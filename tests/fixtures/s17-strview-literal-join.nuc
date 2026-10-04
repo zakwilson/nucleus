@@ -2,10 +2,10 @@
 ; slot. They used to collapse to CStr unconditionally, so the phi carried bare
 ; data pointers and the aggregate return then read a length off the end of a
 ; pointer-sized slot — silent garbage, not a verifier error.
-(import-use strview)
-(import-use string)
-(import-use fmt)
-(import-use io)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
 
 ; The shape that broke: `ptr-int-ir` in the compiler itself.
 (defn width-ir (bytes:i32):StrView

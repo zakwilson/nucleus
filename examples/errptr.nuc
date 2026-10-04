@@ -9,7 +9,7 @@
 ; the same encoding; only the layout differs from the tagged `(Result T E)`.
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use error)
+(import-use nucleus.error)
 
 (defstruct Pt x:i32 y:i32)
 

@@ -1,6 +1,6 @@
 ; A collection literal expands to an alloca'd header, so its (ref (Vector T))
 ; is frame storage too — only the elements are on the heap.
-(import-use vector)
+(import-use nucleus.vector)
 (defn f ():&(Vector i32)
   (let (v:&(Vector i32) [1 2 3])
     (return v)))

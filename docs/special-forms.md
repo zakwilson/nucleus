@@ -72,7 +72,7 @@ failure.
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. **Not to be confused with the `(array T N)` *type*** ([Fixed-size arrays](types.md#fixed-size-arrays--array-t-n)): the two are told apart by position, and `(array i32 4)` means a one-element array holding `4` here but a four-element array type in a type annotation. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](types.md#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`). Nests: a backtick raises the level and an unquote lowers it, so only a level-1 unquote is code — see [Nesting levels](macros.md#nesting-levels) | — |
-| `ast-first` `ast-rest` `ast-at` `ast-len` | Read a list `Node`: the first element, the elements after the first, element *i*, the element count. **This is the spelling a macro body uses** — each is lowered by whichever compiler is running, so a body reaches that compiler's own `Node` layout across a relayout (design/stage21-cleanup/ast-as-collection.md §8.2). Ordinary code calls `node-first`/`node-rest`/`node-at`/`node-len` from `(import-use node)` instead, or treats the list as a [collection](collections.md). | — |
+| `ast-first` `ast-rest` `ast-at` `ast-len` | Read a list `Node`: the first element, the elements after the first, element *i*, the element count. **This is the spelling a macro body uses** — each is lowered by whichever compiler is running, so a body reaches that compiler's own `Node` layout across a relayout (design/stage21-cleanup/ast-as-collection.md §8.2). Ordinary code calls `node-first`/`node-rest`/`node-at`/`node-len` from `(import-use nucleus.node)` instead, or treats the list as a [collection](collections.md). | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr. A `defstruct` in the body defines a **program** type, not a compile-time-private one: its definition is emitted into the program module and the type is usable by ordinary code — in a *body*, in a *signature*, by value or by reference, anywhere in the unit including **above** the block, and at a later REPL entry. `defstruct` is the only definer the body registers for the program this way: a `defvar`, `defconst`, `defenum` or `defn` in a `compile-time` body belongs to the compile-time module, and naming one from ordinary code is an error. | — |
 | `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
@@ -362,7 +362,7 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 
 Operators are **ordinary generic functions**. Each built-in operator is a generic; when the operands are built-in numerics (or pointers, for comparisons) the resolver selects the built-in method, which emits its inline instruction (`add nsw`, `icmp slt`, …) directly — a **front-end peephole**, not an LLVM pass — so there is no `call` and the IR is byte-identical to a non-polymorphic compiler even at `-O0`.
 
-There is no unary bitwise complement operator; `bit-not` (`lib/macros.nuc`) is a one-argument macro over `bit-xor` instead — see [Standard Macros](macros.md#standard-macros-libmacrosnuc).
+There is no unary bitwise complement operator; `bit-not` (`lib/nucleus/macros.nuc`) is a one-argument macro over `bit-xor` instead — see [Standard Macros](macros.md#standard-macros-libmacrosnuc).
 
 **Mixed operands now resolve**: an untyped integer literal adapts to the other operand's numeric type (`(+ x 1)` with `x:i64`), an untyped *float* literal adapts to the other operand's float width (`(* alpha 2.0)` with `alpha:f32` is `f32`), and a narrower typed integer/float widens to the wider (`(+ i32 i64)`, `(+ f32 f64)`). The same literal adaptation applies outside binops, at any typed target — `(let (a:f32 0.1) …)`, an `f32` argument, an `f32` `return`; see [Types](types.md#built-in-types). A name bound by `defconst` or a `defenum` member counts as the literal it stands for, so `(<= ans:ui32 K)` with `(defconst K 512)` resolves exactly as `(<= ans:ui32 512)` does (a local binding that *shadows* the constant is an ordinary typed value). Genuinely mismatched operands (e.g. two different typed pointers in arithmetic, or mixed signedness of two typed values) are still rejected.
 
@@ -385,12 +385,12 @@ A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.p
 ```
 t.nuc:9: error: no matching method for '=': Pt does not conform to Eq
   note: a struct literal compares by value, never by address
-  note: define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use numeric)
+  note: define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use nucleus.numeric)
 ```
 
 `= !=` name `Eq`, `< <= > >=` name `Ord` and `_+ _- _* _/` name `Num`. `%` (integers or floats) and the bit operators (integers) belong to no protocol, so the message names what they take instead. When the operands have two different types, both are listed: `no matching method for '=' with operand types (Pt, i32)`. That form has no protocol clause when `Pt` already has its `=`, because the pairing is what fails.
 
-The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `?&MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](generics.md#bounded-generic-defn).
+The **standard numeric protocols** live in `lib/nucleus/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `?&MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](generics.md#bounded-generic-defn).
 
 ## Callable values (non-function call position)
 
@@ -541,7 +541,7 @@ value reading, since a bare symbol already is one:
 ```
 
 For parametric function-object conformance use `(UnaryFn Arg Ret)` and
-`(FoldFn Acc Elem)` from `lib/iterator.nuc`
+`(FoldFn Acc Elem)` from `lib/nucleus/iterator.nuc`
 (see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var)).
 See `examples/callable.nuc` for a full demonstration, and
 `examples/selector-value.nuc` for the member-access matrix.

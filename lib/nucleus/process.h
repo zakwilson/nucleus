@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include "string.h"
 #include "allocator.h"
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/process.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/process.nuc by nucleusc --emit-cheader */
 
 #define EXEC_FAILED_STATUS 127
 #define PROC_CHUNK 65536

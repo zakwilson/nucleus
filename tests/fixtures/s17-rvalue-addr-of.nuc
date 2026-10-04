@@ -2,7 +2,7 @@
 ; A call result has no storage the caller can see, and `(ref T)` does not
 ; distinguish a read borrow from a write one, so materializing a temporary here
 ; would let a mutating callee write somewhere the caller can never observe.
-(import-use strview)
+(import-use nucleus.strview)
 
 (defn show (sv:&StrView):void)
 

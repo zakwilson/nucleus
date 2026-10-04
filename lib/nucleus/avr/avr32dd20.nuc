@@ -15,6 +15,8 @@
 ; writing a 1-bit to OUTTGL toggles that output — no read needed.
 ; Decimal values (no 0x hex literal in the reader); hex noted for reference.
 
+(ns nucleus.avr.avr32dd20)
+
 (defconst PORTA_DIR     1024)  ; 0x0400  base + 0
 (defconst PORTA_DIRSET  1025)  ; 0x0401  base + 1
 (defconst PORTA_DIRCLR  1026)  ; 0x0402  base + 2

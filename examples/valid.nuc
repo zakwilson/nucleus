@@ -8,7 +8,7 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use numeric)
+(import-use nucleus.numeric)
 
 ; clampv uses only < and >, so it is valid for any ordered/comparable type.
 (defn clampv (x:T lo:T hi:T :where (Valid T)):T

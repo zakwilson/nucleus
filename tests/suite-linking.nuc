@@ -24,8 +24,30 @@
 ; ---------------------------------------------------------------------------
 
 ; `read-dir` sorts, so a failure names the same file on every machine.
-(defn lib-sources ():!DirEntries
-  (return (read-dir "lib")))
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.test)
+(import-use nucleus.keyword)
+(import-use nucleus.coll)
+(defn lib-sources ():!(Vector String)
+  (let (out:(Vector String) (vector-new))
+    (try (lib-sources-in "lib" &out))
+    (try (lib-sources-in "lib/nucleus" &out))
+    (return (ok out))))
+
+(defn lib-sources-in (dir:StrView out:&(Vector String)):!void
+  (let (d:DirEntries (try (read-dir dir))
+        n:usize (dir-count &d)
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name &d i))
+        (when (strview-has-suffix nm ".nuc") (conj out (str dir "/" nm))))
+      (set! i (+ i 1)))
+    (drop &d))
+  (return (ok)))
 
 ; Every `lib/*.nuc` under one emit mode. The real target is `make lib-objs` /
 ; `lib-headers` / `lib-cheaders`: a file that compiles only as part of the
@@ -36,14 +58,13 @@
 ; and so could not resolve `Node`, `StrView`, `String`, `(Maybe T)` or the `!T`
 ; sugar's `(Result T E)` in an exported signature.
 (defn check-lib-emits (flag:StrView):!void
-  (let (d:DirEntries (try (lib-sources))
-        n:usize (dir-count &d)
+  (let (d:(Vector String) (try (lib-sources))
+        n:usize (count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name &d i))
-        (when (strview-has-suffix nm ".nuc")
-          (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view &p)
+      (let (p:String (invoke &d i))
+        (do
+          (let (pv:StrView (string-as-view &p)
                 c:Compiled (try (emit-checked "" flag pv)))
             (when (not (c 'ok?))
               (fail! pv " does not survive " flag " on its own:\n     "
@@ -55,14 +76,13 @@
   (return (ok)))
 
 (deftest w9-lib-emit-llvm
-  (let (d:DirEntries (try (lib-sources))
-        n:usize (dir-count &d)
+  (let (d:(Vector String) (try (lib-sources))
+        n:usize (count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name &d i))
-        (when (strview-has-suffix nm ".nuc")
-          (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view &p)
+      (let (p:String (invoke &d i))
+        (do
+          (let (pv:StrView (string-as-view &p)
                 c:Compiled (try (emit-checked "" "--emit-llvm" pv)))
             (when (not (c 'ok?))
               (fail! pv " does not compile on its own:\n     "
@@ -108,14 +128,13 @@
   (let (dir:StrView (try (test-scratch))
         obj:String (str dir "/gate.o")
         ov:StrView (string-as-view &obj)
-        d:DirEntries (try (lib-sources))
-        n:usize (dir-count &d)
+        d:(Vector String) (try (lib-sources))
+        n:usize (count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name &d i))
-        (when (strview-has-suffix nm ".nuc")
-          (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view &p)
+      (let (p:String (invoke &d i))
+        (do
+          (let (pv:StrView (string-as-view &p)
                 c:Compiled (try (object-checked "" pv ov)))
             (when (not (c 'ok?))
               (fail! pv " does not compile to an object:\n     "

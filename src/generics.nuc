@@ -1,5 +1,14 @@
-(import-use arena)
-(import-use vector)
+(import-use nucleus.arena)
+(import-use nucleus.vector)
+(import-use nucleus.intern)
+(import-use nucleus.node)
+(import-use nucleus.hashmap)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.strview-str)
+(import-use nucleus.read)
+(import-use nucleus.strview)
+(import-use nucleus.hashset)
 
 ; Generic / polymorphism registry, bounded-generic def-time checking, Stage 11
 ; tyvar-from-receiver inference + structural unification, and the Valid inferred
@@ -28,11 +37,6 @@
   (return null))
 
 (defn generic-lookup (name:Symbol):?&Generic
-  (when-some (h (hyg-of name))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&Generic (generic-lookup (hyg-inner name)))
-      (name-env-set here)
-      (return r)))
   ; Stage 15 W5e: a name this file declared with `defn-` is keyed under the
   ; file's implicit namespace, and shadows a public generic of the same name.
   ; priv-key-use is the identity for every other name, so this is one extra
@@ -48,7 +52,7 @@
 ; the unqualified space, so that is what it answers to.
 (defn method-in-ns (m:&Method ns:Symbol):i32
   (let (s:Symbol (m 'src-ns))
-    (when (symbol-none? s) (set! s (symbol-intern "user")))
+    (when (symbol-none? s) (set! s g-ns-user))
     (when (= s ns) (return 1))
     (return 0)))
 
@@ -144,7 +148,17 @@
           (when (conformance-exact? pt (p 'name)) (return true))
           (when (and (!= pt null) (= (pt 'kind) TY-PTR)
                      (conformance-exact? (pt 'elem) (p 'name)))
-            (return true))))))
+            (return true))
+          ; A method on its own namespace's type implements the protocol for it,
+          ; even above the file's `extend` (ambient-namespaces.md, AN-2 as built).
+          (when (type-owned-by-ns? pt (m 'src-ns)) (return true))))))
+  (return false))
+
+(defn type-owned-by-ns? (t:?&Type ns:Symbol):bool
+  (when (or (= t null) (symbol-none? ns)) (return false))
+  (let (u:?&Type (if (and (= (t 'kind) TY-PTR) (!= (t 'elem) null)) (t 'elem) t))
+    (when (and (!= u null) (or (= (u 'kind) TY-STRUCT) (= (u 'kind) TY-UNION)) (!= (u 'sdef) null))
+      (return (= (key-namespace ((unsafe/cast &StructDef (u 'sdef)) 'name)) ns))))
   (return false))
 
 (defn proto-declares-method? (p:&Protocol name:Symbol):bool
@@ -190,11 +204,6 @@
 ; for a bare one — which is what makes a prefix bind names under the prefix and
 ; under nothing else, for a generic as for every other kind (R3).
 (defn generic-lookup-ref (spelling:Symbol):?&Generic
-  (when-some (h (hyg-of spelling))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&Generic (generic-lookup-ref (hyg-inner spelling)))
-      (name-env-set here)
-      (return r)))
   (when (<= (qualifier-len spelling) 0)
     (let (g:?&Generic (generic-lookup spelling))
       (when (= g null) (return null))
@@ -259,7 +268,7 @@
     ; generic) registers its own overloads of the same name. Without re-running
     ; finalize, those imported methods keep null ir-names and emit under the bare
     ; `@name`, colliding (e.g. a local parametric `next` finalizes the `next`
-    ; generic, then `(import iterator)` adds concrete `next` methods that never get
+    ; generic, then `(import nucleus.iterator)` adds concrete `next` methods that never get
     ; mangled). Clearing `finalized` lets the import's finalize-generics re-mangle
     ; every method. Safe: this runs in the prescan/import phase, before any of the
     ; affected methods' bodies are emitted, so no already-emitted reference uses a
@@ -779,7 +788,7 @@
     (when (!= bnode null) (set! bline ((unsafe/cast &Node bnode) 'line)))
     (when (symbol-none? afile) (set! afile (symbol-intern "<unknown file>")))
     (when (symbol-none? bfile) (set! bfile (symbol-intern "<unknown file>")))
-    (when (symbol-none? ansname) (set! ansname (symbol-intern "user")))
+    (when (symbol-none? ansname) (set! ansname g-ns-user))
     (let (head:StrView (fstr "duplicate definition of '" bare
                           "' — the same parameter types are already defined at "
                           (fstr bfile ":" bline))
@@ -842,8 +851,8 @@
         bare:Symbol (strip-priv-qualifier (gg 'name))
         ans:Symbol (a 'src-ns)
         bns:Symbol (b 'src-ns))
-    (when (symbol-none? ans) (set! ans (symbol-intern "user")))
-    (when (symbol-none? bns) (set! bns (symbol-intern "user")))
+    (when (symbol-none? ans) (set! ans g-ns-user))
+    (when (symbol-none? bns) (set! bns g-ns-user))
     (let (acand:StrView (fstr "'" (fstr ans "/" bare) "' (defined at " (method-def-site a)
                            ")")
           bcand:StrView (fstr "'" (fstr bns "/" bare) "' (defined at " (method-def-site b)
@@ -1096,7 +1105,19 @@
               "': arguments do not satisfy the required protocol constraint")))
     (die-at line (fstr "no matching method for overloaded '" (gg 'name)
                        "' with argument types (" (arg-type-spellings argtypes nargs) ")"
+                       (unreachable-method-note gg argtypes nargs)
                        (candidate-notes gg argtypes arg-nodes nargs line)))))
+
+; The exact method the import environment filtered out of `gg`, named by its
+; namespace, or "" — the one fix "no matching method" otherwise hides.
+(defn unreachable-method-note (gg:ptr:Generic argtypes:ptr nargs:i32):StrView
+  (when-some (full (generic-lookup (gg 'name)))
+    (when-some (m (generic-find-method-exact full argtypes nargs))
+      (let (ns:Symbol (m 'src-ns))
+        (when (and (not (symbol-none? ns)) (= (ns-reachable-bare ns) 0))
+          (return (fstr "\n  note: a method in namespace '" ns
+                        "' takes these arguments, and this file does not import it"))))))
+  (return ""))
 
 ; ============================================================
 ; The no-match diagnostic's notes: the overloads that take the first argument,
@@ -3494,7 +3515,7 @@
 ; Is this head one of the core special forms (mirrors emit-list's dispatch)?
 ; Such forms are handled structurally by gcheck, never as function calls.
 ; hp is the head Node* itself (not its string spelling) — every symbol Node
-; is `intern-symbol`-canonicalized (lib/node.nuc), so comparing the whole
+; is `intern-symbol`-canonicalized (lib/nucleus/node.nuc), so comparing the whole
 ; Node* by `=` against a quoted-symbol literal ('let, 'with, ...) is a valid,
 ; fast identity test, matching emit-list's dispatch in nucleusc.nuc. Node is
 ; not a string kind, so this `=` is a plain `icmp eq ptr` regardless of hp's
@@ -4184,21 +4205,13 @@
 ;   * a qualifier bound nowhere in this file resolves to nothing, even when the
 ;     raw spelling happens to *be* a registry key.
 ;
-; A bare name probes the current namespace, then the bare (`user`) key, then the
-; flattened set. The `user` probe is not a special case: the prelude is flattened
-; into every file, so `user` is always in the flattened set, and probing it
-; explicitly keeps a unit with no namespaces on exactly one registry scan — which
-; is why `g-ns-declared` gates the loop.
+; A bare name probes the current namespace, then the flattened set, then the bare
+; (`user`) key — the order every reference lookup walks (ambient-namespaces.md §8).
 ;
 ; Note an *ambiguous* bare reference is still correctly a miss under `user`: with
 ; `a/Describe` and `b/Describe` registered and neither namespace flattened, bare
 ; `Describe` resolves to neither and the caller must qualify.
 (defn protocol-lookup (name:Symbol):?&Protocol
-  (when-some (h (hyg-of name))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&Protocol (protocol-lookup (hyg-inner name)))
-      (name-env-set here)
-      (return r)))
   (let (r:ref:NameRef (resolve-spelling name))
     (when (= (r 'status) NR-UNBOUND) (return null))
     ; Stage 15 B5: `defprotocol-`'s privacy is enforced HERE, in the reference
@@ -4210,9 +4223,6 @@
       (when (!= hit null) (return hit))
       ; A qualified reference names exactly one namespace: no fallback.
       (when (= (r 'status) NR-QUALIFIED) (return null))
-      (when (!= (r 'canonical) (r 'bare))
-        (let (h2:?&Protocol (protocol-visible (protocol-lookup-exact (r 'bare))))
-          (when (!= h2 null) (return h2))))
       (when (!= g-ns-declared 0)
         (dotimes (i (file-imports-count))
           (match (file-flattened-ns-at i)
@@ -4222,6 +4232,10 @@
                   (let (h3:?&Protocol (protocol-visible (protocol-lookup-exact k)))
                     (when (!= h3 null) (return h3))))))
             (none 0))))
+      ; `user` last, as for every other kind: a core library's `Drop` is not a user file's.
+      (when (!= (r 'canonical) (r 'bare))
+        (let (h2:?&Protocol (protocol-visible (protocol-lookup-exact (r 'bare))))
+          (when (!= h2 null) (return h2))))
       (return null))))
 
 ; Stage 15 B2a — for a name that may be EITHER a live source spelling or an
@@ -4279,7 +4293,7 @@
     (set! g-source-path (crec 'path))
     (set! g-current-ns (crec 'ns))
     (set! g-file-imports (crec 'imports))
-    (let (msg:StrView (with-qualifier-note
+    (let (msg:StrView (protocol-ref-message
                         (fstr who ": :where names unknown protocol '" (crec 'proto) "'")
                         (crec 'proto)))
       (set! g-source-path save-path)
@@ -4330,7 +4344,7 @@
     (when (or (= k TY-STRUCT) (= k TY-UNION))
       (let (sd:?&StructDef (tt 'sdef))
         (when (= sd null) (return 0))
-        (when (!= (conformance-lookup (sd 'name) (symbol-intern "Drop")) 0) (return 1))))
+        (when (!= (conformance-lookup (sd 'name) (core-proto-key "Drop")) 0) (return 1))))
     (return 0)))
 
 ; Stage 13 L2: is `ty` trivially (bitwise) copyable, hence automatically `Clone`?
@@ -4369,7 +4383,7 @@
                       (= ((ty 'elem) 'kind) TY-STRUCT)))
         (return 1))
       (return 0)))
-  (when (= proto-name "Clone")
+  (when (core-named? proto-name "Clone")
     (return (type-trivially-copyable ty)))
   (return 0))
 
@@ -4521,12 +4535,14 @@
     ; Step 1: idempotent — already conforms.
     (when (!= (conformance-lookup cvspell proto) 0) (return 1))
     ; Step 2: recognized-set gate (UnaryFn / FoldFn / BinaryFn). BinaryFn is the
-    ; same-typed-args comparator shape `sort` (lib/combinators.nuc) needs; it is
+    ; same-typed-args comparator shape `sort` (lib/nucleus/combinators.nuc) needs; it is
     ; derived by the identical sig-scan as the other two (each protocol param is
     ; bound from a matching NODE-SYM in the single method's signature). This gate
     ; entry is inert under self-compilation — the compiler never stamps a
     ; BinaryFn — so the bootstrap stays a byte-identical fixed point.
-    (when (and (!= proto "UnaryFn") (!= proto "FoldFn") (!= proto "BinaryFn")) (return 0))
+    (when (not (or (core-named? proto "UnaryFn") (core-named? proto "FoldFn")
+                  (core-named? proto "BinaryFn")))
+      (return 0))
   ; Step 3: find the closure's invoke method — a METHOD-USER on the `invoke`
   ; generic whose self param (param-types[0]) is (ref Env) with Env.name == cvspell.
   ; Detection is semantic ("the type has an invoke method"), not by name, so it
@@ -5859,7 +5875,7 @@
                     sargs:ptr (extend-subject-tyvar-args app base-ntv (if (!= st null) "defstruct" "defunion") sline))
                 (when (= proto null)
                   (die-at (node-line (as ptr proto-node) (ff 'line))
-                    (with-qualifier-note
+                    (protocol-ref-message
                       (fstr "extend: unknown protocol '" proto-spelling "'")
                       proto-spelling)))
                 ; The protocol application must supply exactly the protocol's extra
@@ -6009,8 +6025,8 @@
         (when (and (!= subj-proto null) (= proto-nargs 0))
           (when (= proto-rec null)
             (die-at (node-line (as ptr proto-node) (ff 'line))
-              (with-qualifier-note
-                (fstr "extend: '" (-> subj-proto (as &Protocol _) (_ 'name))
+              (protocol-ref-message
+                (fstr "extend: '" (display-key (-> subj-proto (as &Protocol _) (_ 'name)))
                       "' is a protocol, so its supertype '" proto-spelling
                       "' must be a protocol too")
                 proto-spelling)))
@@ -6022,7 +6038,7 @@
         (let (proto:?&Protocol proto-rec)
           (when (= proto null)
             (die-at (node-line (as ptr proto-node) (ff 'line))
-              (with-qualifier-note
+              (protocol-ref-message
                 (fstr "extend: unknown protocol '" proto-spelling "'")
                 proto-spelling)))
           ; Validate single-token subject types eagerly for a clean diagnostic.
@@ -6639,13 +6655,13 @@
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
-      ; struct, available only when the program has (import keyword). If the struct
+      ; struct, available only when the program has (import nucleus.keyword). If the struct
       ; is registered, report it so the Rung-3 cross-check at the emit site agrees
       ; with the keyword-intern call's return type; otherwise return null and let
       ; emit's own type stand (emit-keyword's synthetic call dies with a clear
       ; "undefined: keyword-intern" if the lib was not imported).
       NODE-KEYWORD
-        (let (sd:?&StructDef (struct-lookup-ref (symbol-intern "Keyword")))
+        (let (sd:?&StructDef (core-struct "Keyword"))
           (when (!= sd null) (return (type-for-sdef sd)))
           (return null))
       0)

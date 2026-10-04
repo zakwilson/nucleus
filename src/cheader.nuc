@@ -13,6 +13,19 @@
 ; __attribute__((noreturn))), so recognize the standard noreturn libc functions
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
+(import-use nucleus.process)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.hashset)
+(import-use nucleus.string)
+(import-use nucleus.intern)
+(import-use nucleus.fmt)
+(import-use nucleus.arena)
+(import-use nucleus.node)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.io)
+(import-use nucleus.read)
 (defn c-fn-noreturn (fname:Symbol):bool
   (let (names:&(HashSet StrView)
         #{"exit" "abort" "_exit" "_Exit" "quick_exit"
@@ -2901,10 +2914,25 @@
             (cheader-register-opaque tag decl-line is-union null))))
       (return (cheader-skip-to-semi buf p len)))))
 
+; C has one global namespace: a header's names key as `user`'s do, whichever
+; namespace the importing file declares (stage23-namespaces/ambient-namespaces.md).
+(defn cheader-prescan-opaque (header-path:Symbol line:i32):void
+  (let (saved:Symbol g-current-ns)
+    (set! g-current-ns g-ns-user)
+    (cheader-prescan-opaque-in header-path line)
+    (set! g-current-ns saved)))
+
+(defn emit-c-include (header-path:Symbol line:i32):void
+  (let (saved:Symbol g-current-ns)
+    (set! g-current-ns g-ns-user)
+    (emit-c-include-in header-path line)
+    (set! g-current-ns saved)))
+
+
 ; Pre-register a C header's opaque type names. Never emits IR and never registers
 ; a function. It refuses a header that does not preprocess, in `emit-c-include`'s
 ; words: the header modes run this pass and never the import.
-(defn cheader-prescan-opaque (header-path:Symbol line:i32):void
+(defn cheader-prescan-opaque-in (header-path:Symbol line:i32):void
   (let (buf-len:i64 0
         buf:ptr (cheader-preprocess header-path (as &i64 &buf-len)))
     (when (= buf null)
@@ -3317,7 +3345,7 @@
     (cheader-macro-register)
     (cheader-macro-reset)))
 
-(defn emit-c-include (header-path:Symbol line:i32):void
+(defn emit-c-include-in (header-path:Symbol line:i32):void
   ; W3a: reset the linemarker provenance for this header. Until the first
   ; `# N "file"` marker is seen, attribute declarations to the header we were
   ; asked to import (never to line 0 — a `:0:` in a diagnostic is exactly what
@@ -3606,7 +3634,7 @@
 
 ; Stage 15 W9 item 37. A type this unit does not define needs the defining unit's
 ; generated header included, or the reference is to a tag C never completes:
-; a by-value FIELD fails outright ("field has incomplete type" — `lib/string-split.h`
+; a by-value FIELD fails outright ("field has incomplete type" — `lib/nucleus/string-split.h`
 ; was unusable for exactly this), and a by-value PARAMETER parses but cannot be
 ; called, which is worse, being silent. Recorded here because `type-name-to-c`'s
 ; fallthrough is the one place a reference to a user type is spelled, so the set
@@ -3617,21 +3645,23 @@
 ; --emit-cheader emits no struct. `prescan-imported-types` swaps g-source-path
 ; while it walks an imported file, so an imported type carries that file's path.
 (defn cheader-note-type-file (name:Symbol):void
+  (cheader-note-sdef-file (struct-lookup-ref name)))
+
+(defn cheader-note-sdef-file (sd:?&StructDef):void
   (when (symbol-none? g-source-path) (return))
-  (let (sd:?&StructDef (struct-lookup-ref name))
-    (when (= sd null) (return))
-    (let (f:Symbol (sd 'src-file))
-      (when (symbol-none? f) (return))
-      ; Only a Nucleus unit, whose header the build generates beside it by the
-      ; same rule (`lib/%.h: lib/%.nuc`). A C header's opaque type is already
-      ; reachable through the `#include` the SOURCE wrote, and a compiler-minted
-      ; type (a closure env, a stamped instance) has no header to name at all.
-      (when (and (= (str-ends-with f ".nuc") 0) (= (str-ends-with f ".nuch") 0))
-        (return))
-      (when (= f g-source-path) (return))
-      (let (k:Symbol f)
-        (when (= (import-list-has g-cheader-includes k) 0)
-          (set! g-cheader-includes (import-list-push g-cheader-includes k)))))))
+  (when (= sd null) (return))
+  (let (f:Symbol (sd 'src-file))
+    (when (symbol-none? f) (return))
+    ; Only a Nucleus unit, whose header the build generates beside it by the
+    ; same rule (`lib/%.h: lib/%.nuc`). A C header's opaque type is already
+    ; reachable through the `#include` the SOURCE wrote, and a compiler-minted
+    ; type (a closure env, a stamped instance) has no header to name at all.
+    (when (and (= (str-ends-with f ".nuc") 0) (= (str-ends-with f ".nuch") 0))
+      (return))
+    (when (= f g-source-path) (return))
+    (let (k:Symbol f)
+      (when (= (import-list-has g-cheader-includes k) 0)
+        (set! g-cheader-includes (import-list-push g-cheader-includes k))))))
 
 ; The `#include` spelling for a defining source file, relative to the header
 ; being generated. The build writes `lib/foo.h` beside `lib/foo.nuc`, and a
@@ -3692,9 +3722,8 @@
   (set! g-hdr-buf (string-new))
   (set! g-hdr &g-hdr-buf))
 
-; A tag means nothing in the compilation that reads the header (quasiquote-resolution.md §3.11).
 (defn header-out-close ():void
-  (emit stdout (hyg-scrub-in (string-as-view &g-hdr-buf) true))
+  (emit-all stdout &g-hdr-buf)
   (set! g-hdr null))
 
 (defn header-print-node (n:?&Node):void
@@ -3824,16 +3853,15 @@
     (case (n 'kind)
       NODE-SYM
         (do
-          (when-some (h (hyg-of (n 's)))
-            (let (here:NameEnv (hyg-enter h)
-                  c:StrView (type-node-to-c (as ptr (intern-node (hyg-inner (n 's))))))
-              (name-env-set here)
-              (return c)))
           (match (niche-sym-to-c (n 's))
             ((some nc) (return nc))
             (none 0))
           (when (symbol-contains-byte (n 's) 58)
             (return (type-node-to-c (split-colon-segments (n 's) (n 'line)))))
+          ; A full name (a template's `mylib/Box`) is rendered as the type it names.
+          (when (> (qualifier-len (n 's)) 0)
+            (when-some (sd (struct-lookup-ref (n 's)))
+              (return (cheader-type-c (type-for-sdef sd)))))
           ; Stage 16: an alias has no C spelling of its own — it is a second
           ; spelling for its body (container-type-sugar.md §3.2), so the header
           ; must show the body's C type. Without this the alias name leaked out
@@ -3960,10 +3988,10 @@
     (set! (e 'sd) sd)
     (set! (e 'kw) (if (!= (s 'is-union) 0) "union" "struct"))
     ; `__anon_…` is a reserved C identifier.
-    (set! (e 'cname) (let (nv:StrView (symbol-as-view (s 'name)))
+    (set! (e 'cname) (let (nv:StrView (display-key (s 'name)))
                        (if (strview-has-prefix nv "__anon_")
                          (fstr "nuc" (strview-drop-bytes nv 1))
-                         (cheader-c-ident-view (s 'name)))))
+                         (cheader-c-ident-view (symbol-intern nv)))))
     (set! (e 'deps) (vector-new-in &g-arena-alloc))
     (set! (e 'busy) true)
     (set! (e 'emitted) false)
@@ -4021,7 +4049,9 @@
                   (str-into acc (cheader-type-c-decl (f 'type) (cheader-c-ident-view (f 'name))) "; ")))
               (str-into acc "}")
               (return (string-as-view acc)))))
-        (return (type-name-to-c (sd 'name)))))
+        ; D-IR: a core type keeps its bare C name, as it keeps its bare link name.
+        (cheader-note-sdef-file sd)
+        (return (type-name-to-c (symbol-intern (display-key (sd 'name)))))))
     (return (type-to-c t))))
 
 ; A signature's type, where an inline `(struct …)`/`(union …)` is named so a
@@ -4421,7 +4451,7 @@
         (return 1))))
   ; Stage 18 TF-4: a `(fn RET)` / `((fn RET) (P…))` carries RET and its parameters
   ; one level down, where the ptr/ref unwrapping below never looked — which is how
-  ; a `!void` callback reached lib/test.h as an undefined `struct _BANGvoid` tag.
+  ; a `!void` callback reached lib/nucleus/test.h as an undefined `struct _BANGvoid` tag.
   (let (fh:ptr (cheader-fn-head-node (as ptr tn)))
     (when (!= fh null)
       (let (rn:ptr (node-rest (unsafe/cast &Node fh)))
@@ -4589,7 +4619,7 @@
     ; only for a solitary non-operator `defn`; an overload takes a per-signature
     ; mangled name and an operator goes through `op-name-token` even when it is
     ; the sole user method (its generic always carries an intrinsic seed), so
-    ; `lib/string.nuc`'s `=` links as `eq.String.String`. The registry decided
+    ; `lib/nucleus/string.nuc`'s `=` links as `eq.String.String`. The registry decided
     ; that in `finalize-generics` and is the only thing that knows it; deriving a
     ; second answer here is how the header came to declare symbols no object
     ; defines. `defn-form-mangled-name` answers null for a solitary name, which is
@@ -4949,7 +4979,7 @@
 ; The two "has no C spelling" predicates are the emitters' own, and they are
 ; applied here for the same reason those apply them: a declaration they reject is
 ; never emitted, so a type reachable only through one is not a dependency of this
-; header. Without them `lib/combinators.h` — which spells no `struct` at all —
+; header. Without them `lib/nucleus/combinators.h` — which spells no `struct` at all —
 ; picked up an include for the `String` return type of a generic template.
 (defn cheader-scan-sig-node (tn:ptr line:i32):void
   (if (and (!= tn null) (!= (cheader-inline-aggregate? (cheader-unalias tn)) 0))
@@ -4989,7 +5019,7 @@
           ; A declaration the emitter refuses names no dependency of this header,
           ; and it refuses the WHOLE declaration on any one of its signature
           ; positions — so ask once, of the whole form, rather than per type node.
-          ; W9 item 44: this is what keeps `lib/char.h` from including `prelude.h`
+          ; W9 item 44: this is what keeps `lib/nucleus/char.h` from including `prelude.h`
           ; for the `Char` payload of a `!Char` return that is no longer declared.
           (when (!= (cheader-defn-skip-reason form) 0) (return))
           (when (>= (node-len form) 3)
@@ -5007,7 +5037,7 @@
         (when (= h "defstruct")
           ; A parametric head — `(defstruct (Vector T) …)` — defines no concrete
           ; C type and is skipped by the emitter at its first line, so its fields
-          ; name no dependency either. Without this, `lib/vector.h` (which spells
+          ; name no dependency either. Without this, `lib/nucleus/vector.h` (which spells
           ; no `struct` at all) took an include for the template's allocator field.
           ; Any position may be `()`, a NULL node (W5f); this scan only collects includes.
           (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
@@ -5043,7 +5073,7 @@
   ; W9 item 37: discover the cross-unit type references BEFORE the preamble, so
   ; the `#include` that completes each one can precede it. A header that names a
   ; type it does not define is not merely untidy — a by-value field of one does
-  ; not compile at all, which is what made `lib/string-split.h` unusable.
+  ; not compile at all, which is what made `lib/nucleus/string-split.h` unusable.
   (set! g-cheader-includes null)
   (set! g-cheader-c-includes null)
   (let (sc:ptr forms)

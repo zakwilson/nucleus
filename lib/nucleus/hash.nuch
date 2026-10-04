@@ -1,4 +1,6 @@
-; .nuch header for lib/hash.nuc
+; .nuch header for lib/nucleus/hash.nuc
+(ns nucleus.hash)
+(import-use nucleus.fnv)
 (defprotocol Hash (hash (self:ref:Self) :usize))
 (extend i32 Hash)
 (defmethod "@hash.pi32" hash ((self (ref i32))) :usize)

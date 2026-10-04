@@ -11,12 +11,13 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use vector)
-(import-use iterator)
-(import-use string)
-(import-use combinators)
-; explicit path: a bare (import-use list) resolves to examples/list.nuc.
-(import-use "lib/list.nuc")
+(import-use nucleus.vector)
+(import-use nucleus.iterator)
+(import-use nucleus.string)
+(import-use nucleus.combinators)
+; explicit path: a bare (import-use nucleus.list) resolves to examples/list.nuc.
+(import-use "lib/nucleus/list.nuc")
+(import-use nucleus.strview)
 
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; node with no name is simply a zeroed one.

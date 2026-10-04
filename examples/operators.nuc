@@ -7,7 +7,7 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use numeric)
+(import-use nucleus.numeric)
 
 ; ---- A user numeric type: rationals reduced to a common scale (here /100). ----
 (defstruct Cents v:i32)

@@ -51,6 +51,8 @@
 ; to internal helpers that the value-returning `iter` wraps; the protocol surface
 ; is value-return only — one convention. It must itself conform to (Iterator E).
 ; ---------------------------------------------------------------------------
+(ns nucleus.coll)
+
 (defprotocol (Coll E It)
   (count  (self:&Self):usize)
   (conj    (self:&Self elem:E):void)
@@ -122,7 +124,7 @@
 ; not shadow libc `@free` for the compilation unit.
 ;
 ; Drop is declared here (the canonical library home) so every owning
-; collection lib can `(import coll)` and extend it. Programs that only need
+; collection lib can `(import nucleus.coll)` and extend it. Programs that only need
 ; ad-hoc lifecycle outside collections may still define their own Drop
 ; (examples/drop-defer.nuc does), in a unit that does not import this one.
 ; ---------------------------------------------------------------------------

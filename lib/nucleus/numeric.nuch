@@ -1,4 +1,5 @@
-; .nuch header for lib/numeric.nuc
+; .nuch header for lib/nucleus/numeric.nuc
+(ns nucleus.numeric)
 (defprotocol Eq (= (a:Self b:Self) :bool) (!= (a:Self b:Self) :bool))
 (defprotocol Ord (< (a:Self b:Self) :bool) (<= (a:Self b:Self) :bool) (> (a:Self b:Self) :bool) (>= (a:Self b:Self) :bool))
 (extend Ord Eq)

@@ -8,9 +8,9 @@
 
 (import-use "stdio.h")
 (import-use "string.h")
-(import-use numeric)
+(import-use nucleus.numeric)
 
-; CStr conforms to Eq (lib/numeric.nuc), so it works in an Eq-bounded generic.
+; CStr conforms to Eq (lib/nucleus/numeric.nuc), so it works in an Eq-bounded generic.
 (defn same (a:T b:T :where (Eq T)):bool
   (return (= a b)))
 
@@ -30,7 +30,7 @@
 
   ; Through the Eq-bounded generic (T := CStr). Stage 14 NS-3: a bare "…" is now a
   ; StrView, so cast to CStr to keep binding this generic at CStr (StrView's Eq is
-  ; import-gated in lib/strview.nuc and not pulled in here).
+  ; import-gated in lib/nucleus/strview.nuc and not pulled in here).
   (printf "same hi hi  : %d\n" (same (as CStr "hi") (as CStr "hi")))
   (printf "same hi yo  : %d\n" (same (as CStr "hi") (as CStr "yo")))
   (return 0))

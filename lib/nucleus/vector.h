@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/vector.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/vector.nuc by nucleusc --emit-cheader */
 
 void vector_oom(void) asm("vector-oom");
 void vector_bounds(struct StrView what, size_t i, size_t n) asm("vector-bounds");

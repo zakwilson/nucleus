@@ -19,8 +19,10 @@
 ;   invoke method is selected at stamp time. reduce uses :where to declare its
 ;   fold tyvar G as bounded by FoldFn and element type S recovered from I.
 
+(ns nucleus.iterator)
+
 (import-use "stdio.h")
-(import-use seq)
+(import-use nucleus.seq)
 
 ; ---------------------------------------------------------------------------
 ; 1. Iterator parametric protocol.

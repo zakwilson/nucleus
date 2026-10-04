@@ -8,7 +8,7 @@
 ;       two-eightbyte struct ABI), NOT collapsed to its data pointer — the
 ;       variadic collapse in (1) must never touch a fixed parameter.
 (import-use "stdio.h")
-(import-use strview)
+(import-use nucleus.strview)
 
 ; (2) fixed StrView by-value parameter — reads .len via the by-ref accessor.
 (defn sv-len (v:StrView):usize (return (strview-byte-len &v)))

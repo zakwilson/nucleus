@@ -15,7 +15,8 @@
 ; initializer, and a read-back of the handle the Vector actually copied.
 
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
 
 ; The §2.10 shape: a two-field constant struct, applied by the LOADER before any
 ; code runs — which is what removes the ordering hazard entirely rather than

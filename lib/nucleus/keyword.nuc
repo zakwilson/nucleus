@@ -14,19 +14,21 @@
 ; `HashMap` keys.
 ;
 ; A Keyword is now exactly one interned `Symbol` and nothing else: one word
-; instead of three, and the intern table is `lib/intern.nuc`'s open-addressed
+; instead of three, and the intern table is `lib/nucleus/intern.nuc`'s open-addressed
 ; one. Before Stage 17 this file carried its own 256-entry fixed array with a
 ; linear scan and a `strcmp` per probe, which capped a program's distinct
 ; keyword set and aborted past it. Both are gone.
 ; ---------------------------------------------------------------------------
 
-(import-use numeric)   ; the Eq protocol (= / !=)
-(import-use hash)
-(import-use strview)
-(import-use string)
-(import-use fmt)
-(import-use intern)
-(import-use intern-str)
+(ns nucleus.keyword)
+
+(import-use nucleus.numeric)   ; the Eq protocol (= / !=)
+(import-use nucleus.hash)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
 
 (defstruct Keyword sym:Symbol)
 

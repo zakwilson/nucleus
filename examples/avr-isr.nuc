@@ -18,7 +18,7 @@
 ; idiom is therefore the two adjacent forms below — the generic `fn-attr`
 ; directive followed by the `defn` — with `fn-attr` FIRST (it is consumed at
 ; emit-defn time; there is no forward-reference prescan for the attribute table).
-; See the block comment in lib/avr.nuc for the convention.
+; See the block comment in lib/nucleus/avr.nuc for the convention.
 ;
 ; `(exclude-prelude)` is no longer required (Stage 16 took the node/arena runtime
 ; out of the prelude); it is kept because this example also pins that path. Every
@@ -29,8 +29,8 @@
 
 (exclude-prelude)
 
-(import-use "lib/avr.nuc")
-(import-use "lib/avr/atmega328p.nuc")
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/atmega328p.nuc")
 
 ; --- Timer/Counter1 Overflow ISR (vector 13) ---
 ; `fn-attr` must precede the `defn` it targets. The "signal" attribute is what

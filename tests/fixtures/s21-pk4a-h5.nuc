@@ -4,7 +4,7 @@
 ; a type VARIABLE — the sigil made the name unresolvable — stamped
 ; `f_qpt.pVector.i32` and ran this program, printing 1.
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 
 (defn f-qpt ((v (ref (Vector ?Pt)))):i32 (return 1))

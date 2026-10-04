@@ -1,5 +1,5 @@
-; Stage 22 HY-3: a template name its file resolves to a global may not be
-; bound by the expansion (design/stage22-edn/quasiquote-resolution.md §3.5).
+; A template name its file resolves to a global is that global's full name, which
+; may not be bound (design/stage23-namespaces/ambient-namespaces.md, AN-4).
 (defn bump (x:i32):i32 (return (+ x 1)))
 (defmacro with-bump (e) `(let (bump ~e) bump))
 (defn main ():i32

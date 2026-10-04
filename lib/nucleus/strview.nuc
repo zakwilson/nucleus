@@ -30,15 +30,18 @@
 ;     must NOT appear in plain `defn` names (LLVM IR rejects them).
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.strview)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(import-use hash)
-(import-use numeric)       ; Eq / Ord protocols (= / != / <)
-(import-use char)          ; Char type, char-decode-utf8, DecodeResult
-(import-use string-errors) ; str-index-out-of-bounds, invalid-char-boundary
-(import-use iterator)      ; (Iterator E)
+(import-use nucleus.hash)
+(import-use nucleus.numeric)       ; Eq / Ord protocols (= / != / <)
+(import-use nucleus.char)          ; Char type, char-decode-utf8, DecodeResult
+(import-use nucleus.string-errors) ; str-index-out-of-bounds, invalid-char-boundary
+(import-use nucleus.iterator)      ; (Iterator E)
+(import-use nucleus.fnv)
 ; NOTE: string-protocols.nuc imports strview, so we CANNOT import it here
 ; (circular).  The ByteStr/Str conformances for StrView live in strview-str.nuc,
 ; which imports both strview and string-protocols.
@@ -48,9 +51,9 @@
 ; required or assumed; `len` is authoritative.
 ;
 ; Stage 14 NS-1 (design/stage14/native-strings.md): the `(defstruct StrView
-; ...)` itself now lives in lib/prelude.nuc (beside Node/Maybe) so the type is
+; ...)` itself now lives in lib/nucleus/core.nuc (beside Node/Maybe) so the type is
 ; registered in every compilation unit, including the reader/macros/bootstrap,
-; not just files that `(import-use strview)`. This file keeps every method.
+; not just files that `(import-use nucleus.strview)`. This file keeps every method.
 ; ---------------------------------------------------------------------------
 
 ; ---------------------------------------------------------------------------
@@ -441,7 +444,7 @@
 ; or parse-int-error on empty, on any byte that is not a digit of that radix,
 ; or on a magnitude above `limit`.
 ;
-; `lib/parse.nuc`'s integer conformances are this with radix 10 and their own limit.
+; `lib/nucleus/parse.nuc`'s integer conformances are this with radix 10 and their own limit.
 ; It is public because the limit and the radix are both things `FromStr` cannot
 ; express: the protocol is keyed only on the target TYPE, and a hex literal or
 ; a signed/unsigned retry at the same width needs to say more than that.
@@ -552,7 +555,7 @@
     (return (strview-trim-end &s))))
 
 ; ---------------------------------------------------------------------------
-; S3: ByteStr / Str conformances for StrView live in lib/strview-str.nuc.
+; S3: ByteStr / Str conformances for StrView live in lib/nucleus/strview-str.nuc.
 ;
 ; They cannot live here because string-protocols.nuc imports strview (for
 ; StrView in method signatures), creating a circular import if strview also

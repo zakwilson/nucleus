@@ -27,49 +27,73 @@ its own `(ns …)`.
 ## A template's names mean the macro file's names
 
 A name in a `defmacro` quasiquote means what it meant in the file that wrote the
-macro, not in the file that calls it. A library macro can therefore call its own
-helpers (private ones included) and build its own types. The caller does not
-have to import them, and a caller's local or overload with the same name does not
+macro, not in the file that calls it. The template writes the **full name** of
+the definition the symbol resolves to, as Clojure's syntax-quote does:
+`mylib/helper`, `nucleus.edn/edn-put`, or `user/helper` for a file with no
+`(ns …)`. The caller reaches that name because importing the macro's library put
+the library's namespace in its import closure
+([toplevel.md](toplevel.md#what-an-import-brings-into-scope)). So a library
+macro can call its own helpers and build its own types, the caller need not
+import them, and a caller's local or overload with the same name does not
 capture the call:
 
 ```lisp
 ; mylib.nuc
 (ns mylib)
-(defn- helper (x:i32):i32 (return (+ x 100)))
+(defn helper (x:i32):i32 (return (+ x 100)))
 (defmacro twice-helper (e) `(helper (helper ~e)))
 
 ; main.nuc
 (import mylib m)
 (let (helper:i32 5)
-  (m/twice-helper 1))          ; 201: mylib's helper, not the local
+  (m/twice-helper 1))          ; 201: expands to (mylib/helper (mylib/helper 1))
 ```
 
-**Which names.** A symbol in the template's data is resolved when it names a
+**Which names.** A symbol in the template's data is rewritten when it names a
 global of the macro's file: a function, value, type, protocol or macro. These
 are left as written, and mean the caller's thing as before:
 
 - a name the macro's file does not define or reach, such as a template local, a
   caller's name, a type variable, or a field or arm name;
-- the prelude's names and the built-in operators (`when`, `+`, `Node`, …),
-  special forms, and `unsafe/…`;
+- the core names (`nucleus.core`, `nucleus.macros`) and the built-in operators
+  (`when`, `+`, `Node`, …), special forms, and `unsafe/…`;
 - anything under `quote` (`'field`) or under an unquote (`~x`);
 - a union arm's name, wherever it appears: in a `match` pattern, as `make`'s
   arm, or as a target-typed constructor `(circle r)`, even when the macro's file
   also has a function `circle`;
-- the name half of a typed token (in `x:Point` only `Point` is resolved),
+- the name half of a typed token (in `x:Point` only `Point` is rewritten),
   except where the token binds a name: there, `(let (count:i32 0) …)` is
   refused like `(let (count 0) …)`, below.
 
 The rule covers `defmacro` bodies, `~e` arguments and `compile-time` blocks. A
 `macrolet` or `macmap` template expands in the file that wrote it, and exists to
-name the enclosing function's locals, so it is left alone.
+name the enclosing function's locals, so it is left alone. So is a quasiquote in
+an ordinary `defn`, which builds data for some later compilation.
 
-**Binding a resolved name is an error.** If a template defines or binds a name
-that its file resolves to a global, the expansion is refused:
+**Public names only.** A full name reaches what any file could write: a
+template naming its file's private helper expands, in another namespace, to an
+ordinary "private to namespace 'mylib'" error. A file with no `(ns …)` has no
+full name for its private names at all, so such a template is refused where it
+is written:
 
 ```
-main.nuc:6: error: macro 'm' binds 'count', which its file resolves to the function 'mylib/count'
-  note: a template name that names a global in the macro's file refers to that global;
+plib.nuc:2: error: macro 'use-secret' names 'secret', which is private to its file
+  note: a template reaches public names only; make it public, or give its file an (ns …)
+```
+
+**An overload must live in one namespace.** A full name filters an overloaded
+function to one namespace, plus every conformer of a protocol declaring it. A
+template naming a function whose methods reach the macro's file from two
+namespaces, through no shared protocol, is refused rather than narrowed.
+
+**A binding name may not be qualified.** No binder (`let`, a parameter, a
+`defn` or `defstruct` name, …) may be spelled `ns/name`, whether the source or
+an expansion wrote it. A template that binds a name its file defines therefore
+fails, with a note saying why:
+
+```
+main.nuc:6: error: cannot bind 'mylib/count': a binding name may not be qualified
+  note: 'mylib/count' is the full name of the function 'count', as a template writes a name its file defines;
   write ~'count to bind the caller's name, or use (gensym)
 ```
 
@@ -77,17 +101,19 @@ To bind the caller's name, write `~'count`. For example, a template that defines
 a protocol method for the caller's type does this. For a fresh local, use
 `(gensym)`.
 
-Messages, `macroexpand` and REPL output show a resolved name the way the macro's
-file spells it: `mylib/helper`, or `helper` for a file in `user`.
-`--report-qq-resolution` prints each name a quasiquote resolves and each binder
-that would be refused.
+Messages, `macroexpand` and REPL output show the expansion as it is, and it
+re-reads: pasting a `macroexpand` result back into a file compiles.
+`--report-qq-resolution` prints each name a quasiquote rewrites, with its full
+name, and each binder that would be refused. A `.nuch` header writes an
+expansion's full names unchanged; the header's own imports resolve them in the
+program that reads it.
 
 A template may name a macro that its file defines further down. That macro must
 still be defined by the time the expansion runs.
 
-## Standard Macros (`lib/macros.nuc`)
+## Standard Macros (`lib/nucleus/macros.nuc`)
 
-Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. **Defining or using a macro costs a program nothing**: a macro body becomes its own JIT module and resolves the node constructors against the compiler process, so no runtime is emitted for it. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
+Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use nucleus.macros)`) into every program, so all of these are available without an explicit `(import-use nucleus.macros)`. **Defining or using a macro costs a program nothing**: a macro body becomes its own JIT module and resolves the node constructors against the compiler process, so no runtime is emitted for it. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
 
 | Name | Signature | Expands To |
 |------|-----------|------------|
@@ -139,11 +165,11 @@ A value may be written `(:or v ...)`, which matches any one of the listed values
 
 The **keyword head is what marks the list** — a plain parenthesised value stays an ordinary expression, evaluated and compared like any other, so `(case x (f y) r d)` still calls `f`. That is why the marker exists at all: the values people group are overwhelmingly bare enum constants (`TY-STRUCT`, `NODE-SYM`), which are indistinguishable from a call's head, so nothing about the elements themselves can decide it ([case-alternatives.md](../design/stage16-ergonomics/case-alternatives.md)). Alternatives are ordinary expressions, each compared with the same `=`; `form` is re-evaluated once per alternative, and an empty `(:or)` is false, matching no value.
 
-`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. `arena-alloc` returns an unchecked bare `ptr`, and `as` refuses to make that non-null, so the macro asserts it with `unsafe/cast` — true because `arena-alloc` aborts rather than return null. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
+`(import-use nucleus.arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. `arena-alloc` returns an unchecked bare `ptr`, and `as` refuses to make that non-null, so the macro asserts it with `unsafe/cast` — true because `arena-alloc` aborts rather than return null. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use nucleus.arena)`.
 
 ## Variadic Arithmetic
 
-`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
+`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/nucleus/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
 
 | Form            | Expansion                                              |
 |-----------------|--------------------------------------------------------|
@@ -171,7 +197,7 @@ The resulting form is identical either way.
 
 ## Variadic Logical Operators
 
-`and`/`or` are macros that expand to nested binary short-circuit primitive calls, mirroring the `_+`/`+` split above. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_and`/`_or` are the actual short-circuit forms; the macros exist to make the logical operators variadic.
+`and`/`or` are macros that expand to nested binary short-circuit primitive calls, mirroring the `_+`/`+` split above. They live in `lib/nucleus/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_and`/`_or` are the actual short-circuit forms; the macros exist to make the logical operators variadic.
 
 | Form              | Expansion                                            |
 |-------------------|------------------------------------------------------|
@@ -212,7 +238,7 @@ Note that this *is* a fold written inside a macro body, and it works: `~@more`
 splices a list the macro already holds. A `macmap` there is a nested quasiquote,
 which also works — see [Nesting levels](#nesting-levels).
 
-Both are ordinary macros in `lib/macros.nuc`, available through the prelude.
+Both are ordinary macros in `lib/nucleus/macros.nuc`, available through the prelude.
 They are defined before everything else in that file, so their own bodies use
 only `cond` — nothing defined below them is callable from them yet.
 
@@ -405,8 +431,8 @@ not against whatever the expansion happened to lower to.
   as a program would:
 
   ```lisp
-  (import-use fmt)    ; str — any ToStr piece: text, integers, Char, bool
-  (import-use read)   ; node-str — a node's source text
+  (import-use nucleus.fmt)    ; str — any ToStr piece: text, integers, Char, bool
+  (import-use nucleus.read)   ; node-str — a node's source text
 
   (defmacro only-ints (x)
     (when (!= (x 'kind) NODE-INT)
@@ -461,7 +487,7 @@ derive code from it: a serializer, a printer, a comparison. `lib/edn`'s
 | `(type-name t)` | the struct's qualified name as a symbol: `geom/Point`, or `user/Point` in a file with no `(ns …)` |
 
 ```lisp
-(import-ct node)     ; node-int, at expansion time only
+(import-ct nucleus.node)     ; node-int, at expansion time only
 (defmacro field-count (t)
   (node-int (as i64 (ast-len (struct-fields t)))))
 
@@ -589,7 +615,7 @@ The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
 A `macrolet` body is compiled and JIT'd exactly as a `defmacro` body is, so it
 has the same compile-time requirements — the `Node` type, which the prelude
 provides, and the node constructors, which its JIT module resolves against the
-compiler process (so neither body needs `(import-use node)`). It works anywhere an expression does,
+compiler process (so neither body needs `(import-use nucleus.node)`). It works anywhere an expression does,
 including inside a loop, inside a `cond` arm, in argument position, inside a
 generic template body (compiled once per monomorphization), and inside a
 `defmacro` body.
@@ -698,7 +724,7 @@ The compile-time runtime is the set a macro body shares with the compiler *by
 necessity*, because the compiler allocates, interns and reads the nodes the macro
 returns. Concretely, a call resolves to the compiler's own copy when **both** of
 these hold: the callee's defining file is under the library root this compilation
-resolved `lib/prelude.nuc` through, **and** the compiler binary exports that
+resolved `lib/nucleus/core.nuc` through, **and** the compiler binary exports that
 symbol. `alloc-node`, `node-int`, `intern-symbol` and the list API
 (`node-first`, `node-rest`, `node-at`, `node-len`, `node-list-new`, `node-push`,
 `node-extend`) are this set.
@@ -774,14 +800,14 @@ use — cross-compiles exactly as before.
 ### ⚠ Sharp edge: which `lib/` counts as the compiler's
 
 The first condition is a **path prefix** against the directory *this compilation*
-resolved `lib/prelude.nuc` through, and the import search has five steps — the
+resolved `lib/nucleus/core.nuc` through, and the import search has five steps — the
 source file's directory, `lib/` relative to the **current directory**, each `-I`,
 `$NUCLEUS_LIB`, then the installed `/usr/local/share/nucleus/lib/`. A development
 build finds its library at step 2; an installed one at step 5. Five consequences:
 
 1. **A cwd-relative `lib/` can capture the root.** Run a program from a directory
-   that has its own `lib/prelude.nuc` and *that* becomes the root, so every module
-   beside it counts as compile-time runtime. A project with its own `lib/node.nuc`
+   that has its own `lib/nucleus/core.nuc` and *that* becomes the root, so every module
+   beside it counts as compile-time runtime. A project with its own `lib/nucleus/node.nuc`
    then gets the **compiler's** `node-at` at compile time. This one is not warned
    about: in a checkout of the compiler the cwd-relative `lib/` genuinely *is* the
    compiler's, and the two cases are indistinguishable from the path alone.
@@ -789,7 +815,7 @@ build finds its library at step 2; an installed one at step 5. Five consequences
    what an installed compiler gives. A test that pins this behaviour has to name
    the root rather than inherit the current directory.
 3. **Editing a `lib/` file changes nothing until the compiler is rebuilt.** The
-   second condition asks the *running* binary, so a modified `lib/node.nuc` still
+   second condition asks the *running* binary, so a modified `lib/nucleus/node.nuc` still
    binds to the compiler's old `node-at` at compile time. At compile time, library
    code is the compiler's build of it.
 4. **`-I` and `$NUCLEUS_LIB` can name a library the compiler was not built from.**
@@ -875,7 +901,7 @@ interpolating a number a macro *computed* needs a node for it. `(import-use
 node)` supplies one:
 
 ```lisp
-(import-use node)
+(import-use nucleus.node)
 
 (defmacro double ()
   (let (n:i32 21)
@@ -917,9 +943,9 @@ and is what a definer asks to refuse `()` where a name belongs.
 surface a `Vector` does, with `(ref Node)` as the element type:
 
 ```lisp
-(import-use node)
-(import-use coll)
-(import-use iterator)
+(import-use nucleus.node)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 
 (let (xs:&Node (unsafe/cast &Node `(10 20 30))
       i1:usize 1)
@@ -946,7 +972,7 @@ The builders are `node-list-new` / `node-push` / `node-extend` /
 `node-list-done` (the last is the identity — a builder *is* a finished list),
 with `node-cons` and the fixed-arity `node-list1`…`node-list5` over them, and
 `node-set-at` / `node-splice-at` for in-place edits. All of them come from
-`(import-use node)`.
+`(import-use nucleus.node)`.
 
 ## The type of a quoted form
 
@@ -967,7 +993,7 @@ this rule needs changing.
 including a null one, so its result type is expansion-dependent.
 
 **In ordinary code a quote is a run-time call**, so a program that writes one
-needs `(import-use node)` — the prelude registers the `Node` type but no longer
+needs `(import-use nucleus.node)` — the prelude registers the `Node` type but no longer
 emits the constructors. Inside a `defmacro`/`macrolet`/`compile-time` body it
 needs nothing: that body is a JIT module resolved against the compiler process.
 See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).

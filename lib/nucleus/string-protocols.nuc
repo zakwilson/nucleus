@@ -33,10 +33,13 @@
 ;     declared elsewhere.
 ; ---------------------------------------------------------------------------
 
-(import-use strview)    ; StrView struct + Eq/Hash conformances
-(import-use iterator)  ; (Iterator E) — ByteI must conform to (Iterator ui8),
+(ns nucleus.string-protocols)
+
+(import-use nucleus.strview)    ; StrView struct + Eq/Hash conformances
+(import-use nucleus.iterator)  ; (Iterator E) — ByteI must conform to (Iterator ui8),
                    ;                CharI must conform to (Iterator Char)
-(import-use string-errors) ; the four deferror codes
+(import-use nucleus.string-errors) ; the four deferror codes
+(import-use nucleus.numeric)
 
 ; ---------------------------------------------------------------------------
 ; ByteStr ByteI — the byte substrate.
@@ -80,7 +83,7 @@
 ;   see design/stage11/string.md eval §1: mutation ops belong only on the
 ;   concrete owning String, not on the shared read surface).
 ;   The protocol inheritance is recorded with `(extend Str Eq)` below,
-;   matching the `(extend Ord Eq)` pattern in lib/numeric.nuc.
+;   matching the `(extend Ord Eq)` pattern in lib/nucleus/numeric.nuc.
 ;
 ; Methods:
 ;   char-count   — codepoint count.  O(n): walks UTF-8 bytes counting lead
@@ -105,5 +108,5 @@
   (contains-str?   (self:&Self needle:&StrView):bool))
 
 ; Str extends Eq: every type that conforms to Str must also conform to Eq
-; (content comparison).  This mirrors `(extend Ord Eq)` in lib/numeric.nuc.
+; (content comparison).  This mirrors `(extend Ord Eq)` in lib/nucleus/numeric.nuc.
 (extend Str Eq)

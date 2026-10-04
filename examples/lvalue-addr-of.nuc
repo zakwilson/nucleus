@@ -8,8 +8,8 @@
 ; design/stage17-native-strings/borrow-conventions.md §3.4.
 
 (import-use "stdio.h")
-(import-use strview)
-(import-use strview-str)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
 
 (defstruct P x:i64 y:i64)
 

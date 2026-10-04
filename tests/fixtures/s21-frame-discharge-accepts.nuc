@@ -9,7 +9,7 @@
 ;     only the initializer-function sink refuses;
 ;   * a void function whose last form is a tainted set! (nothing leaves it).
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 (defvar options:(Vector i32) [500 1000 1500 2000 2500])
 (defvar gp:Pt (Pt 3 4))

@@ -4,12 +4,12 @@
 ; so a reader-macro operand, a literal element and a top-level atom fuse too.
 ; The spellings sit inside string literals so this file reads the same under
 ; any reader; what each one reads AS is the program's output.
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use io)
-(import-use node)
-(import-use read)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.node)
+(import-use nucleus.read)
 
 (defn show (text:StrView):void
   (match (read-all text)

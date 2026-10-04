@@ -28,6 +28,8 @@
 
 ; Type name, union arm, global, constant, function, parameter, `let` binding,
 ; match binder and `label`/`goto` target — every one digit-leading.
+(import-use nucleus.test)
+(import-use nucleus.string)
 (defn w39-lib-src ():StrView
   (return "(defstruct 2Pair a:i32 b:i32)
 (defunion 2Shape (2circle r:i32) (2square s:i32))

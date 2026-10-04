@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/hash.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/hash.nuc by nucleusc --emit-cheader */
 
 size_t hash_pi32(int32_t* self) asm("hash.pi32");
 size_t hash_pi64(int64_t* self) asm("hash.pi64");

@@ -2,6 +2,9 @@
 ; turns its crash into a located error (docs/macros.md, "When a macro body crashes").
 
 (import-use "signal.h")
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.strview-str)
 
 (defconst CT-FAULT-MAX 16)
 (defconst CT-FAULT-ALTSTACK 65536)

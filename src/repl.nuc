@@ -6,6 +6,18 @@
 
 (import-use "setjmp.h")
 (import-use "poll.h")
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.read)
+(import-use nucleus.strview)
+(import-use nucleus.intern)
+(import-use nucleus.fmt)
+(import-use nucleus.node)
+(import-use nucleus.strview-str)
+(import-use nucleus.io)
+(import-use nucleus.arena)
+(import-use nucleus.file)
+(import-use nucleus.process)
 
 ; ============================================================
 ; Non-local exit — the protected call and its throw. The callback shape and the
@@ -683,7 +695,7 @@
       0))
   (clear-module-buffers))
 
-; Non-zero while the session boots its own `(import-use prelude)`, which goes
+; Non-zero while the session boots its own `(import-use nucleus.core)`, which goes
 ; through the ordinary import arm but is not something the user typed.
 (defvar g-repl-booting:i32 0)
 
@@ -1090,10 +1102,11 @@
                             (emit stderr "  ")
                             (fprint-node stderr expanded)
                             (emit stderr "\n")))))))
-            ; All six import spellings. Stage 15 B2b retired the alias `Sym`s a
+            ; All eight import spellings. Stage 15 B2b retired the alias `Sym`s a
             ; prefixed import injected, so the backfill below sees what a flat one gives.
             (and (not (symbol-none? h))
-                 (or (or (= h "import-use") (= h "import-only"))
+                 (or (or (or (= h "import-use") (= h "import-only"))
+                         (require-head? h))
                      (or (or (= h "import") (= h "import-prefixed"))
                          (or (= h "import-ct") (= h "unsafe/import-private")))))
               (do (let (pre-len:i32 (g-globals 'len)
@@ -1104,6 +1117,8 @@
                     (cond (= h "import-use")  (emit-import-use (as ptr f))
                           (= h "import-only") (emit-import-only (as ptr f))
                           (= h "import-ct")   (emit-import-ct (as ptr f))
+                          (= h "require")     (emit-require (as ptr f))
+                          (= h "require-ct")  (emit-require-ct (as ptr f))
                           (= h "unsafe/import-private")
                             (emit-unsafe-import-private (as ptr f))
                           true (emit-import-prefixed (as ptr f)))
@@ -1875,8 +1890,8 @@
   n-init:i32
   n-dyn-annots:i32
   n-where-checks:i32
-  n-hyg-envs:i32
-  n-file-macros:i32)
+  n-file-macros:i32
+  n-import-edges:i32)
 
 ; Truncating `g-generics` recovers only the generics a died import CREATED; a
 ; method appended to a pre-existing one needs this per-entry watermark instead.
@@ -1979,8 +1994,8 @@
                  (n-init g-init-worklist)
                  (n-dyn-annots g-dyn-annots)
                  (n-where-checks g-where-checks)
-                 (n-hyg-envs g-hyg-envs)
-                 (n-file-macros g-file-macros)))))
+                 (n-file-macros g-file-macros)
+                 (n-import-edges g-import-edges)))))
 
   (defn repl-snapshot (st:&ReplState):void
     (over-repl-globals ((f g) `(set! (st '~f) ~g)))
@@ -2037,7 +2052,7 @@
 
 ; The body of repl-preload-prelude, as a protected callback.
 (defn repl-protect-preload (ctx:ptr):void
-  (match (read-source-or-report "(import-use prelude)" repl-rmacros)
+  (match (read-source-or-report (fstr "(import-use " g-ns-core ")") repl-rmacros)
     ((ok parsed)
       (let (fc:ptr (desugar parsed))
         (while (> (node-len fc) 0)
@@ -2305,7 +2320,7 @@
   (ensure-emit-buffers)
   ; Pre-include all libc functions (so they're available without explicit include)
   (repl-include-all-libc)
-  ; Tolerates failure so a session still starts without lib/prelude.nuc; the
+  ; Tolerates failure so a session still starts without lib/nucleus/core.nuc; the
   ; user just gets "unknown type" for everything the prelude defines.
   (repl-preload-prelude)
   (let (running:i32 1)

@@ -4,20 +4,20 @@
 ; `i32`. Keywords are interned, so equality is an id compare and hashing is a
 ; cached load — the reason they are the idiomatic lightweight key.
 ;
-; `Keyword` lives in lib/keyword.nuc, so unlike the int/float/string literals a
-; keyword literal needs `(import-use keyword)` as well as the collection import.
+; `Keyword` lives in lib/nucleus/keyword.nuc, so unlike the int/float/string literals a
+; keyword literal needs `(import-use nucleus.keyword)` as well as the collection import.
 ; See design/stage16-ergonomics/container-literal-elements.md.
 
 (import-use "stdio.h")
-(import-use strview)
-(import-use hash)
-(import-use keyword)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashset)
-(import-use hashmap)
-(import-use vector)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.keyword)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.vector)
 
 (defn main ():i32
   ; Set: the repeated :foo dedupes, as an interned identity should.

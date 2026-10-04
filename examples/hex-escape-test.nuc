@@ -19,7 +19,7 @@
 ; Stage 17 C7-3 made the token's name a `Symbol`, which carries its length, so
 ; the count `lex-string` already had now survives to the literal.
 
-(import-use strview)
+(import-use nucleus.strview)
 
 ; Print a literal's bytes as hex. StrView arrives by value (a TY-STRUCT), so
 ; bind a pointer once and read fields through it (context/conventions.md,

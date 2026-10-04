@@ -6,10 +6,10 @@
 ; `m:SymTab` replaces the whole `(ref (HashMap CStr i32))` wrapper (§3.9).
 
 (import-use "stdio.h")
-(import-use hashmap)
-(import-use hashset)
-(import-use vector)
-(import-use coll)
+(import-use nucleus.hashmap)
+(import-use nucleus.hashset)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
 
 (deftype SymTab  &(HashMap CStr i32))
 (deftype NameSet &(HashSet CStr))

@@ -12,7 +12,7 @@
 ;
 ; IR-only, so it can afford the node runtime the quasiquote needs; a fixture that
 ; LINKS for AVR still cannot (avr3-link.nuc).
-(import-use node)
+(import-use nucleus.node)
 
 (defunion Shape
   (circle r:i32)

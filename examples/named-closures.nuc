@@ -7,8 +7,8 @@
 ; with-dropped, or passed by name to a generic combinator.
 
 (import-use "stdio.h")
-(import-use iterator)
-(import-use allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.allocator)
 
 (defn main ():i32
   (let (r:&IntRangeIter (alloca IntRangeIter)

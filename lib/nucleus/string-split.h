@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/string-split.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/string-split.nuc by nucleusc --emit-cheader */
 
 typedef struct SplitIter {
     uint8_t* buf;

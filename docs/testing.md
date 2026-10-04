@@ -1,17 +1,17 @@
 # Testing
 
-`lib/test.nuc` — declare tests, assert, and report.
+`lib/nucleus/test.nuc` — declare tests, assert, and report.
 
 A test suite is an ordinary Nucleus program. `deftest` registers each test before
 `main` runs, so `main` is one call to `test-main`, and the binary answers
 `--list`, `--run <name>`, `--shard <i>/<n>`, or no arguments at all.
 
 ```lisp
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use io)
-(import-use test)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.test)
 
 (deftest greeting-is-friendly
   (try (check-contains (greeting) "hello"))
@@ -233,7 +233,7 @@ Nucleus may span lines, so the program goes in the test:
          "defvar: integer literal incompatible with type bool")))
 ```
 
-`tests/nuctests.nuc` defines these over `lib/process.nuc`; they are the suite's,
+`tests/nuctests.nuc` defines these over `lib/nucleus/process.nuc`; they are the suite's,
 not the library's, because they run `./build/nucleusc`.
 
 | Form | Meaning |

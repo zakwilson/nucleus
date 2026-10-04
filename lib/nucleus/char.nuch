@@ -1,4 +1,7 @@
-; .nuch header for lib/char.nuc
+; .nuch header for lib/nucleus/char.nuc
+(ns nucleus.char)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
 (defstruct DecodeResult (ch Char) (nbytes usize) (ok i32))
 (declare char-utf8-len ((c Char)) :usize)
 (declare char-encode-utf8 ((c Char) (buf (ref ui8))) :usize)

@@ -5,8 +5,8 @@
 ; `extend: protocol parameter '?E' is not determined by the subject or any
 ; :where constraint` (the sigil made `?E` a different symbol to `E`).
 (import-use "stdio.h")
-(import-use vector)
-(import-use iterator)
+(import-use nucleus.vector)
+(import-use nucleus.iterator)
 
 (defstruct (Wrap I) source:I)
 (extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))

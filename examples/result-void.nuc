@@ -5,7 +5,7 @@
 ; design/stage17-native-strings/overview.md phase A1.
 
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 
 (deferror too-big "value out of range")
 

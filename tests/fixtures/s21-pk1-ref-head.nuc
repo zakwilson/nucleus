@@ -3,7 +3,7 @@
 ; `(ref T)`; a value-position `&x` / `(ref x)` is the address-of and `(ref p 'f)`
 ; the field address; the written-out `addr-of` is retired (PK-5b).
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 
 (defstruct Pt x:i32 y:i32)
 

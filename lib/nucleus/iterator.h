@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/iterator.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/iterator.nuc by nucleusc --emit-cheader */
 
 typedef struct IntRangeIter {
     int32_t start;

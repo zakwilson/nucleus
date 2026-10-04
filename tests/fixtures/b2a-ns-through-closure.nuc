@@ -1,0 +1,15 @@
+; Stage 15 B2a pinned this file as an error (R3: a prefixed import binds its
+; prefix and not the library's namespace, so `dp/Describe` was out of scope).
+; Stage 23 AN-1 reversed R3 (design/stage23-namespaces/ambient-namespaces.md
+; §8): `dp` is declared by lib/nsdescribe.nuc, which this file's imports load,
+; so the full name and the prefix name one protocol. Accepted, and kept as the
+; record of the reversal.
+(import-use "stdio.h")
+(import-prefixed nsdescribe dpx)
+
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self 'n))))
+
+(extend Cat dp/Describe)
+
+(defn main ():i32 (return 0))

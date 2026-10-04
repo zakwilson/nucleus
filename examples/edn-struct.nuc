@@ -1,16 +1,16 @@
-; Struct codecs over EDN (lib/edn.nuc).
+; Struct codecs over EDN (lib/nucleus/edn.nuc).
 ;
 ; `derive-edn` gives a struct an `EdnCodec` conformance, so `edn-read` and
 ; `edn-write` take it like any scalar. A struct is written as a map tagged with
 ; its qualified name; this file has no `(ns …)`, so the tag is `#user/…`.
 
-(import-use string)
-(import-use io)
-(import-use vector)
-(import-use hashmap)
-(import-use keyword)
-(import-use read)
-(import-use edn)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.keyword)
+(import-use nucleus.read)
+(import-use nucleus.edn)
 
 (defstruct Endpoint (host String) port:ui16)
 (defstruct Service

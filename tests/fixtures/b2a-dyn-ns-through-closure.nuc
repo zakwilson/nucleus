@@ -1,0 +1,17 @@
+; The `(dyn P)` half of b2a-ns-through-closure.nuc. Stage 15 B2a/B6 refused
+; `(dyn dp/Describe)` here, at the annotation, because the prefix `dpx` did not
+; bind the namespace `dp`. Stage 23 AN-1 reversed R3: `dp` is in this file's
+; import closure, so the box built under the full name dispatches the
+; conformance declared through the prefix — one protocol, one box type.
+(import-use "stdio.h")
+(import-use nucleus.allocator)
+(import-prefixed nsdescribe dpx)
+
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self 'n))))
+(extend Cat dpx/Describe)
+
+(defn main ():i32
+  (let (a:(dyn dp/Describe) (Cat 5))
+    (printf "%d\n" (describe a)))
+  (return 0))

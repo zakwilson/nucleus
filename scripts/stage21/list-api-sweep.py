@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite cons-cell AST access onto lib/node.nuc's list API.
+"""Rewrite cons-cell AST access onto lib/nucleus/node.nuc's list API.
 
 Stage 21, design/stage21-cleanup/ast-as-collection.md §8.3: every consumer of a
 Node list must go through the API before the representation can change. This

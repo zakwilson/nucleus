@@ -16,6 +16,10 @@
 ; Every table below asserts the exact emitted `declare` line, never "it
 ; compiled": the wrong rows all compiled cleanly, which is why they survived.
 
+(import-use nucleus.string)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
 (defn cd-ir (path:StrView):!String
   (let (dir:StrView (try (test-scratch)))
     (return (emit-for-file dir "--emit-llvm" path))))

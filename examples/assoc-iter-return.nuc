@@ -22,8 +22,8 @@
 ;                    mk-iter to get an It, and drives next over it.
 
 (import-use "stdio.h")
-(import-use iterator)   ; the (Iterator E) protocol
-(import-use combinators)
+(import-use nucleus.iterator)   ; the (Iterator E) protocol
+(import-use nucleus.combinators)
 
 ; ---------------------------------------------------------------------------
 ; A concrete iterator over [cur, stop) yielding i32 (conforms (Iterator i32)).

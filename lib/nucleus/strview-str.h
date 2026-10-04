@@ -2,10 +2,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 #include "strview.h"
 
-/* Generated from lib/strview-str.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/strview-str.nuc by nucleusc --emit-cheader */
 
 size_t byte_len(struct StrView* self) asm("byte-len");
 /* byte-at: uses an error-union or option type; not exported */

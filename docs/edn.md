@@ -1,6 +1,6 @@
 # EDN
 
-`lib/edn.nuc` — [EDN](https://github.com/edn-format/edn) data, read and written
+`lib/nucleus/edn.nuc` — [EDN](https://github.com/edn-format/edn) data, read and written
 through the Nucleus reader.
 
 An EDN value is the `Node` the reader builds in [EDN mode](reading.md#edn-mode).
@@ -10,12 +10,12 @@ collections are the reader's lists, and strings, symbols and keywords are
 interned for the life of the process, so a `StrView` taken from a value never
 dangles. That suits configuration-sized input; nothing is ever freed.
 
-The library declares `(ns edn)`. `(import-use edn)` names everything bare;
-`(import edn e)` names it `e/edn-parse`, `e/derive-edn` and so on.
+The library declares `(ns nucleus.edn)`. `(import-use nucleus.edn)` names everything bare;
+`(import nucleus.edn e)` names it `e/edn-parse`, `e/derive-edn` and so on.
 
 ```lisp
-(import-use read)
-(import-use edn)
+(import-use nucleus.read)
+(import-use nucleus.edn)
 
 (match (edn-parse "{:host \"localhost\", :port 8080}")
   ((ok cfg)
@@ -149,10 +149,11 @@ of conforming types and any struct given a derived codec. `edn-read` and
 
 `(derive-edn T …)` gives each named struct `T` an `EdnCodec` conformance. It is
 a top-level macro, so its call has to come before any use of the codecs. Its
-expansion's names [resolve in `lib/edn`](macros.md#a-templates-names-mean-the-macro-files-names),
-so the calling file only has to reach `derive-edn` itself, through
-`(import-use edn)` or `(import edn e)` and `(e/derive-edn T)`. A caller's own
-`edn-put`, or a local with the same name, does not capture the derived code.
+expansion names the library's definitions by [full name](macros.md#a-templates-names-mean-the-macro-files-names)
+(`nucleus.edn/edn-put`, `nucleus.read/ReadResult`), so the calling file only has
+to reach `derive-edn` itself, through `(import-use nucleus.edn)` or
+`(import nucleus.edn e)` and `(e/derive-edn T)`. A caller's own `edn-put`, or a
+local with the same name, does not capture the derived code.
 
 - **Written as a tagged map:** `#ns/T {:field value …}`, keys in declaration
   order. The tag is `T`'s qualified name: `#geom/Point` for a struct defined
@@ -183,7 +184,7 @@ them, and only programs that import it pay for them:
 ```lisp
 (ns geometry-edn)
 (import-use geometry)
-(import-use edn)
+(import-use nucleus.edn)
 (derive-edn Point Rect)
 ```
 

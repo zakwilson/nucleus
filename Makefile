@@ -69,7 +69,7 @@ BOOT         := bin/nucleusc
 # time the symptom was a silently stale binary, or a `make bootstrap` that
 # diffed a stale stage1 against a fresh stage2. Over-approximating costs a
 # rebuild that takes seconds; under-approximating costs a debugging session.
-COMPILER_DEPS := $(wildcard src/*.nuc) $(wildcard lib/*.nuc)
+COMPILER_DEPS := $(wildcard src/*.nuc) $(wildcard lib/*.nuc lib/nucleus/*.nuc)
 
 $(BIN): $(COMPILER_DEPS) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
@@ -118,7 +118,7 @@ NUCTESTS := $(BUILD)/nuctests
 # for a run that cannot accept one.
 NUCTESTS_ARGS :=
 
-$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.edn $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.edn $(wildcard lib/*.nuc lib/nucleus/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctests.nuc -o $@
 
 # The suite's stdout is a stream of EDN records, one per line with `:status`
@@ -245,6 +245,7 @@ lib/%.h: lib/%.nuc $(BIN)
 
 # Compile library .nuc to .ll
 $(BUILD)/lib/%.ll: lib/%.nuc $(BIN) | $(BUILD)/lib
+	@mkdir -p $(@D)
 	$(BIN) --emit-llvm $< > $@
 
 # Compile .ll to position-independent .o
@@ -252,7 +253,7 @@ $(BUILD)/lib/%.o: $(BUILD)/lib/%.ll
 	llc -filetype=obj -relocation-model=pic $< -o $@
 
 # Build all library headers
-LIB_NUCS  := $(wildcard lib/*.nuc)
+LIB_NUCS  := $(wildcard lib/*.nuc lib/nucleus/*.nuc)
 LIB_NUCHS := $(LIB_NUCS:.nuc=.nuch)
 LIB_HS    := $(LIB_NUCS:.nuc=.h)
 LIB_LLS   := $(patsubst lib/%.nuc,$(BUILD)/lib/%.ll,$(LIB_NUCS))
@@ -285,8 +286,8 @@ clean:
 
 # ---- Install ----
 #
-# Installs the compiler binary plus the lib/ source files needed at import
-# time (macros, prelude, etc.). The compiler searches for imports in:
+# Installs the compiler binary plus the core library sources (lib/nucleus/),
+# which imports and the implicit `nucleus.core` read at compile time. The compiler searches for imports in:
 #   1. directory of current source file
 #   2. ./lib relative to cwd
 #   3. -I paths
@@ -304,7 +305,9 @@ LIBDIR  := $(DESTDIR)$(PREFIX)/share/nucleus/lib
 install: $(BIN)
 	install -d $(BINDIR) $(LIBDIR)
 	install -m 755 $(BIN) $(BINDIR)/nucleusc
-	install -m 644 lib/*.nuc $(LIBDIR)/
+	install -d $(LIBDIR)/nucleus/avr
+	install -m 644 lib/nucleus/*.nuc $(LIBDIR)/nucleus/
+	install -m 644 lib/nucleus/avr/*.nuc $(LIBDIR)/nucleus/avr/
 	@echo "Installed nucleusc to $(BINDIR)/nucleusc"
 	@echo "Installed lib files to $(LIBDIR)/"
 	@if [ "$(PREFIX)" != "/usr/local" ]; then \

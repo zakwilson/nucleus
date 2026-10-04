@@ -17,8 +17,8 @@
 
 (exclude-prelude)
 
-(import-use "lib/avr.nuc")
-(import-use "lib/avr/attiny1634.nuc")
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/attiny1634.nuc")
 
 ; Crude busy-wait. A counting loop, no timer. The exact iteration count is not
 ; behaviourally verified (the ATtiny1634 is not simavr-simulatable); it exists to

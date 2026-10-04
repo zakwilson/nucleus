@@ -11,7 +11,7 @@
 ; defprotocol + extend, lambda, as / unsafe/cast / sizeof / alloca, template
 ; argument, deftype, and a macro argument.
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 
 (defstruct Pt x:i32 y:i32)
 

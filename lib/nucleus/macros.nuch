@@ -1,4 +1,5 @@
-; .nuch header for lib/macros.nuc
+; .nuch header for lib/nucleus/macros.nuc
+(ns nucleus.macros)
 (defmacro macfoldr (op unit :rest args) (let (n:i32 (ast-len args)) (cond (= n 0) unit true (let ((acc ?ref:Node) (ast-at args (_- n 1)) i:i32 (_- n 1)) (while (!= i 0) (set! i (_- i 1)) (set! acc (quasiquote ((unquote op) (unquote (ast-at args i)) (unquote acc))))) acc))))
 (defmacro macfoldl (op unit :rest args) (let (n:i32 (ast-len args)) (cond (= n 0) unit true (let ((acc ?ref:Node) (ast-at args 0) i:i32 1) (while (< i n) (set! acc (quasiquote ((unquote op) (unquote acc) (unquote (ast-at args i))))) (set! i (_+ i 1))) acc))))
 (defmacro + (:rest args) (cond (= (ast-len args) 0) (quasiquote 0) (= (ast-len args) 1) (ast-at args 0) (= (ast-len args) 2) (quasiquote (_+ (unquote (ast-at args 0)) (unquote (ast-at args 1)))) true (quasiquote (macfoldr _+ 0 (unquote-splice args)))))

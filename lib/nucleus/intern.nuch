@@ -1,4 +1,6 @@
-; .nuch header for lib/intern.nuc
+; .nuch header for lib/nucleus/intern.nuc
+(ns nucleus.intern)
+(import-use nucleus.fnv)
 (defstruct SymHeader (hash usize) (len usize))
 (declare symbol-header ((self Symbol)) :ref:SymHeader)
 (declare symbol-len ((self Symbol)) :usize)

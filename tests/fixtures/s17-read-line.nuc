@@ -5,11 +5,11 @@
 ; Covers: an ordinary line, an empty line, a final line with no terminator, and
 ; `none` at end of input.
 
-(import-use strview)
-(import-use strview-str)
-(import-use string)
-(import-use fmt)
-(import-use io)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
 
 (defn main ():i32
   (let (n:i64 0

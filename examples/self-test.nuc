@@ -1,4 +1,4 @@
-; A program that declares and runs its own tests (lib/test.nuc).
+; A program that declares and runs its own tests (lib/nucleus/test.nuc).
 ;
 ; `deftest` registers each test before `main` runs, so `main` is one call to
 ; `test-main`. Run it with no arguments to run everything, `--list` to see the
@@ -7,12 +7,12 @@
 ; Two tests do not pass on purpose, so the output shows what a skip record and
 ; a failure record look like.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use vector)
-(import-use io)
-(import-use test)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.io)
+(import-use nucleus.test)
 
 (defn greeting ():StrView (return "hello, world"))
 

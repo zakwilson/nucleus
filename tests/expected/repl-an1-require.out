@@ -1,0 +1,11 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> <repl>:1: error: unknown: geom/area — 'geom' is not in scope in this file
+  note: 'geom' is neither an import prefix this file binds nor a namespace its imports load — (require …) a library to reach its namespace by its full name. This file has no import qualifiers in scope.
+  error: error (recovered)
+nuc> nuc> nuc>   imported nsgfacade
+nuc>   12
+nuc>   14
+nuc> <repl>:1: error: unknown: area — defined in namespace 'geom'
+  note: write 'geom/area' here
+  error: error (recovered)
+nuc> 

@@ -32,6 +32,9 @@
 ; The scope refusals share a shape: compile, expect one located error, expect
 ; the note that names what the file can actually spell, and refuse the
 ; reachability message.
+(import-use nucleus.string)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
 (defn ns-scope-refusal (main:StrView head:StrView note:StrView):!void
   (let (c:Compiled (try (w1-compile main)))
     (try (check-no-line-zero (ref c 'diags)))
@@ -155,23 +158,40 @@
 ; B2a: a prefixed import DEFINES the spellings in scope
 ; ---------------------------------------------------------------------------
 
-; The originally reported defect: the fixture imports lib/nsdescribe.nuc as
-; `dpx`, and before B2a the library's own `dp/Describe` resolved anyway, which
-; made a prefix an addition to the spellings in scope rather than the definition
-; of them. The shell checked only the note; the head and its line are what say
-; the failure is `extend`'s and not something upstream of it.
+; This pinned B2a's refusal of `dp/Describe` under the prefix `dpx`. Stage 23
+; AN-1 reversed R3 (design/stage23-namespaces/ambient-namespaces.md §8), so that
+; fixture is accepted now (manifest `b2a-extend-ns-through-closure`) and the
+; scope diagnostic is pinned where it still applies: a namespace the UNIT
+; declares, outside the closure of the file that names it. Only a non-root file
+; can be in that position — the root's closure is the whole unit.
 (deftest b2a-scope-diagnostic
-  (let (c:Compiled (try (compile-path "tests/fixtures/b2a-ns-not-in-scope.nuc")))
+  (try (test-write-file "b2a-sd-ns.nuc" "(ns b2asd)
+(defprotocol Sd (sd-m (x:Self):i32))
+"))
+  (try (test-write-file "b2a-sd-a.nuc" "(import-use b2a-sd-ns)
+(defn sd-a ():i32 (return 1))
+"))
+  (try (test-write-file "b2a-sd-b.nuc" "(defstruct SdCat n:i32)
+(defn sd-m (x:SdCat):i32 (return (x 'n)))
+(extend SdCat b2asd/Sd)
+"))
+  (let (m:String (try (test-write-file "b2a-sd-main.nuc" "(import-use b2a-sd-a)
+(import-use b2a-sd-b)
+(defn main ():i32 (return (sd-a)))
+"))
+        b:String (str (try (test-scratch)) "/b2a-sd-b.nuc")
+        bv:StrView (string-as-view &b)
+        c:Compiled (try (w1-compile (string-as-view &m))))
     (try (check-no-line-zero (ref c 'diags)))
-    (try (check-error-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
-                         "extend: unknown protocol 'dp/Describe'"))
-    (try (check-note-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
-                        "'dp' is not in scope in this file"))
-    (try (check-note-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
-                        "In scope here: dpx."))
+    (try (check-error-at (ref c 'diags) bv 3 "extend: unknown protocol 'b2asd/Sd'"))
+    (try (check-note-at (ref c 'diags) bv 3 "namespace 'b2asd' (declared in "))
+    (try (check-note-at (ref c 'diags) bv 3
+                        "is not loaded by this file's imports — add (require …)"))
     (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop &c))
+    (drop &c)
+    (drop &b)
+    (drop &m))
   (return (ok)))
 
 ; `import-use` flattens a namespaced library AND binds the namespace's own name
@@ -180,7 +200,7 @@
 ; because what is asserted is that they land on ONE protocol identity: the box
 ; dispatches `dp`'s `describe` on a type that conformed under the bare spelling.
 (deftest b2a-import-use-binds-namespace
-  (let (m:String (try (test-write-file "b2a-flat.nuc" "(import-use allocator)
+  (let (m:String (try (test-write-file "b2a-flat.nuc" "(import-use nucleus.allocator)
 (import-use nsdescribe)
 (defstruct Cat n:i32)
 (defn describe ((self (ref Cat))):i32 (return (+ 40 (self 'n))))
@@ -219,9 +239,11 @@
     (drop &m))
   (return (ok)))
 
-; R3 for the kinds that had no qualified spelling at all before B2b: the
-; DEFINING namespace is out of scope, because the consumer asked for `bv`.
-(deftest b2b-prefixed-values-ns-refused
+; This pinned R3 for the kinds that had no qualified spelling before B2b: the
+; defining namespace refused under the prefix `bv`. Stage 23 AN-1 reversed R3
+; (ambient-namespaces.md §8): `b2bns` is in the consumer's import closure, so
+; the full name reaches the same global the prefix does.
+(deftest b2b-prefixed-values-ns-reached
   (try (test-write-file "b2b-vlib.nuc" "(ns b2bns)
 (defn b2b-fn (x:i32):i32 (return x))
 (defvar b2b-gv:i32 40)
@@ -231,9 +253,7 @@
   (let (m:String (try (test-write-file "b2b-vns.nuc" "(import-prefixed b2b-vlib bv)
 (defn main ():i32 (return b2bns/b2b-gv))
 ")))
-    (try (ns-scope-refusal (string-as-view &m)
-                           "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"
-                           "In scope here: bv."))
+    (try (w1-exit (string-as-view &m) 40))
     (drop &m))
   (return (ok)))
 
@@ -327,7 +347,7 @@
 (defstruct Pt x:i32 y:i32)
 (defprotocol Areal (area ((self (ref Self))) i32))
 "))
-  (let (m:String (try (test-write-file "b3a-use.nuc" "(import-use vector)
+  (let (m:String (try (test-write-file "b3a-use.nuc" "(import-use nucleus.vector)
 (import-prefixed b3a-lib bx)
 (defn area ((self (ref bx/Pt))):i32 (return (* (_get self 'x) (_get self 'y))))
 (extend bx/Pt bx/Areal)
@@ -404,23 +424,25 @@
     (drop &m))
   (return (ok)))
 
-; …and R3 still holds for generics. The note lists BOTH prefixes this file bound,
-; which is what shows the list is built from this file's environment rather than
-; from whatever the failed qualifier happened to be near.
-(deftest b4-qualified-generic-ns-refused
+; This pinned R3 for generics. Stage 23 AN-1 reversed R3 (ambient-namespaces.md
+; §8): `b4a` is in the file's import closure, and the full name filters the
+; merged generic exactly as the prefix does — `b4b`'s arity stays out of reach.
+(deftest b4-qualified-generic-ns-reached
   (try (b4-generic-files))
   (let (m:String (try (test-write-file "b4-gns.nuc" "(import-prefixed b4-glib-a pa)
 (import-prefixed b4-glib-b pb)
 (defn main ():i32 (return (b4a/b4-desc 1)))
+")))
+    (try (w1-exit (string-as-view &m) 101))
+    (drop &m))
+  (let (m:String (try (test-write-file "b4-gns2.nuc" "(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (b4a/b4-desc 1 2)))
 "))
         mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (ref c 'diags)))
     (try (check-error-at (ref c 'diags) mv 3
-                         "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"))
-    (try (check-note-at (ref c 'diags) mv 3 "In scope here: pa, pb."))
-    (try (check-no-diag-containing (ref c 'diags)
-                                   "not defined anywhere in this compilation unit"))
+                         "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"))
     (drop &c)
     (drop &m))
   (return (ok)))
@@ -600,7 +622,7 @@
 ; that the prefix spelling produced no second box type.
 (deftest b6-dyn-cross-ns
   (try (test-write-file "b6-dlib.nuc" "(ns b6dp)
-(import-use allocator)
+(import-use nucleus.allocator)
 (defprotocol Describe (describe ((self (ref Self))) i32))
 (defstruct Fox n:i32)
 (defn describe ((self (ref Fox))):i32 (return (+ 3 (_get self 'n))))
@@ -608,7 +630,7 @@
 (defn make-fox ((n i32)):(dyn Describe) (return (Fox n)))
 (defn show ((b (dyn Describe))):i32 (return (+ 1 (describe b))))
 "))
-  (let (m:String (try (test-write-file "b6-duse.nuc" "(import-use allocator)
+  (let (m:String (try (test-write-file "b6-duse.nuc" "(import-use nucleus.allocator)
 (import-prefixed b6-dlib dpx)
 (defstruct Cat n:i32)
 (defn describe ((self (ref Cat))):i32 (return (+ 10 (_get self 'n))))
@@ -661,16 +683,15 @@
     (drop &m))
   (return (ok)))
 
-; R3 for macros. Before B7 this "worked" for the wrong reason: every macro was
-; one unit-global bare name, so no qualifier resolved and none was needed.
-(deftest b7-macro-ns-refused
+; This pinned R3 for macros. Stage 23 AN-1 reversed R3 (ambient-namespaces.md
+; §8): the macro's namespace is in the consumer's import closure, so its full
+; name expands it.
+(deftest b7-macro-ns-reached
   (try (b7-macro-lib))
   (let (m:String (try (test-write-file "b7-mns.nuc" "(import-prefixed b7-mlib pm)
 (defn main ():i32 (return (b7ns/b7-twice 21)))
 ")))
-    (try (ns-scope-refusal (string-as-view &m)
-                           "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"
-                           "In scope here: pm."))
+    (try (w1-exit (string-as-view &m) 42))
     (drop &m))
   (return (ok)))
 
@@ -1023,7 +1044,7 @@
         nuch:String (try (emit-into "" "--emit-nuch" (string-as-view &lib)
                                     dir "w41lib.nuch"))
         src:String (str "(import-use \"stdio.h\")
-(import-use allocator)
+(import-use nucleus.allocator)
 (import \"" (string-as-view &nuch) "\" wx)
 (defn main ():i32
   (let (b:(dyn wx/Describe) (wx/Fox 309))
@@ -1064,4 +1085,372 @@
     (drop &lll)
     (drop &lib)
     (drop &u))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 23 AN-1: a namespace in the import closure is reachable by its full
+; name (design/stage23-namespaces/ambient-namespaces.md §8)
+; ---------------------------------------------------------------------------
+
+(defn an1-lib ():!void
+  (try (test-write-file "an1-lib.nuc" "(ns an1ns)
+(defn an1-f (x:i32):i32 (return (+ x 1)))
+(defn- an1-hidden (x:i32):i32 (return x))
+(defstruct An1S n:i32)
+(defvar an1-g:i32 10)
+"))
+  (return (ok)))
+
+; Direct: a `require` binds nothing but puts the namespace in reach. A type, a
+; function and a global, so each registry's qualified path is exercised.
+(deftest an1-require-full-name
+  (try (an1-lib))
+  (let (m:String (try (test-write-file "an1-req.nuc" "(require an1-lib)
+(defn main ():i32
+  (let (s:an1ns/An1S (an1ns/An1S 30))
+    (return (+ (an1ns/an1-f (s 'n)) an1ns/an1-g))))
+")))
+    (try (w1-exit (string-as-view &m) 41))
+    (drop &m))
+  (return (ok)))
+
+; Transitive: two namespace-less files sit between the root and the library,
+; and neither the root nor the first of them names it.
+(deftest an1-transitive-full-name
+  (try (an1-lib))
+  (try (test-write-file "an1-m2.nuc" "(import-use an1-lib)
+(defn an1-m2 ():i32 (return 1))
+"))
+  (try (test-write-file "an1-m1.nuc" "(import an1-m2)
+(defn an1-m1 ():i32 (return 2))
+"))
+  (let (m:String (try (test-write-file "an1-tr.nuc" "(import-use an1-m1)
+(defn main ():i32 (return (an1ns/an1-f (an1-m1))))
+")))
+    (try (w1-exit (string-as-view &m) 3))
+    (drop &m))
+  (return (ok)))
+
+; `require` binds no bare names, and the note says how the file CAN spell it.
+(deftest an1-require-binds-nothing
+  (try (an1-lib))
+  (let (m:String (try (test-write-file "an1-bare.nuc" "(require an1-lib)
+(defn main ():i32 (return (an1-f 1)))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 2 "unknown: an1-f — defined in namespace 'an1ns'"))
+    (try (check-note-at (ref c 'diags) mv 2 "write 'an1ns/an1-f' here"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; Privacy is unchanged: a full name reaches public names only.
+(deftest an1-full-name-private-refused
+  (try (an1-lib))
+  (let (m:String (try (test-write-file "an1-priv.nuc" "(require an1-lib)
+(defn main ():i32 (return (an1ns/an1-hidden 1)))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 2 "unknown: an1ns/an1-hidden — private to namespace 'an1ns'"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; A qualifier no file in the unit declares gets the general note.
+(deftest an1-unknown-namespace-refused
+  (let (m:String (try (test-write-file "an1-zz.nuc" "(import-use \"stdio.h\")
+(defn main ():i32 (return (an1zz/an1-f 1)))
+")))
+    (try (ns-scope-refusal (string-as-view &m)
+                           "unknown: an1zz/an1-f — 'an1zz' is not in scope in this file"
+                           "is neither an import prefix this file binds nor a namespace its imports load"))
+    (drop &m))
+  (return (ok)))
+
+; The ruling on risk 3: a prefix this file bound shadows a closure namespace of
+; the same name, silently. `an1pa/` names the library bound to that PREFIX.
+(deftest an1-prefix-shadows-namespace
+  (try (test-write-file "an1-pa.nuc" "(ns an1pa)
+(defn an1-which ():i32 (return 1))
+"))
+  (try (test-write-file "an1-pb.nuc" "(ns an1pb)
+(defn an1-which ():i32 (return 2))
+"))
+  (let (m:String (try (test-write-file "an1-shadow.nuc" "(require an1-pa)
+(import an1-pb an1pa)
+(defn main ():i32 (return (an1pa/an1-which)))
+")))
+    (try (w1-exit (string-as-view &m) 2))
+    (drop &m))
+  (return (ok)))
+
+; `require-ct` registers the compile-time surface: a macro expands through its
+; full name, and a run-time reference is the located compile-time-only refusal.
+(defn an1-ct-lib ():!void
+  (try (test-write-file "an1-ctlib.nuc" "(ns an1ct)
+(defn an1-ct-val ():i32 (return 9))
+(defmacro an1-inc (x) `(+ ~x 1))
+"))
+  (return (ok)))
+
+(deftest an1-require-ct-macro
+  (try (an1-ct-lib))
+  (let (m:String (try (test-write-file "an1-ctm.nuc" "(require-ct an1-ctlib)
+(defn main ():i32 (return (an1ct/an1-inc 6)))
+")))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
+  (return (ok)))
+
+(deftest an1-require-ct-runtime-refused
+  (try (an1-ct-lib))
+  (let (m:String (try (test-write-file "an1-ctr.nuc" "(require-ct an1-ctlib)
+(defn main ():i32 (return (an1ct/an1-ct-val)))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 2
+                         "'an1ct/an1-ct-val' was imported compile-time-only"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; ...unless an ordinary `require` in the unit reaches the library, which then
+; withholds nothing — `import-ct`'s unit rule, unchanged.
+(deftest an1-require-ct-real-elsewhere
+  (try (an1-ct-lib))
+  (let (m:String (try (test-write-file "an1-ctreal.nuc" "(require-ct an1-ctlib)
+(require an1-ctlib)
+(defn main ():i32 (return (an1ct/an1-inc (an1ct/an1-ct-val))))
+")))
+    (try (w1-exit (string-as-view &m) 10))
+    (drop &m))
+  (return (ok)))
+
+; A C header has no namespace to require.
+(deftest an1-require-header-refused
+  (let (m:String (try (test-write-file "an1-reqh.nuc" "(require \"stdio.h\")
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 1
+                         "require: 'stdio.h' is a C header, which has no namespace to require"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; Dots in a library name are directories; the default prefix is the last
+; component; a missing directory is the ordinary "cannot find".
+(deftest an1-dotted-import-directory
+  (let (d:String (try (test-scratch-sub "an1d")))
+    (try (test-write-file "an1d/an1-leaf.nuc" "(ns an1d.leaf)
+(defn an1-leaf-fn ():i32 (return 5))
+"))
+    (drop &d))
+  (let (m:String (try (test-write-file "an1-dot.nuc" "(require an1d.an1-leaf)
+(import an1d.an1-leaf)
+(defn main ():i32 (return (+ (an1d.leaf/an1-leaf-fn) (an1-leaf/an1-leaf-fn))))
+")))
+    (try (w1-exit (string-as-view &m) 10))
+    (drop &m))
+  (let (m:String (try (test-write-file "an1-dot-miss.nuc" "(require an1d.an1-nope)
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 1 "import: cannot find 'an1d.an1-nope'"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; A header keeps its source's `require`, so a signature naming a closure
+; namespace still resolves where the header is read. The library's source sits
+; outside the search path, so the consumer reads the header.
+(deftest an1-nuch-carries-require
+  (let (hdir:String (try (test-scratch-sub "h"))
+        ldir:String (try (test-scratch-sub "l"))
+        hv:StrView (string-as-view &hdir)
+        zs:String (try (write-into hv "an1-hz.nuc" "(ns an1hz)
+(defstruct An1Hz n:i32)
+"))
+        lib:String (try (write-into (string-as-view &ldir) "an1-hl.nuc" "(require an1-hz)
+(defn an1-hget (s:&an1hz/An1Hz):i32 (return (s 'n)))
+"))
+        h:String (try (emit-into hv "--emit-nuch" (string-as-view &lib) hv "an1-hl.nuch"))
+        hdr:String (try (read-file (string-as-view &h)))
+        m:String (try (test-write-file "an1-hu.nuc" "(import-use an1-hl)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (compile-path-in hv (string-as-view &m))))
+    (try (check-line (string-as-view &hdr) "(require an1-hz)"))
+    (try (check-no-errors (ref c 'diags)))
+    (drop &c)
+    (drop &m)
+    (drop &hdr)
+    (drop &h)
+    (drop &lib)
+    (drop &zs)
+    (drop &ldir)
+    (drop &hdir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; AN-2: the core libraries are `nucleus.*` (ambient-namespaces.md §8)
+; ---------------------------------------------------------------------------
+
+(defn an2-refused (file:StrView src:StrView line:i32 msg:StrView):!void
+  (let (m:String (try (test-write-file file src))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv line msg))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; A literal's lowering names its library by full name, so the file must load it.
+(deftest an2-literal-needs-its-library
+  (try (an2-refused "an2-vlit.nuc" "(defn main ():i32 (let (v [1 2]) (return 0)))
+" 1 "a vector literal needs nucleus.vector — add (import-use nucleus.vector)"))
+  (try (an2-refused "an2-klit.nuc" "(defn main ():i32 (let (k :a) (return 0)))
+" 1 "a keyword literal needs nucleus.keyword — add (import-use nucleus.keyword)"))
+  (return (ok)))
+
+; An exact operator method the file cannot reach is refused: the built-in it
+; would fall to compares a StrView by strcmp, which runs past an unterminated view.
+(deftest an2-operator-method-unreachable
+  (try (an2-refused "an2-op.nuc" "(import-use nucleus.string)
+(import-use nucleus.fmt)
+(defn main ():i32
+  (let (a:String (str \"ab\") b:String (str \"ab\"))
+    (return (if (= (string-as-view &a) (string-as-view &b)) 0 1))))
+" 5 "no matching method for '=' with operand types (StrView, StrView)"))
+  (let (m:String (try (test-write-file "an2-op-ok.nuc" "(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(defn main ():i32
+  (let (a:String (str \"ab\") b:String (str \"a\" \"b\"))
+    (return (if (= (string-as-view &a) (string-as-view &b)) 7 1))))
+")))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
+  (return (ok)))
+
+; D-IR: a core type links under its bare name, so a `user` type of that name is
+; refused at its definition; under its own `(ns …)` the same names coexist.
+(deftest an2-core-link-name-collision
+  (try (an2-refused "an2-clash.nuc" "(defstruct StrView a:i32)
+(defn main ():i32 (return 0))
+" 1 "defstruct: StrView links as %StrView, the LLVM type of nucleus.core/StrView"))
+  (try (test-write-file "an2-own.nuc" "(ns an2own)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(defstruct String b:i32)
+(defstruct Node c:i32)
+(defprotocol Drop (drop (x:&Self):void))
+(defn an2-run ():i32
+  (let (s:nucleus.string/String (str \"x\" 1)
+        v:(nucleus.vector/Vector i32) [1 2])
+    (return (+ (unsafe/cast i32 (byte-len &s)) (unsafe/cast i32 (count &v))))))
+"))
+  (let (m:String (try (test-write-file "an2-own-main.nuc" "(import-use an2-own)
+(defn main ():i32 (return (an2-run)))
+")))
+    (try (w1-exit (string-as-view &m) 4))
+    (drop &m))
+  (return (ok)))
+
+; A top-level form naming a macro of a namespace the file did not flatten says
+; where the macro is, even when a qualified spelling would reach it.
+(deftest an2-toplevel-macro-elsewhere
+  (try (test-write-file "an2-mlib.nuc" "(ns an2m)
+(defmacro an2-def (n) `(defn ~n ():i32 (return 3)))
+"))
+  (try (an2-refused "an2-mtop.nuc" "(require an2-mlib)
+(an2-def f)
+(defn main ():i32 (return (f)))
+" 2 "unknown top-level form: an2-def — defined in namespace 'an2m'"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 23 AN-4: a quasiquote names the full name of what its file resolved
+; (design/stage23-namespaces/ambient-namespaces.md, "AN-4 as built").
+; ---------------------------------------------------------------------------
+
+; `path`'s compile refused at `lib`'s `line` with `msg`: the fault is in the library.
+(defn an4-refused-in (lib:StrView main:StrView src:StrView line:i32 msg:StrView):!void
+  (let (m:String (try (test-write-file main src))
+        c:Compiled (try (w1-compile (string-as-view &m))))
+    (try (check-error-at (ref c 'diags) lib line msg))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; D2: one full name filters an overload to one namespace, so a callee whose methods
+; reach the template from two namespaces is refused, not silently narrowed.
+(deftest an4-overload-spans-namespaces
+  (try (test-write-file "an4a.nuc" "(ns an4a)
+(defn pick (x:i32):i32 (return 1))
+"))
+  (try (test-write-file "an4b.nuc" "(ns an4b)
+(defn pick (x:f64):i32 (return 2))
+"))
+  (let (l:String (try (test-write-file "an4-d2lib.nuc" "(ns an4d2)
+(import-use an4a)
+(import-use an4b)
+(defmacro pick-it (e) `(pick ~e))
+")))
+    (try (an4-refused-in (string-as-view &l) "an4-d2.nuc" "(import-use an4-d2lib)
+(defn main ():i32 (return (pick-it 1)))
+" 4 "macro 'pick-it' names 'pick', whose methods here come from namespaces 'an4a', 'an4b', and a full name reaches one"))
+    (drop &l))
+  (return (ok)))
+
+; D3 reversed: a template reaches public names only. A `user` file's private name
+; has no full name at all, so the template is refused where it is written.
+(deftest an4-user-private-refused
+  (let (l:String (try (test-write-file "an4-plib.nuc" "(defn- secret (x:i32):i32 (return x))
+(defmacro use-secret (e) `(secret ~e))
+")))
+    (try (an4-refused-in (string-as-view &l) "an4-p.nuc" "(import-use an4-plib)
+(defn main ():i32 (return (use-secret 1)))
+" 2 "macro 'use-secret' names 'secret', which is private to its file"))
+    (drop &l))
+  (return (ok)))
+
+; No binder may be qualified, source-written or not; each used to reach LLVM, or
+; to define a name no reference could spell.
+(deftest an4-qualified-binder-refused
+  (try (an2-refused "an4-qb1.nuc" "(defn main ():i32 (let (a/b:i32 1) (return 0)))
+" 1 "cannot bind 'a/b': a binding name may not be qualified"))
+  (try (an2-refused "an4-qb2.nuc" "(defn f (a/b:i32):i32 (return 1))
+(defn main ():i32 (return 0))
+" 1 "cannot bind 'a/b': a binding name may not be qualified"))
+  (try (an2-refused "an4-qb3.nuc" "(defn foo/bar (x:i32):i32 (return x))
+(defn main ():i32 (return 0))
+" 1 "cannot bind 'foo/bar': a binding name may not be qualified"))
+  (try (an2-refused "an4-qb4.nuc" "(defstruct foo/S a:i32)
+(defn main ():i32 (return 0))
+" 1 "cannot bind 'foo/S': a binding name may not be qualified"))
+  (try (an2-refused "an4-qb5.nuc" "(defmacro m (a/b) a/b)
+(defn main ():i32 (return 0))
+" 1 "cannot bind 'a/b': a binding name may not be qualified"))
+  (try (an2-refused "an4-qb6.nuc" "(defenum foo/E A B)
+(defn main ():i32 (return 0))
+" 1 "cannot bind 'foo/E': a binding name may not be qualified"))
+  (return (ok)))
+
+; A macroexpansion prints names that re-read: full names, never a tag.
+(deftest an4-macroexpand-full-names
+  (let (t:String (try (repl-session "(import-use nucleus.edn)
+(defstruct Pt x:i32 y:i32)
+(macroexpand (derive-edn Pt))
+"))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv "(nucleus.edn/edn-derive-struct Pt user/Pt edn-encode edn-decode edn-release) (extend Pt nucleus.edn/EdnCodec)"))
+    (try (check-not-contains tv "#h"))
+    (drop &t))
   (return (ok)))

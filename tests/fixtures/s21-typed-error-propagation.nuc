@@ -4,9 +4,9 @@
 ; caller and converts it through the `defcast E Err` rule into `!i32` and
 ; `!void` callers, and into a `!&T` caller, whose niche err arm is a pointer. `E` is 48 bytes -- wider than the two-register SysV class,
 ; which is the case that once mis-lowered the cast's byval argument.
-(import-use error)
-(import-use strview)
-(import-use io)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.io)
 
 (deferror s21-bad "bad")
 (deferror s21-worse "worse")

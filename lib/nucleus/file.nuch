@@ -1,4 +1,13 @@
-; .nuch header for lib/file.nuc
+; .nuch header for lib/nucleus/file.nuc
+(ns nucleus.file)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.coll)
 (defconst MODE-644 420)
 (defconst MODE-755 493)
 (defconst FILE-CHUNK 65536)

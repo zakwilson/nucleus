@@ -12,6 +12,8 @@
 ; (`(extend &MyStruct Ord)`, in any pointer spelling).
 
 ; Equality.
+(ns nucleus.numeric)
+
 (defprotocol Eq
   (=  (a:Self b:Self):bool)
   (!= (a:Self b:Self):bool))

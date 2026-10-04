@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/prelude.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/core.nuc by nucleusc --emit-cheader */
 
 typedef struct Symbol {
     uint8_t* p;

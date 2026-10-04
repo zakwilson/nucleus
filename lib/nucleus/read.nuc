@@ -17,15 +17,17 @@
 ;
 ; See docs/reading.md.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use fmt)
-(import-use vector)
-(import-use allocator)
-(import-use arena)
-(import-use intern)
-(import-use node)
+(ns nucleus.read)
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(import-use nucleus.arena)
+(import-use nucleus.intern)
+(import-use nucleus.node)
 
 (deferror read-eof "unexpected end of input")
 (deferror read-unterminated-list "unterminated list")
@@ -651,7 +653,7 @@
                   (set! (n 's) (rd-expand-sigil (strview-drop-bytes tv 1)))
                   (return (ok n)))))
       ; Symbols are interned singletons shared across the whole program, so
-      ; they carry no per-occurrence line -- see node-line in lib/node.nuc.
+      ; they carry no per-occurrence line -- see node-line in lib/nucleus/node.nuc.
       (return (ok (as &Node (intern-node (rd-expand-sigil tv))))))))
 
 ; ---------------------------------------------------------------------------
@@ -1073,7 +1075,7 @@
                        (string-push-bytes-raw out one 1))))
       (set! i (+ i 1)))))
 
-; `\u{…}` is hex, and lib/fmt.nuc writes decimal only.
+; `\u{…}` is hex, and lib/nucleus/fmt.nuc writes decimal only.
 (defn rd-write-hex (out:&String v:ui64):void
   (let (buf:&ui8 (as &ui8 (alloca ui8 16))
         n:i32 0
@@ -1092,7 +1094,7 @@
 
 ; A string as an s-expression literal -- quotes included, escapes applied. The
 ; counterpart of what the reader accepts, exported so anything WRITING an
-; s-expression (lib/test.nuc's result records) escapes the way this reads.
+; s-expression (lib/nucleus/test.nuc's result records) escapes the way this reads.
 (defn sexp-write-string (out:&String sv:StrView):void
   (write-str out "\"")
   (rd-write-escaped out sv)

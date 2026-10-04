@@ -22,19 +22,19 @@
 ; which is why no call site needed to change how it stores the result.
 
 (import-use "stdio.h")
-(import-use arena)
-(import-use allocator)
-(import-use vector)
-(import-use string)
-(import-use strview)
-(import-use fmt)
-(import-use io)
-(import-use file)
-(import-use intern-str)   ; Symbol's ToStr, so a name can flow into `fstr`/`emit`
+(import-use nucleus.arena)
+(import-use nucleus.allocator)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.intern-str)   ; Symbol's ToStr, so a name can flow into `fstr`/`emit`
 
 ; The arena's own handle. A separate `defvar` from nucleusc.nuc's
 ; `g-arena-alloc` only because a module cannot see its importer's globals; the
-; arena itself is `lib/arena.nuc`'s single process-wide one, so both handles
+; arena itself is `lib/nucleus/arena.nuc`'s single process-wide one, so both handles
 ; allocate from the same bump pointer and neither ever frees.
 (defvar g-strfmt-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
 

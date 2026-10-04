@@ -4,9 +4,10 @@
 ; how FoldFn is recognised). Each combinator gets an inline AND a named operand.
 
 (import-use "stdio.h")
-(import-use vector)
-(import-use iterator)
-(import-use combinators)
+(import-use nucleus.vector)
+(import-use nucleus.iterator)
+(import-use nucleus.combinators)
+(import-use nucleus.string)
 
 ; A named UnaryFn conformer rendering a small int to a fixed name (join).
 (defstruct NameFn dummy:i32)

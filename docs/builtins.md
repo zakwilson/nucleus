@@ -77,7 +77,7 @@ Globals can be redefined too. A second `defvar` of the same name and type confir
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
-- `(import-use node)` brings in the AST utilities — the readers `node-len`, `node-at`, `node-first`, `node-rest`, `node-kind`, `node-is-list`, `node-empty?`, `node-line`; the builders `node-list-new`, `node-push`, `node-extend`, `node-list-done`, `node-cons`, `node-list1`…`node-list5`, `node-set-at`, `node-splice-at`; and `alloc-node` / `node-int` / `intern-symbol`. They allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` and `node-first` return a *nullable* `?&Node` (out of range or an empty list answers `none`); `node-head-sym` reads a form's head symbol, or none. Read either result's kind with `node-kind` — which answers `NODE-NIL` both for a null node and for `()`, the two ways a form can have nothing where an operand belongs — and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)). The same import carries the `Coll`/`Seq` conformances, so a list `Node` answers `count`, `(xs i)`, `conj` and `doseq` — see [A form is a collection](macros.md#a-form-is-a-collection).
+- `(import-use nucleus.node)` brings in the AST utilities — the readers `node-len`, `node-at`, `node-first`, `node-rest`, `node-kind`, `node-is-list`, `node-empty?`, `node-line`; the builders `node-list-new`, `node-push`, `node-extend`, `node-list-done`, `node-cons`, `node-list1`…`node-list5`, `node-set-at`, `node-splice-at`; and `alloc-node` / `node-int` / `intern-symbol`. They allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` and `node-first` return a *nullable* `?&Node` (out of range or an empty list answers `none`); `node-head-sym` reads a form's head symbol, or none. Read either result's kind with `node-kind` — which answers `NODE-NIL` both for a null node and for `()`, the two ways a form can have nothing where an operand belongs — and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)). The same import carries the `Coll`/`Seq` conformances, so a list `Node` answers `count`, `(xs i)`, `conj` and `doseq` — see [A form is a collection](macros.md#a-form-is-a-collection).
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
@@ -106,7 +106,7 @@ A header also carries its source's name-binding imports (a prefixed import as `(
 
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `defn` | Define a function. Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a list `Node` built at the call site (so each call site emits `@node-list-new` and `@node-push` calls, which `(import-use node)` supplies). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into the element slot. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
+| `defn` | Define a function. Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a list `Node` built at the call site (so each call site emits `@node-list-new` and `@node-push` calls, which `(import-use nucleus.node)` supplies). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into the element slot. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant `(defconst name[:T] value)`: a literal (integer, float, string, character, `true`/`false`/`null`, or a folded integer expression), which each use substitutes and which adapts as the literal would, or a constant aggregate (`(S …)`, `(array T …)`, `&g`) in read-only storage. Writes are compile-time errors. See [Constants](toplevel.md#constants) and [Integer literals](types.md#integer-literals). | `#define` / `static const` |
 | `defenum` | Define an enumeration. Each member is a named integer literal (its 0-based ordinal) and adapts at a use site exactly as `defconst` does. | `enum` |
 | `defvar` | Define a global variable `(defvar name:type [init])`. The optional init is preferably a **compile-time constant**: a literal, a name bound by `defconst` / `defenum`, or a constant *expression* over them (arithmetic and bit operations, `(sizeof T)`, `(as T x)` including `(as CStr "…")`, `(char "x")`, `&other-global`, and constant array/struct aggregates) — see [Global initializers](toplevel.md#global-initializers) for the full grammar, the overflow / divide-by-zero rules, and what is still refused. An initializer the compiler cannot fold runs at **startup, before `main`**, as an ordinary assignment — see [Run-time initializers](toplevel.md#run-time-initializers). An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct or union) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` is valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
@@ -124,7 +124,7 @@ A header also carries its source's name-binding imports (a prefixed import as `(
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a list `Node` holding the remaining args. Parameters (and the `:rest` list) are typed `&Node` inside the body — never null — so `(p 'kind)` and `(p 's)` read fields directly with no cast; elements come out through the `ast-first` / `ast-rest` / `ast-at` / `ast-len` special forms (see [A form is a collection](macros.md#a-form-is-a-collection)). The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. The reader registers the macro **as it reads it**, so it takes effect only for the forms after it — in its own file (a different file never sees it; a REPL session keeps one table across prompts, so a `def-rmacro` at one prompt is visible at the next). Refused if `prefix` is already registered, or begins with a byte that can start an atom — a prefix may open only with one of `` $ ' @ ^ ` \| ~ `` (a comma is whitespace). Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref), `&` (ref). See [Reading s-expressions](reading.md#def-rmacro). | — |
-| `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
+| `exclude-prelude` | Suppress the implicit `(import-use nucleus.core)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
 
 ### One symbol, one kind
 
@@ -384,7 +384,7 @@ applies.
 ```lisp
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use error)
+(import-use nucleus.error)
 (defstruct Pt x:i32 y:i32)
 (deferror not-found "point not found")
 
@@ -621,14 +621,14 @@ machinery.
 | Form | Meaning |
 |---|---|
 | `match` | the eliminator — `((ok v) …)` / `((err e) …)` arms |
-| `(try r)` | propagation macro (`lib/error.nuc`, needs `(import-use error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
+| `(try r)` | propagation macro (`lib/nucleus/error.nuc`, needs `(import-use nucleus.error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
 | `(unwrap r)` | the `ok` payload, or — on `err` — print `err-name`/`err-message` and abort (needs `printf` in scope for the message) |
 | `(unwrap-or r d)` | the `ok` payload, or `d` (evaluated only on the `err` arm) |
 | `(err-name e)` / `(err-message e)` | the descriptor strings for an `Err` value |
 
 ```lisp
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 (deferror parse-failed "could not parse value")
 
 (defn checked (n:i64):!i64
@@ -662,7 +662,7 @@ understand.
 
 ### Handler-aware `err` and `with-handler` (E3)
 
-When `(import-use error)` is in scope, returning `(err E)` from a `!T` function
+When `(import-use nucleus.error)` is in scope, returning `(err E)` from a `!T` function
 consults the dynamically-bound handler chain before returning the error value. A
 matching handler can **repair** the fault: the function returns `(ok v)` instead
 of the error. `(err! E)` always bypasses the chain.
@@ -682,7 +682,7 @@ stored in the error value:
 ```
 
 **`with-handler`.** Binds a handler in the current dynamic extent (from
-`lib/error.nuc`; requires `(import-use error)`):
+`lib/nucleus/error.nuc`; requires `(import-use nucleus.error)`):
 
 ```lisp
 (with-handler (error-value repair-type handler-fn ctx) body…)
@@ -716,8 +716,8 @@ error. The type key is the type's mangled-name string (pointer-compare with
   path. Programs that bind no handlers pay one global pointer load and null
   compare per `err` return, on the error path only. `err!` costs nothing extra.
 
-**Gating.** The handler machinery lives in `lib/error.nuc`. Without
-`(import-use error)`, `(err E)` behaves like `(err! E)` — the check is never
+**Gating.** The handler machinery lives in `lib/nucleus/error.nuc`. Without
+`(import-use nucleus.error)`, `(err E)` behaves like `(err! E)` — the check is never
 emitted. `with-handler`, `Handler`, and `err-find-handler` require the import;
 `try` does not (it is a special form, not a library macro).
 
@@ -729,7 +729,7 @@ not supported in v1.
 
 ```lisp
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 
 (deferror config-missing "config file not found")
 
@@ -781,7 +781,7 @@ allocator's grow path signalling for a replacement block, falling back to its ow
 behavior if policy declines:
 
 ```lisp
-(import-use error)
+(import-use nucleus.error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
@@ -796,15 +796,15 @@ behavior if policy declines:
   (grow 8))                      ; → 16
 ```
 
-`signal` requires `(import-use error)` (it references the handler chain). Its result
+`signal` requires `(import-use nucleus.error)` (it references the handler chain). Its result
 is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
 pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
 `(ref X)` niche-pointer repair is not a struct, so the struct-return call path
 cannot carry it (`examples/signal.nuc`).
 
-## Standard Macros (`lib/macros.nuc`)
+## Standard Macros (`lib/nucleus/macros.nuc`)
 
-Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
+Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use nucleus.macros)`) into every program, so all of these are available without an explicit `(import-use nucleus.macros)`. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
 
 | Name | Signature | Expands To |
 |------|-----------|------------|
@@ -822,7 +822,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
-`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
+`(import-use nucleus.arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use nucleus.arena)`.
 
 ## Macros and pass-through arguments
 
@@ -870,7 +870,7 @@ using its normal rules.
 
 ## Variadic Arithmetic
 
-`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
+`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/nucleus/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
 
 | Form          | Expansion                                       |
 |---------------|-------------------------------------------------|
@@ -1087,12 +1087,12 @@ A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.p
 ```
 t.nuc:9: error: no matching method for '=': Pt does not conform to Eq
   note: a struct literal compares by value, never by address
-  note: define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use numeric)
+  note: define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use nucleus.numeric)
 ```
 
 `= !=` name `Eq`, `< <= > >=` name `Ord` and `_+ _- _* _/` name `Num`. `%` (integers or floats) and the bit operators (integers) belong to no protocol, so the message names what they take instead. When the operands have two different types, both are listed: `no matching method for '=' with operand types (Pt, i32)`. That form has no protocol clause when `Pt` already has its `=`, because the pairing is what fails.
 
-The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `?&MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](#bounded-generic-defn).
+The **standard numeric protocols** live in `lib/nucleus/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `?&MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](#bounded-generic-defn).
 
 ## Polymorphism: overloaded `defn` (multimethods)
 
@@ -1149,7 +1149,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **No code, multiple protocols per implementation.** Because `extend` adds no methods, one concrete function can satisfy several protocols at once — the protocol is a *predicate over the method set*, not the owner of an implementation.
 
-**Protocol inheritance.** `extend`'s subject may itself be a protocol: `(extend Ord Eq)` declares that conforming to `Ord` additionally requires conforming to `Eq`, so `(extend i32 Ord)` records `(i32, Eq)` too. Operators satisfy protocol requirements for built-in numerics with no user method, so `lib/numeric.nuc`'s `Eq`/`Ord`/`Num` apply to `i32`/`i64`/`f32`/`f64` out of the box.
+**Protocol inheritance.** `extend`'s subject may itself be a protocol: `(extend Ord Eq)` declares that conforming to `Ord` additionally requires conforming to `Eq`, so `(extend i32 Ord)` records `(i32, Eq)` too. Operators satisfy protocol requirements for built-in numerics with no user method, so `lib/nucleus/numeric.nuc`'s `Eq`/`Ord`/`Num` apply to `i32`/`i64`/`f32`/`f64` out of the box.
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](#nuch-header-format).
 
@@ -1164,7 +1164,7 @@ substituted by concrete types — once per distinct instantiation, and cached.
 Statically dispatched, zero runtime overhead.
 
 ```lisp
-(import-use numeric)                      ; Eq / Ord / Num over the operators
+(import-use nucleus.numeric)                      ; Eq / Ord / Num over the operators
 
 (defn maxv (a:T b:T :where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
@@ -1362,10 +1362,10 @@ tuple:
 ```
 
 For parametric function-object conformance, use `(UnaryFn Arg Ret)` and
-`(FoldFn Acc Elem)` from `lib/iterator.nuc`:
+`(FoldFn Acc Elem)` from `lib/nucleus/iterator.nuc`:
 
 ```lisp
-(import-use iterator)
+(import-use nucleus.iterator)
 (defstruct Adder delta:i32)
 (extend Adder (UnaryFn i32 i32))
 (defn apply ((self (ref Adder)) (x i32)) i32
@@ -1411,7 +1411,7 @@ A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. S
   (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
 ```
 
-The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The canonical-node table lives in `lib/node.nuc` (the interned bytes themselves in `lib/intern.nuc`), which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The canonical-node table lives in `lib/nucleus/node.nuc` (the interned bytes themselves in `lib/nucleus/intern.nuc`), which a program that writes a quote imports with `(import-use nucleus.node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
@@ -1442,7 +1442,7 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
-`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
+`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/nucleus/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
 
@@ -1553,11 +1553,11 @@ Pre-declared C standard library functions, available without `extern`.
 | `dup2` | `(i32, i32) -> i32` | `<unistd.h>` |
 | `close` | `(i32) -> i32` | `<unistd.h>` |
 
-## Allocators (`lib/allocator.nuc`, Stage 11)
+## Allocators (`lib/nucleus/allocator.nuc`, Stage 11)
 
 The collection library owns and frees memory through an **allocator** rather than
 a bare `malloc`, so a collection can be built against libc, an arena, or a future
-allocator and still free with the same backend that built it. `(import-use allocator)`
+allocator and still free with the same backend that built it. `(import-use nucleus.allocator)`
 brings in the protocol, the handle type, the backends, and a default.
 
 ### The `Allocator` protocol
@@ -1601,7 +1601,7 @@ protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
 |----------|-----------|-----|
 | `default-allocator` | `() -> (ref AllocHandle)` | the process-global libc handle; backs convenience constructors that omit an allocator |
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
-| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
+| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/nucleus/arena.nuc`'s globals) |
 
 A collection stores the `AllocHandle` by value; use `(ref coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
@@ -1614,9 +1614,9 @@ conformance currently cannot be `import`ed at all — the imported file's transi
 finalize. A conformance defined *directly* in the consuming unit does compile.
 See `design/stage11/progress.md` (M1) for the details and the deferred compiler fix.
 
-## Iterators (`lib/iterator.nuc`, Stage 11)
+## Iterators (`lib/nucleus/iterator.nuc`, Stage 11)
 
-`(import-use iterator)` provides the `Iterator` parametric protocol, two concrete
+`(import-use nucleus.iterator)` provides the `Iterator` parametric protocol, two concrete
 iterator structs (`IntRangeIter`, `I64ArrayIter`), generic function-object
 protocols (`UnaryFn`, `FoldFn`), generic lazy combinators (`MapIter`, `FilterIter`),
 and a generic `reduce`. The combinators conform to `Iterator` via `:where` on

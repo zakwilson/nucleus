@@ -15,6 +15,10 @@
 ; The rendered diagnostic lists are compared rather than a message quoted per
 ; mode: the fix routes all three through one chokepoint, and comparing them is
 ; what pins that. Three quoted copies would drift and never notice.
+(import-use nucleus.test)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
 (defn check-header-mode-agrees (dir:StrView path:StrView (want (ref Compiled))
                                 flag:StrView):!void
   (let (c:Compiled (try (emit-checked dir flag path)))
@@ -226,7 +230,7 @@
 ;
 ; The fix is not twenty new messages. Every one of these positions ALREADY owned
 ; the right diagnostic for a wrong-kind name — the kind test that would have
-; fired it crashed first. `node-kind` (lib/node.nuc) answers NODE-NIL for a null
+; fired it crashed first. `node-kind` (lib/nucleus/node.nuc) answers NODE-NIL for a null
 ; node, so each site's own message is what these units pin.
 
 ; The four heads item 45 was filed for: each died SIGSEGV under plain
@@ -510,7 +514,7 @@
 ; and RISC-V surface — which uses macros heavily — cross-compiles as before.
 (deftest s20-macro-cross-target-host-resolved
   (let (p:String (try (test-write-file "probe-host.nuc"
-                        "(import-use node)
+                        "(import-use nucleus.node)
 (defmacro pick (xs) (node-at xs (as usize 1)))
 (defn main ():i32 (return (pick (_+ 7 0))))
 "))
@@ -558,7 +562,7 @@
 ; name the argument and its call rather than a macro, which is the only part of
 ; that path C1 had to add.
 (deftest s20-computed-arg-forward-reference
-  (try (check-ct-refused "(import-use node)
+  (try (check-ct-refused "(import-use nucleus.node)
 (defmacro one (x) x)
 (defn main ():i32 (return (one ~(s20-later))))
 (defn s20-later ():(ptr Node) (return `7))
@@ -576,7 +580,7 @@
   (try (check-source-rejects "(defn s20-f (x:i32):i32 (return x))
 (defn main ():i32 (return (s20-f ~(_+ 1 2))))
 " "unquote outside quasiquote"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-v ():(ptr Node) (return `1))
 (defmacro one (x) x)
 (defn main ():i32 (return (one (_+ 1 ~(s20-v)))))
@@ -590,7 +594,7 @@
   (try (check-source-rejects "(defn s20-g (x:i32):i32 (return x))
 (defn main ():i32 (return (s20-g ~@(_+ 1 2))))
 " "unquote-splice outside quasiquote"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-w ():(ptr Node) (return `1))
 (defmacro one (x) x)
 (defn main ():i32 (return (one (_+ 1 ~@(s20-w)))))
@@ -605,22 +609,22 @@
 ; many the list has — including none, which is the count a fixed-arity macro then
 ; has to report rather than seeing one null argument.
 (deftest s20-computed-arg-arity-counts-substitution
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-one ():(ptr Node) (return `1))
 (defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two ~(s20-one))))
 " "macro 'two': expects 2 args, got 1"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-pair ():(ptr Node) (return `(1 2)))
 (defmacro three (a b c) `(_+ ~a (_+ ~b ~c)))
 (defn main ():i32 (return (three ~@(s20-pair))))
 " "macro 'three': expects 3 args, got 2"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-trio ():(ptr Node) (return `(1 2 3)))
 (defmacro two2 (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two2 ~@(s20-trio))))
 " "macro 'two2': expects 2 args, got 3"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (defn s20-empty ():(ptr Node) (return null))
 (defmacro one2 (x) x)
 (defn main ():i32 (return (one2 ~@(s20-empty))))
@@ -631,14 +635,14 @@
 ; this says it is a node of the right SHAPE, because `~@` substitutes N arguments
 ; and only a list has N elements.
 (deftest s20-computed-arg-splice-not-a-list
-  (try (check-ct-refused "(import-use node)
+  (try (check-ct-refused "(import-use nucleus.node)
 (defn s20-atom ():(ptr Node) (return `7))
 (defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two 1 ~@(s20-atom))))
 " 4 "the computed argument '~@(s20-atom)' must evaluate to a list of nodes"
     "`~@` splices its result in as N arguments, so it must evaluate to a list"))
   ; Through a `:rest` macro, whose splice walks a second path.
-  (try (check-ct-refused "(import-use node)
+  (try (check-ct-refused "(import-use nucleus.node)
 (defn s20-sym ():(ptr Node) (return `abc))
 (defmacro s20-sum2 (:rest args) `(macfoldr _+ 0 ~@args))
 (defn main ():i32 (return (s20-sum2 ~@(s20-sym))))
@@ -656,7 +660,7 @@
 ; spans lowered for `--target=`. The message names the argument.
 (deftest s20-computed-arg-cross-target
   (let (p:String (try (test-write-file "probe-carg.nuc"
-                        "(import-use node)
+                        "(import-use nucleus.node)
 (defn s20-xrows ():(ptr Node) (return `((a 1))))
 (macmap ((n v) `(defn ~n ():i32 (return ~v))) ~(s20-xrows))
 (defn main ():i32 (return (a)))

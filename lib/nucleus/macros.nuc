@@ -2,7 +2,7 @@
 ;
 ; These macros require defmacro and quasiquote support (stage-2 compiler).
 ; They are pulled in automatically by the prelude; a file may also bring them
-; in explicitly with (import-use macros).
+; in explicitly with (import-use nucleus.macros).
 
 ; (macfoldr op unit a b c) => (op a (op b c))   [right-nested]
 ; (macfoldl op unit a b c) => (op (op a b) c)   [left-nested]
@@ -16,6 +16,8 @@
 ; `cond` only, no `if`/`when`: these are the first macros in the file, so nothing
 ; defined below them is callable from these bodies yet, and `cond` is a special
 ; form. Same reason the `case` macro further down says so.
+(ns nucleus.macros)
+
 (defmacro macfoldr (op unit :rest args)
   (let (n:i32 (ast-len args))
     (cond (= n 0)
@@ -132,7 +134,7 @@
               (cond (and (!= head null)
                          (= (head 'kind) NODE-KEYWORD)
                          ; Reaching through `Symbol.p` because the prelude
-                         ; cannot import `lib/intern.nuc`, where `=` on two
+                         ; cannot import `lib/nucleus/intern.nuc`, where `=` on two
                          ; `Symbol`s lives. One byte table, so this is the
                          ; identity compare that overload would do.
                          (= (as ptr ((head 's) 'p)) (as ptr (('or 's) 'p))))
@@ -381,7 +383,7 @@
 ; gives. design/stage20-macros/overview.md §2.1.
 ;
 ; `ast-at`/`ast-len` rather than `node-at`/`node-len`: the prelude registers the
-; Node TYPE but imports no node runtime, so a signature from lib/node.nuc is not
+; Node TYPE but imports no node runtime, so a signature from lib/nucleus/node.nuc is not
 ; in scope here even though the JIT'd body could resolve one.
 ;
 ; The binding is the fixed name `__macmap`, not a `gensym`: gensym'd names are
@@ -406,7 +408,7 @@
     ; Two counts, not one. `ntotal` decides the whole-row rule below; `nfixed`
     ; and `variadic` decide how long a row may be, since `:rest` lets it run
     ; longer. The keyword test reaches through `Symbol.p` for the same reason
-    ; `case` does — the prelude cannot import `lib/intern.nuc`, where `=` on two
+    ; `case` does — the prelude cannot import `lib/nucleus/intern.nuc`, where `=` on two
     ; Symbols lives, and one byte table makes identity the same question.
     (let (pi:i32 0
           np:i32 (ast-len params))

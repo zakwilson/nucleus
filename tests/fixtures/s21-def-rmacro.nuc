@@ -2,7 +2,7 @@
 ; registers as the file is READ, forward-only and file-scoped. `$s21-x` on
 ; line 7 is the symbol `$s21-x`; on line 9 it is `(s21-w s21-x)`. An importer
 ; may define its own `$` and sees neither of these (tests/suite-s21.nuc).
-(import-use node)
+(import-use nucleus.node)
 (defvar s21-x:i32 4)
 (defn s21-before ():ptr:Node (return '$s21-x))
 (defn s21-w (v:i32):i32 (return (* v 10)))

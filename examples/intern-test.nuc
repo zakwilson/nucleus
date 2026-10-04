@@ -1,4 +1,4 @@
-; Stage 17 B4 — lib/intern.nuc: `Symbol`, interned identity with the length and
+; Stage 17 B4 — lib/nucleus/intern.nuc: `Symbol`, interned identity with the length and
 ; hash behind the pointer.
 ;
 ; The point of the layout is that all four properties hold at once: `=` is one
@@ -8,17 +8,17 @@
 ; design/stage17-native-strings/overview.md §2.4.
 
 (import-use "string.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashmap)
-(import-use strview)
-(import-use strview-str)
-(import-use string)
-(import-use fmt)
-(import-use io)
-(import-use intern)
-(import-use intern-str)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashmap)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
 
 (defn main ():i32
 

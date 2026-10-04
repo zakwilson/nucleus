@@ -12,7 +12,7 @@
 ; The argument path is a second erased-slot coercion, not a caller of
 ; `maybe-box-into-slot`, so it needs the call separately — see the sibling
 ; fixture b6-dyn-box-mismatch-let.nuc for the binding path.
-(import-use allocator)
+(import-use nucleus.allocator)
 
 (defprotocol Pp (pm ((self (ref Self))) i32))
 (defprotocol Qq (qm ((self (ref Self))) i32))

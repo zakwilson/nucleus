@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/allocator.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/allocator.nuc by nucleusc --emit-cheader */
 
 enum AllocKind {
     AllocKind_ALLOC_LIBC = 0,

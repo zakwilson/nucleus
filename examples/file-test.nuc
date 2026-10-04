@@ -1,4 +1,4 @@
-; Stage 17 B3 — lib/file.nuc: an owning descriptor and a buffered Writer.
+; Stage 17 B3 — lib/nucleus/file.nuc: an owning descriptor and a buffered Writer.
 ;
 ; `BufWriter` is the load-bearing half: IR emission is millions of small writes,
 ; and a `FILE`'s buffer is the only thing `fprintf` had that a bare descriptor
@@ -6,13 +6,13 @@
 ;
 ; design/stage17-native-strings/overview.md §2.1.
 
-(import-use strview)
-(import-use strview-str)
-(import-use string-split)
-(import-use string)
-(import-use fmt)
-(import-use io)
-(import-use file)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.string-split)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
 
 (defn write-lines (path:&StrView n:i64):!void
   (with (bw (buf-writer (try (file-create path))))

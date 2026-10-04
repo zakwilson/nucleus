@@ -8,6 +8,10 @@
 ; Types
 ; ============================================================
 
+(import-use nucleus.string)
+(import-use nucleus.intern)
+(import-use nucleus.arena)
+(import-use nucleus.read)
 (defn make-type (k:i32):&Type
   (let (t:&Type (alloc-type))
     (set! (t 'kind) k)
@@ -742,7 +746,7 @@
     (when (!= (tt 'kind) TY-STRUCT) (return 0))
     (let (sd:?&StructDef (tt 'sdef))
       (when (= sd null) (return 0))
-      (when (= (sd 'name) "StrView")
+      (when (core-named? (sd 'name) "StrView")
         (return 1))
       (return 0))))
 

@@ -7,7 +7,12 @@
 ; the whole-unit prescan) lets union-registry import before generics cleanly.
 ; Extracted from nucleusc.nuc → generics.nuc → here (Stage 12 N8).
 
-(import-use hashmap)
+(import-use nucleus.hashmap)
+(import-use nucleus.intern)
+(import-use nucleus.string)
+(import-use nucleus.node)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.

@@ -1,25 +1,29 @@
 ; Stage 17 B4 — `Symbol`'s text conformances.
 ;
-; Split from `lib/intern.nuc` at C7-1 exactly as `lib/strview-str.nuc` is split
-; from `lib/strview.nuc`, and for the same reason: `ToStr` needs `fmt` and
+; Split from `lib/nucleus/intern.nuc` at C7-1 exactly as `lib/nucleus/strview-str.nuc` is split
+; from `lib/nucleus/strview.nuc`, and for the same reason: `ToStr` needs `fmt` and
 ; `String`, and `ByteStr`/`Str` need `strview-str`, while the interner itself
-; must stay importable by `lib/node.nuc` without dragging the whole string stack
+; must stay importable by `lib/nucleus/node.nuc` without dragging the whole string stack
 ; into every program that uses a macro.
 ;
 ; Every method here is the `StrView` method on `symbol-as-view`, which is two
 ; words and no allocation.
 
-(import-use error)
-(import-use numeric)
-(import-use char)
-(import-use strview)
-(import-use strview-str)
-(import-use vector)
-(import-use string)
-(import-use fmt)
-(import-use intern)
+(ns nucleus.intern-str)
 
-; The conformance RECORDS for the two protocols lib/intern.nuc cannot import.
+(import-use nucleus.error)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.hash)
+(import-use nucleus.string-protocols)
+
+; The conformance RECORDS for the two protocols lib/nucleus/intern.nuc cannot import.
 ; `=`/`!=` are already defined there; `hash` is a load of the value cached at
 ; intern time, never a byte walk.
 (extend Symbol Eq)

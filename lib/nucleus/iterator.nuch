@@ -1,4 +1,6 @@
-; .nuch header for lib/iterator.nuc
+; .nuch header for lib/nucleus/iterator.nuc
+(ns nucleus.iterator)
+(import-use nucleus.seq)
 (defprotocol (Iterator E) (next (self:ref:Self) :?E))
 (defstruct IntRangeIter (start i32) (end i32))
 (extend IntRangeIter (Iterator i32))

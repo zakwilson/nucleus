@@ -7,7 +7,7 @@
 ; type variable is not supported in a generic pattern yet`) and never collected
 ; `T` from the list spellings (`unknown type: T`).
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 
 (defn n-q ((v (ref (Vector ?T)))):i32 (return (unsafe/cast i32 (count v))))

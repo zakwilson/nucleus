@@ -1,4 +1,5 @@
-; .nuch header for lib/avr.nuc
+; .nuch header for lib/nucleus/avr.nuc
+(ns nucleus.avr)
 (declare reg8-read ((addr usize)) :ui8)
 (declare reg8-write ((addr usize) (val ui8)) :void)
 (declare reg16-read ((addr usize)) :ui16)

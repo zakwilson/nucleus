@@ -7,11 +7,11 @@
 ;   - Hash order is non-deterministic; sum the keys and vals for determinism.
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hash)
-(import-use hashmap)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
+(import-use nucleus.hashmap)
 
 (defn main ():i32
   (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))

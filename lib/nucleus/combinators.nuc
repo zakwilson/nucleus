@@ -2,7 +2,7 @@
 ;
 ; Design: design/stage13/functional-refactor.md §"R1 — Eager combinator library".
 ;
-; Every combinator here mirrors `reduce` (lib/iterator.nuc): it is generic, driven
+; Every combinator here mirrors `reduce` (lib/nucleus/iterator.nuc): it is generic, driven
 ; over a bare `(Iterator E)` reference, and takes its closure operand typed
 ; `(name (ref Tyvar))` so the operand may be an inline closure, a CE-1 named
 ; closure, or a hand-written conformer — conformance is type-keyed, never literal.
@@ -22,15 +22,18 @@
 ; returned `BoxedFn` follows. A `let`-bound result is NOT auto-dropped (only
 ; `with` bindings are), so the explicit drop is the contract.
 
+(ns nucleus.combinators)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")          ; strlen, for join
-(import-use allocator)           ; BoxedFn boxing (the closure-returning combinators)
-(import-use iterator)            ; Iterator/UnaryFn/FoldFn protocols + reduce
-(import-use numeric)             ; Ord (constantly's value-type bound)
-(import-use strview)             ; StrView (string.nuc's !String fns reference it)
-(import-use vector)              ; Vector / VecIter / conj / count / iter
-(import-use string)              ; String / string-new / string-push-bytes-raw
+(import-use nucleus.allocator)           ; BoxedFn boxing (the closure-returning combinators)
+(import-use nucleus.iterator)            ; Iterator/UnaryFn/FoldFn protocols + reduce
+(import-use nucleus.numeric)             ; Ord (constantly's value-type bound)
+(import-use nucleus.strview)             ; StrView (string.nuc's !String fns reference it)
+(import-use nucleus.vector)              ; Vector / VecIter / conj / count / iter
+(import-use nucleus.string)              ; String / string-new / string-push-bytes-raw
+(import-use nucleus.coll)
 
 ; ---------------------------------------------------------------------------
 ; BinaryFn A R — a binary function object `(A, A) -> R`. This is the comparator

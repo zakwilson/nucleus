@@ -2,8 +2,8 @@
 ; return goes through the struct-return path, which did not run the coercion
 ; that materializes the chameleon literal into {ptr,len} — so LLVM rejected the
 ; `store %StrView <bare ptr>` with no source location at all.
-(import-use strview)
-(import-use io)
+(import-use nucleus.strview)
+(import-use nucleus.io)
 
 (defn advice ():StrView
   (return "break the cycle"))

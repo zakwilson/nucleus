@@ -1,4 +1,7 @@
-; .nuch header for lib/string-split.nuc
+; .nuch header for lib/nucleus/string-split.nuc
+(ns nucleus.string-split)
+(import-use nucleus.strview)
+(import-use nucleus.iterator)
 (defstruct SplitIter (buf (ref ui8)) (rem usize) (sep-data (ref ui8)) (sep-len usize) (done bool))
 (declare split-iter-done ((it (ref SplitIter))) :bool)
 (declare split-iter-next ((it (ref SplitIter))) :StrView)

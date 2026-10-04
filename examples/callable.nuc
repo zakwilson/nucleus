@@ -11,13 +11,13 @@
 ; Because invoke takes precedence, a type that defines `invoke` can no longer use
 ; the callable form for field access — read its fields with `_get`/`.field`.
 ; Function-object protocols: (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
-; lib/iterator.nuc provide parametric, element-generic alternatives to the
+; lib/nucleus/iterator.nuc provide parametric, element-generic alternatives to the
 ; former fixed-type Call/BinaryCall protocols.
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use iterator)
-(import-use node)   ; a user `get` interns its selector at run time
+(import-use nucleus.iterator)
+(import-use nucleus.node)   ; a user `get` interns its selector at run time
 
 (defstruct Point x:i32 y:i32)
 

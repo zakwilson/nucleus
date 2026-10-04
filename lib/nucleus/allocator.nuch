@@ -1,4 +1,6 @@
-; .nuch header for lib/allocator.nuc
+; .nuch header for lib/nucleus/allocator.nuc
+(ns nucleus.allocator)
+(import-use nucleus.arena)
 (defprotocol Allocator (alloc (self:ref:Self size:usize align:usize) ?ref:ui8) (realloc (self:ref:Self (p ?ref:ui8) old:usize new:usize align:usize) ?ref:ui8) (free (self:ref:Self (p ?ref:ui8) size:usize align:usize) :void))
 (defenum AllocKind ALLOC-LIBC ALLOC-ARENA)
 (defstruct AllocHandle (kind i32) (data ptr))

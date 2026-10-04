@@ -13,6 +13,12 @@
 ; `nucleus|C type|C literal suffix`. Order is load-bearing: a decimal literal
 ; folds through the host f64, so it is asserted only at the first three widths
 ; (§10 limit 1, design/future/decimal-float-literals.md).
+(import-use nucleus.string)
+(import-use nucleus.string-split)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
+(import-use nucleus.parse)
+(import-use nucleus.test)
 (defn fl-kinds ():StrView
   (return "f16|_Float16|f16
 f32|float|f
@@ -114,7 +120,7 @@ f128|__float128|q"))
               (strview-has-prefix val "0xL"))))
 
 ; Nucleus has no bitcast operator; this is its established spelling
-; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/hash.nuc).
+; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/nucleus/hash.nuc).
 (defn fl-f64-bits (d:f64):ui64
   (let (r:f64 d
         p:&f64 &r)

@@ -1,4 +1,10 @@
-; .nuch header for lib/hashset.nuc
+; .nuch header for lib/nucleus/hashset.nuc
+(ns nucleus.hashset)
+(import-use nucleus.numeric)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
 (declare hashset-oom () :void)
 (defstruct (HashSet T) (keys ?ref:ui8) (states ?ref:ui8) (count usize) (cap usize) (alloc AllocHandle))
 (defn hashset-init ((s (ref (HashSet T)))) :void (let (init-cap:usize 8 elem-size:usize (as usize (sizeof T))) (libc-allocator (ref s (quote alloc))) (let ((kbuf ?ref:ui8) (alloc-handle-alloc (ref s (quote alloc)) (* init-cap elem-size) 8)) (when (= (as ptr kbuf) null) (hashset-oom)) (let ((sbuf ?ref:ui8) (alloc-handle-alloc (ref s (quote alloc)) init-cap 1)) (when (= (as ptr sbuf) null) (hashset-oom)) (memset (as ptr sbuf) 0 (as i64 init-cap)) (set! (s (quote keys)) kbuf) (set! (s (quote states)) sbuf) (set! (s (quote count)) 0) (set! (s (quote cap)) init-cap)))))

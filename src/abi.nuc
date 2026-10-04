@@ -1,4 +1,10 @@
-(import-use arena)
+(import-use nucleus.arena)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.strview)
+(import-use nucleus.io)
 
 ; ABI lowering — SysV x86_64 and aarch64 struct-by-value classification and coercion.
 ; Source-imported by src/nucleusc.nuc after basic type functions are defined.
@@ -259,7 +265,15 @@
               (str-into acc " " (f 'name) ":" (type-display (f 'type)))))
           (str-into acc ")")
           (return (string-as-view acc))))
-      (return nv))))
+      (return (display-key (s 'name))))))
+
+; A registry key for a message: a core library's names read bare, as written.
+(defn display-key (key:Symbol):StrView
+  (let (n:usize (qualifier-len key)
+        kv:StrView (symbol-as-view key))
+    (when (and (> n 0) (core-ns-view? (strview-take-bytes kv n)))
+      (return (strview-drop-bytes kv (+ n 1))))
+    (return kv)))
 
 ; A union by its instance type, so a niche `Maybe` reads `?&T` like its values.
 (defn udef-display (ud:?&UnionDef):StrView
@@ -269,12 +283,12 @@
 ; canonical spellings are the sigils `?T` and `!T` (docs/types.md).
 (defn template-app-display (name:Symbol args:ptr n:i32):StrView
   (let (a0:?&Type (if (> n 0) (unsafe/cast ptr:Type (aref (unsafe/cast &ptr args) 0)) null))
-    (when (and (= n 1) (= name "Maybe"))
+    (when (and (= n 1) (core-named? name "Maybe"))
       (return (fstr "?" (type-display a0))))
-    (when (and (= n 2) (= name "Result")
+    (when (and (= n 2) (core-named? name "Result")
                (= (-> (aref (unsafe/cast &ptr args) 1) (unsafe/cast &Type _) (_ 'kind)) TY-ERR))
       (return (fstr "!" (type-display a0))))
-    (let ((acc String) (str-alloc (strfmt-alloc) "(" name))
+    (let ((acc String) (str-alloc (strfmt-alloc) "(" (display-key name)))
       (dotimes (i n)
         (str-into acc " " (type-display (unsafe/cast ptr:Type (aref (unsafe/cast &ptr args) i)))))
       (str-into acc ")")

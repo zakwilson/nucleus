@@ -1,5 +1,5 @@
 (import-use "stdio.h")
-(import-use iterator)
+(import-use nucleus.iterator)
 
 (defn sq-fn (x:i32):i32 (return (* x x)))
 (defn sum-fn (acc:i32 x:i32):i32 (return (+ acc x)))

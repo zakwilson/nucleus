@@ -1,12 +1,12 @@
 ; Stage 11 assoc-types (A4.3/A4.4) — cross-unit `.nuch` round-trip of a `:where` extend.
 ;
 ; After A4.4: UnaryFn, FoldFn, MapIter (with its :where extend), FilterIter, and
-; reduce are all in lib/iterator.nuc. The mapiterlib fixture now just re-exports
+; reduce are all in lib/nucleus/iterator.nuc. The mapiterlib fixture now just re-exports
 ; them through the .nuch import path, testing that the TmplConformance survives
-; --emit-nuch round-trip across the lib/iterator.nuc -> mapiterlib chain.
+; --emit-nuch round-trip across the lib/nucleus/iterator.nuc -> mapiterlib chain.
 ;
 ; This unit stamps `(MapIter IntRangeIter SqFn)` and passes it to `reduce` from
-; lib/iterator.nuc, bounded on `((Iterator S) I)`. Resolving that bound requires
+; lib/nucleus/iterator.nuc, bounded on `((Iterator S) I)`. Resolving that bound requires
 ; the stamped MapIter to be a first-class Iterator — i.e. the :where extend must
 ; have recovered E = i32 at stamp time, here, across the unit boundary.
 ;
@@ -14,11 +14,11 @@
 ;   reduce(map sq [1,5)) = 30          ; 1+4+9+16
 
 (import-use "stdio.h")
-(import-use iterator)
+(import-use nucleus.iterator)
 (import-use mapiterlib)   ; resolves to lib/mapiterlib.nuch (header import)
 
 ; SqFn: i32 -> i32, squares its input. Conforms to (UnaryFn i32 i32) from
-; lib/iterator.nuc (re-exported through mapiterlib). Recovery of the MapIter
+; lib/nucleus/iterator.nuc (re-exported through mapiterlib). Recovery of the MapIter
 ; element type reads THIS conformance at stamp time in this unit.
 (defstruct SqFn dummy:i32)
 (extend SqFn (UnaryFn i32 i32))
@@ -26,7 +26,7 @@
   (return (* x x)))
 
 ; SumFn: folds (i32 acc, i32 elem) -> i32 by addition. Conforms to (FoldFn i32 i32)
-; from lib/iterator.nuc.
+; from lib/nucleus/iterator.nuc.
 (defstruct SumFn dummy:i32)
 (extend SumFn (FoldFn i32 i32))
 (defn fold (self:&SumFn (acc i32) (x i32)) i32

@@ -1,4 +1,4 @@
-; Stage 17 B2 — lib/io.nuc: the standard streams as Writers over descriptors.
+; Stage 17 B2 — lib/nucleus/io.nuc: the standard streams as Writers over descriptors.
 ;
 ; No `FILE*` anywhere: `print`/`println` format into one shared buffer and issue
 ; one `write`. `read-line` is covered separately (tests/fixtures/s17-read-line.nuc),
@@ -6,11 +6,11 @@
 ;
 ; design/stage17-native-strings/overview.md §2.1, §2.2.
 
-(import-use strview)
-(import-use strview-str)
-(import-use string)
-(import-use fmt)
-(import-use io)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
 
 (defn main ():i32
 

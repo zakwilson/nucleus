@@ -14,8 +14,8 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
-(import-use strview)
-(import-use string-split)
+(import-use nucleus.strview)
+(import-use nucleus.string-split)
 
 ; Print a StrView as a C string (assumes the view is a slice of a NUL-terminated
 ; buffer, OR we copy it to a temp buffer).

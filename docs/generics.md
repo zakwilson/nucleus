@@ -34,7 +34,7 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 
 ```
 main.nuc:26: error: no matching method for overloaded 'invoke' with argument types (&(Vector i32), i32)
-  note: lib/vector.nuc:158: (invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)
+  note: lib/nucleus/vector.nuc:158: (invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)
 ```
 
 Taking a binding's address implicitly for a concrete method's `&S` parameter is an exact-match rule, so it cannot combine with widening another argument; the note names the argument to convert. If no method takes the first argument but one would take its address, a note says to pass `&name`. If no method takes the first argument at all, there are no notes. At most eight methods are listed.
@@ -80,7 +80,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **No code, multiple protocols per implementation.** Because `extend` adds no methods, one concrete function can satisfy several protocols at once — the protocol is a *predicate over the method set*, not the owner of an implementation.
 
-**Protocol inheritance.** `extend`'s subject may itself be a protocol: `(extend Ord Eq)` declares that conforming to `Ord` additionally requires conforming to `Eq`, so `(extend i32 Ord)` records `(i32, Eq)` too. Operators satisfy protocol requirements for built-in numerics with no user method, so `lib/numeric.nuc`'s `Eq`/`Ord`/`Num` apply to `i32`/`i64`/`f32`/`f64` out of the box.
+**Protocol inheritance.** `extend`'s subject may itself be a protocol: `(extend Ord Eq)` declares that conforming to `Ord` additionally requires conforming to `Eq`, so `(extend i32 Ord)` records `(i32, Eq)` too. Operators satisfy protocol requirements for built-in numerics with no user method, so `lib/nucleus/numeric.nuc`'s `Eq`/`Ord`/`Num` apply to `i32`/`i64`/`f32`/`f64` out of the box.
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](compiler.md#nuch-header-format).
 
@@ -112,7 +112,7 @@ Four rules cover every spelling:
 * **Inside its own namespace, a protocol is named bare.** Within `(ns shapes)`, `Shape` means `shapes/Shape`.
 * **From anywhere else, spell it with a qualifier the file has in scope** — see [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope). With `(import-prefixed shapes sh)` that is `sh/Shape`; with `(import-use shapes)` it is bare `Shape` or `shapes/Shape`. Every accepted spelling denotes the one protocol, so a conformance written bare inside the namespace is found by a `(dyn sh/Shape)` written outside it.
 * **A prefixed import does *not* put the library's own namespace in scope.** With `(import-prefixed shapes sh)`, `shapes/Shape` is an error: the prefix is the whole of what the import bound. The diagnostic says so and lists what *is* in scope.
-* **A bare name falls back to the default `user` namespace.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols with no qualifier. If two namespaces each declare a `Describe` and neither is flattened into this file, a bare `Describe` names neither and is an error — qualify it.
+* **A bare name falls back to the flattened namespaces, the prelude's included, and then `user`.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols (`nucleus.core`) with no qualifier. If two namespaces each declare a `Describe` and neither is flattened into this file, a bare `Describe` names neither and is an error — qualify it.
 
 A protocol's method signatures are the declaring file's text, so they name that file's types however the protocol is reached. `Self`, the protocol's type arguments and the conformer's methods belong to the file that writes the `extend`. A private `defstruct-` conformer in another namespace, or a conformer named like one of the protocol library's own types, therefore conforms. A library generic that calls a protocol method reaches the conformer's method wherever the `extend` put it — solitary, overloaded or `defn-` — though the library imports nothing of that namespace. The pass is for a method that answers a protocol whose methods the calling spelling names (bare in the protocol's own namespace or a flattened one, or through a qualifier naming it); any other name in another namespace stays unreachable. See [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
 
@@ -189,7 +189,7 @@ substituted by concrete types — once per distinct instantiation, and cached.
 Statically dispatched, zero runtime overhead.
 
 ```lisp
-(import-use numeric)                      ; Eq / Ord / Num over the operators
+(import-use nucleus.numeric)                      ; Eq / Ord / Num over the operators
 
 (defn maxv (a:T b:T :where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
@@ -641,7 +641,7 @@ pointer, its signature) against `P`'s single required method and **synthesizes a
 forwarding conformance**, reading the bound type arguments straight off the
 matched signature. This is what lets an `fn`/`vfn`/`mfn`/`cfn` literal be passed
 inline to a generic combinator such as `map`/`reduce`
-(`lib/iterator.nuc`, [Iterators](iterators.md)) with no hand-written
+(`lib/nucleus/iterator.nuc`, [Iterators](iterators.md)) with no hand-written
 function-object struct:
 
 ```lisp
@@ -654,7 +654,7 @@ function-object struct:
 
 **Recognized-set scoping.** Derivation fires only for a recognized set of
 single-method "function-shaped" protocols — **`UnaryFn`** (`Arg` → `Ret`) and
-**`FoldFn`** (`Acc`, `Elem`) from `lib/iterator.nuc` — **not** for arbitrary
+**`FoldFn`** (`Acc`, `Elem`) from `lib/nucleus/iterator.nuc` — **not** for arbitrary
 single-method protocols. The narrow scope sidesteps the open
 `(type, protocol)` coherence/dedup interaction a fully general mechanism would
 raise; the set can be widened later if other function-shaped protocols emerge.

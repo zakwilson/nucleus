@@ -1,6 +1,6 @@
 ; A homogeneous struct read by value with a computed selector still takes the
 ; field path, even though its `invoke` (taking `&V3`) would supply the hint.
-(import-use node)
+(import-use nucleus.node)
 
 (defstruct V3 x:i32 y:i32 z:i32)
 

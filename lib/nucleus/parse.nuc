@@ -28,15 +28,17 @@
 ;     resolve "Self" as a concrete type. Use parametric R instead.
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.parse)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(import-use strview)
+(import-use nucleus.strview)
 
 ; Parse error codes. `parse-int-error` lives in `string-errors` with
 ; `strview-parse-magnitude`, the primitive every integer conformance calls.
-(import-use string-errors)
+(import-use nucleus.string-errors)
 (deferror parse-float-error "invalid float")
 
 ; ---------------------------------------------------------------------------

@@ -11,6 +11,9 @@
 ; survey compiles, links and runs, so each unit pins the exact `%X = type` line
 ; — which IS the field offsets — or the exact signature, or a located refusal.
 
+(import-use nucleus.test)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 (defn cd-header ():StrView (return "tests/fixtures/cd-declarators.h"))
 
 ; One program serves five verdicts: the type lines, the three typedef

@@ -7,13 +7,13 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
-(import-use strview)
-(import-use hash)
-(import-use keyword)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashmap)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.keyword)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashmap)
 
 (defn main ():i32
   ; Self-evaluation: a bare keyword is a value (a Keyword) in value position.

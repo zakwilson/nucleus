@@ -8,18 +8,21 @@
 ; this is that buffer, made explicit and flushable, so B2 can keep the standard
 ; streams unbuffered without costing the conversion its throughput.
 
+(ns nucleus.file)
+
 (import-use "fcntl.h")
 (import-use "unistd.h")
 (import-use "dirent.h")
 (import-use "sys/stat.h")
 
-(import-use error)
-(import-use string-errors)
-(import-use char)
-(import-use strview)
-(import-use vector)
-(import-use string)
-(import-use fmt)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.coll)
 
 ; `O_*` come from the target's own <fcntl.h>, so the values are the emission
 ; target's (design/stage17-native-strings/platform-constants.md). `0644` is a
@@ -166,7 +169,7 @@
 ; Directories
 ;
 ; Design: design/stage18-tooling/overview.md §T3 lists directory enumeration
-; among the filesystem surface `lib/file.nuc` was missing; TF-6 category (b) is
+; among the filesystem surface `lib/nucleus/file.nuc` was missing; TF-6 category (b) is
 ; the consumer that needed it.
 ; ---------------------------------------------------------------------------
 

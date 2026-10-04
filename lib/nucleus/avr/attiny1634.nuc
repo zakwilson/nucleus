@@ -15,6 +15,8 @@
 ; 0x hex literal); the hex value and header line are noted for cross-reference.
 
 ; Port B  (iotn1634.h:141/147/153)
+(ns nucleus.avr.attiny1634)
+
 (defconst PINB   43)   ; 0x2B = _SFR_IO8(0x0B) + 0x20
 (defconst DDRB   44)   ; 0x2C = _SFR_IO8(0x0C) + 0x20
 (defconst PORTB  45)   ; 0x2D = _SFR_IO8(0x0D) + 0x20

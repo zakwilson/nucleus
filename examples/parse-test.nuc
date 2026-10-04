@@ -16,8 +16,8 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use strview)
-(import-use parse)
+(import-use nucleus.strview)
+(import-use nucleus.parse)
 
 (defn main ():i32
 

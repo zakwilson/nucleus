@@ -1,5 +1,5 @@
 ; W4d's case-clause hint, in a program that has `invoke` methods (from vector).
-(import-use vector)
+(import-use nucleus.vector)
 
 (defn main ():i32
   (let (x:i32 1)

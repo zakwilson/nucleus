@@ -1,9 +1,9 @@
 ; Stage 19 P3: the job-pool primitives. Children are spawned in one order and
 ; must be reaped in COMPLETION order — which is what `wait-any` is for and what
 ; no per-child call can express.
-(import-use process)
-(import-use io)
-(import-use strview)
+(import-use nucleus.process)
+(import-use nucleus.io)
+(import-use nucleus.strview)
 
 (defn spawn-sh (script:StrView):!Process
   (let (c:Command (command "sh"))

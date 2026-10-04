@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/hashset.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/hashset.nuc by nucleusc --emit-cheader */
 
 void hashset_oom(void) asm("hashset-oom");
 /* hashset-init: generic template; not exported */

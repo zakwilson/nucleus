@@ -12,10 +12,10 @@ string/ctype/unistd. Both halves of that claim are wrong: `close`/`dup2`/`dup`
 undocumented.
 
 The actual mechanism (verified by reading, not assumed): nothing is
-"registered at compiler startup". `lib/prelude.nuc` (auto-imported into every
+"registered at compiler startup". `lib/nucleus/core.nuc` (auto-imported into every
 program unless `(exclude-prelude)`) directly `(import-use "string.h")`s, and
-ALSO `(import-use node)` -> `lib/node.nuc` -> `(import-use arena)` ->
-`lib/arena.nuc`, which itself `(import-use "stdio.h")` + `(import-use
+ALSO `(import-use nucleus.node)` -> `lib/nucleus/node.nuc` -> `(import-use nucleus.arena)` ->
+`lib/nucleus/arena.nuc`, which itself `(import-use "stdio.h")` + `(import-use
 "stdlib.h")` + `(import-use "string.h")`. So the "no import needed" set is
 exactly whatever a C header import of stdio.h + stdlib.h + string.h resolves
 to via `clang -E -x c -include <hdr> /dev/null` on the BUILD HOST's C library

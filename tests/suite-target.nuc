@@ -9,7 +9,7 @@
 ; `O_CREAT` equals, and how a struct of two floats is passed are all the
 ; TARGET's to answer — and each was once answered by something written into the
 ; compiler instead: the host's headers under every `--target=`, a hardcoded
-; constant table in `lib/file.nuc`, and the SysV classifier for every machine.
+; constant table in `lib/nucleus/file.nuc`, and the SysV classifier for every machine.
 ;
 ; So the oracle is never a number quoted here. The C4 lane reads the widths back
 ; out of the emitted module, the constants lane compares against a C program
@@ -20,6 +20,12 @@
 
 ; `nucleusc --target=<t> [extra] --emit-llvm <path>`, diagnostics kept: two of
 ; these units are about what the compiler SAID as much as what it emitted.
+(import-use nucleus.string)
+(import-use nucleus.process)
+(import-use nucleus.fmt)
+(import-use nucleus.test)
+(import-use nucleus.string-split)
+(import-use nucleus.strview)
 (defn target-emit (target:StrView extra:StrView path:StrView):!Compiled
   (let (c:Command (command (compiler-path))
         flag:String (str "--target=" target))
@@ -257,9 +263,9 @@
   (return (ok)))
 
 ; `-I` is the Nucleus import path and never reaches clang. The bait is real:
-; `lib/` holds a generated `lib/string.h`, and a clang `-I` precedes the system
+; `lib/` holds a generated `lib/nucleus/string.h`, and a clang `-I` precedes the system
 ; directories, so a forwarded `-I lib` would have the prelude read the C header
-; of `lib/string.nuc` in place of libc's. The scratch `string.h` here declares
+; of `lib/nucleus/string.nuc` in place of libc's. The scratch `string.h` here declares
 ; only a marker; if it were ever read, `strlen` would be unknown.
 (deftest s21-dash-i-not-forwarded
   (let (dir:String (try (test-scratch-sub "shadow"))
@@ -454,7 +460,7 @@
 ; A program over `tests/layout/macros.h`, which is the admission table.
 (defn macro-src (expr:StrView):String
   (return (str "(import-use \"" (macro-header) "\")
-(import-use io)
+(import-use nucleus.io)
 (defn main ():i32 (print " expr " \"\\n\") (return 0))
 ")))
 
@@ -535,7 +541,7 @@
 ; rule, and the same `_MP_BASE` the table above refuses comes through.
 (deftest s17-cmacro-private
   (let (out:String (try (build-run-source "(unsafe/import-private \"tests/layout/macros.h\" m)
-(import-use io)
+(import-use nucleus.io)
 (defn main ():i32 (print _MP_BASE \"\\n\") (return 0))
 ")))
     (try (check-eq (string-as-view &out) "8\n"))
@@ -562,7 +568,7 @@ int main(void) {
         got:String (try (build-run-source "(import-use \"fcntl.h\")
 (import-use \"stdio.h\")
 (import-use \"time.h\")
-(import-use io)
+(import-use nucleus.io)
 (defn main ():i32 (print O_RDONLY \" \" O_WRONLY \" \" O_CREAT \" \" O_TRUNC \" \" O_APPEND \" \" SEEK_SET \" \" CLOCKS_PER_SEC \"\\n\") (return 0))
 ")))
     (try (check-eq (string-as-view &got) (string-as-view &want)))

@@ -13,6 +13,8 @@
 ; Decimal values (no 0x hex literal in the reader); hex/header line noted.
 
 ; Port B  (iom328p.h:54/64/74)
+(ns nucleus.avr.atmega328p)
+
 (defconst PINB    35)   ; 0x23 = _SFR_IO8(0x03) + 0x20
 (defconst DDRB    36)   ; 0x24 = _SFR_IO8(0x04) + 0x20
 (defconst PORTB   37)   ; 0x25 = _SFR_IO8(0x05) + 0x20

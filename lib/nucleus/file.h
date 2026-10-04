@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include "string.h"
 #include "allocator.h"
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/file.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/file.nuc by nucleusc --emit-cheader */
 
 #define MODE_644 420
 #define MODE_755 493

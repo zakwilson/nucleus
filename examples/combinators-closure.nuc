@@ -1,6 +1,6 @@
 ; Stage 13 R1 — closure-returning combinators (the storable-closure payoff).
 ;
-; Each of the six combinators in lib/combinators.nuc RETURNS a `(BoxedFn …)` by
+; Each of the six combinators in lib/nucleus/combinators.nuc RETURNS a `(BoxedFn …)` by
 ; value — a owning, heap-boxed closure handle (design/stage13/type-erasure.md).
 ; This example constructs each returned box, CALLS it (showing the right value),
 ; and drops it exactly once — the discipline examples/boxedfn.nuc established.
@@ -11,10 +11,10 @@
 ; integers (no addresses/pointers).
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use iterator)
-(import-use numeric)
-(import-use combinators)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.numeric)
+(import-use nucleus.combinators)
 
 (defn main ():i32
   ; compose / comp — `(compose g f)` boxes `x → (g (f x))`.

@@ -14,11 +14,13 @@
 ; The compiler half — `Err`, `deferror`, `!T`, `err`/`err!`, `match`, `unwrap`,
 ; `try`, the handler-chain check, and `type-token` — is built in. Only this
 ; library (`Handler`, the chain global, the find-walk, `with-handler`) needs
-; `(import error)`.
+; `(import nucleus.error)`.
 ;
 ; `try` moved from here into the compiler in Stage 17 A1: the ok arm's binder
 ; count depends on the operand's type (`!void`'s ok arm is payload-less), which
 ; a macro cannot see. See src/union-emit.nuc `emit-try`.
+
+(ns nucleus.error)
 
 (import-use "string.h")
 ; `with-handler`'s body calls `node-at` to destructure its spec — a COMPILE-time
@@ -26,7 +28,7 @@
 ; for exactly that: the signature registers, no node/arena runtime is emitted,
 ; and a program that uses error handling pays nothing for it.
 ; design/stage16-ergonomics/compile-time-imports.md §4a.
-(import-ct node)
+(import-ct nucleus.node)
 
 ; The panic-tier debugger hook (errors.md §4 "the panic tier gets a hook for
 ; free", phase C3). `die-at` and `unwrap`-on-`err` `signal` this condition before

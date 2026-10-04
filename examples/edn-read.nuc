@@ -1,15 +1,16 @@
-; Reading and writing EDN (lib/edn.nuc).
+; Reading and writing EDN (lib/nucleus/edn.nuc).
 ;
 ; EDN values are the reader's `Node` tree, read in EDN mode and classified by
 ; `edn-kind`; `edn-read` converts one into a Nucleus scalar, range-checked.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use io)
-(import-use node)
-(import-use read)
-(import-use edn)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.edn)
+(import-use nucleus.fmt)
 
 (defn config ():StrView (return "
 ; a little configuration file

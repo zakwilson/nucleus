@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/combinators.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/combinators.nuc by nucleusc --emit-cheader */
 
 /* map: generic template; not exported */
 /* filter: generic template; not exported */

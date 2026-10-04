@@ -1,6 +1,6 @@
 ; An overloaded call that fails on an argument after the first lists each method
 ; that takes the first argument, and why the rest do not fit.
-(import-use vector)
+(import-use nucleus.vector)
 
 (defvar options:(Vector i32) [500 1000 1500])
 

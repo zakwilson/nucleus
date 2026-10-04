@@ -9,17 +9,19 @@
 ; A descriptor has no buffer to disagree about. The buffering that emission
 ; actually needs is `BufWriter` in B3, where it is explicit and flushable.
 
+(ns nucleus.io)
+
 (import-use "unistd.h")
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(import-use error)
-(import-use string-errors)
-(import-use char)
-(import-use strview)
-(import-use vector)
-(import-use string)
-(import-use fmt)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 
 ; ---------------------------------------------------------------------------
 ; FdOut — a borrowed descriptor as a Writer.

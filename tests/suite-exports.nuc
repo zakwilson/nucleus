@@ -26,6 +26,12 @@
 ; fails loudly — the shell wrote `2>/dev/null || true` and then grepped a file
 ; that a failed emit had left empty, which reports a missing symbol rather than
 ; the compiler error that caused it.
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
 (defstruct Exports ll:String nuch:String h:String llpath:String nuchpath:String)
 
 (extend Exports Drop)

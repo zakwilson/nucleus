@@ -1,4 +1,7 @@
-; .nuch header for lib/list.nuc
+; .nuch header for lib/nucleus/list.nuc
+(ns nucleus.list)
+(import-use nucleus.node)
+(import-use nucleus.iterator)
 (declare cons ((car ptr) (cdr ptr)) :ptr)
 (declare first ((n ptr)) :ptr)
 (declare rest ((n ptr)) :ptr)

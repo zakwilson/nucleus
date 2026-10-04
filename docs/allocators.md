@@ -1,8 +1,8 @@
-# Allocators (`lib/allocator.nuc`, Stage 11)
+# Allocators (`lib/nucleus/allocator.nuc`, Stage 11)
 
 The collection library owns and frees memory through an **allocator** rather than
 a bare `malloc`, so a collection can be built against libc, an arena, or a future
-allocator and still free with the same backend that built it. `(import-use allocator)`
+allocator and still free with the same backend that built it. `(import-use nucleus.allocator)`
 brings in the protocol, the handle type, the backends, and a default.
 
 ## The `Allocator` protocol
@@ -46,7 +46,7 @@ protocol system is static-only (no vtables) and `unsafe/funcall-ptr-*` cannot ca
 |----------|-----------|-----|
 | `default-allocator` | `() -> (ref AllocHandle)` | the process-global libc handle; backs convenience constructors that omit an allocator |
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
-| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
+| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/nucleus/arena.nuc`'s globals) |
 
 A collection stores the `AllocHandle` by value; use `(ref coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.

@@ -16,6 +16,8 @@
 ; one copy per emitted name.
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
+(import-use nucleus.arena)
+(import-use nucleus.strview)
 (defn sanitize-for-ir (name:StrView):StrView
   (let (v:&StrView &name
         n:i64 (as i64 (v 'len))

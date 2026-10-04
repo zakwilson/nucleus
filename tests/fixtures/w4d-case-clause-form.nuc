@@ -1,5 +1,5 @@
 ; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): `case`'s real
-; syntax (lib/macros.nuc:91, examples/case.nuc) is FLAT value/result pairs --
+; syntax (lib/nucleus/macros.nuc:91, examples/case.nuc) is FLAT value/result pairs --
 ; `(case x 1 "one" 2 "two" default)` -- not the nested-clause integer-switch
 ; shape `docs/special-forms.md` used to (wrongly) document. This file is
 ; exactly that documented-but-wrong shape: `(0 (printf ...))` parses as "call

@@ -1,4 +1,10 @@
-; .nuch header for lib/process.nuc
+; .nuch header for lib/nucleus/process.nuc
+(ns nucleus.process)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.coll)
 (deferror process-spawn-failed "cannot start process")
 (deferror process-wait-failed "cannot wait for process")
 (deferror process-pipe-failed "cannot create pipe")

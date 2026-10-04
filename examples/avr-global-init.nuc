@@ -20,8 +20,8 @@
 
 (exclude-prelude)
 
-(import-use "lib/avr.nuc")
-(import-use "lib/avr/attiny1634.nuc")
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/attiny1634.nuc")
 
 (defconst BLINKS 3)
 

@@ -8,9 +8,9 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
-(import-use iterator)
-(import-use strview)
-(import-use string-split)
+(import-use nucleus.iterator)
+(import-use nucleus.strview)
+(import-use nucleus.string-split)
 
 ; print-sv — print a StrView's bytes (copied to a NUL-terminated temp).
 (defn print-sv (sv:&StrView):void

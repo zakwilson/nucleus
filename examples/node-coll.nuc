@@ -6,10 +6,10 @@
 ; that names one wins over the index method.
 
 (import-use "stdio.h")
-(import-use node)
-(import-use coll)
-(import-use iterator)
-(import-use vector)
+(import-use nucleus.node)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
 
 (defn show (label:CStr xs:&Node):void
   (printf "%s" label)

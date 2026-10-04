@@ -13,10 +13,10 @@
 ;   (4) a `defn` returning a BoxedFn (closes the env-naming return gap).
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use vector)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
 
 ; (4) A defn whose return type is a BoxedFn — the anonymous env is not spellable,
 ;     but the BoxedFn handle is. The returned box owns its heap env.

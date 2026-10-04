@@ -12,7 +12,7 @@
 ; which proves the cfn inherits its captured local's region and the return sink
 ; catches the escape.
 
-(import-use allocator)
+(import-use nucleus.allocator)
 
 ; `x` is a plain frame local (a let binding). The cfn captures it by reference,
 ; so the closure value is tainted with x's frame region. Returning the closure

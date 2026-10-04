@@ -4,7 +4,7 @@ C standard library functions callable without any explicit `(import-use ...)`
 in your own program. Nothing is "registered at compiler startup" — `lib/
 prelude.nuc` (auto-imported into every program unless it starts with
 `(exclude-prelude)`) directly `(import-use "string.h")`s, and transitively,
-via `(import-use node)` -> `lib/node.nuc` -> `lib/arena.nuc`, also
+via `(import-use nucleus.node)` -> `lib/nucleus/node.nuc` -> `lib/nucleus/arena.nuc`, also
 `(import-use "stdio.h")` and `(import-use "stdlib.h")`. Each is an ordinary C
 header import (`context/build.md`'s "Import system": `clang -E -x c -include
 <hdr> /dev/null`, parsed the same way as any `(import "foo.h")` you write
@@ -98,9 +98,9 @@ docstring for the exact (deliberately host-tolerant) pass/fail rule.
 
 ---
 
-## `StrView` (`lib/strview.nuc`, Stage 11)
+## `StrView` (`lib/nucleus/strview.nuc`, Stage 11)
 
-`(import-use strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and `String`. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`. For a full reference covering `Char`, `StrView`, `String`, split, lines, trim, and parse, see [Strings](strings.md).
+`(import-use nucleus.strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and `String`. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`. For a full reference covering `Char`, `StrView`, `String`, split, lines, trim, and parse, see [Strings](strings.md).
 
 ```lisp
 (defstruct StrView
@@ -110,7 +110,7 @@ docstring for the exact (deliberately host-tolerant) pass/fail rule.
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer is **not** NUL-terminated (except when built from a C string, in which case `strview-to-cstr` is sound). Copying a `StrView` copies two words and borrows the bytes — it frees nothing. There is no `Drop` conformance.
 
-The bare struct type is registered in the prelude and so is available everywhere without an import; the functions and conformances below still require `(import-use strview)` (plus `(import-use hash)` and `(import-use numeric)`, both transitively needed for `Hash`/`Eq`).
+The bare struct type is registered in the prelude and so is available everywhere without an import; the functions and conformances below still require `(import-use nucleus.strview)` (plus `(import-use nucleus.hash)` and `(import-use nucleus.numeric)`, both transitively needed for `Hash`/`Eq`).
 
 ### Functions
 
@@ -121,7 +121,7 @@ The bare struct type is registered in the prelude and so is available everywhere
 | `strview-to-cstr` | `((sv (ref StrView))) -> CStr` | Reinterpret the view's bytes as a `CStr`. **Only sound when the underlying buffer is NUL-terminated at `data[len]`** — guaranteed for views built from C strings and for keyword names, but not for arbitrary sub-slices. |
 | `strview-byte-len` | `((sv (ref StrView))) -> usize` | Byte length of the view. |
 | `strview-eq` | `((a (ref StrView)) (b (ref StrView))) -> i32` | Returns `1` if both views have equal length and identical bytes (`memcmp`), `0` otherwise. |
-| `strview-hash` | `((sv (ref StrView))) -> usize` | FNV-1a fold over exactly `len` bytes (same algorithm and offset basis as `lib/hash.nuc`'s scalar/`CStr` conformances). Handles embedded NULs. |
+| `strview-hash` | `((sv (ref StrView))) -> usize` | FNV-1a fold over exactly `len` bytes (same algorithm and offset basis as `lib/nucleus/hash.nuc`'s scalar/`CStr` conformances). Handles embedded NULs. |
 
 ### Protocol conformances
 
@@ -132,8 +132,8 @@ The bare struct type is registered in the prelude and so is available everywhere
 ```lisp
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use strview)
-(import-use hash)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
 
 (defn main ():i32
   ; strview-from-cstr returns by value and allocates nothing; the
@@ -155,9 +155,9 @@ See `examples/strview-test.nuc` for a complete runnable example.
 
 ---
 
-## `Symbol` (`lib/intern.nuc`, Stage 17)
+## `Symbol` (`lib/nucleus/intern.nuc`, Stage 17)
 
-`(import-use intern)` provides an interned name whose identity is a pointer.
+`(import-use nucleus.intern)` provides an interned name whose identity is a pointer.
 
 ```lisp
 (defstruct Symbol p:(ptr ui8))
@@ -214,11 +214,11 @@ interning the literal to get a pointer would cost a hash to save a four-byte
 `Symbol` conforms to `Eq` (pointer identity), `Hash` (the cached hash), `ToStr`,
 `ByteStr`, and `Str` — the last two through `as-view`, so every string method
 works on a `Symbol` at no allocation. The conformance *records* and every text
-method live in `lib/intern-str.nuc`; `(import-use intern-str)` is what a program
+method live in `lib/nucleus/intern-str.nuc`; `(import-use nucleus.intern-str)` is what a program
 that formats or slices a `Symbol` needs.
 
-`lib/intern.nuc` itself imports nothing but `lib/fnv.nuc` and libc, on purpose:
-`lib/node.nuc` delegates the compiler's symbol table to it, and `node` is what
+`lib/nucleus/intern.nuc` itself imports nothing but `lib/nucleus/fnv.nuc` and libc, on purpose:
+`lib/nucleus/node.nuc` delegates the compiler's symbol table to it, and `node` is what
 every macro-using program imports. `hash`, `numeric` and `strview` all reach an
 `f64` annotation, which AVR rejects outright — importing any of them here would
 make every macro-using program un-compilable for an 8-bit target.
@@ -228,9 +228,9 @@ benchmark against the compiler's own interner.
 
 ---
 
-## `Keyword` (`lib/keyword.nuc`, Stage 11; rebased Stage 17)
+## `Keyword` (`lib/nucleus/keyword.nuc`, Stage 11; rebased Stage 17)
 
-`(import-use keyword)` provides interned, self-evaluating keyword values. Requires `(import-use strview)`, `(import-use hash)`, `(import-use numeric)`, and `(import-use intern)`.
+`(import-use nucleus.keyword)` provides interned, self-evaluating keyword values. Requires `(import-use nucleus.strview)`, `(import-use nucleus.hash)`, `(import-use nucleus.numeric)`, and `(import-use nucleus.intern)`.
 
 ```lisp
 (defstruct Keyword sym:Symbol)
@@ -254,13 +254,13 @@ Before Stage 17 this file carried its own intern pool: a fixed 256-entry array w
 
 ### Usage
 
-Keywords are written as `:identifier` in source. The compiler requires `(import-use keyword)` (plus its transitive imports) at the use site; without it the compiler errors with `undefined: keyword-intern`.
+Keywords are written as `:identifier` in source. The compiler requires `(import-use nucleus.keyword)` (plus its transitive imports) at the use site; without it the compiler errors with `undefined: keyword-intern`.
 
 ```lisp
 (import-use "stdio.h")
-(import-use strview)
-(import-use hash)
-(import-use keyword)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.keyword)
 
 (defn main ():i32
   ; Self-evaluation and identity equality.

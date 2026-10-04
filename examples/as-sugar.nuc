@@ -6,9 +6,9 @@
 ; `b`.
 
 (import-use "stdio.h")
-(import-use hashset)
-(import-use strview)
-(import-use hashmap)
+(import-use nucleus.hashset)
+(import-use nucleus.strview)
+(import-use nucleus.hashmap)
 
 (defstruct Rec (k i32))
 

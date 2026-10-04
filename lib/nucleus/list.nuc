@@ -1,13 +1,15 @@
 ; List manipulation primitives over the AST `Node` type.
 ;
-; A list Node is a header over an array of element pointers (see lib/node.nuc);
+; A list Node is a header over an array of element pointers (see lib/nucleus/node.nuc);
 ; `cons` prepends, `first`/`rest` read. Retained for the examples that still
 ; spell a list this way — `Node` conforms to `Coll`/`Seq` directly now, so this
 ; layer is scheduled for retirement
 ; (design/stage21-cleanup/ast-as-collection.md §8.5).
 
-(import-use node)
-(import-use iterator)
+(ns nucleus.list)
+
+(import-use nucleus.node)
+(import-use nucleus.iterator)
 
 (defn cons (car:ptr cdr:ptr):ptr
   (return (as ptr (node-cons car cdr 0))))

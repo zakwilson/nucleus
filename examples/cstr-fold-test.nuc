@@ -1,17 +1,18 @@
 ; R1-iter: byte folding a CStr and a String through `reduce` over a ByteIter.
 ;
 ; The FNV-1a hash expressed as a fold over the byte iterator must match the
-; hand-written strview-hash (lib/strview.nuc) for the same bytes. Demonstrates:
+; hand-written strview-hash (lib/nucleus/strview.nuc) for the same bytes. Demonstrates:
 ;   1. cstr-bytes  — a ByteIter over a C string, folded to the FNV hash.
 ;   2. strview-bytes over a String's view — same fold, same hash.
 ;   3. doseq-iter over cstr-bytes — sum the byte values.
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use iterator)
-(import-use strview)
-(import-use string)
-(import-use hash)
+(import-use nucleus.iterator)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.hash)
+(import-use nucleus.fnv)
 
 ; FoldFn: FNV-1a one byte at a time. acc = running i64 hash; x = the byte (ui8).
 (defstruct Fnv1aFold dummy:i32)

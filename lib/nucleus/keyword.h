@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/keyword.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/keyword.nuc by nucleusc --emit-cheader */
 
 typedef struct Keyword {
     struct Symbol sym;

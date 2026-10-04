@@ -17,6 +17,8 @@
 ; `w9-as-float-inexact` are rows of tests/manifest/diagnostics.edn. This module
 ; owns the accepting side and the artifact.
 
+(import-use nucleus.string)
+(import-use nucleus.test)
 (defn cv-exit (path:StrView want:i32):!void
   (let (dir:StrView (try (test-scratch)))
     (try (check-file-exit dir path want)))
@@ -150,7 +152,7 @@
 ; The case the item was filed from, which only the IR can witness: four billion
 ; elements is not addressable, so a ui32 at 2^31 cannot be run into.
 (deftest w9-unsigned-index-ui32
-  (let (ir:String (try (source-ir "(import prelude)
+  (let (ir:String (try (source-ir "(import nucleus.core)
 (defn f (p:&i32 i:ui32):i32 (return (aref p i)))
 (defn main ():i32 (return 0))
 "))

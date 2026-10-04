@@ -1,4 +1,16 @@
-; .nuch header for lib/string.nuc
+; .nuch header for lib/nucleus/string.nuc
+(ns nucleus.string)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.char)
+(import-use nucleus.string-errors)
+(import-use nucleus.string-protocols)
+(import-use nucleus.hash)
+(import-use nucleus.numeric)
 (defstruct String (bytes (Vector ui8)))
 (declare string-as-view ((self (ref String))) :StrView)
 (declare string-new () :String)

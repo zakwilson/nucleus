@@ -6,6 +6,15 @@
 (import-use "ctype.h")
 (import-use "unistd.h")
 (import-use llvm)
+(import-use nucleus.string)
+(import-use nucleus.allocator)
+(import-use nucleus.intern)
+(import-use nucleus.io)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.file)
+(import-use nucleus.fmt)
+(import-use nucleus.hashmap)
 
 (extern stderr:ptr)
 (extern stdout:ptr)
@@ -17,7 +26,7 @@
 ; Global variables
 ; ============================================================
 
-; g-arena, g-arena-used, g-arena-cap are defined by lib/arena.nuc.
+; g-arena, g-arena-used, g-arena-cap are defined by lib/nucleus/arena.nuc.
 
 (defvar g-source-path:Symbol)
 
@@ -121,6 +130,7 @@
 ; That dependency is laundered through two calls, so G-4's syntactic
 ; forward-reference check cannot see it — the second of the two source reorders
 ; this migration needs (§2.10 predicted only the g-arena-alloc one).
+(defvar g-ns-user:Symbol (symbol-intern "user"))
 (defvar g-current-ns:Symbol (symbol-intern "user"))
 
 ; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
@@ -146,14 +156,10 @@
 (defvar g-type-alias-depth:i32 0)
 ; Append-only: a marker's index is its identity (`env-arg-sym`).
 (defvar g-env-args:&(Vector &EnvArg) (vector-new-in &g-arena-alloc))
-; A quasiquote tag's N indexes this (`hyg-of`); append-only within a compilation.
-(defvar g-hyg-envs:&(Vector &HygEnv) (vector-new-in &g-arena-alloc))
 ; Armed while a defmacro, `~e` or compile-time body compiles: its quasiquotes resolve (§3.6).
 (defvar g-qq-resolve:i32 0)
 ; `--report-qq-resolution`: print each quasiquote's rewrites and binder collisions.
 (defvar g-report-qq:i32 0)
-; The last tag `hyg-respell` found no spelling for, or none.
-(defvar g-hyg-unspellable:Symbol)
 ; Every file's macro names, so a template may name one its file defines further down.
 (defvar g-file-macros:&(Vector &FileMacro) (vector-new-in &g-arena-alloc))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
@@ -176,7 +182,7 @@
 (defvar g-globals:&Scope (scope-new null))
 
 ; g-arena-alloc — the shared allocator handle — is declared further down, right
-; after `(import-use vector)` brings in `%AllocHandle`'s layout. Its constant
+; after `(import-use nucleus.vector)` brings in `%AllocHandle`'s layout. Its constant
 ; initializer needs that layout; nothing here needs its VALUE, only its address.
 
 ; Name-kind membership sets (built by their own initializers; never dropped).
@@ -357,7 +363,7 @@
 ; `g-source-path` is its file half (both are read by die-at/report-at).
 ;
 ; It exists because a bare symbol node is an interned singleton with no
-; per-occurrence line (lib/node.nuc `node-line`), so `emit-symbol-ref` — reached
+; per-occurrence line (lib/nucleus/node.nuc `node-line`), so `emit-symbol-ref` — reached
 ; from `emit-node`, which is handed only the operand — has no node to blame when
 ; a lookup fails. `emit-node` is the single dispatcher every operand passes
 ; through, so it maintains this with strict save/restore: on entry it adopts the
@@ -366,7 +372,7 @@
 ; form with a real line, which is the reference's line.
 ;
 ; Every *other* W4a fix takes its line from a node the raising code already
-; holds (lib/node.nuc `node-line` + the enclosing form's line); this global is
+; holds (lib/nucleus/node.nuc `node-line` + the enclosing form's line); this global is
 ; consumed in exactly one place, emit-node's NODE-SYM branch.
 (defvar g-form-line:i32 0)
 ; Stage 14 RV-6c (design/stage14/riscv-fp-abi.md §4): the riscv64 argument
@@ -622,7 +628,7 @@
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
-; Stage 18 TF-3: dump the reader's output and stop. The gate for lib/read.nuc is
+; Stage 18 TF-3: dump the reader's output and stop. The gate for lib/nucleus/read.nuc is
 ; agreement with THIS reader, and there is no other way to see what it produced.
 (defvar g-dump-ast:i32 0)
 (defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
@@ -689,7 +695,7 @@
 ; real import of one of these still reads and emits it. A second `import-ct` of
 ; the same path stops on this list instead.
 (defvar g-ct-imported:ptr)
-; Stage 20 L1: the directory this invocation resolved `lib/prelude.nuc` through.
+; Stage 20 L1: the directory this invocation resolved `lib/nucleus/core.nuc` through.
 ; There is no single library root — `try-import-path` searches five places, so a
 ; dev build finds `lib/` at step 2 and an installed compiler at step 5 — and the
 ; prelude is the one import every compilation makes and no program writes.
@@ -777,7 +783,7 @@
 ; none of its own top-level forms — otherwise the hoist would emit the forms
 ; already processed at depth 1 a second time. `emit-toplevel-forms` arms it just
 ; before its depth-1 loop and clears it at the end of the loop's first iteration;
-; the auto-prepended `(import-use prelude)` is that first iteration, which is
+; the auto-prepended `(import-use nucleus.core)` is that first iteration, which is
 ; exactly the window the prelude's own libraries (`node`, `arena`, `macros`) need
 ; when one of them is the file being compiled.
 (defvar g-root-hoist-ok:i32 0)
@@ -813,7 +819,7 @@
 ; byte-identical.
 ;
 ; A `.nuc` import is inlined, so every object built from a file that imports
-; `lib/vector.nuc` carries its own copy of the whole prelude closure, and two
+; `lib/nucleus/vector.nuc` carries its own copy of the whole prelude closure, and two
 ; such objects could not be linked. A copy is identical in every unit that has
 ; it — that is C++'s `inline`/template rule — so a definition the unit does not
 ; OWN is emitted `weak_odr` and the linker keeps exactly one. Ownership is the
@@ -892,6 +898,24 @@
 ; meaningful answer and no eager registration is needed. Paths are compared by
 ; CONTENT — `resolve-import` is free to hand back a fresh buffer per call.
 (defvar g-file-ns:?&FileNsVec)
+; `g-file-ns` by path, for the walk that asks it once per flattened import.
+(defvar g-path-ns:&(HashMap Symbol Symbol) (hashmap-new-in &g-arena-alloc))
+
+; Stage 23 AN-1: every import edge in the unit, and the memo of the last file
+; closure asked for (ambient-namespaces.md §8, "AN-1 as built").
+(defvar g-import-edges:&(Vector &ImportEdge) (vector-new-in &g-arena-alloc))
+(defvar g-closure-paths:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+(defvar g-closure-nss:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+(defvar g-closure-gen:i32 0)
+(defvar g-ns-core:Symbol (symbol-intern "nucleus.core"))
+(defvar g-ns-macros:Symbol (symbol-intern "nucleus.macros"))
+(defvar g-key-core-strview:Symbol (symbol-intern "nucleus.core/StrView"))
+; Every core namespace some file of the unit declares, in declaration order.
+(defvar g-core-nss:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+(defvar g-closure-memo-env:?&ImportVec)
+(defvar g-closure-memo-n:i32 -1)
+(defvar g-closure-memo-edges:i32 -1)
+(defvar g-closure-memo-gen:i32 -1)
 
 ; Imported protocol keys from pass 1: a signature-prescan key must see a flattened
 ; namespace's protocol before `prescan-protocols` registers it.
@@ -967,19 +991,19 @@
 (import-use "stdlib.h")
 
 ; ============================================================
-; Arena allocator — imported from lib/arena.nuc
+; Arena allocator — imported from lib/nucleus/arena.nuc
 ; ============================================================
 
-(import-use arena)
+(import-use nucleus.arena)
 
 ; ============================================================
-; Node utilities — imported from lib/node.nuc
+; Node utilities — imported from lib/nucleus/node.nuc
 ; ============================================================
 
-(import-use node)
+(import-use nucleus.node)
 
 ; ============================================================
-; Collections — imported from lib/vector.nuc, lib/hash.nuc, lib/hashset.nuc
+; Collections — imported from lib/nucleus/vector.nuc, lib/nucleus/hash.nuc, lib/nucleus/hashset.nuc
 ; (Stage 11). The compiler's growable pointer tables are (Vector ptr) values;
 ; the globals/locals holding them are typed (ref (Vector ptr)) so use sites call
 ; conj/count/invoke directly (bounds-checked indexing, amortized growth) with no
@@ -1002,10 +1026,10 @@
 ; top-level collisions.
 ; ============================================================
 
-(import-use vector)
-(import-use process)
-(import-use hash)
-(import-use hashset)
+(import-use nucleus.vector)
+(import-use nucleus.process)
+(import-use nucleus.hash)
+(import-use nucleus.hashset)
 
 ; ============================================================
 ; Stage 17 C1: `fstr`, the native-string replacement for the `fmt-*` helpers.
@@ -1018,7 +1042,7 @@
 ; `parse` — the f64 FromStr the float-literal path uses instead of its own
 ; `strtod` call (stage17 C8: the libc parse is the library's business, not the
 ; compiler's).
-(import-use parse)
+(import-use nucleus.parse)
 
 ; ============================================================
 ; Identifier helpers — src/format.nuc. After `strfmt` rather than beside
@@ -1057,8 +1081,8 @@
 ; the top of the file, so the `(vector-new-in &g-arena-alloc)`
 ; initializers would not forward-reference it. Measured, the move is the
 ; opposite one and for a different reason. Upward is impossible: a constant
-; struct literal needs `AllocHandle`'s LAYOUT, and `lib/allocator.nuc` is not
-; imported until `(import-use vector)` directly above — at the old `:182` the
+; struct literal needs `AllocHandle`'s LAYOUT, and `lib/nucleus/allocator.nuc` is not
+; imported until `(import-use nucleus.vector)` directly above — at the old `:182` the
 ; renderer sees a fieldless registry entry and dies "too many initializers for
 ; struct 'AllocHandle'". Upward is also unnecessary: a constant initializer is
 ; applied by the loader, so it has no order (§4.1 consequence 4), and every
@@ -1165,7 +1189,7 @@
 
 (import-use diagnostics)
 (import-use ct-fault)
-(import-use read)
+(import-use nucleus.read)
 
 ; Stage 10 C3: condition class for recoverable malformed top-level forms that
 ; the compiler validates at definition time (e.g. a malformed `(deferror …)`).
@@ -1178,12 +1202,12 @@
 
 ; ============================================================
 ; AST printer — the library's `node-write`, aimed at a FILE*. One printer, so
-; `--emit-nuch` cannot drift from what `lib/read.nuc` reads back.
+; `--emit-nuch` cannot drift from what `lib/nucleus/read.nuc` reads back.
 ; ============================================================
 
 (defn fprint-node (out:ptr n:?&Node):void
   (let (s:String (node-str n))
-    (emit out (hyg-scrub (string-as-view &s)))
+    (emit-all out &s)
     (drop &s)))
 
 (defn print-node (n:?&Node):void
@@ -1489,7 +1513,7 @@
   (when (!= g-ct-body-arg 0)
     (return (fstr "the computed argument '" g-ct-body-name "'")))
   (when (symbol-none? g-ct-body-name) (return "compile-time block"))
-  (return (fstr "macro '" g-ct-body-name "'")))
+  (return (fstr "macro '" (display-key g-ct-body-name) "'")))
 
 ; What a computed macro argument may evaluate to. A bare `ptr` is in because the
 ; compiler's own node producers (`macroexpand-form`, `expand-macro-call`) are
@@ -1503,7 +1527,7 @@
       (when (!= (e 'kind) TY-STRUCT) (return 0))
       (let (sd:?&StructDef (e 'sdef))
         (when (= sd null) (return 0))
-        (when (= (sd 'name) "Node") (return 1))
+        (when (core-named? (sd 'name) "Node") (return 1))
         (return 0)))))
 
 ; Stage 20 C1 (computed-macro-arguments.md §4.4): the check `~` inside a
@@ -2439,7 +2463,7 @@
 ; returning) call IR, lower to the synthetic call form `(keyword-intern "foo")`
 ; and route it through the ordinary emit path — so dispatch, the struct-return
 ; ABI, and node-type all reuse the existing machinery. The program must
-; `(import keyword)` to provide `keyword-intern` (exactly as `[...]`/`{...}`
+; `(import nucleus.keyword)` to provide `keyword-intern` (exactly as `[...]`/`{...}`
 ; require their collection libs). The node's `s` is the name with the leading
 ; colon already stripped by the reader.
 (defn emit-keyword (n:?&Node scope:&Scope):&Val
@@ -2451,7 +2475,8 @@
     (set! (strnode 'line) line)
     (set! (strnode 's) (nn 's))
     ; (keyword-intern "name")
-    (let (call:ptr (node-list2 'keyword-intern
+    (core-ns-require "nucleus.keyword" "a keyword literal" line)
+    (let (call:ptr (node-list2 (intern-node (core-spelling "nucleus.keyword" "keyword-intern"))
                      strnode line))
       (return (emit-node call scope)))))
 
@@ -2512,9 +2537,9 @@
     (when (= (ss 'ct-only) 0) (return))
     (die-at line
       (fstr "'" (ss 'name)
-            "' was imported compile-time-only — it has no definition in this program (import-ct)"))))
+            "' was imported compile-time-only — it has no definition in this program (import-ct or require-ct)"))))
 
-; Refuse a program-module node-constructor call when lib/node.nuc is not in the
+; Refuse a program-module node-constructor call when lib/nucleus/node.nuc is not in the
 ; unit. The prelude registers the `Node` TYPE but no longer emits the runtime
 ; (design/stage16-ergonomics/compile-time-imports.md §4b).
 ;
@@ -2525,11 +2550,11 @@
 (defn require-node-runtime (line:i32 what:StrView):void
   (when (= (emitting-program-ir) 0) (return))
   (when (!= g-interactive 0) (return))
-  (let (mc:?&Sym (scope-lookup g-globals (symbol-intern "node-list-new")))
+  (let (mc:?&Sym (core-global "node-list-new"))
     (when (!= (as ptr mc) null)
       (let (ms:(ptr Sym) (as (ptr Sym) mc))
         (when (= (ms 'ct-only) 0) (return)))))
-  (die-at line (fstr what " needs the node runtime — add (import-use node)")))
+  (die-at line (fstr what " needs the node runtime — add (import-use nucleus.node)")))
 
 ; Build a quoted Node tree at runtime so that quoted symbols share Node
 ; identity with reader-produced ones. Returns a body-stream tmp ref.
@@ -2608,10 +2633,10 @@
 ; member access. Falls back to bare ty-ptr, uncached, until `Node` is registered.
 (defn ty-ptr-node ():?&Type
   (when (= g-ty-ptr-node null)
-    (let (sd:?&StructDef (struct-lookup-ref (symbol-intern "Node")))
+    (let (sd:?&StructDef (core-struct "Node"))
       (when (!= sd null)
         (let (t:&Type (make-type TY-PTR))
-          (set! (t 'elem) (parse-type-name (symbol-intern "Node") 0))
+          (set! (t 'elem) (type-for-sdef sd))
           (set! (t 'pkind) PTR-RAW)
           (set! g-ty-ptr-node (as ptr t))))))
   (if (= g-ty-ptr-node null) ty-ptr g-ty-ptr-node))
@@ -2622,10 +2647,10 @@
 ; Same lazy build + fallback discipline as ty-ptr-node.
 (defn ty-ref-node ():?&Type
   (when (= g-ty-ref-node null)
-    (let (sd:?&StructDef (struct-lookup-ref (symbol-intern "Node")))
+    (let (sd:?&StructDef (core-struct "Node"))
       (when (!= sd null)
         (let (t:&Type (make-type TY-PTR))
-          (set! (t 'elem) (parse-type-name (symbol-intern "Node") 0))
+          (set! (t 'elem) (type-for-sdef sd))
           (set! (t 'pkind) PTR-REF)
           (set! g-ty-ref-node (as ptr t))))))
   (if (= g-ty-ref-node null) ty-ptr g-ty-ref-node))
@@ -2798,7 +2823,7 @@
                 (return (alloc-val ty-void "")))
               (set! vsd (t 'sdef)))
           (and (!= t null) (= (t 'kind) TY-STRUCT) (!= (t 'sdef) null)
-               (= ((as ptr:StructDef (t 'sdef)) 'name) "String"))
+               (core-named? ((as ptr:StructDef (t 'sdef)) 'name) "String"))
             (let (ssd:(ptr StructDef) (t 'sdef)
                   bi:i32 (struct-field-index ssd (symbol-intern "bytes")))
               (when (>= bi 0)
@@ -3475,10 +3500,12 @@
         (set! scanned (import-list-push scanned own-dir))
         (let (hit:Symbol (scan-dir-for-definer own-dir name want-type))
           (when (not (symbol-none? hit)) (return hit)))))
-    (when (= (import-list-has scanned (symbol-intern "lib")) 0)
-      (set! scanned (import-list-push scanned (symbol-intern "lib")))
-      (let (hit:Symbol (scan-dir-for-definer (symbol-intern "lib") name want-type))
-        (when (not (symbol-none? hit)) (return hit))))
+    (dotimes (k 2)
+      (let (d:Symbol (symbol-intern (if (= k 0) "lib" "lib/nucleus")))
+        (when (= (import-list-has scanned d) 0)
+          (set! scanned (import-list-push scanned d))
+          (let (hit:Symbol (scan-dir-for-definer d name want-type))
+            (when (not (symbol-none? hit)) (return hit))))))
     (do
       (dotimes (j (unsafe/cast i32 (count g-include-paths)))
         (let (dir:Symbol (invoke g-include-paths j:usize))
@@ -3747,6 +3774,8 @@
   ; the import graph never reaches, and after item 43 that is a reachable
   ; failure rather than a hypothetical one.
   (match (generic-in-other-namespace-message verb name) (none 0) ((some gen-ns) (return gen-ns)))
+  (match (macro-in-other-namespace-message verb name false) (none 0) ((some mac-ns) (return mac-ns)))
+  (match (global-in-other-namespace-message verb name) (none 0) ((some glob-ns) (return glob-ns)))
   ; Stage 15 W1c, tier 2. The name resolved nowhere in the unit — but it may be
   ; defined in a file the import graph never reaches. Naming that file is
   ; strictly more actionable than a spelling guess (it says which import to
@@ -3770,6 +3799,14 @@
     ; imported so far", and the old bare `unknown: <name>` did not say so.
     (return (fstr verb ": " name " — not defined anywhere in this compilation unit"))))
 
+; How this file spells `bare` in namespace `ns`: through a prefix it bound, else
+; by the full name when the namespace is in its closure, else "".
+(defn ns-qualified-spelling (ns:Symbol bare:Symbol):StrView
+  (let (p:Symbol (file-prefix-for-ns ns))
+    (when (not (symbol-none? p)) (return (fstr p "/" bare))))
+  (when (file-closure-has-ns ns) (return (fstr ns "/" bare)))
+  (return ""))
+
 ; Stage 15 W9 items 43/35 — the generic analogue of the type tier below, and the
 ; message item 43's filter made necessary: a bare call that used to reach a
 ; prefixed import's method now reaches nothing, and "not defined anywhere in this
@@ -3783,6 +3820,7 @@
 ; candidates", delivered here rather than at the definitions.
 ;
 ; Error path only (the caller is a `die-at`), so a linear scan is affordable.
+
 (defn generic-in-other-namespace-message (verb:StrView name:Symbol):?StrView
   (when (= g-ns-declared 0) (return (none)))
   (when (!= (qualifier-len name) 0) (return (none)))
@@ -3801,13 +3839,12 @@
               (when (= ns1 mns) (set! fresh 0))
               (when (= ns2 mns) (set! fresh 0))
               (when (!= fresh 0)
-                (let (p:Symbol (file-prefix-for-ns mns))
+                (let (sp:StrView (ns-qualified-spelling mns name))
                   (if (symbol-none? ns1)
-                    (do (set! ns1 mns)
-                        (when (not (symbol-none? p)) (set! sp1 (fstr p "/" name))))
+                    (do (set! ns1 mns) (set! sp1 sp))
                     (when (symbol-none? ns2)
                       (set! ns2 mns)
-                      (when (not (symbol-none? p)) (set! sp2 (fstr p "/" name)))))))))))
+                      (set! sp2 sp)))))))))
       (when (symbol-none? ns1) (return (none)))
       ; A prefix this file already bound is the spelling that compiles; the
       ; namespace name alone is what it would have to import. Same two answers,
@@ -3836,18 +3873,80 @@
 (defn type-in-other-namespace-message (verb:StrView name:Symbol):?StrView
   (when (= g-ns-declared 0) (return (none)))
   (let (bare:Symbol (strip-ns-qualifier name))
-    (dotimes (i (unsafe/cast i32 (count g-structs)))
-      (let (sd:&StructDef (as &StructDef (invoke g-structs i:usize)))
-        (when (and (!= (qualifier-len (sd 'name)) 0)
-                   (= (strip-ns-qualifier (sd 'name)) bare))
-          (let (usable:Symbol (binding-usable-spelling BK-STRUCT (as ptr sd) bare))
-            (when (and (not (symbol-none? usable)) (!= usable name))
-              (return (some (fstr (fstr verb ": " name " — defined in namespace '"
-                                        (key-namespace (sd 'name)) "'")
-                                  "\n  note: write '" usable "' here"))))
-            (return (some (fstr verb ": " name " — defined in namespace '" (key-namespace (sd 'name))
-                                "', which this file does not import")))))))
+    (doseq (sd g-structs (VecIter &StructDef))
+      (when (type-key-named? (sd 'name) bare)
+        (return (type-elsewhere-message verb name bare BK-STRUCT (as ptr sd) (sd 'name)))))
+    (doseq (st g-struct-templates (VecIter &StructTemplate))
+      (when (type-key-named? (st 'name) bare)
+        (return (type-elsewhere-message verb name bare BK-STRUCT-TEMPLATE (as ptr st) (st 'name)))))
+    (doseq (ut g-union-templates (VecIter &UnionTemplate))
+      (when (type-key-named? (ut 'name) bare)
+        (return (type-elsewhere-message verb name bare BK-UNION-TEMPLATE (as ptr ut) (ut 'name)))))
+    (doseq (ta g-type-aliases (VecIter &TypeAlias))
+      (when (type-key-named? (ta 'name) bare)
+        (return (type-elsewhere-message verb name bare BK-TYPE-ALIAS (as ptr ta) (ta 'name)))))
     (return (none))))
+
+; The macro counterpart. Error path only; unless `spellable`, silent when the file
+; can spell the name, which the did-you-mean then offers.
+(defn macro-in-other-namespace-message (verb:StrView name:Symbol spellable:bool):?StrView
+  (when (or (= g-ns-declared 0) (!= (qualifier-len name) 0)) (return (none)))
+  (doseq (m g-macros (VecIter &MacroDef))
+    (when (and (type-key-named? (m 'name) name)
+               (or spellable (symbol-none? (binding-usable-spelling BK-MACRO (as ptr m) name))))
+      (return (type-elsewhere-message verb name name BK-MACRO (as ptr m) (m 'name)))))
+  (return (none)))
+
+; The `g-globals` counterpart (`defvar`, `defconst`, enum members). Error path only.
+(defn global-in-other-namespace-message (verb:StrView name:Symbol):?StrView
+  (when (or (= g-ns-declared 0) (!= (qualifier-len name) 0)) (return (none)))
+  (let (sc:&Scope (unsafe/cast &Scope g-globals))
+    (dotimes (i (sc 'len))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
+        (when (and (= (sym 'sym-private) 0) (type-key-named? (sym 'name) name)
+                   (core-or-real-ns? (key-namespace (sym 'name)))
+                   (symbol-none? (binding-usable-spelling BK-GLOBAL (as ptr sym) name)))
+          (return (type-elsewhere-message verb name name BK-GLOBAL (as ptr sym) (sym 'name)))))))
+  (return (none)))
+
+; A namespace a source file declared, not a file-private `#pN` key space.
+(defn core-or-real-ns? (ns:Symbol):bool
+  (return (!= (symbol-byte-at ns 0) 35)))
+
+(defn type-key-named? (key:Symbol bare:Symbol):bool
+  (return (and (!= (qualifier-len key) 0) (= (strip-ns-qualifier key) bare))))
+
+(defn type-elsewhere-message (verb:StrView name:Symbol bare:Symbol kind:i32 payload:ptr key:Symbol):?StrView
+  (let (usable:Symbol (binding-usable-spelling kind payload bare))
+    (when (and (not (symbol-none? usable)) (!= usable name))
+      (return (some (fstr (fstr verb ": " name " — defined in namespace '" (key-namespace key) "'")
+                          "\n  note: write '" usable "' here"))))
+    (return (some (fstr verb ": " name " — defined in namespace '" (key-namespace key)
+                        "', which this file does not import")))))
+
+; The protocol counterpart, as a suffix for an "unknown protocol" head: the
+; namespace a bare spelling would reach the protocol through. Error path only.
+(defn protocol-in-other-namespace-suffix (name:Symbol):?StrView
+  (when (or (= g-ns-declared 0) (!= (qualifier-len name) 0)) (return (none)))
+  (doseq (p g-protocols (VecIter &Protocol))
+    (when (and (!= (qualifier-len (p 'name)) 0) (= (strip-ns-qualifier (p 'name)) name))
+      (let (usable:Symbol (binding-usable-spelling BK-PROTOCOL (as ptr p) name))
+        (when (and (not (symbol-none? usable)) (!= usable name))
+          (return (some (fstr " — defined in namespace '" (key-namespace (p 'name))
+                              "'\n  note: write '" usable "' here"))))
+        (return (some (fstr " — defined in namespace '" (key-namespace (p 'name))
+                            "', which this file does not import"))))))
+  (return (none)))
+
+; An "unknown protocol" head with whichever note explains it.
+(defn protocol-ref-message (head:StrView spelling:Symbol):StrView
+  (match (qualifier-scope-note spelling)
+    ((some note) (return (fstr head "\n" note)))
+    (none 0))
+  (match (protocol-in-other-namespace-suffix spelling)
+    ((some sfx) (return (fstr head sfx)))
+    (none 0))
+  (return head))
 
 ; Stage 15 W1c: the same treatment for §2.7's TYPE reachability constraint,
 ; which W1 deliberately does not remove — a struct/union/protocol named in a
@@ -3908,7 +4007,7 @@
   (return (unresolved-name-message "undefined" name)))
 
 ; `line` is the source line to blame for a failure here. A bare symbol node is
-; an interned singleton with no per-occurrence line of its own (lib/node.nuc
+; an interned singleton with no per-occurrence line of its own (lib/nucleus/node.nuc
 ; `node-line`), so the caller supplies the enclosing form's line: emit-node hands
 ; over the ambient g-form-line it maintains, emit-dispatch the call cell's line.
 ; Stage 15 W4a: before this, every raise below reported `:0:`.
@@ -4471,7 +4570,7 @@
         (return d)))
     (return (vv 'val))))
 
-; The protocol an operator belongs to (lib/numeric.nuc), or "" for `%` and the bit ops.
+; The protocol an operator belongs to (lib/nucleus/numeric.nuc), or "" for `%` and the bit ops.
 (defn operator-protocol (op:(ptr BinOp)):StrView
   (let (name:Symbol (op 'name))
     (when (!= (op 'is-cmp) 0)
@@ -4529,7 +4628,12 @@
         (str-into msg "\n  note: define (defn " name " (a:" bd " b:" bd "):" rt " …) to give " bd " '" name "'")
         (when (not (str-empty? &proto))
           (str-into msg "; to conform to " proto ", define its methods and assert (extend " bd " " proto
-                    ") after (import-use numeric)"))))
+                    ") after (import-use nucleus.numeric)"))))
+    (when-some (g (generic-lookup name))
+      (let (ops:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+        (set! (aref (unsafe/cast &ptr ops) 0) at)
+        (set! (aref (unsafe/cast &ptr ops) 1) bt)
+        (str-into msg (unreachable-method-note g ops 2))))
     (return (string-as-view msg))))
 
 ; Emit an operator's inline instruction given already-emitted operand Vals. This
@@ -5182,7 +5286,11 @@
 ; passed, because that global IS the answer at exactly this moment —
 ; `emit-unsafe-import-private` sets it around its `do-import` call and restores
 ; it after. Resolution happens much later, so the binding has to carry it.
-(defn file-import-record (prefix:Symbol path:Symbol):void
+;
+; Stage 23 AN-1: `bind-none` is 1 for `require`/`require-ct`, which only add the
+; library to this file's closure; a flattening import of the same path wins.
+(defn file-import-record (prefix:Symbol path:Symbol bind-none:i32):void
+  (import-edge-record g-source-path path)
   (when (= g-file-imports null)
     (set! g-file-imports (vector-new-in &g-arena-alloc)))
   (let (tbl:&ImportVec (unsafe/cast &ImportVec g-file-imports))
@@ -5200,12 +5308,26 @@
           ; with it ON. Upgrade rather than ignore, or a private prefixed import
           ; loses its permission to the earlier record.
           (when (!= g-import-include-private 0) (set! (e 'private) 1))
+          (when (= bind-none 0) (set! (e 'bind-none) 0))
           (return))))
     (let (rec:&ImportBind (new ImportBind))
       (set! (rec 'prefix) prefix)
       (set! (rec 'path) path)
       (set! (rec 'private) g-import-include-private)
+      (set! (rec 'bind-none) bind-none)
       (conj tbl rec))))
+
+; One edge of the unit's import graph, once. The importer is the file being
+; processed, which every caller of `file-import-record` has set as `g-source-path`.
+(defn import-edge-record (from:Symbol to:Symbol):void
+  (when (or (symbol-none? from) (symbol-none? to)) (return))
+  (when (= from to) (return))
+  (doseq (e g-import-edges (VecIter &ImportEdge))
+    (when (and (= (e 'from) from) (= (e 'to) to)) (return)))
+  (let (rec:&ImportEdge (new ImportEdge))
+    (set! (rec 'from) from)
+    (set! (rec 'to) to)
+    (conj g-import-edges rec)))
 
 ; The prefixes bound in this file, comma-separated, or null when it binds none.
 ; Diagnostic-only, so the quadratic concatenation is fine (and `fmt-2s` clamps).
@@ -5233,14 +5355,17 @@
 ; consumer imported as `dpx` (§2.1).
 ;
 ; §8.3's table, as implemented here:
-;   * `(import-prefixed lib p)` binds `p/` and NOT the library's namespace;
+;   * `(import-prefixed lib p)` binds `p/`; the library's namespace is reached
+;     only through the closure tier below;
 ;   * `(import-use lib)` / `(import-only lib …)` flatten, and the namespace's own
 ;     name is also a legal qualifier — R2's escape hatch for a collision;
 ;   * the file's own namespace is always a legal qualifier (a file may spell its
 ;     own names either way, and `lib/nsdescribe.nuc`'s bare self-reference is the
 ;     same rule with the qualifier omitted);
 ;   * `user` is always legal: the prelude is flattened into every file, and
-;     `user` is the unqualified space itself.
+;     `user` is the unqualified space itself;
+;   * Stage 23 AN-1 reversed R3: last of all, a namespace declared anywhere in
+;     this file's import closure (stage23-namespaces/ambient-namespaces.md §8).
 ; Anything else is NR-UNBOUND — a hard "not in scope here", *not* a fall-through
 ; to the raw spelling.
 ;
@@ -5272,6 +5397,9 @@
 ; second `ns` directive in one file updates rather than shadows.
 (defn file-ns-record (path:Symbol ns:Symbol):void
   (when (symbol-none? path) (return))
+  (set! g-closure-gen (+ g-closure-gen 1))
+  (assoc g-path-ns path ns)
+  (when (and (core-ns? ns) (not (contains? g-core-nss ns))) (conj g-core-nss ns))
   (let (hit:?&FileNs (file-ns-entry path))
     (when (!= hit null)
       (set! ((unsafe/cast &FileNs hit) 'ns) ns)
@@ -5288,16 +5416,25 @@
 ; performs for the *current* namespace, factored out so another namespace can be
 ; named. `user` stores bare keys (the byte-identical hatch), so this is the
 ; identity there. Interned, because every registry key compares by pointer.
+; Memoized per namespace: a namespaced unit asks this on every flattened probe.
+(defvar g-nsq-memo:&(HashMap Symbol &(HashMap Symbol Symbol)) (hashmap-new-in &g-arena-alloc))
+
 (defn ns-qualify-in (ns:Symbol bare:Symbol):Symbol
-  (when (= ns "user") (return bare))
-  (return (symbol-intern (fstr ns "/" bare))))
+  (when (= ns g-ns-user) (return bare))
+  (let (m:&(HashMap Symbol Symbol) (match (get g-nsq-memo ns)
+                                    ((some hit) hit)
+                                    (none (let (fresh:&(HashMap Symbol Symbol) (hashmap-new-in &g-arena-alloc))
+                                            (assoc g-nsq-memo ns fresh)
+                                            fresh))))
+    (match (get m bare) ((some k) (return k)) (none 0))
+    (let (k:Symbol (symbol-intern (fstr ns "/" bare)))
+      (assoc m bare k)
+      (return k))))
 
 ; The namespace of an imported file: its recorded `(ns …)`, or `user` when it
 ; declared none (which is why absence of a record is an answer, not a gap).
 (defn import-path-ns (path:Symbol):Symbol
-  (let (hit:?&FileNs (file-ns-entry path))
-    (when (= hit null) (return (symbol-intern "user")))
-    (return ((unsafe/cast &FileNs hit) 'ns))))
+  (match (get g-path-ns path) ((some ns) (return ns)) (none (return g-ns-user))))
 
 ; The file this file bound `spelling`'s qualifier to as a PREFIX, or null.
 ; (B1's `file-prefix-bound` answers the yes/no; B2a needs the path, because the
@@ -5328,9 +5465,17 @@
 ; How many import forms this file wrote — the iteration bound for the flattened
 ; set. Paired with `file-flattened-ns-at`, which answers null for a prefixed one.
 (defn file-imports-count ():i32
+  (return (+ (file-import-forms-count) 2)))
+
+(defn file-import-forms-count ():i32
   (when (= g-file-imports null) (return 0))
   (let (tbl:&ImportVec (unsafe/cast &ImportVec g-file-imports))
     (return (unsafe/cast i32 (count tbl)))))
+
+; D-CORE: the prelude's two namespaces close the flattened set of every file,
+; as if each began with `(import-use nucleus.core)` (ambient-namespaces.md §8).
+(defn prelude-ns? (ns:Symbol):bool
+  (return (or (= ns g-ns-core) (= ns g-ns-macros))))
 
 ; The namespace flattened by import form `i`, or null when that form bound a
 ; prefix instead (a prefixed import flattens nothing — §8.3 row 2, the whole
@@ -5338,11 +5483,15 @@
 ; `(Maybe Symbol)` rather than a nullable one: a `Symbol` is a non-null pointer
 ; by type, so "this import flattens nothing" has to be said in the return type.
 (defn file-flattened-ns-at (i:i32):?Symbol
+  (let (nf:i32 (file-import-forms-count))
+    (when (= i nf) (return (some g-ns-core)))
+    (when (= i (+ nf 1)) (return (some g-ns-macros))))
   (when (= g-file-imports null) (return (none)))
   (let (tbl:&ImportVec (unsafe/cast &ImportVec g-file-imports))
     (when (>= i (unsafe/cast i32 (count tbl))) (return (none)))
     (let (e:&ImportBind (invoke tbl i:usize))
       (when (not (symbol-none? (e 'prefix))) (return (none)))
+      (when (!= (e 'bind-none) 0) (return (none)))
       (return (some (import-path-ns (e 'path)))))))
 
 ; Stage 15 B5: does this file flatten the namespace `ns` (given whole, not as a
@@ -5375,12 +5524,53 @@
       (none 0)))
   (return 0))
 
+; Stage 23 AN-1: the namespaces this file's import closure declares, `user`
+; excepted. Seeded from `g-file-imports`, not `g-source-path`, so a body re-read
+; in its own file's environment (`NameEnv`) sees that file's closure.
+(defn file-closure-namespaces ():&(Vector Symbol)
+  (let (n:i32 (file-import-forms-count)
+        ne:i32 (unsafe/cast i32 (count g-import-edges)))
+    (when (and (= g-closure-memo-env g-file-imports) (= g-closure-memo-n n)
+               (= g-closure-memo-edges ne) (= g-closure-memo-gen g-closure-gen))
+      (return g-closure-nss))
+    (set! g-closure-memo-env g-file-imports)
+    (set! g-closure-memo-n n)
+    (set! g-closure-memo-edges ne)
+    (set! g-closure-memo-gen g-closure-gen)
+    (set! (g-closure-paths 'len) 0)
+    (set! (g-closure-nss 'len) 0)
+    (when (> n 0)
+      (doseq (b (unsafe/cast &ImportVec g-file-imports) (VecIter &ImportBind))
+        (closure-path-add (b 'path))))
+    (let (i:usize 0)
+      (while (< i (count g-closure-paths))
+        (let (p:Symbol (invoke g-closure-paths i))
+          (doseq (e g-import-edges (VecIter &ImportEdge))
+            (when (= (e 'from) p) (closure-path-add (e 'to))))
+          (let (ns:Symbol (import-path-ns p))
+            (when (and (!= ns "user") (not (contains? g-closure-nss ns)))
+              (conj g-closure-nss ns))))
+        (set! i (+ i 1))))
+    (return g-closure-nss)))
+
+(defn closure-path-add (p:Symbol):void
+  (when (not (contains? g-closure-paths p)) (conj g-closure-paths p)))
+
+; The closure namespace `spelling`'s `n`-byte qualifier names, or none.
+(defn closure-ns-named (spelling:Symbol n:usize):Symbol
+  ; No namespace anywhere in the unit: the closure holds only `user`.
+  (when (= g-ns-declared 0) (return (symbol-none)))
+  (let (nss:&(Vector Symbol) (file-closure-namespaces))
+    (doseq (ns nss (VecIter Symbol))
+      (when (!= (qualifier-eq spelling (symbol-as-view ns) n) 0) (return ns))))
+  (return (symbol-none)))
+
+(defn file-closure-has-ns (ns:Symbol):bool
+  (when (= g-ns-declared 0) (return false))
+  (return (contains? (file-closure-namespaces) ns)))
+
 ; THE canonicaliser. See the section header for the rules.
 (defn resolve-spelling (spelling:Symbol):&NameRef
-  (when (>= (hyg-index spelling) 0)
-    (die-at g-form-line
-      (fstr "internal error: the quasiquote name tag '" spelling "' (table entry "
-            (hyg-index spelling) ") reached resolve-spelling unwrapped -- a reference resolver is missing its tag branch (design/stage22-edn/quasiquote-resolution.md §3.4)")))
   (let (r:&NameRef (new NameRef))
     (set! (r 'spelling) spelling)
     (set! (r 'bare) spelling)
@@ -5402,7 +5592,7 @@
         ; `user` is the unqualified space and the prelude's namespace; it is
         ; flattened into every file by construction.
         (= (r 'qual) "user")
-          (set! (r 'ns) (symbol-intern "user"))
+          (set! (r 'ns) g-ns-user)
         ; Stage 15 B2b (§8.3's last row): `unsafe` is a BUILT-IN namespace, bound
         ; as an implicit prefix in every file's environment. Bound *prefixed*, so
         ; it is never flattened — which is what makes bare `cast`/`ptr+`/
@@ -5415,8 +5605,11 @@
           (let (p:Symbol (file-prefix-path spelling n))
             (if (not (symbol-none? p))
               (set! (r 'ns) (import-path-ns p))
-              (when (!= (file-flattens-ns spelling n) 0)
-                (set! (r 'ns) (symbol-intern (r 'qual)))))))
+              (if (!= (file-flattens-ns spelling n) 0)
+                (set! (r 'ns) (symbol-intern (r 'qual)))
+                ; Stage 23 AN-1: last, so a prefix this file bound shadows a
+                ; closure namespace of the same name (ambient-namespaces.md §8).
+                (set! (r 'ns) (closure-ns-named spelling n))))))
       (when (symbol-none? (r 'ns)) (return r))
       (set! (r 'status) NR-QUALIFIED)
       (set! (r 'canonical) (ns-qualify-in (r 'ns) (r 'bare)))
@@ -5448,11 +5641,6 @@
 ; Resolve a source REFERENCE against the global scope. `sc` is the global frame
 ; (the unique null-parent Scope); `name` is the spelling as written.
 (defn globals-lookup-ref (sc:?&Scope name:Symbol):?&Sym
-  (when-some (h (hyg-of name))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&Sym (globals-lookup-ref sc (hyg-inner name)))
-      (name-env-set here)
-      (return r)))
   (let (n:i64 (qualifier-len name))
     (when (<= n 0)
       ; Unqualified: the current namespace's key — the pre-B2b rule, unchanged,
@@ -5471,7 +5659,7 @@
       (dotimes (i (file-imports-count))
         (match (file-flattened-ns-at i)
           ((some fns)
-            (when (!= fns g-current-ns)
+            (when (and (!= fns g-current-ns) (!= fns "user"))
               (let (hit:?&Sym (scope-frame-find-public sc (ns-qualify-in fns name)))
                 (when (!= hit null) (return hit)))))
           (none 0)))
@@ -5553,7 +5741,9 @@
         ((some fns)
           ; The current namespace was slot 0; re-probing it here would be a
           ; second identical scan.
-          (if (= fns g-current-ns)
+          ; `user` is the last slot, after the prelude tier, so a user file's
+          ; names never shadow the core inside a library that imports a C header.
+          (if (or (= fns g-current-ns) (= fns "user"))
             (return (none))
             (return (some (ns-qualify-in fns spelling)))))
         (none (return (none))))))
@@ -5570,7 +5760,7 @@
     (dotimes (i (file-imports-count))
       (match (file-flattened-ns-at i)
         ((some ns)
-          (when (!= ns "user")
+          (when (and (!= ns "user") (not (prelude-ns? ns)))
             (if (str-empty? &out)
               (set! out (symbol-as-view ns))
               (set! out (fstr out ", " ns)))))
@@ -5617,11 +5807,27 @@
                     (r 'qual) "' to " path
                     ", but a prefix reaches only the file whose own import declares it. "
                     tail)))))
-        ; Tier 2: the general rule.
+        ; Tier 2: a namespace some file in the unit declares, outside this
+        ; file's closure (Stage 23 AN-1).
+        (let (path:Symbol (unit-ns-path spelling n))
+          (when (not (symbol-none? path))
+            (return (some
+              (fstr "  note: namespace '" (r 'qual) "' (declared in " path
+                    ") is not loaded by this file's imports — add (require …) naming its library to reach it by its full name. "
+                    tail)))))
+        ; Tier 3: the general rule.
         (return (some
           (fstr "  note: '" (r 'qual)
-                "' is not in scope in this file — a prefixed import binds its library under the prefix it names and not under the library's own namespace, and an unimported namespace is not nameable at all. "
+                "' is neither an import prefix this file binds nor a namespace its imports load — (require …) a library to reach its namespace by its full name. "
                 tail)))))))
+
+; A file of this unit whose `(ns …)` is `spelling`'s `n`-byte qualifier, or none.
+(defn unit-ns-path (spelling:Symbol n:usize):Symbol
+  (when (= g-file-ns null) (return (symbol-none)))
+  (doseq (e (unsafe/cast &FileNsVec g-file-ns) (VecIter &FileNs))
+    (when (!= (qualifier-eq spelling (symbol-as-view (e 'ns)) n) 0)
+      (return (e 'path))))
+  (return (symbol-none)))
 
 ; Append `qualifier-scope-note` to a diagnostic head, when there is one to
 ; append. Every raise about an unresolved *reference* should go through this:
@@ -5709,11 +5915,6 @@
 ; asked here. Identity and admission need different data; admission is asked at
 ; the annotation site, where the spelling the author wrote still exists.
 (defn dyn-proto-key (spelling:Symbol):Symbol
-  (when-some (h (hyg-of spelling))
-    (let (here:NameEnv (hyg-enter h)
-          k:Symbol (dyn-proto-key (hyg-inner spelling)))
-      (name-env-set here)
-      (return k)))
   (let (r:&NameRef (resolve-spelling spelling))
     (when (= (r 'status) NR-UNBOUND) (return spelling))
     (when (= (r 'status) NR-QUALIFIED) (return (r 'canonical)))
@@ -5726,7 +5927,7 @@
         (match (file-flattened-ns-at i)
           ((some fns)
             (let (k:Symbol (ns-qualify-in fns (r 'bare)))
-              (when (proto-decl-key? k) (return k))))
+              (when (and (!= fns "user") (proto-decl-key? k)) (return k))))
           (none 0))))
     (return spelling)))
 
@@ -5855,7 +6056,69 @@
   (when (= ns "user") (return (symbol-intern "")))
   (let (p:Symbol (ns-ir-prefix-get ns))
     (when (not (symbol-none? p)) (return p))
+    ; D-IR: the core libraries keep bare link names (ambient-namespaces.md §8).
+    (when (core-ns? ns) (return (symbol-intern "")))
     (return (ns-prefix-sanitize (symbol-as-view ns)))))
+
+; Is `ns` `nucleus` or a namespace under it — a core library's?
+(defn core-ns? (ns:Symbol):bool
+  (return (core-ns-view? (symbol-as-view ns))))
+
+(defn core-ns-view? (v:StrView):bool
+  (return (or (= v "nucleus") (strview-has-prefix v "nucleus."))))
+
+; Is registry key `key` the core library's definition of `bare`? Every name the
+; compiler synthesizes or recognizes (`Node`, `Drop`, `String`, …) is asked this
+; way, never by comparing a key to the bare spelling.
+(defn core-named? (key:Symbol bare:StrView):bool
+  (let (kv:StrView (symbol-as-view key)
+        n:usize (qualifier-len key))
+    (when (= n 0) (return false))
+    (return (and (= (strview-drop-bytes kv (+ n 1)) bare)
+                 (core-ns-view? (strview-take-bytes kv n))))))
+
+; The canonical key of the core protocol `bare`, or `bare` when none is registered.
+(defn core-proto-key (bare:StrView):Symbol
+  (doseq (p g-protocols (VecIter &Protocol))
+    (when (core-named? (p 'name) bare) (return (p 'name))))
+  (return (symbol-intern bare)))
+
+; The core library's global (`defn`, `defvar`, …) named `bare`, or null — found
+; whichever file of the unit loaded it, since the compiler, not the file, names it.
+(defn core-global (bare:StrView):?&Sym
+  (doseq (ns g-core-nss (VecIter Symbol))
+    (let (hit:?&Sym (scope-frame-find-public g-globals (ns-qualify-in ns (symbol-intern bare))))
+      (when (!= hit null) (return hit))))
+  (return null))
+
+; How synthesized source names core library `ns`'s `bare`: by its full name,
+; which resolves through the file's closure whatever form its import took.
+(defn core-spelling (ns:StrView bare:StrView):Symbol
+  (return (symbol-intern (fstr ns "/" bare))))
+
+; Refuse a construct whose lowering names core library `ns` in a file whose
+; imports do not load it, saying which import it needs.
+(defn core-ns-require (ns:StrView what:StrView line:i32):void
+  (let (nsym:Symbol (symbol-intern ns))
+    (when (or (= nsym g-current-ns) (prelude-ns? nsym)) (return))
+    (when (and (contains? g-core-nss nsym) (file-closure-has-ns nsym)) (return))
+    (die-at line (fstr what " needs " ns " — add (import-use " ns ")"))))
+
+; The core struct (or union) named `bare`, or null.
+(defn core-struct (bare:StrView):?&StructDef
+  (doseq (sd g-structs (VecIter &StructDef))
+    (when (core-named? (sd 'name) bare) (return (as ptr sd))))
+  (return null))
+
+; Two keys with one LLVM type name would be one `%T` with two bodies. D-IR makes
+; this reachable: a `user` type named like a core one (ambient-namespaces.md §8).
+(defn struct-link-name-unique (sd:&StructDef line:i32):void
+  (when (core-ns? g-current-ns) (return))
+  (doseq (o g-structs (VecIter &StructDef))
+    (when (and (= (o 'ir-name) (sd 'ir-name)) (!= (o 'name) (sd 'name)) (= (o 'alias-of) null))
+      (die-at line (fstr "defstruct: " (strip-ns-qualifier (sd 'name)) " links as %" (sd 'ir-name)
+                         ", the LLVM type of " (o 'name)
+                         " — rename it, or give this file an (ns …)")))))
 
 ; Compose an explicit ir-prefix string onto a (bare, already-tokenized) base —
 ; `<prefix>__<base>`, or bare `base` when the prefix is empty. The atomic
@@ -7991,7 +8254,7 @@
           (set! qty pt))
       true (return null))
     (when (= sd null) (return null))
-    (when (= (conformance-lookup (sd 'name) (symbol-intern "Drop")) 0) (return null))
+    (when (= (conformance-lookup (sd 'name) (core-proto-key "Drop")) 0) (return null))
     (let (g:?&Generic (generic-lookup (symbol-intern "drop")))
       (when (= g null) (return null))
       (let (argtypes:ptr (arena-alloc (ptr-bytes)))
@@ -8021,7 +8284,7 @@
                 (when (and (= (et 'kind) TY-STRUCT)
                            (!= (et 'sdef) null)
                            (!= (conformance-lookup
-                                ((et 'sdef) 'name) (symbol-intern "Drop")) 0))
+                                ((et 'sdef) 'name) (core-proto-key "Drop")) 0))
                   (return (arm 'name)))))))))
     (return (symbol-none))))
 
@@ -8733,7 +8996,7 @@
 ; mode 2 (cfn — the env holds borrowed pointers, no owned referents): the env's
 ; own storage was allocated through the `alloc` operand, so drop frees that block
 ; via the stored handle (the leading __alloc field), mirroring how a collection's
-; drop frees its buffer through its stored AllocHandle (lib/vector.nuc):
+; drop frees its buffer through its stored AllocHandle (lib/nucleus/vector.nuc):
 ;   (defn drop:void ((self (ptr <Env>)))
 ;     (alloc-handle-free (_get self '__alloc) (unsafe/cast (ptr ui8) self) (sizeof Env) 8))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
@@ -8803,7 +9066,7 @@
           mtypes:ptr (arena-alloc (ptr-bytes)))
       (set! (aref (unsafe/cast &ptr mtypes) 0) self-ptr-ty)
       ; Record the conformance so with-drop-method finds (Env, Drop).
-      (conformance-add (sd 'name) (symbol-intern "Drop") null 0 line)
+      (conformance-add (sd 'name) (core-proto-key "Drop") null 0 line)
       (let (newm:&Method (generic-register-method (symbol-intern "drop") ty-void mtypes 1 0 0 defn-form)
             mangled:Symbol (mangle-fn-name (symbol-intern "") (symbol-intern "drop") mtypes 1))
         (set! (newm 'ir-name) mangled)
@@ -9307,10 +9570,10 @@
     (ensure-box-drop-fn box-ty line)
     (let (vname:Symbol (ensure-fnfwd-vtable box-ty line))
       (when (= (scope-lookup scope (symbol-intern "default-allocator")) null)
-        (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
+        (die-at line "BoxedFn: boxing a function requires (import-use nucleus.allocator)"))
       (let (ahsym:?&Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
         (when (= ahsym null)
-          (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
+          (die-at line "BoxedFn: boxing a function requires (import-use nucleus.allocator)"))
         (let (da-node:ptr (node-list1 (intern-node (symbol-intern "default-allocator")) line)
               hv:&Val (emit-node da-node scope)
               blk:StrView (new-tmp))
@@ -9383,10 +9646,10 @@
         struct-name:Symbol (sd 'name)
         irn:Symbol (sd 'ir-name))
     (when (= (scope-lookup scope (symbol-intern "default-allocator")) null)
-      (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
+      (die-at line "type-erasure: boxing a value requires (import-use nucleus.allocator)"))
     (let (ahsym:?&Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
       (when (= ahsym null)
-        (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
+        (die-at line "type-erasure: boxing a value requires (import-use nucleus.allocator)"))
       (let (da-node:ptr (node-list1 (intern-node (symbol-intern "default-allocator")) line)
             hv:&Val (emit-node da-node scope)
             sz-node:ptr (node-list2 (intern-node (symbol-intern "sizeof"))
@@ -9519,7 +9782,7 @@
     ; short-circuit) see the box as Drop-conforming.
     (let (sd:ptr (-> canon (unsafe/cast &Type _) (_ 'sdef))
           sd-name:Symbol (-> canon (unsafe/cast &Type _) (_ 'sdef) (unsafe/cast &StructDef _) (_ 'name)))
-      (when (= (conformance-lookup sd-name (symbol-intern "Drop")) 0)
+      (when (= (conformance-lookup sd-name (core-proto-key "Drop")) 0)
         (let (recv:&Type (as &Type (make-type TY-PTR))
               mtypes:ptr (arena-alloc (ptr-bytes)))
           (set! (recv 'elem) canon)
@@ -9530,7 +9793,7 @@
           ; Route `drop` by argument type so the box drop and every other type's
           ; drop coexist without one re-binding the other's bare @drop symbol.
           (fn-force-generic-mangled (symbol-intern "drop"))
-          (conformance-add sd-name (symbol-intern "Drop") null 0 line))))
+          (conformance-add sd-name (core-proto-key "Drop") null 0 line))))
     (when (= g-boxdrop-emitted 0)
       (set! g-boxdrop-emitted 1)
       (emit g-out "define internal void @__boxedfn_drop(ptr %self)")
@@ -9801,7 +10064,7 @@
       ; frame-taint — the strongest constraint, matching the L1 sink direction.
       (let (ahsym:?&Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
         (when (= ahsym null)
-          (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
+          (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use nucleus.allocator) is required to use cfn"))
         (let (ah-ir:StrView (ahsym 'ir-name)
               ; sizeof Env as a runtime usize (mirrors emit-sizeof).
               sz-node:ptr (node-list2 (intern-node (symbol-intern "sizeof"))
@@ -9892,7 +10155,7 @@
                   ; Drop capture: require a hand-written Clone, else direct to mfn; then
                   ; deep-clone via `(clone &x)`.
                   (do
-                    (when (= (conformance-lookup (type-spelling fty) (symbol-intern "Clone")) 0)
+                    (when (= (conformance-lookup (type-spelling fty) (core-proto-key "Clone")) 0)
                       (die-at line
                         (fstr "vfn cannot clone-capture '" cname "' (type " (type-display fty)
                               " is Drop with no Clone); use mfn to move it instead")))
@@ -10145,7 +10408,7 @@
           (when (or (!= (alloc-ty 'kind) TY-PTR)
                     (= (alloc-ty 'elem) null)
                     (!= (-> (alloc-ty 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
-            (die-at line "cfn: allocator operand must be a (ref AllocHandle) — (import-use allocator) and pass e.g. (default-allocator)"))
+            (die-at line "cfn: allocator operand must be a (ref AllocHandle) — (import-use nucleus.allocator) and pass e.g. (default-allocator)"))
           ; --- Parse params (mirrors emit-fn / emit-vfn) ---
           (let (nparams:i32 (node-len params-node)
                 ret:ptr (fn-parse-ret-type ret-node line)
@@ -11772,11 +12035,6 @@
   (return null))
 
 (defn find-macro (spelling:Symbol):?&MacroDef
-  (when-some (h (hyg-of spelling))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&MacroDef (find-macro (hyg-inner spelling)))
-      (name-env-set here)
-      (return r)))
   ; Stage 16: lexical bindings win over the global registry. `find-macro` is the
   ; registry's only reader, so this one probe covers emit-list's dispatch,
   ; node-type, gcheck, valid-walk and the BK-MACRO name-kind lookup at once.
@@ -11809,7 +12067,7 @@
   (when (= node null) (return))
   (let (n:&Node (unsafe/cast &Node node))
     ; Stage 15 W4a: NEVER stamp a symbol node. A symbol is an interned singleton
-    ; shared by every occurrence of that spelling program-wide (lib/node.nuc
+    ; shared by every occurrence of that spelling program-wide (lib/nucleus/node.nuc
     ; `node-line`), so writing a line into it is observed by every *other*
     ; occurrence too — the first macro expansion mentioning `x` would make every
     ; later diagnostic about any `x` anywhere report that macro's call line.
@@ -11834,7 +12092,7 @@
         where:StrView "a list")
     (when (and (!= h null) (= (h 'kind) NODE-SYM))
       (set! where (fstr "(" (h 's) " …)")))
-    (die-at ln (fstr "macro '" mname "': the expansion has an empty element at position "
+    (die-at ln (fstr "macro '" (display-key mname) "': the expansion has an empty element at position "
                      i " of " where " -- a value unquoted into it was null"))))
 
 ; Stage 20 C2/C3 (computed-macro-arguments.md §4.2): `~e` and `~@e` are
@@ -11890,18 +12148,18 @@
     (when (!= (mdef 'variadic) 0)
       (when (< nargs (- (mdef 'num-params) 1))
         (die-at ((unsafe/cast &Node call) 'line)
-                (fstr "macro '" (mdef 'name) "': expects at least " (- (mdef 'num-params) 1)
+                (fstr "macro '" (display-key (mdef 'name)) "': expects at least " (- (mdef 'num-params) 1)
                       " args, got " nargs))))
     (when (= (mdef 'variadic) 0)
       (when (!= nargs (mdef 'num-params))
         ; Stage 15 W4d: a one-armed `(if test then)` is the single most common
         ; fixed-arity macro miscall (C/JS habit carried over) -- name the fix
         ; directly rather than a generic arg-count message.
-        (if (and (= (mdef 'name) "if") (= nargs 2))
+        (if (and (core-named? (mdef 'name) "if") (= nargs 2))
           (die-at ((unsafe/cast &Node call) 'line)
                   "if requires an else branch; use (when test then…) for a guard")
           (die-at ((unsafe/cast &Node call) 'line)
-                  (fstr "macro '" (mdef 'name) "': expects " (mdef 'num-params) " args, got "
+                  (fstr "macro '" (display-key (mdef 'name)) "': expects " (mdef 'num-params) " args, got "
                         nargs)))))
     (let (args-arr:ptr (malloc (* (mdef 'num-params) (ptr-bytes)))
           regular-params:i32 (mdef 'num-params))
@@ -11923,7 +12181,7 @@
       ; by now. L5: a refusal is a located error here, not the JIT's own "lookup
       ; failed" below.
       (when (= (ct-mirror-flush (mdef 'ct-roots) ((unsafe/cast &Node call) 'line)) 0)
-        (ct-mirror-report-refusal (fstr "macro '" (mdef 'name) "'")
+        (ct-mirror-report-refusal (fstr "macro '" (display-key (mdef 'name)) "'")
                                   ((unsafe/cast &Node call) 'line)))
       (let (addr:i64 0
             err:ptr (LLVMOrcLLJITLookup g-jit &addr (symbol-as-cstr (mdef 'jit-name))))
@@ -12132,6 +12390,12 @@
         (die-at (nn 'line) (operator-refusal binop (aref (unsafe/cast &ptr vt) 0) (aref (unsafe/cast &ptr vt) 1) true)))
       (when (!= nargs 2)
         (die-at (nn 'line) (fstr ((unsafe/cast &BinOp binop) 'name) " expects 2 args")))
+      ; An exact method this file cannot reach must not fall to the built-in:
+      ; for StrView that is a strcmp of an unterminated view.
+      (let (missed:StrView (unreachable-method-note g argtypes 2))
+        (when (not (str-empty? &missed))
+          (die-at (nn 'line) (operator-refusal binop (aref (unsafe/cast &ptr argtypes) 0)
+                                               (aref (unsafe/cast &ptr argtypes) 1) false))))
       (return (emit-binop-vals (unsafe/ptr+ (unsafe/cast &Val args) 0) (unsafe/ptr+ (unsafe/cast &Val args) 1)
                                (aref (unsafe/cast &ptr arg-nodes) 0) (aref (unsafe/cast &ptr arg-nodes) 1)
                                binop scope (nn 'line))))))
@@ -12280,7 +12544,7 @@
 ; ir-prefix from its key through exactly that path.
 (defn key-namespace (key:Symbol):Symbol
   (let (n:usize (qualifier-len key))
-    (when (= n 0) (return (symbol-intern "user")))
+    (when (= n 0) (return g-ns-user))
     (return (symbol-intern (strview-take-bytes (symbol-as-view key) n)))))
 
 (defn binding-is-private (kind:i32 payload:ptr):i32
@@ -12326,9 +12590,9 @@
 ; How the file being compiled would have to SPELL this binding, or null when it
 ; cannot spell it at all. The `src-ns` column is the whole input: a binding in
 ; the file's own namespace, in `user`, or in a namespace this file flattened is
-; named bare; one reached only through a bound prefix is named `p/bare`;
-; anything else is unreachable from here and must not be offered as a
-; suggestion. This is what closes defect #9 — see `suggest-better`.
+; named bare; one reached only through a bound prefix is named `p/bare`; one in
+; a namespace of this file's import closure is named `ns/bare`; anything else is
+; unreachable from here and must not be offered as a suggestion. This is what closes defect #9 — see `suggest-better`.
 (defn binding-usable-spelling (kind:i32 payload:ptr bare:Symbol):Symbol
   ; A binding this file may not see is not a suggestion. `binding-visible` is
   ; the same rule the reference lookups apply, called here so the did-you-mean
@@ -12345,83 +12609,35 @@
     (when (!= (file-flattens-ns-named ns) 0) (return bare))
     (let (p:Symbol (file-prefix-for-ns ns))
       (when (not (symbol-none? p)) (return (symbol-intern (fstr p "/" bare)))))
+    (when (file-closure-has-ns ns) (return (symbol-intern (fstr ns "/" bare))))
     (return (symbol-none))))
 
-; How the tag's own file names what it resolves to: `mylib/helper`, or `helper` in `user`.
-; For reading only; it is never re-read (quasiquote-resolution.md §3.9).
-(defn hyg-display (name:Symbol):StrView
-  (if-some (h (hyg-of name))
-    (let (here:NameEnv (hyg-enter h)
-          shown:StrView (binding-display (hyg-inner name)))
-      (name-env-set here)
-      (return shown))
-    (return (symbol-as-view name))))
-
-; The tag's binding as the current file spells it, falling back to `hyg-display`.
-(defn hyg-respell (name:Symbol):StrView
-  (if-some (h (hyg-of name))
-    (let (here:NameEnv (hyg-enter h)
-          inner:Symbol (hyg-inner name)
-          bare:Symbol inner
-          hit:?&BindingHit (binding-find inner null 0 BINDING-KIND-COUNT 0 NK-NONE))
-      (when (> (qualifier-len inner) 0)
-        (set! bare ((resolve-spelling inner) 'bare)))
-      (name-env-set here)
-      (when-some (b hit)
-        (let (s:Symbol (binding-usable-spelling (b 'kind) (b 'payload) bare))
-          (when (not (symbol-none? s)) (return (symbol-as-view s)))))
-      (set! g-hyg-unspellable name)
-      (return (hyg-display name)))
-    (return (symbol-as-view name))))
-
-; §3.5: a template name its own file resolves may not be bound by the expansion.
-(defn hyg-refuse-binder (name:Symbol line:i32):void
-  (when (= (count g-hyg-envs) 0) (return))
-  (when-some (h (hyg-of name))
-    (let (inner:Symbol (hyg-inner name)
-          here:NameEnv (hyg-enter h)
-          noun:StrView "a global"
-          shown:StrView (binding-display inner))
-      (when-some (hit (binding-find inner null 0 BINDING-KIND-COUNT 0 NK-NONE))
-        (set! noun (binding-noun (hit 'kind) (hit 'payload))))
-      (name-env-set here)
-      (let (who:StrView (case (h 'kind)
-                          1 (fstr "the computed argument '" (h 'who) "'")
-                          2 "a compile-time block"
-                          (fstr "macro '" (h 'who) "'"))
-            the:StrView (cond (strview-has-prefix noun "an ") (fstr "the " (strview-drop-bytes noun (as usize 3)))
-                              (strview-has-prefix noun "a ") (fstr "the " (strview-drop-bytes noun (as usize 2)))
-                              true noun))
+; A binding name is never qualified, whoever wrote it: a template's full name is a
+; reference (ambient-namespaces.md, "AN-4 as built").
+(defn refuse-qualified-binder (name:Symbol line:i32):void
+  (when (or (= (qualifier-len name) 0) (= (symbol-byte-at name 0) 35)) (return))
+  (let (r:&NameRef (resolve-spelling name))
+    (when (= (r 'status) NR-QUALIFIED)
+      (when-some (hit (binding-find name null 0 BINDING-KIND-COUNT 0 NK-NONE))
         (diag-stage-note
-          (fstr "a template name that names a global in the macro's file refers to that global;\n  write ~'"
-                inner " to bind the caller's name, or use (gensym)"))
-        ; A template's lists carry no line; the expansion is blamed at its call.
-        (die-at (if (= line 0) g-form-line line)
-                (fstr who " binds '" inner "', which its file resolves to " the " '" shown "'"))))))
-
-; The current file's global `name` as `ns/bare`, or bare when it lives in `user`.
-(defn binding-display (name:Symbol):StrView
-  (let (bare:Symbol name
-        ns:Symbol (symbol-none))
-    (when (> (qualifier-len name) 0)
-      (let (r:&NameRef (resolve-spelling name))
-        (set! bare (r 'bare))
-        (set! ns (r 'ns))))
-    (when-some (hit (binding-find name null 0 BINDING-KIND-COUNT 0 NK-NONE))
-      (set! ns (binding-src-ns (hit 'kind) (hit 'payload))))
-    (when (or (symbol-none? ns) (= ns "user")) (return (symbol-as-view bare)))
-    (return (fstr ns "/" bare))))
+          (fstr "'" name "' is the full name of " (binding-noun (hit 'kind) (hit 'payload)) " '" (r 'bare)
+                "', as a template writes a name its file defines;\n  write ~'" (r 'bare)
+                " to bind the caller's name, or use (gensym)"))))
+    ; A template's lists carry no line; the expansion is blamed at its call.
+    (die-at (if (= line 0) g-form-line line)
+            (fstr "cannot bind '" name "': a binding name may not be qualified"))))
 
 ; ------------------------------------------------------------
-; The quasiquote pass (design/stage22-edn/quasiquote-resolution.md §3.2, §3.7)
+; The quasiquote pass (design/stage23-namespaces/quasiquote-resolution.md §3.2, §3.7;
+; full names since AN-4, ambient-namespaces.md)
 ; ------------------------------------------------------------
 
-; The prelude and its macros: in every file by construction, so never tagged.
+; The core tier: in every file by construction, so never rewritten (D1).
 (defn qq-prelude-file? (path:Symbol):bool
   (when (= (path-under-ct-lib-root path) 0) (return false))
   (let (base:StrView (strview-drop-bytes (symbol-as-view path)
                                          (+ (symbol-len g-ct-lib-root) (as usize 1))))
-    (return (or (= base "prelude.nuc") (= base "macros.nuc")))))
+    (return (or (= base "nucleus/core.nuc") (= base "nucleus/macros.nuc")))))
 
 ; Does a template naming this binding mean the defining file's? Not when every file
 ; sees the same thing: built-ins, prelude, intrinsic operators, C names (§3.2).
@@ -12477,7 +12693,9 @@
       (when (= (node-kind f) NODE-LIST)
         (let (h:Symbol (qq-head (unsafe/cast &Node f))
               n:?&Node (node-at f 1))
-          (when (and (or (= h "defmacro") (= h "defmacro-")) (= (node-kind n) NODE-SYM)
+          ; A `user` file's private macro has no full name; its forward reference stays bare.
+          (when (and (or (= h "defmacro") (and (= h "defmacro-") (!= g-current-ns g-ns-user)))
+                     (= (node-kind n) NODE-SYM)
                      (not (file-defines-macro? g-source-path ((unsafe/cast &Node n) 's))))
             (let (rec:&FileMacro (new FileMacro))
               (set! (rec 'path) g-source-path)
@@ -12497,22 +12715,69 @@
       (return true)
     (return false)))
 
-(defn qq-report (line:i32 what:StrView name:Symbol hit:&BindingHit):void
+(defn qq-report (line:i32 what:StrView name:Symbol hit:&BindingHit shown:StrView):void
   (emit stderr "qq-resolution: " g-source-path ":" line ": " (ct-body-who) ": " what " '"
-        name "' -> " (binding-noun (hit 'kind) (hit 'payload)) " '" (binding-display name) "'\n"))
+        name "' -> " (binding-noun (hit 'kind) (hit 'payload)) " '" shown "'\n"))
 
-; `name` tagged when it resolves (and, if `type-only`, to a type); else `name`.
-(defn qq-tag-name (name:Symbol type-only:bool line:i32):Symbol
+; `name` as the full name of what it resolves to (and, if `type-only`, only a type); else `name`.
+(defn qq-name (name:Symbol type-only:bool line:i32):Symbol
   (if-some (hit (qq-resolvable name))
     (do
       (when (and type-only (not (qq-type-kind? (hit 'kind)))) (return name))
-      (when (!= g-report-qq 0) (qq-report line "rewrite" name hit))
-      (return (hyg-mint name)))
+      (let (full:Symbol (qq-full-name name hit line))
+        (when (!= g-report-qq 0) (qq-report line "rewrite" name hit (symbol-as-view full)))
+        (return full)))
     (return name)))
 
-; A spelling whose type part's leaf is tagged (§3.8): the name before `from` and
+; `ns/bare` for the binding `name` resolves to in the template's file, `user/bare`
+; in `user`. Only public names have one: a file-private `user` name is refused.
+(defn qq-full-name (name:Symbol hit:&BindingHit line:i32):Symbol
+  (let (bare:Symbol (if (> (qualifier-len name) 0) ((resolve-spelling name) 'bare) name)
+        kind:i32 (hit 'kind)
+        payload:ptr (hit 'payload)
+        ns:Symbol (cond (= payload null) g-current-ns
+                        (= kind BK-GENERIC) (qq-generic-ns bare (unsafe/cast &Generic payload) line)
+                        (= kind BK-TYPE-ALIAS) ((unsafe/cast &TypeAlias payload) 'src-ns)
+                        true (binding-src-ns kind payload)))
+    (when (symbol-none? ns) (set! ns g-ns-user))
+    (when (and (!= payload null) (!= (binding-is-private kind payload) 0)
+               (or (= ns g-ns-user) (= (symbol-byte-at ns 0) 35)))
+      (diag-stage-note "a template reaches public names only; make it public, or give its file an (ns …)")
+      (die-at line (fstr (ct-body-who) " names '" bare "', which is private to its file")))
+    (return (symbol-intern (fstr ns "/" bare)))))
+
+; The one namespace whose full name reaches every method of `view` (the template
+; file's set), or a refusal: a full name filters an overload to one namespace (D2).
+(defn qq-generic-ns (bare:Symbol view:&Generic line:i32):Symbol
+  (let (full:?&Generic (generic-lookup-exact bare)
+        n:i32 (unsafe/cast i32 (count (view 'methods)))
+        seen:StrView "")
+    (when (= full null) (return (binding-src-ns BK-GENERIC (as ptr view))))
+    ; A protocol's namespace first: its full name reaches every conformer's method.
+    (doseq (p g-protocols (VecIter &Protocol))
+      (when (and (proto-declares-method? p bare)
+                 (qq-ns-covers? (unsafe/cast &Generic full) view (p 'src-ns)))
+        (return (p 'src-ns))))
+    (dotimes (i n)
+      (let (ns:Symbol ((as &Method (invoke (view 'methods) i:usize)) 'src-ns))
+        (when (qq-ns-covers? (unsafe/cast &Generic full) view ns) (return ns))
+        (set! seen (if (str-empty? &seen) (fstr "'" ns "'") (fstr seen ", '" ns "'")))))
+    (die-at line (fstr (ct-body-who) " names '" bare "', whose methods here come from namespaces "
+                       seen ", and a full name reaches one"))))
+
+(defn qq-ns-covers? (full:&Generic view:&Generic ns:Symbol):bool
+  (let (f:?&Generic (generic-filter-by-ns full ns))
+    (when (= f null) (return false))
+    (doseq (m (view 'methods) (VecIter &Method))
+      (let (found:bool false)
+        (doseq (k ((unsafe/cast &Generic f) 'methods) (VecIter &Method))
+          (when (= (as ptr k) (as ptr m)) (set! found true)))
+        (when (not found) (return false))))
+    (return true)))
+
+; A spelling whose type part's leaf is rewritten (§3.8): the name before `from` and
 ; the `ref:`/`?&`/`!` wrapping are kept as written.
-(defn qq-tag-type-leaf (spelling:Symbol from:usize line:i32):Symbol
+(defn qq-name-type-leaf (spelling:Symbol from:usize line:i32):Symbol
   (let (sv:StrView (symbol-as-view spelling)
         start:usize from
         n:usize (symbol-len spelling))
@@ -12523,9 +12788,9 @@
       (set! start (+ start (as usize 1))))
     (when (>= start n) (return spelling))
     (let (leaf:Symbol (symbol-intern (strview-drop-bytes sv start))
-          tagged:Symbol (qq-tag-name leaf true line))
-      (when (= tagged leaf) (return spelling))
-      (return (symbol-intern (fstr (strview-take-bytes sv start) tagged))))))
+          full:Symbol (qq-name leaf true line))
+      (when (= full leaf) (return spelling))
+      (return (symbol-intern (fstr (strview-take-bytes sv start) full))))))
 
 ; `?`, `&`, `!`, `*` wrap a type spelling's leaf name.
 (defn qq-type-sigil? (c:i32):bool
@@ -12543,21 +12808,21 @@
     (set! (k 's) s)
     (return k)))
 
-; One data symbol: a typed token keeps its binder and tags its type's leaf.
+; One data symbol: a typed token keeps its binder and rewrites its type's leaf.
 (defn qq-resolve-sym (e:&Node line:i32):&Node
   (let (s:Symbol (e 's)
         sv:StrView (symbol-as-view s))
     (match (strview-find-byte sv 58)
       ((some i)
-        (let (t:Symbol (qq-tag-type-leaf s (+ i (as usize 1)) line))
+        (let (t:Symbol (qq-name-type-leaf s (+ i (as usize 1)) line))
           (when (= t s) (return e))
           (return (qq-sym-node t))))
       (none
-        (let (t:Symbol (qq-tag-name s false line))
+        (let (t:Symbol (qq-name s false line))
           (when (= t s) (return e))
           (return (qq-sym-node t)))))))
 
-; A binder: a typed token's name part is tagged too, so `scope-define` refuses it as it
+; A binder: a typed token's name part is rewritten too, so `scope-define` refuses it as it
 ; does an untyped one; left bare, the template's own references would mean the global.
 (defn qq-resolve-binder (b:?&Node line:i32):?&Node
   (case (node-kind b)
@@ -12569,9 +12834,9 @@
         (match (strview-find-byte sv 58)
           ((some i)
             (let (name:Symbol (symbol-intern (strview-take-bytes sv i))
-                  tn:Symbol (qq-tag-name name false line))
+                  tn:Symbol (qq-name name false line))
               (when (= tn name) (return (qq-resolve-sym e line)))
-              (let (typed:Symbol (qq-tag-type-leaf s (+ i (as usize 1)) line))
+              (let (typed:Symbol (qq-name-type-leaf s (+ i (as usize 1)) line))
                 (return (qq-sym-node (symbol-intern
                           (fstr tn (strview-drop-bytes (symbol-as-view typed) i))))))))
           (none (return (qq-resolve-sym e line)))))
@@ -12626,7 +12891,7 @@
       ((some i) (set! s (symbol-intern (strview-take-bytes sv i))))
       (none (do)))
     (when-some (hit (qq-resolvable s))
-      (qq-report line "binder" s hit))))
+      (qq-report line "binder" s hit (symbol-as-view s)))))
 
 (defn qq-check-binder-list (lst:?&Node stride:i32 line:i32):void
   (let (i:i32 0)
@@ -12698,7 +12963,7 @@
                   (when armc (set! r na)))
               (and (= i ret-at) (= (node-kind e) NODE-KEYWORD))
                 (let (k:&Node (unsafe/cast &Node e)
-                      t:Symbol (qq-tag-type-leaf (k 's) (as usize 0) here))
+                      t:Symbol (qq-name-type-leaf (k 's) (as usize 0) here))
                   (when (!= t (k 's)) (set! r (qq-keyword-node k t))))
               (or (= h "defprotocol") (= h "defprotocol-"))
                 (set! r (qq-resolve-node e (if (>= i 2) 2 -1) here))
@@ -12711,51 +12976,13 @@
     (when changed (return out))
     (return lst)))
 
-; The template with its resolvable data symbols tagged, or the template itself.
+; The template with its resolvable data symbols as full names, or the template itself.
 (defn qq-resolve (tmpl:?&Node line:i32):?&Node
   (case (node-kind tmpl)
     NODE-SYM  (return (qq-resolve-sym (unsafe/cast &Node tmpl) line))
     NODE-LIST (return (qq-resolve-list (unsafe/cast &Node tmpl)
                                        (qq-ret-index (qq-head (unsafe/cast &Node tmpl))) line))
     (return tmpl)))
-
-; `text` with every minted tag replaced by `hyg-display`: the one rule for messages,
-; printed nodes and header text. The identity whenever nothing minted a tag.
-(defn hyg-scrub (text:StrView):StrView
-  (return (hyg-scrub-in text false)))
-
-; `respell`: each tag as the file being compiled would write it, for text another
-; compilation reads; else as the tag's own file names it.
-(defn hyg-scrub-in (text:StrView respell:bool):StrView
-  (when (= (count g-hyg-envs) 0) (return text))
-  (let (n:i64 (as i64 (text 'len))
-        out:String (string-new)
-        i:i64 0
-        copied:i64 0)
-    (while (< i n)
-      (if (and (= (text-byte-at text i) 35) (< (+ i 1) n) (= (text-byte-at text (+ i 1)) 104))
-        (let (j:i64 (+ i 2))
-          (while (and (< j n) (hyg-symbol-byte? (text-byte-at text j))) (set! j (+ j 1)))
-          (let (tag:Symbol (symbol-intern (strview (unsafe/ptr+ (text 'data) i) (as usize (- j i)))))
-            (if (= (hyg-of tag) null)
-              (set! i (+ i 1))
-              (do (str-into &out (strview (unsafe/ptr+ (text 'data) copied) (as usize (- i copied))))
-                  (str-into &out (if respell (hyg-respell tag) (hyg-display tag)))
-                  (set! i j)
-                  (set! copied j)))))
-        (set! i (+ i 1))))
-    (when (= copied 0)
-      (drop &out)
-      (return text))
-    (str-into &out (strview (unsafe/ptr+ (text 'data) copied) (as usize (- n copied))))
-    (return (string-as-view &out))))
-
-; Can byte `c` continue a symbol in printed text?
-(defn hyg-symbol-byte? (c:i32):bool
-  (when (<= c 32) (return false))
-  (case c
-    (:or 40 41 91 93 123 125 39 34 96 44 59) (return false)
-    (return true)))
 
 ; ------------------------------------------------------------
 ; probe
@@ -12896,11 +13123,6 @@
 ; exactly as the registry probes are — a facade's alias is reachable only from a
 ; file that can name the facade.
 (defn binding-alias-find (spelling:Symbol kind:i32):ptr
-  (when-some (h (hyg-of spelling))
-    (let (here:NameEnv (hyg-enter h)
-          r:ptr (binding-alias-find (hyg-inner spelling) kind))
-      (name-env-set here)
-      (return r)))
   (when (= g-binding-aliases null) (return null))
   (let (tbl:&(Vector &BindingAlias) (unsafe/cast &(Vector &BindingAlias) g-binding-aliases))
     (dotimes (i (name-ref-key-count spelling))
@@ -13099,18 +13321,18 @@
 ; stamp the type into two positions (the `ref` binding and the `alloca`) and must
 ; not share one node between them.
 ;
-; `Keyword` is defined in lib/keyword.nuc, so a keyword literal is the one bracket
+; `Keyword` is defined in lib/nucleus/keyword.nuc, so a keyword literal is the one bracket
 ; literal whose element type the collection import does not reach; the
-; unknown-type diagnostic names the file to import. `Node` is in lib/prelude.nuc,
+; unknown-type diagnostic names the file to import. `Node` is in lib/nucleus/core.nuc,
 ; so a symbol literal needs nothing extra.
 (defn lit-type-node (kind:i32 line:i32):ptr
   (when (= kind 1) (return (lit-sym "i32")))
   (when (= kind 2) (return (lit-sym "f64")))
-  (when (= kind 3) (return (lit-sym "StrView")))
-  (when (= kind 4) (return (lit-sym "Keyword")))
+  (when (= kind 3) (return (lit-sym (core-spelling "nucleus.core" "StrView"))))
+  (when (= kind 4) (return (as ptr (intern-node (core-spelling "nucleus.keyword" "Keyword")))))
   ; A quoted symbol lowers to intern-symbol, whose result is non-null — see
   ; quoted-datum-type in src/nucleusc.nuc.
-  (when (= kind 5) (return (lit-list2 (lit-sym "ref") (lit-sym "Node") line)))
+  (when (= kind 5) (return (lit-list2 (lit-sym "ref") (lit-sym (core-spelling "nucleus.core" "Node")) line)))
   (return null))
 
 ; The element type node for a value-tier element, from the compiler's own
@@ -13215,9 +13437,14 @@
 ; from the elements otherwise. The two `<Coll>` positions get separate list
 ; nodes because each stamps the type; an interned type SYMBOL inside them is
 ; shared, as it always was.
-(defn emit-collection-lit (n:?&Node scope:&Scope tmpl:Symbol what:StrView
-                           init-fn:StrView add-fn:StrView is-map:i32 empty-msg:StrView):&Val
+(defn emit-collection-lit (n:?&Node scope:&Scope home:StrView tmpl-bare:StrView what:StrView
+                           init-bare:StrView add-bare:StrView is-map:i32 empty-msg:StrView):&Val
+  (core-ns-require home (fstr "a " what " literal") (node-line (as ptr n) g-form-line))
   (let (line:i32 (node-line (as ptr n) g-form-line)
+        tmpl:Symbol (core-spelling home tmpl-bare)
+        tmpl-msg:Symbol (symbol-intern tmpl-bare)
+        init-fn:Symbol (core-spelling home init-bare)
+        add-fn:Symbol (core-spelling home add-bare)
         head:ptr (as ptr (node-rest (unsafe/cast &Node n)))
         want:ptr (collection-lit-want-node tmpl))
     (when (and (= head null) (= want null)) (die-at line empty-msg))
@@ -13228,23 +13455,23 @@
         ; the elements are still scanned for agreement among themselves.
         (do
           (if (!= is-map 0)
-            (do (collection-lit-elem-type head 0 2 scope what "key" tmpl line 1 &kk)
-                (collection-lit-elem-type head 1 2 scope what "value" tmpl line 1 &vk))
-            (collection-lit-elem-type head 0 1 scope what "element" tmpl line 1 &kk))
+            (do (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 1 &kk)
+                (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 1 &vk))
+            (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 1 &kk))
           (set! coll1 want) (set! coll2 want))
         (if (!= is-map 0)
-          (let (kt1:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl line 0 &kk)
-                vt1:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl line 0 &vk)
-                kt2:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl line 0 &kk)
-                vt2:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl line 0 &vk))
+          (let (kt1:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 0 &kk)
+                vt1:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 0 &vk)
+                kt2:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 0 &kk)
+                vt2:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 0 &vk))
             (set! coll1 (lit-list3 (lit-sym tmpl)
                           (if (!= kt1 null) kt1 (lit-type-node kk line))
                           (if (!= vt1 null) vt1 (lit-type-node vk line)) line))
             (set! coll2 (lit-list3 (lit-sym tmpl)
                           (if (!= kt2 null) kt2 (lit-type-node kk line))
                           (if (!= vt2 null) vt2 (lit-type-node vk line)) line)))
-          (let (et1:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl line 0 &kk)
-                et2:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl line 0 &kk))
+          (let (et1:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 0 &kk)
+                et2:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 0 &kk))
             (set! coll1 (lit-list2 (lit-sym tmpl)
                           (if (!= et1 null) et1 (lit-type-node kk line)) line))
             (set! coll2 (lit-list2 (lit-sym tmpl)
@@ -13343,13 +13570,13 @@
         ; g-special-form-set so nothing may shadow them); see
         ; emit-collection-lit above.
         (when (= hp 'vector-lit)
-          (return (emit-collection-lit n scope (symbol-intern "Vector") "vector" "vector-init" "conj" 0
+          (return (emit-collection-lit n scope "nucleus.vector" "Vector" "vector" "vector-init" "conj" 0
                     "empty vector literal: use (vector-new), e.g. (let (v:(ref (Vector T)) (vector-new)) ...)")))
         (when (= hp 'hashset-lit)
-          (return (emit-collection-lit n scope (symbol-intern "HashSet") "set" "hashset-init" "conj" 0
+          (return (emit-collection-lit n scope "nucleus.hashset" "HashSet" "set" "hashset-init" "conj" 0
                     "empty set literal: use (hashset-new), e.g. (let (s:(ref (HashSet T)) (hashset-new)) ...)")))
         (when (= hp 'hashmap-lit)
-          (return (emit-collection-lit n scope (symbol-intern "HashMap") "map" "hashmap-init" "assoc" 1
+          (return (emit-collection-lit n scope "nucleus.hashmap" "HashMap" "map" "hashmap-init" "assoc" 1
                     "empty map literal: use (hashmap-new), e.g. (let (m:(ref (HashMap K V)) (hashmap-new)) ...)")))
         (when (= hp 'tagged-lit)
           (die-at (node-line n 0) (fstr "tagged literal '#" (node-head-sym (node-rest n))
@@ -13498,7 +13725,7 @@
 ; which `emit-ns` refuses precisely because this binding pre-owns the name.
 (defn unsafe-qualified-op (spelling:Symbol):i32
   (let (n:i64 (qualifier-len spelling))
-    (when (or (<= n 0) (>= (hyg-index spelling) 0)) (return 0))
+    (when (<= n 0) (return 0))
     (let (r:&NameRef (resolve-spelling spelling))
       (when (symbol-none? (r 'ns)) (return 0))
       (when (!= (r 'ns) "unsafe") (return 0))
@@ -13572,13 +13799,13 @@
 ; struct's own guard runs (before that the struct prescan always won the race
 ; and the clash was reported at the protocol's line as "a type").
 (defn guard-name-kind (name:Symbol line:i32 newk:i32):void
-  (hyg-refuse-binder name line)
   (cconst-yield name)
   (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
     (die-at line
       (fstr "'" name "' already names " (binding-noun (hit 'kind) (hit 'payload))
             " — a symbol may name only one kind of thing"))
-    0))
+    0)
+  (refuse-qualified-binder name line))
 
 ; Stage 15 B4 — R4's rule (name-resolution.md §11.1): two definitions of one
 ; name reaching one scope. `guard-name-kind` above answers the CROSS-kind
@@ -13596,8 +13823,8 @@
 ; a second `defstruct` / `defunion` / `defprotocol` / `defmacro` / template kept
 ; the FIRST definition, a second `defconst` kept the second, and a second
 ; `defvar` reached LLVM's own parser with no source location at all. §11.1's
-; measured casualty — `Node`, declared in both `lib/prelude.nuc` and
-; `lib/list.nuc` with different field nullability, the winner decided by import
+; measured casualty — `Node`, declared in both `lib/nucleus/core.nuc` and
+; `lib/nucleus/list.nuc` with different field nullability, the winner decided by import
 ; order — was this class, and §11.7 cleared the tree of it ahead of the rule.
 ; Is an existing record THIS definition, being registered again? Several
 ; definers are legitimately re-entered for one form — `prescan-protocols` runs
@@ -13760,7 +13987,7 @@
   (if (!= left 0) (return (bit-shl a b)) (return (bit-shr a b))))
 
 ; The foldable binary operators, by their POST-macroexpansion spelling: the
-; variadic `+`/`-`/`*`/`/` and `bit-not` are macros (lib/macros.nuc) that expand
+; variadic `+`/`-`/`*`/`/` and `bit-not` are macros (lib/nucleus/macros.nuc) that expand
 ; to these, so a source-level `(+ a b c)` arrives as nested `_+` cells.
 ; Comparisons and `_and`/`_or` are deliberately absent — they yield bool and belong
 ; to a value domain this folder does not model (see the G-1 record).
@@ -14221,7 +14448,7 @@
 ; Accepts int / float / string / null / true / false / defconst-name / (char "x").
 ; `encl` is the enclosing `defvar` form's line, blamed when the init node is a
 ; bare symbol (`null`/`true`/`false`/a defconst name) — an interned singleton
-; with no line of its own (lib/node.nuc `node-line`). Stage 15 W4a.
+; with no line of its own (lib/nucleus/node.nuc `node-line`). Stage 15 W4a.
 ; An empty view is "no constant rendering exists" (soft mode's answer); an
 ; initializer is never the empty string, so the two cannot be confused.
 (defn defvar-init-ir (init:?&Node ty:?&Type encl:i32):StrView
@@ -14564,6 +14791,7 @@
     (set! (job 'form) form)
     (set! (job 'ns) g-current-ns)
     (set! (job 'path) g-source-path)
+    (set! (job 'imports) g-file-imports)
     (set! (job 'line) line)
     (set! (job 'name) name)
     (set! (job 'ir-name) irn)
@@ -15152,6 +15380,7 @@
     (require-defenum-form call)
     (let (enum-name-node:&Node (unsafe/cast &Node (node-at cc 1)))
       (reject-colon-in-def-name enum-name-node "defenum" (cc 'line))
+      (when (= (enum-name-node 'kind) NODE-SYM) (refuse-qualified-binder (enum-name-node 's) (cc 'line)))
       ; W4b sibling sweep: defenum has no template/parametric-name concept
       ; (unlike defstruct/defprotocol/defunion), so any CELL name here can
       ; only be the colon-paren-fused single-annotation shape ("E:(i32)" ->
@@ -15245,11 +15474,6 @@
 ; Stage 15 B3′: the reference resolver for the enum NAME (its members are
 ; ordinary `g-globals` entries and were cut over by B2b).
 (defn enumdef-lookup-ref (spelling:Symbol):?&EnumDef
-  (when-some (h (hyg-of spelling))
-    (let (here:NameEnv (hyg-enter h)
-          r:?&EnumDef (enumdef-lookup-ref (hyg-inner spelling)))
-      (name-env-set here)
-      (return r)))
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
@@ -15506,6 +15730,7 @@
                                e
                                (register-struct key))
             nfields:i32 (- (- (node-len cc) 2) nattrs))
+        (struct-link-name-unique sd (cc 'line))
         ; PK-1: before defstruct-fill-layout, since struct-set-fields is what
         ; makes the layout final and abi-field-align reads this on the way.
         (when (!= (bit-and aflags STRUCT-ATTR-PACKED) 0) (set! (sd 'packed) 1))
@@ -15698,7 +15923,9 @@
       ; `(extern stderr)` and the bootstrap stay byte-identical.
       (let (ir-name:StrView (fstr "@" (ns-ir-base name)))
         (check-ir-name-legal (cc 'line) name ir-name)
-        (when (!= m NUCH-REG)
+        ; Two namespaces' `(extern stderr:ptr)` are two keys and one link name.
+        (when (and (!= m NUCH-REG)
+                   (or (= m NUCH-AFTER) (= (scope-frame-find-ir g-globals ir-name) null)))
           ; Stage 16 R3: the dedup above is process-wide, which is right for a
           ; single batch module and leaves every LATER REPL module without the
           ; line — `(extern stderr:ptr)` in two collection libs emitted it into
@@ -15741,7 +15968,7 @@
 ; The interesting half is the *early emission*. Simply dropping the header's
 ; declaration and waiting for the explicit one is wrong: everything between the
 ; import and the declare's own position would fail to resolve. (Measured —
-; `examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/arena.nuc`
+; `examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/nucleus/arena.nuc`
 ; calls it from inside the prelude import that precedes it, so suppression alone
 ; broke that build with `unknown: strlen`.) Emitting the explicit declaration at
 ; the point of first need keeps exactly one `declare` in the module, gives it the
@@ -16005,6 +16232,7 @@
             ; because they see the same types in the same order.
             (abi-args-begin (unsafe/cast ptr:AbiInfo g-fn-ret-abi))
             (while (< i nparams)
+              (refuse-qualified-binder (aref (unsafe/cast &Symbol param-names) i) (cc 'line))
               (abi-emit-param-prologue fn-scope
                 (aref (unsafe/cast &Symbol param-names) i)
                 (aref (unsafe/cast &ptr param-types) i))
@@ -16468,6 +16696,7 @@
         saved-out:?&String g-out
         saved-ns:Symbol g-current-ns
         saved-path:Symbol g-source-path
+        saved-imports:?&ImportVec g-file-imports
         saved-line:i32 g-form-line)
     (set! g-out out)
     (reset-function-state)
@@ -16478,6 +16707,7 @@
           (when (!= (ct-mirror-defines-global (job 'ir-name)) 0)
             (set! g-current-ns (job 'ns))
             (set! g-source-path (job 'path))
+            (set! g-file-imports (job 'imports))
             (set! g-form-line (job 'line))
             (emit-node (as ptr (job 'form)) fn-scope)))
         (set! i (+ i (as usize 1)))))
@@ -16493,6 +16723,7 @@
     (set! g-out saved-out)
     (set! g-current-ns saved-ns)
     (set! g-source-path saved-path)
+    (set! g-file-imports saved-imports)
     (set! g-form-line saved-line)
     (pop-function-state fs))
   (return 1))
@@ -17016,6 +17247,8 @@
               pcount:i32 (macro-parse-params params-node "defmacro" (ff 'line)
                                              (as &ptr &pnames)
                                              (as &i32 &variadic)))
+          (dotimes (pi pcount)
+            (refuse-qualified-binder (aref (unsafe/cast &Symbol pnames) pi) (ff 'line)))
           ; Register in macro table
           (when (>= (unsafe/cast i32 (count g-macros)) 256)
             (die-at (ff 'line) "defmacro: macro table full"))
@@ -17105,7 +17338,9 @@
                 (emit g-entry-stream "  store ptr %__args.arg, ptr %__args.addr, align 8\n")
                 ; Macro params are &Node: arity is checked and `&rest` is `()`, so none is null.
                 (let (param-node-ty:&Type (make-type TY-PTR))
-                  (set! (param-node-ty 'elem) (parse-type-name (symbol-intern "Node") 0))
+                  (set! (param-node-ty 'elem) (if-some (nd (core-struct "Node"))
+                                                (type-for-sdef nd)
+                                                (parse-type-name (symbol-intern "Node") 0)))
                   (set! (param-node-ty 'pkind) PTR-REF)
                   (dotimes (ei pcount)
                     (let (pname:Symbol (aref (unsafe/cast &Symbol pnames) ei)
@@ -17604,7 +17839,7 @@
 ;
 ; Stage 15 W3a: `encl` is the enclosing form's line, used as the line stamped on
 ; the cells this produces. A colon-typed binding name is a bare NODE-SYM, and an
-; interned symbol node's own `line` is always 0 (W4a / lib/node.nuc node-line) —
+; interned symbol node's own `line` is always 0 (W4a / lib/nucleus/node.nuc node-line) —
 ; so without the fallback every desugared `(name (ptr T))` cell carried line 0,
 ; and every diagnostic raised off a defn parameter, defvar/extern/declare name,
 ; defstruct field or let/with binding name reported `:0:`. That is what made
@@ -17825,6 +18060,7 @@
         (when (or (or (= ph "import") (= ph "import-prefixed"))
                   (or (= ph "import-use") (= ph "import-only")))
           (set! kind-ok 1))
+        (when (require-head? ph) (set! kind-ok 1))
         (when (!= priv-head 0)
           ; `(unsafe-import-private lib prefix sym…)` — the prefix is always
           ; explicit, at index 2, and the form may be longer than 3.
@@ -17857,7 +18093,7 @@
             (when (not (symbol-none? path))
               ; A header's private import binds here and nowhere else.
               (when (!= priv-head 0) (set! g-import-include-private 1))
-              (file-import-record prefix path)
+              (file-import-record prefix path (if (require-head? ph) 1 0))
               (set! g-import-include-private save-priv)))))))
   (return true))
 
@@ -17893,9 +18129,16 @@
 
 ; The heads whose index 1 names a library, for every walk that follows imports.
 ; `(import lib p)` is prefixed like `import-prefixed`; its length is its emitter's to check.
+; `require-ct`, like `import-ct`, is left out: what these walks reach is "real".
 (defn import-head? (h:Symbol):bool
   (return (or (= h "import") (= h "import-prefixed") (= h "import-use") (= h "import-only")
-              (= h "unsafe-import-private") (= h "unsafe/import-private"))))
+              (= h "unsafe-import-private") (= h "unsafe/import-private")
+              (= h "require"))))
+
+; Stage 23 AN-1: the import heads that bind nothing — the library only joins the
+; file's closure (ambient-namespaces.md §3).
+(defn require-head? (h:Symbol):bool
+  (return (or (= h "require") (= h "require-ct"))))
 
 ; The one diagnostic for an import that names nothing. `do-import` raises it for
 ; both spellings (W9 item 6 made the string path say the same words as the symbol
@@ -17954,7 +18197,7 @@
                           save-file-imports:?&ImportVec g-file-imports)
                       (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-current-ns (symbol-intern "user"))
+                        (set! g-current-ns g-ns-user)
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-source-or-die (string-as-view &src)))))
@@ -18604,7 +18847,7 @@
                           save-file-imports:?&ImportVec g-file-imports)
                       (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-current-ns (symbol-intern "user"))
+                        (set! g-current-ns g-ns-user)
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-source-or-die (string-as-view &src)))))
@@ -18895,6 +19138,7 @@
   (reset-function-state)
   (let (save-ns:Symbol g-current-ns
         save-path:Symbol g-source-path
+        save-imports:?&ImportVec g-file-imports
         save-line:i32 g-form-line)
     (let (fn-scope:&Scope (scope-new g-globals))
       (set! g-init-fn-active 1)
@@ -18903,11 +19147,13 @@
           (inc! g-init-drained)
           (set! g-current-ns (job 'ns))
           (set! g-source-path (job 'path))
+          (set! g-file-imports (job 'imports))
           (set! g-form-line (job 'line))
           (emit-node (as ptr (job 'form)) fn-scope)))
       (set! g-init-fn-active 0))
     (set! g-current-ns save-ns)
     (set! g-source-path save-path)
+    (set! g-file-imports save-imports)
     (set! g-form-line save-line))
   (when (= g-block-term 0)
     (emit g-body-stream "  ret void\n"))
@@ -19042,6 +19288,8 @@
 
 (defn toplevel-expand-macro (forms:?&Node i:i32 f:&Node h:Symbol):i32
   (when (= (find-macro h) null)
+    (match (macro-in-other-namespace-message "unknown top-level form" h true)
+      (none 0) ((some mac-ns) (die-at (f 'line) mac-ns)))
     (die-at (f 'line) (fstr "unknown top-level form: " h)))
   (let (ex:ptr (desugar-form (macroexpand-form f -1)))
     (when (or (= ex null)
@@ -19146,7 +19394,7 @@
   ; SAME two identity lists an imported file lands on. Nothing imports the unit's
   ; root, so it was on neither (see "The compilation unit's ROOT file is on none
   ; of the import lists"), and the auto-prepended prelude reaches back into
-  ; `lib/node.nuc`/`lib/arena.nuc` — so compiling one of those as the entry file
+  ; `lib/nucleus/node.nuc`/`lib/nucleus/arena.nuc` — so compiling one of those as the entry file
   ; re-entered it as an import and paid twice:
   ;   * `g-prescan-sigs` — a second `prescan-defn-signatures` over one file is a
   ;     duplicate-overload error, because `generic-register-method` appends
@@ -19166,7 +19414,7 @@
       (set! root-pushed 1)
       ; A cycle skip alone would be wrong for the prelude's own libraries: the
       ; skipped file's macros/externs are exactly what the rest of the chain
-      ; needs (`lib/arena.nuc` uses `when` from `lib/macros.nuc`). Arm the hoist
+      ; needs (`lib/nucleus/arena.nuc` uses `when` from `lib/nucleus/macros.nuc`). Arm the hoist
       ; instead — see `g-root-hoist-ok`.
       (set! g-root-hoist-ok 1)))
   ; Stage 15 W1a: outermost unit only — register every reachable file's protocols
@@ -19337,6 +19585,10 @@
               (emit-import-only (as ptr f))
             'import-prefixed
               (emit-import-prefixed (as ptr f))
+            'require
+              (emit-require (as ptr f))
+            'require-ct
+              (emit-require-ct (as ptr f))
             ; Stage 14 UN-5: bare `unsafe-import-private` is retired (D6);
             ; `unsafe/import-private` keeps calling the same emitter as before.
             'unsafe-import-private
@@ -19483,8 +19735,8 @@
 ; re-entry. Answer whether it is the ONE re-entry that must be emitted rather
 ; than skipped: the unit's root file, reached before the root has emitted any of
 ; its own forms. That is the shape the auto-prepended prelude creates whenever
-; the file being compiled is one the prelude reaches (`lib/node.nuc`,
-; `lib/arena.nuc`, `lib/macros.nuc`, `lib/prelude.nuc` itself) — and a skip there
+; the file being compiled is one the prelude reaches (`lib/nucleus/node.nuc`,
+; `lib/nucleus/arena.nuc`, `lib/nucleus/macros.nuc`, `lib/nucleus/core.nuc` itself) — and a skip there
 ; is not merely suboptimal but wrong, since the skipped file is the one holding
 ; the macros and definitions the rest of the chain is about to use.
 ;
@@ -19601,21 +19853,46 @@
 ; import list downstream is then an identity compare rather than the `strcmp` a
 ; fresh per-call buffer forced (c7-interned-substrate.md C7-5).
 (defn resolve-import (name:Symbol line:i32):Symbol
-  (let (nuc-path:Symbol (try-import-path (fstr name ".nuc")))
-    (when (not (symbol-none? nuc-path)) (return nuc-path)))
-  (let (nuch-path:Symbol (try-import-path (fstr name ".nuch")))
-    (when (not (symbol-none? nuch-path)) (return nuch-path)))
+  (match (import-name-relpath name)
+    (none (return (symbol-none)))
+    ((some rel)
+      (let (nuc-path:Symbol (try-import-path (fstr rel ".nuc")))
+        (when (not (symbol-none? nuc-path)) (return nuc-path)))
+      (let (nuch-path:Symbol (try-import-path (fstr rel ".nuch")))
+        (when (not (symbol-none? nuch-path)) (return nuch-path)))))
   (return (symbol-none)))
+
+; Stage 23 AN-1: a library name's dots are directories (`a.b` → `a/b`), as in
+; Clojure; hyphens are kept. None for an empty component, which would otherwise
+; spell an absolute path or `//`.
+(defn import-name-relpath (name:Symbol):?StrView
+  (let (rest:StrView (symbol-as-view name)
+        out:StrView "")
+    (while true
+      (match (strview-find-byte &rest 46)
+        (none
+          (when (str-empty? &rest) (return (none)))
+          (if (str-empty? &out)
+            (return (some rest))
+            (return (some (fstr out "/" rest)))))
+        ((some at)
+          (when (= at 0) (return (none)))
+          (let (part:StrView (strview-take-bytes rest at))
+            (if (str-empty? &out)
+              (set! out part)
+              (set! out (fstr out "/" part))))
+          (set! rest (strview-drop-bytes rest (+ at 1))))))
+    (return (none))))
 
 ; Stage 20 L1: capture the compile-time library root from the prelude import.
 ; Called from `do-import` with a RESOLVED path, because which of
 ; `try-import-path`'s five steps found it is the whole answer (§3.4). First
-; capture wins: the auto-prepended `(import-use prelude)` is the unit's first
+; capture wins: the auto-prepended `(import-use nucleus.core)` is the unit's first
 ; import form, and a later re-import resolves to the same file.
 (defn ct-lib-root-note (name:Symbol path:Symbol):void
   (when (not (symbol-none? g-ct-lib-root)) (return))
-  (when (!= name "prelude") (return))
-  (set! g-ct-lib-root (path-dir path)))
+  ; The root is the search directory `nucleus/core.nuc` was found under.
+  (when (= name "nucleus.core") (set! g-ct-lib-root (path-dir (path-dir path)))))
 
 ; Are THIS file's definitions what an enclosing `(import-ct …)` asked to withhold?
 ;
@@ -19638,7 +19915,7 @@
 ; Both directions are set explicitly, because the mode belongs to the FILE and not
 ; to the nesting: an ordinary import reached THROUGH a compile-time-only one is
 ; still ordinary, and leaving it in the sink would discard a library the program
-; does use. (Measured: `lib/vector.nuc`, imported for real by the program and also
+; does use. (Measured: `lib/nucleus/vector.nuc`, imported for real by the program and also
 ; by a ct-imported library, had every definition marked ct-only.)
 (defn emit-import-forms (forms:?&Node is-nuch:i32 ct:i32):void
   (let (saved-def:?&String g-def-stream
@@ -19685,7 +19962,8 @@
 ; A string path (`(import "stdio.h" 'c)`) routes to C-header parsing; the default
 ; prefix for a string import is `c` (handled by the callers).
 (defn do-import (form:?&Node name-node:?&Node prefix:Symbol line:i32):void
-  (let (nn:&Node (unsafe/cast &Node name-node))
+  (let (nn:&Node (unsafe/cast &Node name-node)
+        bind-none:i32 (if (require-head? (import-form-head form)) 1 0))
     ; W9 item 45: `(import-use ())` is a NULL node (W5f) and names no library.
     ; Asked once, up front, because every import spelling routes its name through
     ; here — and shared with the header validation, which never runs this.
@@ -19716,7 +19994,7 @@
             ; cycle case matters most: skipping the bind there would make
             ; `unbound-prefix-message` answer a question W1d's
             ; `cycle-prefix-message` already answers correctly.
-            (file-import-record prefix path)
+            (file-import-record prefix path bind-none)
             ; Prefix-level dedup: this exact (file, prefix) has already been aliased.
             (when (and (not (symbol-none? prefix))
                        (!= (import-list-has g-import-aliased (import-key path prefix)) 0))
@@ -19768,7 +20046,7 @@
                       (set! g-importing (import-list-push g-importing path))
                       (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-current-ns (symbol-intern "user"))
+                        (set! g-current-ns g-ns-user)
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
                         (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
@@ -19815,7 +20093,12 @@
         ; Stage 15 B1: a C header binds in the importing file's environment too —
         ; `(import-prefixed "stdio.h" c)` makes `c/` legal in *this* file only.
         ; There is no imported-file body here, so no environment to save.
-        (file-import-record prefix spath)
+        ; A header has no namespace to join a closure, so a require of one would
+        ; be an import-use under another name.
+        (when (!= bind-none 0)
+          (die-at line (fstr (import-form-head form) ": '" spath
+                             "' is a C header, which has no namespace to require -- import it with import-use or import")))
+        (file-import-record prefix spath 0)
         (set! g-out &g-decl-stream)
         (emit-c-include spath line))
       (return))
@@ -19828,7 +20111,7 @@
       (ct-lib-root-note name path)
       ; Stage 15 B1: bind in the importing FILE's environment before any early
       ; return below — see the twin site in the string-path branch above.
-      (file-import-record prefix path)
+      (file-import-record prefix path bind-none)
       ; Prefix-level dedup: this exact (file, prefix) has already been aliased.
       (when (and (not (symbol-none? prefix))
                  (!= (import-list-has g-import-aliased (import-key path prefix)) 0))
@@ -19888,7 +20171,7 @@
                 ; Read and parse the imported file
                 (let (src:String (read-file path))
                   (set! g-source-path path)
-                  (set! g-current-ns (symbol-intern "user"))
+                  (set! g-current-ns g-ns-user)
                   (set! g-ns-seen 0)
                   (set! g-file-imports null)
                   (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
@@ -19935,6 +20218,31 @@
       (die-at (ff 'line) "import-use: expected (import-use name)"))
     (do-import form (node-at form 1) (symbol-none) (ff 'line))))
 
+; The head symbol of an import form, or none.
+(defn import-form-head (form:?&Node):Symbol
+  (when (or (!= (node-kind form) NODE-LIST) (= (node-len form) 0)) (return (symbol-none)))
+  (let (h:?&Node (as ?&Node (node-at form 0)))
+    (when (!= (node-kind h) NODE-SYM) (return (symbol-none)))
+    (return ((unsafe/cast &Node h) 's))))
+
+; Stage 23 AN-1: `(require NAME)` loads a library as `import-use` does and binds
+; nothing; its namespace joins this file's closure (ambient-namespaces.md §3).
+(defn emit-require (form:?&Node):void
+  (let (ff:&Node (unsafe/cast &Node form))
+    (when (!= (node-len form) 2)
+      (die-at (ff 'line) "require: expected (require name)"))
+    (do-import form (node-at form 1) (symbol-none) (ff 'line))))
+
+; `(require-ct NAME)` — `require`'s compile-time-only form, withheld exactly as
+; `import-ct` withholds.
+(defn emit-require-ct (form:?&Node):void
+  (let (ff:&Node (unsafe/cast &Node form))
+    (when (!= (node-len form) 2)
+      (die-at (ff 'line) "require-ct: expected (require-ct name)"))
+    (set! g-import-ct (+ g-import-ct 1))
+    (do-import form (node-at form 1) (symbol-none) (ff 'line))
+    (set! g-import-ct (- g-import-ct 1))))
+
 ; `(import-ct NAME)` — import a library for its COMPILE-TIME surface alone:
 ; types, signatures, constants and macros register exactly as `import-use`
 ; registers them, and nothing the library defines is emitted into the program.
@@ -19950,7 +20258,7 @@
 ; (`g-malloc-decl-done`, `g-trap-declared`, `g-nuch-registered`) records a
 ; `declare` the module is then assumed to hold — send those to a sink and the
 ; latch is set for a line nothing has. Measured: with the decl stream redirected,
-; `lib/arena.nuc`'s own `defmacro` JIT'd a `@malloc` call into a module whose
+; `lib/nucleus/arena.nuc`'s own `defmacro` JIT'd a `@malloc` call into a module whose
 ; declare had been discarded.
 (defn emit-import-ct (form:?&Node):void
   (let (ff:&Node (unsafe/cast &Node form))
@@ -20046,7 +20354,7 @@
 
 ; Stage 15 W1d: default prefix for a `.nuc`/`.nuch` STRING-path import — the
 ; basename with its extension removed, then the same last-dotted-component rule
-; the symbol spelling uses, so `(import "lib/list.nuc")` and `(import list)` both
+; the symbol spelling uses, so `(import "lib/nucleus/list.nuc")` and `(import nucleus.list)` both
 ; bind `list/…`. Note the path is used verbatim (do-import does not run
 ; resolve-import on a string path), so the basename is taken from what the author
 ; wrote; two paths with the same basename collide, which is the same
@@ -20332,7 +20640,7 @@
 ; §4.4 item 1. Each still allocates through g-arena-alloc and is never dropped
 ; (process lifetime).
 (defn build-special-form-set ():NameSet
-  ; --- special-form-named set (87 members) ---
+  ; --- special-form-named set (89 members) ---
   ; Stage 15 B2b removed the seven `unsafe/*` whole-string entries UN-2 added:
   ; `unsafe` is a real built-in namespace now, so `special-form-named` answers
   ; for them through `unsafe-qualified-op` (resolve the qualifier, then the
@@ -20389,6 +20697,7 @@
        "defn-" "defvar-" "defconst-" "defenum-" "defstruct-"
        "defmacro-" "defprotocol-" "defunion-" "deftype-"
        "import" "import-use" "import-only" "import-prefixed"
+       "require" "require-ct"
        "unsafe-import-private" "extern" "declare" "compile-time"
        ; Stage 12 N4: namespace IR-prefix override
        "set-ir-prefix"
@@ -20692,18 +21001,18 @@
       (when (!= ((unsafe/cast &Node head) 's) "ns") (return 0))
       (return 1))))
 
-; Prepend a synthetic (import-use prelude) cell onto the given forms list. The
+; Prepend a synthetic (import-use nucleus.core) cell onto the given forms list. The
 ; auto-prelude flattens the prelude's symbols into the unit under their bare
 ; names (`import-use`, not the prefix-qualified `import`). If the unit opens with
 ; a leading `(ns NAME)`, the prelude import is spliced in just after it,
 ; preserving `ns` as the first form so apply-leading-ns sees it.
 (defn prepend-prelude-import (forms:?&Node):ptr
   (let (import-sym:ptr (intern-node (symbol-intern "import-use"))
-        name-sym:ptr   (intern-node (symbol-intern "prelude"))
+        name-sym:ptr   (intern-node g-ns-core)
         name-cell:ptr  (node-list1 name-sym 0)
         import-form:ptr (node-cons import-sym name-cell 0))
     (when (!= (is-leading-ns forms) 0)
-      ; forms = (ns ...) . rest ; result = (ns ...) . (import-use prelude) . rest
+      ; forms = (ns ...) . rest ; result = (ns ...) . (import-use nucleus.core) . rest
       (return (node-cons (node-first (unsafe/cast &Node forms))
                 (node-cons import-form
                   (node-rest (unsafe/cast &Node forms)) 0) 0)))

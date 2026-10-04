@@ -1,9 +1,11 @@
 ; Node utilities — allocation and list operations on the AST Node type.
 ;
-; The Node struct and NODE-* constants are defined in lib/prelude.nuc, which
-; is auto-imported into every program. arena-alloc comes from lib/arena.nuc.
+; The Node struct and NODE-* constants are defined in lib/nucleus/core.nuc, which
+; is auto-imported into every program. arena-alloc comes from lib/nucleus/arena.nuc.
 
-(import-use arena)
+(ns nucleus.node)
+
+(import-use nucleus.arena)
 
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node ():&Node
@@ -193,12 +195,12 @@
     (node-push n e)
     (return n)))
 
-; `intern` is imported HERE, not at the top: it reaches `lib/error.nuc`
+; `intern` is imported HERE, not at the top: it reaches `lib/nucleus/error.nuc`
 ; transitively, whose `with-handler` macro body calls `node-at` — and a macro
 ; body sees only what precedes it (context/conventions.md). Importing it above
 ; would compile that macro before `node-at` is a registered program defn, and
 ; the JIT module would reference an undeclared `@node-at`.
-(import-use intern)
+(import-use nucleus.intern)
 
 ; A form's head symbol, or none for an empty list or a leaf.
 (defn node-head-sym (n:ptr:Node):Symbol
@@ -216,7 +218,7 @@
 ; gensym deliberately bypasses interning — gensym-produced symbols are
 ; unique by construction and never collide with anything else.
 ;
-; Stage 17 C7-2: the BYTES are `lib/intern.nuc`'s, not a second table's. This
+; Stage 17 C7-2: the BYTES are `lib/nucleus/intern.nuc`'s, not a second table's. This
 ; file keeps only the Symbol -> canonical-Node map, which is what the `Node*`
 ; identity above actually needs; the probe is a pointer compare on the interned
 ; bytes rather than a `strcmp`, and the hash is the one the interner cached.
@@ -302,9 +304,9 @@
 ; (design/stage21-cleanup/ast-as-collection.md §1).
 ;
 ; Imported here rather than at the top for the same reason `intern` is: a macro
-; body sees only what precedes it, and `lib/coll.nuc` reaches macros of its own.
-(import-use coll)
-(import-use iterator)
+; body sees only what precedes it, and `lib/nucleus/coll.nuc` reaches macros of its own.
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 
 ; LIFETIME: a view, not an owner — the list must outlive the iterator.
 (defstruct NodeIter
@@ -340,7 +342,7 @@
     (return @it)))
 
 ; `invoke`, not `get`: an integer index `(n i)` routes to `invoke`, which keeps
-; index access and field access distinct (lib/coll.nuc §Seq). `(n 'kind)` still
+; index access and field access distinct (lib/nucleus/coll.nuc §Seq). `(n 'kind)` still
 ; reads the field — the router prefers a selector that names one.
 (extend Node (Seq &Node))
 

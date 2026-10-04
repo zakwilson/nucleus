@@ -13,11 +13,13 @@
 ;   - Return type StrView (struct by value) goes through sret ABI.
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.string-split)
+
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(import-use strview)
-(import-use iterator)
+(import-use nucleus.strview)
+(import-use nucleus.iterator)
 
 ; ---------------------------------------------------------------------------
 ; SplitIter — lazy byte-level split of a StrView on a delimiter StrView.

@@ -1,6 +1,6 @@
-# Iterators (`lib/iterator.nuc`, Stage 11)
+# Iterators (`lib/nucleus/iterator.nuc`, Stage 11)
 
-`(import-use iterator)` provides the `Iterator` parametric protocol, two concrete
+`(import-use nucleus.iterator)` provides the `Iterator` parametric protocol, two concrete
 iterator structs, function-object protocols, generic lazy combinators, and a
 generic `reduce`.
 
@@ -67,7 +67,7 @@ each element arrives as a bare `Node*` pointer. Prefer `NodeIter` in new code �
 `Node` conforms to `(Coll (ref Node) NodeIter)` directly, so `doseq` works on a
 form with no wrapper and yields typed `(ref Node)` elements
 (see [Collections](collections.md#node-libnodenuc)); `ListIter` is kept for the
-examples that still spell a list through `lib/list.nuc`.
+examples that still spell a list through `lib/nucleus/list.nuc`.
 
 ```lisp
 (let (it:ListIter (list-iter lst))
@@ -76,13 +76,13 @@ examples that still spell a list through `lib/list.nuc`.
 ```
 
 **C strings and Strings — byte/char folds.** `(cstr-bytes cs)` / `(cstr-chars cs)`
-(`lib/strview.nuc`) return a `ByteIter` / `CharIter` over a `CStr` (the NUL is
+(`lib/nucleus/strview.nuc`) return a `ByteIter` / `CharIter` over a `CStr` (the NUL is
 excluded). A `String` folds via `string-as-view` + `strview-bytes`/`strview-chars`.
 This lets the FNV byte hash be written as a `reduce` over the byte iterator that
 matches `strview-hash` exactly. See `examples/cstr-fold-test.nuc`.
 
 **Lazy string splitting — `SplitIter` / `LineIter`.** These conform to
-`(Iterator StrView)` (`lib/string-split.nuc`), so `next` yields
+`(Iterator StrView)` (`lib/nucleus/string-split.nuc`), so `next` yields
 `(Maybe StrView)` and `doseq-iter` binds each segment by value. Pass
 `&seg` to anything taking `(ref StrView)`:
 
@@ -194,7 +194,7 @@ Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 ```lisp
 (import-use "stdio.h")
-(import-use iterator)
+(import-use nucleus.iterator)
 
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))

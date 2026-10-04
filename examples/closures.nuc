@@ -2,7 +2,7 @@
 ;
 ; This is the reference runnable demo for the closure feature. Each of the four
 ; forms is exercised as the fold function of a generic `reduce` over an
-; IntRangeIter (lib/iterator.nuc). `reduce` declares its fold operand `g` with
+; IntRangeIter (lib/nucleus/iterator.nuc). `reduce` declares its fold operand `g` with
 ; the bound `((FoldFn Acc S) G)`, and the compiler structurally derives each
 ; closure's `(FoldFn ...)` conformance from its synthesized `invoke` method — so
 ; no hand-written function-object struct is needed (see design/stage13/lambda.md
@@ -20,8 +20,8 @@
 ; (Stage 13 CE-1). Passing it inline as the `g` argument is the original shape.
 
 (import-use "stdio.h")
-(import-use iterator)
-(import-use allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.allocator)
 
 ; A top-level name. Referencing it from a body is NOT capture — it is an ordinary
 ; global reference, resolved the way any function reaches a defconst. Only the

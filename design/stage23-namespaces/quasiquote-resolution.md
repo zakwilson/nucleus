@@ -1,5 +1,17 @@
 # Quasiquote names resolve where the macro was written
 
+> **AN-4 rebase (2026-10-04).** Stage 23 AN-4 rebased this design onto ambient
+> namespaces ([ambient-namespaces.md](ambient-namespaces.md) §6, "AN-4 as
+> built"). The rule (§3.1), the classification (§3.2, §3.6–§3.8, §3.10) and D1,
+> D4, D5 stand. Superseded: the `#h<N>/` tag (§3.3) is now the definition's full
+> name `ns/name`, resolved by the ordinary qualified path, so §3.4's per-resolver
+> unwrapping, §3.9's display scrub and §3.11's `.nuch` re-spelling and refusal
+> are deleted; §3.5's binder refusal is now "a binding name may not be
+> qualified", for every binder. D2 holds with a refusal where one namespace
+> cannot cover the defining file's methods. D3 is reversed: a template reaches
+> public names only. The HY sections below are kept as the record of what was
+> built first.
+
 Stage 22 follow-on. **Designed 2026-10-03; HY-0 to HY-6 built 2026-10-03**
 (uncommitted; see the answers and as-built notes at the end of §5). Not
 built: namespacing `lib/fmt.nuc` and `lib/io.nuc` (HY-5, measured and deferred). Prompted by the ED-4

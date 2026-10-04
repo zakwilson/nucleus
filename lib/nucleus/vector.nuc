@@ -22,24 +22,27 @@
 ; escapable ref. An owning collection may not escape by return without `move`.
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.vector)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
+(import-use nucleus.numeric)
 
 ; `stderr` is a libc global, not a function — C header parsing imports functions
 ; only, so it must be declared explicitly (as the compiler itself does).
 (extern stderr:ptr)
 
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 
 ; ---------------------------------------------------------------------------
 ; Panic helpers. These are NON-generic so they are emitted once and resolve
 ; their `stderr`/`exit`/`fprintf` references against this file's includes. A
 ; generic method body is monomorphized at the *call site* in the consuming unit,
 ; which would otherwise have to declare `stderr`/`exit` itself; routing the panic
-; through these helpers keeps the consumer's only requirement to `(import vector)`.
+; through these helpers keeps the consumer's only requirement to `(import nucleus.vector)`.
 ; ---------------------------------------------------------------------------
 (defn vector-oom ():void
   (fprintf stderr "vector: out of memory\n")
