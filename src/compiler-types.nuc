@@ -1219,6 +1219,17 @@
   ns:Symbol      ; the namespace name
   prefix:Symbol) ; its ir-prefix
 
+; Who holds an `@` link name: a definition, or a C declaration a definition must match.
+(defstruct LinkClaim
+  ident:Symbol   ; the same ident again is a redefinition, not a collision
+  name:Symbol    ; as diagnostics print it
+  file:Symbol
+  line:i32
+  sig:Symbol     ; the LLVM signature, for a C declaration
+  c-decl:bool
+  irn:Symbol
+  prev:i32)      ; the claim this one replaced in the index, or -1; REPL rollback restores it
+
 ; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3) — one
 ; entry in the FILE-scoped import environment: what a single import form bound in
 ; the file that wrote it. `prefix` is the qualifier an `import-prefixed` (or the

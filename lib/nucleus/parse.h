@@ -6,7 +6,7 @@
 
 /* Generated from lib/nucleus/parse.nuc by nucleusc --emit-cheader */
 
-uint8_t* parse_nul_copy(struct StrView* sv) asm("parse-nul-copy");
+uint8_t* nuc_parse_nul_copy(struct nuc_StrView* sv) asm("nuc_parse-nul-copy");
 /* from-str: uses an error-union or option type; not exported */
 /* from-str: uses an error-union or option type; not exported */
 /* from-str: uses an error-union or option type; not exported */

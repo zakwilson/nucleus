@@ -6,11 +6,11 @@
 (defstruct Pair a:int b:int)
 (defstruct Big  x:i64 y:i64 z:i64)
 
-(defn nuc_pair_make (a:int b:int):Pair
+(defn nt_pair_make (a:int b:int):Pair
   (let (q:&Pair (alloca Pair)) (set! (q 'a) a) (set! (q 'b) b) @q))
-(defn nuc_pair_sum (p:Pair):int
+(defn nt_pair_sum (p:Pair):int
   (let (q:&Pair (alloca Pair)) (set! (deref q) p) (+ (get q 'a) (get q 'b))))
-(defn nuc_big_make (x:i64 y:i64 z:i64):Big
+(defn nt_big_make (x:i64 y:i64 z:i64):Big
   (let (q:&Big (alloca Big)) (set! (q 'x) x) (set! (q 'y) y) (set! (q 'z) z) @q))
-(defn nuc_big_sum (b:Big):i64
+(defn nt_big_sum (b:Big):i64
   (let (q:&Big (alloca Big)) (set! (deref q) b) (+ (+ (get q 'x) (get q 'y)) (get q 'z))))

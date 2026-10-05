@@ -1867,6 +1867,7 @@
   qq-resolve:i32
   ; --- registry watermarks ---
   globals-len:i32
+  n-link-claims:i32
   n-structs:i32
   n-uniondefs:i32
   n-union-templates:i32
@@ -2000,6 +2001,7 @@
   (defn repl-snapshot (st:&ReplState):void
     (over-repl-globals ((f g) `(set! (st '~f) ~g)))
     (set! (st 'globals-len) (g-globals 'len))
+    (set! (st 'n-link-claims) (unsafe/cast i32 (count g-link-claims)))
     (over-repl-registries ((f g) `(set! (st '~f) (unsafe/cast i32 (count ~g)))))
     ; Per-generic method watermarks, refilled in place.
     (let (n:i32 (unsafe/cast i32 (count g-generics))
@@ -2038,6 +2040,7 @@
     (when (> g-dyn-annots-drained (as usize (st 'n-dyn-annots)))
       (set! g-dyn-annots-drained (as usize (st 'n-dyn-annots))))
     (set! (g-globals 'len) (st 'globals-len))
+    (link-claims-truncate (st 'n-link-claims))
     (over-repl-globals ((f g) `(set! ~g (st '~f))))))
 
 ; The three protected-callback bodies. `repl-protect` runs them as callbacks so

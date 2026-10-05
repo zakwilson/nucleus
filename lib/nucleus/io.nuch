@@ -13,7 +13,7 @@
 (declare std-err () :FdOut)
 (declare fd-write-all ((fd i32) (p (ref ui8)) (n usize)) :!void)
 (extend FdOut Writer)
-(defmethod "@write_str.pFdOut.StrView" write-str ((self (ref FdOut)) (s StrView)) :!void)
+(defmethod "@nuc_write_str.pnuc_FdOut.nuc_StrView" write-str ((self (ref FdOut)) (s StrView)) :!void)
 (extern (g-io-buf String))
 (extern (g-io-buf-ready i32))
 (declare io-buf-begin () :ref:String)

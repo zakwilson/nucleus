@@ -1097,6 +1097,9 @@
   (set! (ft 'ret) ret-type)
   (type-set-params ft param-types num-params)
   (set! (ft 'variadic) is-variadic)
+  (link-claim-c-decl (symbol-intern (fstr "@" fname)) fname
+                     (fn-link-sig (as ?&Type ret-type) param-types num-params (!= is-variadic 0))
+                     g-cheader-file (cheader-line-at buf decl-start))
   ; Only register if not already defined. B2b: a KEY question, paired
   ; with the `scope-define` it guards.
   (when (= (scope-lookup-key g-globals fname) null)
@@ -3823,6 +3826,10 @@
                  (return (symbol-as-view name)))
              0))
          (cheader-note-type-file name)
+         ; The tag is the type's link name, which its own namespace decides.
+         (if-some (sd (struct-lookup-ref name))
+           (return (fstr "struct " (cheader-c-global-view (sd 'ir-name))))
+           0)
          (return (fstr "struct " (cheader-c-global-view (ns-ir-base name)))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
@@ -3988,7 +3995,7 @@
     (set! (e 'sd) sd)
     (set! (e 'kw) (if (!= (s 'is-union) 0) "union" "struct"))
     ; `__anon_…` is a reserved C identifier.
-    (set! (e 'cname) (let (nv:StrView (display-key (s 'name)))
+    (set! (e 'cname) (let (nv:StrView (symbol-as-view (s 'ir-name)))
                        (if (strview-has-prefix nv "__anon_")
                          (fstr "nuc" (strview-drop-bytes nv 1))
                          (cheader-c-ident-view (symbol-intern nv)))))
@@ -4049,8 +4056,10 @@
                   (str-into acc (cheader-type-c-decl (f 'type) (cheader-c-ident-view (f 'name))) "; ")))
               (str-into acc "}")
               (return (string-as-view acc)))))
-        ; D-IR: a core type keeps its bare C name, as it keeps its bare link name.
         (cheader-note-sdef-file sd)
+        ; A core type's C tag is its link name, as its own header spells it.
+        (when (core-ns? (key-namespace (sd 'name)))
+          (return (fstr "struct " (cheader-c-global-view (sd 'ir-name)))))
         (return (type-name-to-c (symbol-intern (display-key (sd 'name)))))))
     (return (type-to-c t))))
 

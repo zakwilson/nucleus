@@ -308,11 +308,11 @@
 "))
         s:String (try (w1-ir (string-as-view &m)))
         ir:StrView (string-as-view &s))
-    (try (check-line ir "define weak_odr ptr @append.ptr.ptr(ptr %a.arg, ptr %b.arg) section \".text.append.ptr.ptr\" {"))
-    (try (check-match ir "  %t* = call ptr @append.ptr.ptr(ptr %t*, ptr %t*)"))
+    (try (check-line ir "define weak_odr ptr @nuc_append.ptr.ptr(ptr %a.arg, ptr %b.arg) section \".text.nuc_append.ptr.ptr\" {"))
+    (try (check-match ir "  %t* = call ptr @nuc_append.ptr.ptr(ptr %t*, ptr %t*)"))
     ; Covers a solitary define and a solitary call at once, and needs no
     ; maintenance when the linkage word or the parameter names change.
-    (try (check-not-contains ir "@append("))
+    (try (check-not-contains ir "@nuc_append("))
     (drop &s)
     (drop &m))
   (return (ok)))

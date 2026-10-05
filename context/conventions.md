@@ -1228,6 +1228,26 @@ separate C namespaces, so sharing the spelling is legal and makes both `Rec` and
 alternative — teaching each reference site to drop the `struct ` prefix — was
 tried locally (`cheader-by-value-c`) and is what the tag replaced.
 
+## Core link names carry `nuc_` — and a boot that crosses a link-name change needs a JIT shim
+
+Every `nucleus.*` definition links as `nuc_` + name (`@nuc_node-push`,
+`%nuc_String`); design/stage23-namespaces/core-link-names.md. IR the compiler
+writes by hand names a core function through `core-link-name "node-push"`,
+never a literal `@node-push`. That one is a spelling rule, not a registry
+question, because the macro JIT links those declares against the compiler's
+*own* exports. A test that greps IR for a core symbol must spell the `nuc_`
+name. A `check-not-*` on a bare core name passes vacuously.
+
+Changing how core symbols are spelled breaks the first stage of the boot in a
+way `make` does not show. The old boot builds a stage1 whose binary exports the
+OLD names, while stage1's code emits the NEW ones, so every macro stage1 JITs
+fails with "Symbols not found". CL-1 crossed this with a temporary rewrite in
+`jit-add-module-rt`, applied only when `host-exports?` lacks a new-style name.
+That got stage1 to build stage2, which was already a fixed point; the shim was
+deleted after `update-bootstrap`. The CT mirror asks `host-exports?` directly,
+so stage1 also mis-runs some macros in *programs*. Judge stage1 by whether it
+compiles `src/`, not by the suite.
+
 ## An exported symbol is a REGISTRY answer, not a spelling rule — ask, do not re-derive
 
 `ns-ir-base fname` looks like "the symbol for this function" and is one only for a
@@ -5878,8 +5898,10 @@ one `ReplState` snapshot taken at the top of every top-level form and one
 — save and restore, globals and watermarks — with nothing checking the four
 agreed. It is two `macmap` tables held by a top-level `macrolet` over both
 `defn`s, `(field global)` per row, in `defstruct ReplState`'s own order.
-Adding a field means adding one row; `globals-len` is the sole exception,
-being a `Scope` field rather than a global. A table is only half the fix,
+Adding a field means adding one row. The exceptions are `globals-len`, a
+`Scope` field rather than a global, and `n-link-claims`, whose HashMap index
+`link-claims-truncate` must unwind. A registry with an index needs the same
+treatment: dropping the vector tail alone leaves the index pointing past it. A table is only half the fix,
 because a field added with no row still compiles and still leaks that global
 between prompts — `scripts/check-repl-roster.py` (unit `repl-roster`) is the
 other half, and a new field must go in a table or that unit fails.

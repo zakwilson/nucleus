@@ -1338,12 +1338,18 @@
     (drop &m))
   (return (ok)))
 
-; D-IR: a core type links under its bare name, so a `user` type of that name is
-; refused at its definition; under its own `(ns …)` the same names coexist.
+; Core links under `nuc_`, so a `user` type or global named like a core one
+; coexists with it, as the same names do under their own `(ns …)`.
 (deftest an2-core-link-name-collision
-  (try (an2-refused "an2-clash.nuc" "(defstruct StrView a:i32)
-(defn main ():i32 (return 0))
-" 1 "defstruct: StrView links as %StrView, the LLVM type of nucleus.core/StrView"))
+  (let (c:String (try (test-write-file "an2-clash.nuc" "(import-use nucleus.arena)
+(defstruct StrView a:i32)
+(defvar g-arena-used:i64 7)
+(defn main ():i32
+  (let (s:StrView (StrView 5))
+    (return (+ (s 'a) (unsafe/cast i32 g-arena-used)))))
+")))
+    (try (w1-exit (string-as-view &c) 12))
+    (drop &c))
   (try (test-write-file "an2-own.nuc" "(ns an2own)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
@@ -1452,5 +1458,135 @@
         tv:StrView (string-as-view &t))
     (try (check-contains tv "(nucleus.edn/edn-derive-struct Pt user/Pt edn-encode edn-decode edn-release) (extend Pt nucleus.edn/EdnCodec)"))
     (try (check-not-contains tv "#h"))
+    (drop &t))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-1: core links under `nuc_` (core-link-names.md)
+; ---------------------------------------------------------------------------
+
+; A program overload of a core function leaves the core symbol alone: the
+; solitary-or-mangled choice is per link-name prefix.
+(deftest cl1-core-overload-keeps-link-name
+  (let (m:String (try (test-write-file "cl1-ov.nuc" "(import-use nucleus.node)
+(defn node-int (v:i32):i32 (return v))
+(defn main ():i32 (return (node-int (as i32 3))))
+"))
+        mv:StrView (string-as-view &m))
+    (try (w1-exit mv 3))
+    (let (ir:String (try (w1-ir mv))
+          iv:StrView (string-as-view &ir))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr ptr @nuc_node-int(") 1 "core node-int"))
+      (try (check-eq-int (count-lines-with-prefix iv "define i32 @node-int(") 1 "program node-int"))
+      (drop &ir))
+    (drop &m))
+  (return (ok)))
+
+; `quote` lowers to the core runtime's own symbols beside a program overload.
+(deftest cl1-quote-beside-overload
+  (let (m:String (try (test-write-file "cl1-q.nuc" "(import-use nucleus.node)
+(defn node-list-new (s:i64):i64 (return s))
+(defn main ():i32 (return (+ (node-len (quote (1 2 3))) (unsafe/cast i32 (node-list-new (as i64 4))))))
+")))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
+  (return (ok)))
+
+; The same signature in both is two symbols; the bare call sees both.
+(deftest cl1-same-signature-ambiguous
+  (try (an2-refused "cl1-amb.nuc" "(import-use nucleus.node)
+(defn node-int (v:i64):i64 (return v))
+(defn main ():i32 (return (as i32 (node-int 3))))
+" 3 "ambiguous overload for 'node-int' under argument widening"))
+  (return (ok)))
+
+; Under an `(ns …)`, `main` keeps its C name and a hand-written extern its
+; foreign one.
+(deftest cl1-ns-main-and-extern
+  (let (m:String (try (test-write-file "cl1-app.nuc" "(ns cl1app)
+(extern environ:ptr)
+(defn main ():i32 (return (if (= environ null) 1 7)))
+")))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-2: `nuc_` is reserved for the core libraries' link names
+; ---------------------------------------------------------------------------
+
+(deftest cl2-reserved-link-prefix
+  (try (an2-refused "cl2-f.nuc" "(defn nuc_foo ():i32 (return 1))
+(defn main ():i32 (return (nuc_foo)))
+" 1 "defn 'nuc_foo' links as @nuc_foo, and the nuc_ prefix is reserved for the core libraries"))
+  (try (an2-refused "cl2-v.nuc" "(defvar nuc_g:i32 1)
+(defn main ():i32 (return nuc_g))
+" 1 "defvar 'nuc_g' links as @nuc_g, and the nuc_ prefix is reserved"))
+  (try (an2-refused "cl2-s.nuc" "(defstruct nuc_S a:i32)
+(defn main ():i32 (return 0))
+" 1 "type 'nuc_S' links as %nuc_S, and the nuc_ prefix is reserved"))
+  (try (an2-refused "cl2-ns.nuc" "(ns nuc_x)
+(defn main ():i32 (return 0))
+" 1 "ns: link prefix 'nuc_x' is reserved for the core libraries"))
+  (try (an2-refused "cl2-p.nuc" "(set-ir-prefix \"nuc_y\")
+(defn main ():i32 (return 0))
+" 1 "set-ir-prefix: link prefix 'nuc_y' is reserved for the core libraries"))
+  (return (ok)))
+
+; A private definer's link name carries its file's prefix, so it reserves nothing.
+(deftest cl2-private-not-reserved
+  (let (m:String (try (test-write-file "cl2-priv.nuc" "(defn- nuc_helper ():i32 (return 4))
+(defn main ():i32 (return (nuc_helper)))
+")))
+    (try (w1-exit (string-as-view &m) 4))
+    (drop &m))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-3: one link name, one definition, refused where it is written
+; ---------------------------------------------------------------------------
+
+(deftest cl3-link-name-collision
+  (try (an2-refused "cl3-q.nuc" "(defn foo? ():i32 (return 1))
+(defn foo_QMARK ():i32 (return 2))
+(defn main ():i32 (return (+ (foo?) (foo_QMARK))))
+" 2 "'foo_QMARK' links as @foo_QMARK, the symbol of 'foo?' at "))
+  (try (test-write-file "cl3-alib.nuc" "(ns cl3a)
+(set-ir-prefix \"\")
+(defvar counter:i32 1)
+"))
+  (try (an2-refused "cl3-amain.nuc" "(import-use cl3-alib)
+(defvar counter:i32 2)
+(defn main ():i32 (return 0))
+" 2 "'counter' links as @counter, the symbol of 'counter' at "))
+  (return (ok)))
+
+; A definition of a C-declared name must match the declaration; then it is the
+; program implementing it.
+(deftest cl3-c-declaration-signature
+  (try (an2-refused "cl3-puts.nuc" "(import-use \"stdio.h\")
+(defn puts (s:i64):i64 (return s))
+(defn main ():i32 (return 0))
+" 2 " declares as i32 (ptr), not i64 (i64) — match that declaration, or rename it"))
+  (let (m:String (try (test-write-file "cl3-puts-ok.nuc" "(import-use \"stdio.h\")
+(defn puts (s:CStr):int (return 5))
+(defn main ():i32 (return (puts \"x\")))
+")))
+    (try (w1-exit (string-as-view &m) 5))
+    (drop &m))
+  (return (ok)))
+
+; A form that dies takes its link-name claims with it; one that lived keeps them.
+(deftest cl3-repl-rollback-drops-claim
+  (let (t:String (try (repl-session "(defvar foo?:i32 (no-such-fn 1))
+(defvar foo_QMARK:i32 2)
+foo_QMARK
+(defvar bar?:i32 3)
+(defvar bar_QMARK:i32 4)
+"))
+        tv:StrView (string-as-view &t))
+    (try (check-not-contains tv "the symbol of 'foo?'"))
+    (try (check-contains tv "  2\n"))
+    (try (check-contains tv "'bar_QMARK' links as @bar_QMARK, the symbol of 'bar?' at <repl>:1"))
     (drop &t))
   (return (ok)))

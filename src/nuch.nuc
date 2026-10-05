@@ -830,7 +830,7 @@
               "defcast"
                 (emit-defcast (as ptr f))
               "extern"
-                (do (set! g-out &g-decl-stream) (emit-extern-mode (as ptr f) mode))
+                (do (set! g-out &g-decl-stream) (emit-extern-mode (as ptr f) mode true))
               "defconst"
                 (do (set! g-out g-def-stream) (emit-defconst (as ptr f)))
               "defenum"
@@ -877,7 +877,7 @@
               "defmethod"
                 (nuch-defmethod-import (as ptr f) NUCH-REG)
               "extern"
-                (emit-extern-mode (as ptr f) NUCH-REG)
+                (emit-extern-mode (as ptr f) NUCH-REG true)
               ; The two constant kinds already have a registration-only pass —
               ; the very one a `.nuc` file's own `defconst`/`defenum` gets. The
               ; full emitters still run at import time and must: only

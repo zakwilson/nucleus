@@ -335,7 +335,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
     at this position — annotate the binding
   ```
   Such instantiations are distinguished by their return type in the emitted
-  symbol (`@vector_new_in.pAllocHandle.$r.pVector.i64`), because the parameter
+  symbol (`@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i64`), because the parameter
   types alone do not identify them — so one unit may use as many element types as
   it likes. (Before Stage 16 SE-2 it could not: the first instantiation answered
   for all of them, silently.) A variable a `:where` constraint recovers counts as

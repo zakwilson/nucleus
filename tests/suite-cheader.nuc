@@ -412,9 +412,9 @@ int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
   (let (r:CcCheck (try (c-consumer-syntax "."
 "#include \"lib/nucleus/string.h\"
 int main(void) {
-    String s = string_new();
-    struct StrView v = string_as_view(&s);   /* imported struct, by value */
-    (void)eq_String_String(s, s);            /* and by-value parameters */
+    nuc_String s = nuc_string_new();
+    struct nuc_StrView v = nuc_string_as_view(&s);   /* imported struct, by value */
+    (void)nuc_eq_nuc_String_nuc_String(s, s);        /* and by-value parameters */
     (void)v;
     return 0;
 }
@@ -518,7 +518,7 @@ int main(void) {
   (try (check-lib-headers-lack "struct _QMARK"))
   (let (t:String (try (read-file "lib/nucleus/string.h")))
     (try (check-contains (string-as-view &t)
-                         "struct String string_from_cstr_unchecked"))
+                         "struct nuc_String nuc_string_from_cstr_unchecked"))
     (drop &t))
   (return (ok)))
 

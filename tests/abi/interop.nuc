@@ -53,13 +53,13 @@
 ; Nucleus-defined struct functions, to exercise the defn side of the ABI
 ; (prologue reconstruction of struct params; sret / register-coerced returns)
 ; and Nucleus->Nucleus consistency (caller coercion must match callee).
-(defn nuc_pair_make (a:int b:int):Pair
+(defn nt_pair_make (a:int b:int):Pair
   (let (q:&Pair (alloca Pair)) (set! (q 'a) a) (set! (q 'b) b) @q))
-(defn nuc_pair_sum (p:Pair):int
+(defn nt_pair_sum (p:Pair):int
   (let (q:&Pair (alloca Pair)) (set! (deref q) p) (+ (get q 'a) (get q 'b))))
-(defn nuc_big_make (x:i64 y:i64 z:i64):Big
+(defn nt_big_make (x:i64 y:i64 z:i64):Big
   (let (q:&Big (alloca Big)) (set! (q 'x) x) (set! (q 'y) y) (set! (q 'z) z) @q))
-(defn nuc_big_sum (b:Big):i64
+(defn nt_big_sum (b:Big):i64
   (let (q:&Big (alloca Big)) (set! (deref q) b) (+ (+ (get q 'x) (get q 'y)) (get q 'z))))
 
 (defn main ():int
@@ -78,11 +78,11 @@
     (printf "mixed_get=%.1f\n" (mixed_get @m)))
   ; Nucleus -> Nucleus
   (let (p:&Pair (alloca Pair))
-    (set! (deref p) (nuc_pair_make 3 4))
-    (printf "n2n pair=%d,%d sum=%d\n" (get p 'a) (get p 'b) (nuc_pair_sum @p)))
+    (set! (deref p) (nt_pair_make 3 4))
+    (printf "n2n pair=%d,%d sum=%d\n" (get p 'a) (get p 'b) (nt_pair_sum @p)))
   (let (b:&Big (alloca Big))
-    (set! (deref b) (nuc_big_make 100 200 300))
-    (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (get b 'x) (get b 'y) (get b 'z) (nuc_big_sum @b)))
+    (set! (deref b) (nt_big_make 100 200 300))
+    (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (get b 'x) (get b 'y) (get b 'z) (nt_big_sum @b)))
   ; Parametric struct: (P2 i32 i32) passed and returned by value across C boundary.
   (let ((q &(P2 i32 i32)) (alloca (P2 i32 i32)))
     (set! (deref q) (p2_make 3 4))

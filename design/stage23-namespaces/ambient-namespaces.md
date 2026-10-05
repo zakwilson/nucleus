@@ -301,7 +301,8 @@ internal error at run time.
 **Defaults taken where the session could not ask.** Each is reversible, and
 recorded here so it can be overturned:
 
-- **D-IR. Core libraries keep today's bare LLVM and C symbol names.** Each
+- **D-IR. Core libraries keep today's bare LLVM and C symbol names.**
+  *Reversed 2026-10-05: core links as `nuc_` + name ([core-link-names.md](core-link-names.md)).* Each
   `nucleus.*` namespace composes an empty IR prefix. Source names are
   namespaced; link names are not. Program IR, the `lib/*.h` C API, the
   compile-time `-rdynamic` roster and the runtime names the compiler emits by
@@ -520,9 +521,8 @@ rejection is unchanged.
 **Open:**
 
 - A user `defvar`/`defn` whose link name equals a core one is still an
-  unlocated LLVM or link error. Only structs are checked. D-IR's stated cost
-  stands; a located check would mirror `struct-link-name-unique` over
-  `g-globals`.
+  unlocated LLVM or link error. Only structs are checked. Ruled 2026-10-05:
+  [core-link-names.md](core-link-names.md).
 - The anonymous-type hash would be layout-stable if it hashed `display-key`.
   It does not matter until something outside the unit spells these names.
 - REPL: `g-path-ns` keeps a died import's namespace entry, as `g-file-ns`

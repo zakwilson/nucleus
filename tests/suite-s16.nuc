@@ -370,7 +370,7 @@ mval 29 25 10 2
     (let (ir:String (try (source-ir src))
           iv:StrView (string-as-view &ir))
       (try (check-contains iv "icmp ne ptr"))
-      (try (check-match iv "*extractvalue %Maybe.i64 %*, 0*"))
+      (try (check-match iv "*extractvalue %nuc_Maybe.i64 %*, 0*"))
       (drop &ir))))
 
 ; The narrowing half. `test-true-nonnull` matches node SHAPES, so the bare
@@ -1166,8 +1166,8 @@ map=2
 (deftest s16-d9-ct-type-once
   (let (ir:String (try (source-ir (d9-ct-stamp-src))))
     (try (check-eq-int (count-lines-with-prefix (string-as-view &ir)
-                                                "%Maybe.i32 = type")
-                       1 "%Maybe.i32 definitions"))
+                                                "%nuc_Maybe.i32 = type")
+                       1 "%nuc_Maybe.i32 definitions"))
     (drop &ir)))
 
 ; `emit-defstruct` queues every StructDef it writes, so the shared drain sees
@@ -1563,7 +1563,7 @@ map=2
 (import-use nucleus.node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
+    (try (check-match (string-as-view &ir) "define *@nuc_intern-symbol(*"))
     (drop &ir)))
 
 (deftest s16-import-ct-real-import-wins-real-first
@@ -1571,7 +1571,7 @@ map=2
 (import-use nucleus.error)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
+    (try (check-match (string-as-view &ir) "define *@nuc_intern-symbol(*"))
     (drop &ir)))
 
 ; The unit-level rule reaches THROUGH a ct-imported library: `ctlib` is
@@ -1621,10 +1621,10 @@ map=2
       (drop &out))
     (let (ir:String (try (source-ir src))
           iv:StrView (string-as-view &ir))
-      (try (check-not-match iv "define *@alloc-node(*"))
-      (try (check-not-match iv "define *@node-list-new(*"))
-      (try (check-not-match iv "define *@intern-symbol(*"))
-      (try (check-not-match iv "define *@arena-alloc(*"))
+      (try (check-not-match iv "define *@nuc_alloc-node(*"))
+      (try (check-not-match iv "define *@nuc_node-list-new(*"))
+      (try (check-not-match iv "define *@nuc_intern-symbol(*"))
+      (try (check-not-match iv "define *@nuc_arena-alloc(*"))
       (drop &ir))))
 
 ; Arity, so a typo is a diagnostic rather than a silent no-op.
@@ -3097,7 +3097,7 @@ map=2
   (let (c:Compiled (try (compile-source "(import-use nucleus.node)
 (defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (compiled-ir &c) "*call ptr @intern-symbol*"))
+    (try (check-match (compiled-ir &c) "*call ptr @nuc_intern-symbol*"))
     (drop &c))
   (return (ok)))
 
@@ -3249,7 +3249,7 @@ map=2
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
     (try (check-no-errors (ref c 'diags)))
-    (try (check-match (compiled-ir &c) "*call ptr @intern-symbol(*"))
+    (try (check-match (compiled-ir &c) "*call ptr @nuc_intern-symbol(*"))
     (drop &c))
   (return (ok)))
 
@@ -3386,10 +3386,10 @@ map=2
 "))
         iv:StrView (compiled-ir &c))
     (try (check-eq-int
-           (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i32(*")
+           (count-matching-lines iv "define*@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i32(*")
            1 "one stamp for the i32 instance"))
     (try (check-eq-int
-           (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i64(*")
+           (count-matching-lines iv "define*@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i64(*")
            1 "one stamp for the i64 instance"))
     (drop &c))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")

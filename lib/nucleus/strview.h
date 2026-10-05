@@ -6,33 +6,33 @@
 
 /* Generated from lib/nucleus/strview.nuc by nucleusc --emit-cheader */
 
-bool strview_eq(struct StrView* a, struct StrView* b) asm("strview-eq");
-typedef struct ByteIter {
+bool nuc_strview_eq(struct nuc_StrView* a, struct nuc_StrView* b) asm("nuc_strview-eq");
+typedef struct nuc_ByteIter {
     uint8_t* buf;
     size_t pos;
     size_t len;
-} ByteIter;
+} nuc_ByteIter;
 
 /* next: uses an error-union or option type; not exported */
-size_t strview_hash(struct StrView* sv) asm("strview-hash");
-struct StrView strview(uint8_t* data, size_t len);
-struct StrView strview_from_cstr(const char* cs) asm("strview-from-cstr");
-const char* strview_to_cstr(struct StrView* sv) asm("strview-to-cstr");
-bool eq_StrView_StrView(struct StrView a, struct StrView b) asm("eq.StrView.StrView");
-bool ne_StrView_StrView(struct StrView a, struct StrView b) asm("ne.StrView.StrView");
-typedef struct CharIter {
+size_t nuc_strview_hash(struct nuc_StrView* sv) asm("nuc_strview-hash");
+struct nuc_StrView nuc_strview(uint8_t* data, size_t len);
+struct nuc_StrView nuc_strview_from_cstr(const char* cs) asm("nuc_strview-from-cstr");
+const char* nuc_strview_to_cstr(struct nuc_StrView* sv) asm("nuc_strview-to-cstr");
+bool nuc_eq_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_eq.nuc_StrView.nuc_StrView");
+bool nuc_ne_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_ne.nuc_StrView.nuc_StrView");
+typedef struct nuc_CharIter {
     uint8_t* buf;
     size_t pos;
     size_t len;
-} CharIter;
+} nuc_CharIter;
 
 /* next: uses an error-union or option type; not exported */
-size_t strview_byte_len(struct StrView* sv) asm("strview-byte-len");
+size_t nuc_strview_byte_len(struct nuc_StrView* sv) asm("nuc_strview-byte-len");
 /* strview-byte-at: uses an error-union or option type; not exported */
-struct ByteIter strview_bytes(struct StrView* sv) asm("strview-bytes");
-struct StrView strview_as_view(struct StrView* sv) asm("strview-as-view");
-struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
-struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
+struct nuc_ByteIter nuc_strview_bytes(struct nuc_StrView* sv) asm("nuc_strview-bytes");
+struct nuc_StrView nuc_strview_as_view(struct nuc_StrView* sv) asm("nuc_strview-as-view");
+struct nuc_ByteIter nuc_cstr_bytes(const char* cs) asm("nuc_cstr-bytes");
+struct nuc_CharIter nuc_cstr_chars(const char* cs) asm("nuc_cstr-chars");
 /* strview-sub-bytes: uses an error-union or option type; not exported */
 /* strview-find: uses an error-union or option type; not exported */
 /* strview-find-byte: uses an error-union or option type; not exported */
@@ -40,26 +40,26 @@ struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
 /* strview-rfind: uses an error-union or option type; not exported */
 /* strview-find-char: uses an error-union or option type; not exported */
 /* strview-rfind-char: uses an error-union or option type; not exported */
-size_t strview_char_count(struct StrView* sv) asm("strview-char-count");
+size_t nuc_strview_char_count(struct nuc_StrView* sv) asm("nuc_strview-char-count");
 /* strview-char-at: uses an error-union or option type; not exported */
-struct CharIter strview_chars(struct StrView* sv) asm("strview-chars");
-bool strview_empty(struct StrView* sv) asm("strview-empty");
-bool strview_starts_with(struct StrView* sv, struct StrView* prefix) asm("strview-starts-with");
-bool strview_ends_with(struct StrView* sv, struct StrView* suffix) asm("strview-ends-with");
+struct nuc_CharIter nuc_strview_chars(struct nuc_StrView* sv) asm("nuc_strview-chars");
+bool nuc_strview_empty(struct nuc_StrView* sv) asm("nuc_strview-empty");
+bool nuc_strview_starts_with(struct nuc_StrView* sv, struct nuc_StrView* prefix) asm("nuc_strview-starts-with");
+bool nuc_strview_ends_with(struct nuc_StrView* sv, struct nuc_StrView* suffix) asm("nuc_strview-ends-with");
 /* strview-parse-magnitude: uses an error-union or option type; not exported */
-int32_t strview_parse_sign(struct StrView sv, size_t* out_start) asm("strview-parse-sign");
-struct StrView strview_drop_bytes(struct StrView sv, size_t start) asm("strview-drop-bytes");
-struct StrView strview_take_bytes(struct StrView sv, size_t n) asm("strview-take-bytes");
-bool strview_has_prefix(struct StrView sv, struct StrView prefix) asm("strview-has-prefix");
-bool strview_has_suffix(struct StrView sv, struct StrView suffix) asm("strview-has-suffix");
-bool strview_contains(struct StrView sv, struct StrView needle) asm("strview-contains");
-bool strview_contains_str(struct StrView* sv, struct StrView* needle) asm("strview-contains-str");
-bool strview_is_ascii_ws(uint8_t b) asm("strview-is-ascii-ws");
-struct StrView strview_trim_start(struct StrView* sv) asm("strview-trim-start");
-struct StrView strview_trim_end(struct StrView* sv) asm("strview-trim-end");
-struct StrView strview_trim(struct StrView* sv) asm("strview-trim");
-int32_t strview_cmp_raw(struct StrView* a, struct StrView* b) asm("strview-cmp-raw");
-bool lt_StrView_StrView(struct StrView a, struct StrView b) asm("lt.StrView.StrView");
-bool le_StrView_StrView(struct StrView a, struct StrView b) asm("le.StrView.StrView");
-bool gt_StrView_StrView(struct StrView a, struct StrView b) asm("gt.StrView.StrView");
-bool ge_StrView_StrView(struct StrView a, struct StrView b) asm("ge.StrView.StrView");
+int32_t nuc_strview_parse_sign(struct nuc_StrView sv, size_t* out_start) asm("nuc_strview-parse-sign");
+struct nuc_StrView nuc_strview_drop_bytes(struct nuc_StrView sv, size_t start) asm("nuc_strview-drop-bytes");
+struct nuc_StrView nuc_strview_take_bytes(struct nuc_StrView sv, size_t n) asm("nuc_strview-take-bytes");
+bool nuc_strview_has_prefix(struct nuc_StrView sv, struct nuc_StrView prefix) asm("nuc_strview-has-prefix");
+bool nuc_strview_has_suffix(struct nuc_StrView sv, struct nuc_StrView suffix) asm("nuc_strview-has-suffix");
+bool nuc_strview_contains(struct nuc_StrView sv, struct nuc_StrView needle) asm("nuc_strview-contains");
+bool nuc_strview_contains_str(struct nuc_StrView* sv, struct nuc_StrView* needle) asm("nuc_strview-contains-str");
+bool nuc_strview_is_ascii_ws(uint8_t b) asm("nuc_strview-is-ascii-ws");
+struct nuc_StrView nuc_strview_trim_start(struct nuc_StrView* sv) asm("nuc_strview-trim-start");
+struct nuc_StrView nuc_strview_trim_end(struct nuc_StrView* sv) asm("nuc_strview-trim-end");
+struct nuc_StrView nuc_strview_trim(struct nuc_StrView* sv) asm("nuc_strview-trim");
+int32_t nuc_strview_cmp_raw(struct nuc_StrView* a, struct nuc_StrView* b) asm("nuc_strview-cmp-raw");
+bool nuc_lt_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_lt.nuc_StrView.nuc_StrView");
+bool nuc_le_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_le.nuc_StrView.nuc_StrView");
+bool nuc_gt_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_gt.nuc_StrView.nuc_StrView");
+bool nuc_ge_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_ge.nuc_StrView.nuc_StrView");

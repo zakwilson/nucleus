@@ -10,8 +10,9 @@ global's value between prompts with nothing failing. This is the other half.
 Exact, and in both directions. Every `ReplState` field must appear as exactly
 one table row, in the struct's own order — so the tables stay diffable against
 the struct top to bottom — and no row may name a field the struct dropped.
-`globals-len` is the single exemption: it is not a global but a field of the
-`Scope` `g-globals` points at, so it is saved and restored beside the tables.
+`globals-len` and `n-link-claims` are exempt: the first is a field of the
+`Scope` `g-globals` points at, the second needs its index unwound, so both are
+saved and restored beside the tables.
 
     scripts/check-repl-roster.py     # verify (exit 1 on drift)
 """
@@ -27,7 +28,8 @@ TABLES = ["over-repl-globals", "over-repl-registries"]
 
 # Saved and restored by hand: `(st 'globals-len)` pairs with a Scope field, not
 # with a `g-` global, so no two-column row can express it.
-EXEMPT = {"globals-len"}
+# `n-link-claims` truncates a list whose HashMap index must be unwound with it.
+EXEMPT = {"globals-len", "n-link-claims"}
 
 TOK = re.compile(r'''
     (?P<skip>\s+|;[^\n]*|c?"(?:\\.|[^"\\])*"|\\\S)

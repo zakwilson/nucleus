@@ -923,7 +923,7 @@
                   ; (extern-decl, noreturn). Nothing here is ours to decide.
                   (when (and (= (m0 'ir-fixed) 0) (late-renamable? m0))
                     (set! (m0 'ir-name) (symbol-intern (fstr "@"
-                                              (ns-compose (method-ir-prefix gg m0)
+                                              (def-compose (method-ir-prefix gg m0)
                                                      (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
                     (let (fs:&Sym (scope-define g-globals (gg 'name) (m0 'fn-type) (symbol-as-view (m0 'ir-name)) 0))
                       (when (!= (m0 'priv) 0) (set! (fs 'sym-private) 1)))))
@@ -997,7 +997,7 @@
                               (if (and (= has-intrinsic 0) (= has-generic 0)
                                        (= (generic-user-methods-with-prefix gg pfx) 1))
                                 (set! (mi 'ir-name) (symbol-intern (fstr "@"
-                                                          (ns-compose pfx
+                                                          (def-compose pfx
                                                  (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
 
                                 (set! (mi 'ir-name) (mangle-fn-name pfx (strip-priv-qualifier (gg 'name))
