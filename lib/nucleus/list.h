@@ -5,13 +5,13 @@
 
 /* Generated from lib/nucleus/list.nuc by nucleusc --emit-cheader */
 
-void* cons(void* car, void* cdr);
-void* first(void* n);
-void* rest(void* n);
-void* append_ptr_ptr(void* a, void* b) asm("append.ptr.ptr");
-typedef struct ListIter {
+void* nuc_cons(void* car, void* cdr);
+void* nuc_first(void* n);
+void* nuc_rest(void* n);
+void* nuc_append_ptr_ptr(void* a, void* b) asm("nuc_append.ptr.ptr");
+typedef struct nuc_ListIter {
     void* cur;
-} ListIter;
+} nuc_ListIter;
 
 /* next: uses an error-union or option type; not exported */
-struct ListIter list_iter(void* lst) asm("list-iter");
+struct nuc_ListIter nuc_list_iter(void* lst) asm("nuc_list-iter");

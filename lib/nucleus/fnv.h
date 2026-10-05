@@ -5,6 +5,6 @@
 
 /* Generated from lib/nucleus/fnv.nuc by nucleusc --emit-cheader */
 
-int64_t fnv1a_byte(int64_t h, int64_t b) asm("fnv1a-byte");
-int64_t fnv1a_int(int64_t h, int64_t v, int32_t n) asm("fnv1a-int");
-size_t fnv1a_bytes(uint8_t* p, size_t n) asm("fnv1a-bytes");
+int64_t nuc_fnv1a_byte(int64_t h, int64_t b) asm("nuc_fnv1a-byte");
+int64_t nuc_fnv1a_int(int64_t h, int64_t v, int32_t n) asm("nuc_fnv1a-int");
+size_t nuc_fnv1a_bytes(uint8_t* p, size_t n) asm("nuc_fnv1a-bytes");

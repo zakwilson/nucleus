@@ -543,23 +543,25 @@ An `:anon` member over an inline body is written as C's own anonymous member. An
 
 ### Template instances and inline aggregates in a C header
 
-A struct-template instance, such as `(Vector i32)`, by value or behind a pointer, is a C struct named after its stamp. The header defines it just before the first declaration that uses it, after any struct of the file it holds by value. The definition is guarded, so two headers that both use `(Vector i32)` can be included together:
+A struct-template instance, such as `(Vector i32)`, by value or behind a pointer, is a C struct named after its stamp's link name. The header defines it just before the first declaration that uses it, after any struct of the file it holds by value. The definition is guarded, so two headers that both use `(Vector i32)` can be included together:
 
 ```c
-#ifndef NUC_INST_Vector_i32
-#define NUC_INST_Vector_i32
-typedef struct Vector_i32 {
+#ifndef NUC_INST_nuc_Vector_i32
+#define NUC_INST_nuc_Vector_i32
+typedef struct nuc_Vector_i32 {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct AllocHandle alloc;
-} Vector_i32;
+    struct nuc_AllocHandle alloc;
+} nuc_Vector_i32;
 #endif
 
 typedef struct H {
-    struct Vector_i32 v;
+    struct nuc_Vector_i32 v;
 } H;
 ```
+
+A core type is named by its link name everywhere in a header, as `lib/nucleus/*.h` defines it: `struct nuc_String`, `struct nuc_StrView`. So is a core function: `nuc_string_new`, labelled `asm("nuc_string-new")`.
 
 A `defunion` arm's field is a declarator, as a struct field is, so `(cb f:(fn i32)(i32))` is `int32_t (*cb)(int32_t);`.
 
@@ -569,7 +571,7 @@ A function with `:optional` parameters is declared at its full arity, since a C 
 
 An inline `(struct …)` or `(union …)` in a function's signature is named the same way (`struct nuc_anon_struct_h…`), so a caller can declare a value of it. Two signatures with the same shape share one type. As a field it stays inline, because the enclosing struct is the name.
 
-A struct-template instance that holds a defunion-template instance by value, such as `(Box ?i32)`, is declared by its tag only (`struct Box_Maybe_i32;`), with a comment. A pointer to it is still declared, and a declaration that uses it by value is omitted.
+A struct-template instance that holds a defunion-template instance by value, such as `(Box ?i32)`, is declared by its tag only (`struct Box_nuc_Maybe_i32;`), with a comment. A pointer to it is still declared, and a declaration that uses it by value is omitted.
 
 A defunion-template instance, such as `(Either i32 i64)` or an alias to one, has no C layout the header writes. A declaration that uses one is omitted with a comment, as a `?T`/`!T` one is. A struct or `defunion` with a field of one is omitted too, but its tag is still declared (`struct S;`), so a pointer to it in a signature names one type.
 

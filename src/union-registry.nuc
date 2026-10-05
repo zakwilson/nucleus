@@ -1221,6 +1221,7 @@
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
           (let (sd:&StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
             (check-ir-name-legal line name (symbol-as-view (sd 'ir-name)))
+            (struct-link-name-unique sd line)
             (when (!= (sd 'emitted) 0)
               (die-at line (fstr "defunion: '" name "' already names a struct")))
             (let (bnf:i32 (if (!= union-sd null) 2 1)

@@ -5,7 +5,7 @@
 
 /* Generated from lib/nucleus/hashmap.nuc by nucleusc --emit-cheader */
 
-void hashmap_oom(void) asm("hashmap-oom");
+void nuc_hashmap_oom(void) asm("nuc_hashmap-oom");
 /* hashmap-init: generic template; not exported */
 /* hashmap-init-alloc: generic template; not exported */
 /* hashmap-new: generic template; not exported */

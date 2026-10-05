@@ -6,8 +6,8 @@
 
 /* Generated from lib/nucleus/vector.nuc by nucleusc --emit-cheader */
 
-void vector_oom(void) asm("vector-oom");
-void vector_bounds(struct StrView what, size_t i, size_t n) asm("vector-bounds");
+void nuc_vector_oom(void) asm("nuc_vector-oom");
+void nuc_vector_bounds(struct nuc_StrView what, size_t i, size_t n) asm("nuc_vector-bounds");
 /* vector-init: generic template; not exported */
 /* vector-init-alloc: generic template; not exported */
 /* vector-new: generic template; not exported */

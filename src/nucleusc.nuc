@@ -132,6 +132,8 @@
 ; this migration needs (§2.10 predicted only the g-arena-alloc one).
 (defvar g-ns-user:Symbol (symbol-intern "user"))
 (defvar g-current-ns:Symbol (symbol-intern "user"))
+; The reserved link-name prefix of every core library (design/stage23-namespaces/core-link-names.md).
+(defvar g-core-ir-prefix:Symbol (symbol-intern "nuc_"))
 
 ; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
 ; registration order). count = number of structs; invoke = indexed access.
@@ -1501,10 +1503,10 @@
 ; The host's list reads, for a CT module: `ast-first`/`ast-rest`/`ast-at`/
 ; `ast-len` lower to calls on the RUNNING compiler's own implementations.
 (defn macro-jit-ast-read-decls ((out &String)):void
-  (macro-jit-declare-raw out (symbol-intern "@node-first") (symbol-intern "declare ptr @node-first(ptr)\n"))
-  (macro-jit-declare-raw out (symbol-intern "@node-rest") (symbol-intern "declare ptr @node-rest(ptr)\n"))
-  (macro-jit-declare-raw out (symbol-intern "@node-at") (symbol-intern "declare ptr @node-at(ptr, i32)\n"))
-  (macro-jit-declare-raw out (symbol-intern "@node-len") (symbol-intern "declare i32 @node-len(ptr)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-first") (symbol-intern (fstr "declare ptr " (core-link-name "node-first") "(ptr)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-rest") (symbol-intern (fstr "declare ptr " (core-link-name "node-rest") "(ptr)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-at") (symbol-intern (fstr "declare ptr " (core-link-name "node-at") "(ptr, i32)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-len") (symbol-intern (fstr "declare i32 " (core-link-name "node-len") "(ptr)\n"))))
 
 ; The macro/CT body being compiled, as a diagnostic subject.
 (defn ct-body-who ():StrView
@@ -2554,7 +2556,20 @@
     (when (!= (as ptr mc) null)
       (let (ms:(ptr Sym) (as (ptr Sym) mc))
         (when (= (ms 'ct-only) 0) (return)))))
+  (when (core-method-loaded? "node-list-new") (return))
   (die-at line (fstr what " needs the node runtime — add (import-use nucleus.node)")))
+
+; Is core function `bare` defined in this program? A program overload of the name
+; makes it registry-dispatched, and then `core-global` finds no solitary binding.
+(defn core-method-loaded? (bare:StrView):bool
+  (let (g:?&Generic (generic-lookup-exact (symbol-intern bare))
+        irn:Symbol (core-link-name bare))
+    (when (= g null) (return false))
+    (doseq (m ((unsafe/cast &Generic g) 'methods) (VecIter &Method))
+      (when (and (= (m 'ir-name) irn)
+                 (!= (import-list-has g-real-reachable (m 'src-file)) 0))
+        (return true))))
+  (return false))
 
 ; Build a quoted Node tree at runtime so that quoted symbols share Node
 ; identity with reader-produced ones. Returns a body-stream tmp ref.
@@ -2572,15 +2587,15 @@
       (let (sid:i32 (intern-string (symbol-as-view (nn 's)))
             ir-len:i32 (+ ((invoke g-strs (as usize sid)) 'len) 1)
             tmp:StrView (new-tmp))
-        (emit g-body-stream "  " tmp " = call ptr @intern-symbol(ptr getelementptr inbounds (["
+        (emit g-body-stream "  " tmp " = call ptr " (core-link-name "intern-symbol") "(ptr getelementptr inbounds (["
               ir-len " x i8], ptr @.str." sid ", i64 0, i64 0))\n")
         (return tmp)))
     (when (= (nn 'kind) NODE-LIST)
       (let (tmp:StrView (new-tmp))
-        (emit g-body-stream "  " tmp " = call ptr @node-list-new(i32 " (nn 'line) ")\n")
+        (emit g-body-stream "  " tmp " = call ptr " (core-link-name "node-list-new") "(i32 " (nn 'line) ")\n")
         (dotimes (i (node-len nn))
           (let (e:StrView (emit-quote-tree (node-at nn i)))
-            (emit g-body-stream "  call void @node-push(ptr " tmp ", ptr " e ")\n")))
+            (emit g-body-stream "  call void " (core-link-name "node-push") "(ptr " tmp ", ptr " e ")\n")))
         (return tmp)))
     ; NODE-INT / NODE-STR / NODE-FLOAT / NODE-KEYWORD / NODE-CHAR — runtime alloc
     ; + fill. NODE-KEYWORD (Stage 11 cleanup §2) stores its name in `s` like
@@ -2589,7 +2604,7 @@
     ; stored). NODE-CHAR (S0) stores its kind too, then its codepoint via the
     ; NODE-INT `i`-store branch below.
     (let (tmp:StrView (new-tmp))
-      (emit g-body-stream "  " tmp " = call ptr @alloc-node()\n")
+      (emit g-body-stream "  " tmp " = call ptr " (core-link-name "alloc-node") "()\n")
       (when (or (= (nn 'kind) NODE-STR)
                 (= (nn 'kind) NODE-FLOAT)
                 (= (nn 'kind) NODE-KEYWORD) (= (nn 'kind) NODE-CHAR))
@@ -2620,7 +2635,7 @@
               sym:StrView (new-tmp)
               sp:StrView (new-tmp))
           (emit g-body-stream "  " sym
-                " = call i64 @symbol-intern-bytes(ptr getelementptr inbounds ([" ir-len
+                " = call i64 " (core-link-name "symbol-intern-bytes") "(ptr getelementptr inbounds ([" ir-len
                 " x i8], ptr @.str." sid ", i64 0, i64 0), i64 " (unsafe/cast i64 slen) ")\n")
           (emit g-body-stream "  " sp
                 " = getelementptr inbounds { i32, i32, i64, ptr, ptr, i32, i32 }, ptr " tmp
@@ -2686,15 +2701,15 @@
       (when (= op 2)
         (let (iv:&Val (emit-node (node-at call 2) scope)
               ta:StrView (new-tmp))
-          (emit g-body-stream "  " ta " = call ptr @node-at(ptr " (nv 'val)
+          (emit g-body-stream "  " ta " = call ptr " (core-link-name "node-at") "(ptr " (nv 'val)
                 ", i32 " (iv 'val) ")\n")
           (return (alloc-val (ty-ptr-node) ta))))
       (let (t:StrView (new-tmp))
         (when (= op 3)
-          (emit g-body-stream "  " t " = call i32 @node-len(ptr " (nv 'val) ")\n")
+          (emit g-body-stream "  " t " = call i32 " (core-link-name "node-len") "(ptr " (nv 'val) ")\n")
           (return (alloc-val ty-i32 t)))
-        (emit g-body-stream "  " t " = call ptr @node-"
-              (if (= op 0) "first" "rest") "(ptr " (nv 'val) ")\n")
+        (emit g-body-stream "  " t " = call ptr "
+              (core-link-name (if (= op 0) "node-first" "node-rest")) "(ptr " (nv 'val) ")\n")
         (return (alloc-val (ty-ptr-node) t))))))
 
 (defn qq-is-tagged (n:?&Node tag:?&Node):i32
@@ -2718,9 +2733,9 @@
         tag:StrView (emit-quote-tree (node-first fc))
         val:&Val (emit-qq-form (node-at form 1) scope inner)
         t:StrView (new-tmp))
-    (emit g-body-stream "  " t " = call ptr @node-list-new(i32 0)\n")
-    (emit g-body-stream "  call void @node-push(ptr " t ", ptr " tag ")\n")
-    (emit g-body-stream "  call void @node-push(ptr " t ", ptr " (val 'val) ")\n")
+    (emit g-body-stream "  " t " = call ptr " (core-link-name "node-list-new") "(i32 0)\n")
+    (emit g-body-stream "  call void " (core-link-name "node-push") "(ptr " t ", ptr " tag ")\n")
+    (emit g-body-stream "  call void " (core-link-name "node-push") "(ptr " t ", ptr " (val 'val) ")\n")
     (return (alloc-val (ty-ptr-node) t))))
 
 ; One list, built left to right. A level-1 `~@` appends its operand's elements;
@@ -2732,16 +2747,16 @@
   (require-node-runtime (node-line (as ptr list) g-form-line) "quasiquote")
   (let (lc:?&Node list
         acc:StrView (new-tmp))
-    (emit g-body-stream "  " acc " = call ptr @node-list-new(i32 0)\n")
+    (emit g-body-stream "  " acc " = call ptr " (core-link-name "node-list-new") "(i32 0)\n")
     (dotimes (i (node-len lc))
       (let (elem:?&Node (node-at lc i))
         (if (and (= level 1) (!= (qq-is-tagged elem 'unquote-splice) 0))
           (let (inner:?&Node (node-at elem 1)
                 a:&Val (emit-node inner scope))
             (qq-require-node-operand a inner 1 (node-line elem (lc 'line)))
-            (emit g-body-stream "  call void @node-extend(ptr " acc ", ptr " (a 'val) ")\n"))
+            (emit g-body-stream "  call void " (core-link-name "node-extend") "(ptr " acc ", ptr " (a 'val) ")\n"))
           (let (head:&Val (emit-qq-form elem scope level))
-            (emit g-body-stream "  call void @node-push(ptr " acc ", ptr " (head 'val) ")\n")))))
+            (emit g-body-stream "  call void " (core-link-name "node-push") "(ptr " acc ", ptr " (head 'val) ")\n")))))
     (return (alloc-val (ty-ptr-node) acc))))
 
 (defn emit-qq-form (form:?&Node scope:&Scope level:i32):&Val
@@ -6049,6 +6064,7 @@
 ;   - `user`            → empty string (bare ir-names; the byte-identical hatch);
 ;   - an explicit `set-ir-prefix` entry → that value (which may itself be empty,
 ;     forcing bare names for a non-`user` namespace);
+;   - a core library     → `nuc_`, which `ns-compose` joins with no separator;
 ;   - otherwise          → the namespace name itself, sanitized to a C-legal prefix.
 ; Returns "" (empty) for the bare cases so a single empty-test gates the whole
 ; mangling at the production sites.
@@ -6056,8 +6072,7 @@
   (when (= ns "user") (return (symbol-intern "")))
   (let (p:Symbol (ns-ir-prefix-get ns))
     (when (not (symbol-none? p)) (return p))
-    ; D-IR: the core libraries keep bare link names (ambient-namespaces.md §8).
-    (when (core-ns? ns) (return (symbol-intern "")))
+    (when (core-ns? ns) (return g-core-ir-prefix))
     (return (ns-prefix-sanitize (symbol-as-view ns)))))
 
 ; Is `ns` `nucleus` or a namespace under it — a core library's?
@@ -6110,18 +6125,131 @@
     (when (core-named? (sd 'name) bare) (return (as ptr sd))))
   (return null))
 
-; Two keys with one LLVM type name would be one `%T` with two bodies. D-IR makes
-; this reachable: a `user` type named like a core one (ambient-namespaces.md §8).
+; Two keys with one LLVM type name would be one `%T` with two bodies; two
+; namespaces given one prefix by `set-ir-prefix` reach it.
 (defn struct-link-name-unique (sd:&StructDef line:i32):void
-  (when (core-ns? g-current-ns) (return))
+  (when (core-ns? (key-namespace (sd 'name))) (return))
+  (when (and (= g-defining-private 0) (core-reserved-link? (symbol-as-view (sd 'ir-name))))
+    (die-at line (core-reserved-message "type" (strip-ns-qualifier (sd 'name))
+                                        (fstr "%" (sd 'ir-name)))))
   (doseq (o g-structs (VecIter &StructDef))
     (when (and (= (o 'ir-name) (sd 'ir-name)) (!= (o 'name) (sd 'name)) (= (o 'alias-of) null))
       (die-at line (fstr "defstruct: " (strip-ns-qualifier (sd 'name)) " links as %" (sd 'ir-name)
                          ", the LLVM type of " (o 'name)
                          " — rename it, or give this file an (ns …)")))))
 
+; `nuc_` link names belong to the core libraries (core-link-names.md §4.2).
+(defn core-reserved-link? (irn:StrView):bool
+  (return (strview-has-prefix irn "nuc_")))
+
+(defn core-reserved-message (what:StrView name:Symbol irn:StrView):StrView
+  (return (fstr what " '" name "' links as " irn
+                ", and the nuc_ prefix is reserved for the core libraries — rename it")))
+
+; A namespace prefix that composes `nuc_…` link names.
+(defn refuse-reserved-prefix (prefix:Symbol line:i32 what:StrView):void
+  (let (v:StrView (symbol-as-view prefix))
+    (when (or (= v "nuc") (strview-has-prefix v "nuc_"))
+      (die-at line (fstr what ": link prefix '" v "' is reserved for the core libraries")))))
+
+; CL-3: one `@` link name, one definition (core-link-names.md §4.3).
+(defvar g-link-claim-index:&(HashMap Symbol i32) (hashmap-new-in &g-arena-alloc))
+(defvar g-link-claims:&(Vector &LinkClaim) (vector-new-in &g-arena-alloc))
+
+(defn link-claim-find (irn:Symbol):?&LinkClaim
+  (match (get g-link-claim-index irn)
+    (none (return null))
+    ((some i) (return (as ptr (invoke g-link-claims (as usize i)))))))
+
+(defn link-claim-set (c:&LinkClaim ident:Symbol name:Symbol sig:Symbol c-decl:bool line:i32):void
+  (set! (c 'ident) ident)
+  (set! (c 'name) name)
+  (set! (c 'file) g-source-path)
+  (set! (c 'line) line)
+  (set! (c 'sig) sig)
+  (set! (c 'c-decl) c-decl))
+
+(defn link-claim-put (irn:Symbol ident:Symbol name:Symbol sig:Symbol c-decl:bool line:i32):void
+  (let (c:&LinkClaim (new LinkClaim))
+    (link-claim-set c ident name sig c-decl line)
+    (set! (c 'irn) irn)
+    (match (get g-link-claim-index irn)
+      (none (set! (c 'prev) -1))
+      ((some i) (set! (c 'prev) i)))
+    (assoc g-link-claim-index irn (unsafe/cast i32 (count g-link-claims)))
+    (conj g-link-claims c)))
+
+; Drop every claim made since there were `n`, unwinding the index with them.
+(defn link-claims-truncate (n:i32):void
+  (while (> (unsafe/cast i32 (count g-link-claims)) n)
+    (let (c:&LinkClaim (link-claim-last))
+      (if (< (c 'prev) 0)
+        (dissoc g-link-claim-index (c 'irn))
+        (assoc g-link-claim-index (c 'irn) (c 'prev)))
+      (remove-at g-link-claims (- (count g-link-claims) 1)))))
+
+; A C declaration of `irn`, which a Nucleus definition of it must match.
+(defn link-claim-c-decl (irn:Symbol name:Symbol sig:Symbol file:Symbol line:i32):void
+  (when (= (link-claim-find irn) null)
+    (link-claim-put irn name name sig true line)
+    (set! ((link-claim-last) 'file) file)))
+
+(defn link-claim-last ():&LinkClaim
+  (return (invoke g-link-claims (- (count g-link-claims) 1))))
+
+; Claim `irn` for definition `ident`, refusing any other holder.
+(defn link-claim-define (irn:Symbol ident:Symbol name:Symbol sig:Symbol line:i32):void
+  (if-some (o (link-claim-find irn))
+    (do
+      (when (o 'c-decl)
+        (when (!= (o 'sig) sig)
+          (die-at line (fstr "'" name "' links as " irn ", which " (o 'file) ":" (o 'line) " declares as "
+                             (o 'sig) ", not " sig " — match that declaration, or rename it")))
+        ; A new claim, not an edit, so a REPL rollback can restore the declaration's.
+        (link-claim-put irn ident name sig false line)
+        (return))
+      (when (= (o 'ident) ident) (return))
+      (die-at line (fstr "'" name "' links as " irn ", the symbol of '" (o 'name) "' at "
+                         (o 'file) ":" (o 'line) " — rename one, or give one file an (ns …)")))
+    (link-claim-put irn ident name sig false line)))
+
+; CL-2 and CL-3 for a function's `define`. Asked of the method, not the current
+; namespace, which is the stamping file's for a template instance.
+(defn defn-link-check (fname:Symbol irn:Symbol sig:Symbol line:i32):void
+  (when (= (emitting-program-ir) 0) (return))
+  (let (ns:Symbol g-current-ns
+        priv:bool (!= g-defining-private 0))
+    (when-some (g (generic-lookup fname))
+      (doseq (m (g 'methods) (VecIter &Method))
+        (when (= (m 'ir-name) irn)
+          (when (not (symbol-none? (m 'src-ns))) (set! ns (m 'src-ns)))
+          (set! priv (!= (m 'priv) 0)))))
+    (let (name:Symbol (strip-priv-qualifier fname))
+      (when (and (not priv) (not (core-ns? ns))
+                 (core-reserved-link? (strview-drop-bytes (symbol-as-view irn) 1)))
+        (die-at line (core-reserved-message "defn" name (symbol-as-view irn))))
+      (link-claim-define irn fname name sig line))))
+
+; CL-2 and CL-3 for a global's storage.
+(defn global-link-check (name:Symbol irn:Symbol ty:?&Type line:i32):void
+  (when (= (emitting-program-ir) 0) (return))
+  (when (and (= g-defining-private 0) (not (core-ns? g-current-ns))
+             (core-reserved-link? (strview-drop-bytes (symbol-as-view irn) 1)))
+    (die-at line (core-reserved-message "defvar" name (symbol-as-view irn))))
+  (link-claim-define irn (symbol-intern (fstr g-current-ns "/" name)) name
+                     (symbol-intern (type-to-ir ty)) line))
+
+; A function's LLVM signature, as a C declaration's is compared to a definition's.
+(defn fn-link-sig (ret:?&Type param-types:ptr nparams:i32 variadic:bool):Symbol
+  (let (acc:StrView (fstr (type-to-ir ret) " ("))
+    (dotimes (i nparams)
+      (set! acc (fstr acc (if (> i 0) ", " "") (type-to-ir (as ?&Type (aref (unsafe/cast &ptr param-types) i))))))
+    (when variadic (set! acc (fstr acc (if (> nparams 0) ", ..." "..."))))
+    (return (symbol-intern (fstr acc ")")))))
+
 ; Compose an explicit ir-prefix string onto a (bare, already-tokenized) base —
-; `<prefix>__<base>`, or bare `base` when the prefix is empty. The atomic
+; `<prefix>__<base>`, `nuc_<base>` for the core prefix, or bare `base` when the
+; prefix is empty. The atomic
 ; namespace-mangling primitive: it runs BEFORE the per-parameter `.tok` method
 ; mangling, so an overloaded `foo/bar` becomes `foo__bar.tok.tok`. Threading the
 ; prefix explicitly (rather than reading g-current-ns) lets a generic carry the
@@ -6129,7 +6257,20 @@
 ; namespace is current still mangles correctly.
 (defn ns-compose (prefix:Symbol base:StrView):Symbol
   (when (or (symbol-none? prefix) (= (symbol-len prefix) 0)) (return (symbol-intern base)))
+  (when (= prefix g-core-ir-prefix) (return (symbol-intern (fstr prefix base))))
   (return (symbol-intern (fstr prefix "__" base))))
+
+; `ns-compose` for a top-level definition's name: the C runtime calls `main` by
+; that name, whatever namespace defines it.
+(defn def-compose (prefix:Symbol base:StrView):Symbol
+  (when (= base "main") (return (symbol-intern base)))
+  (return (ns-compose prefix base)))
+
+; The `@` symbol of core runtime function `bare`, for IR the compiler writes by
+; hand. A spelling rule, not a registry question: the macro JIT links these
+; against the compiler's own exports, which the same rule named.
+(defn core-link-name (bare:StrView):Symbol
+  (return (symbol-intern (fstr "@" g-core-ir-prefix bare))))
 
 ; Compose the *current* namespace's ir-prefix onto a bare source name. Used at the
 ; solitary-defn / defvar production sites (and the symmetric `.nuch` import /
@@ -6140,8 +6281,8 @@
 ; emits. Identity under `user` (empty prefix) and for any name without `?`/`!`
 ; (ir-name-token returns it unchanged) → byte-identical bootstrap.
 (defn ns-ir-base (name:Symbol):Symbol
-  (return (ns-compose (ns-ir-prefix g-current-ns)
-                      (ir-name-token (symbol-as-view name)))))
+  (return (def-compose (ns-ir-prefix g-current-ns)
+                       (ir-name-token (symbol-as-view name)))))
 
 ; ============================================================
 ; Stage 15 W5e — file-scoped private names
@@ -8026,7 +8167,7 @@
           (require-node-runtime (cc 'line) "a :rest call")
           (let (lst-name:StrView (new-tmp)
                 ri:i32 fixed)
-            (emit g-body-stream "  " lst-name " = call ptr @node-list-new(i32 0)\n")
+            (emit g-body-stream "  " lst-name " = call ptr " (core-link-name "node-list-new") "(i32 0)\n")
             (while (< ri nargs)
               (let (av:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) ri))
                     av-val:StrView (av 'val)
@@ -8056,7 +8197,7 @@
                     (emit g-body-stream "  " tmp " = inttoptr " (type-to-ir (as ptr aty)) " "
                           av-val " to ptr\n")
                     (set! av-val tmp)))
-                (emit g-body-stream "  call void @node-push(ptr " lst-name ", ptr " av-val ")\n"))
+                (emit g-body-stream "  call void " (core-link-name "node-push") "(ptr " lst-name ", ptr " av-val ")\n"))
               (inc! ri))
             ; Place list ptr as the trailing arg slot at index `fixed`.
             (let (slot:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) fixed)))
@@ -15001,6 +15142,7 @@
         ; type's zero and the initializer is queued for @__nucleus_init.
         runtime-init:i32 0)
     (check-ir-name-legal (cc 'line) name ir-name)
+    (global-link-check name (symbol-intern ir-name) (as ?&Type ty) (cc 'line))
     (set! g-repl-retype-suffix "")
     ; Stage 20 L6 (§5.7): open the span here, above the array-backing
     ; global, so `@g.data` is inside the text a mirror copies.
@@ -15866,12 +16008,14 @@
         (set! g-out saved-out)))))
 
 (defn emit-extern (call:?&Node):void
-  (emit-extern-mode call NUCH-BOTH))
+  (emit-extern-mode call NUCH-BOTH false))
 
 ; Stage 15 W9 item 29: the same, split by NUCH-* mode so a `.nuch` header's
 ; globals can be registered by the whole-graph prescan while their
 ; `external global` lines stay where the import has always written them.
-(defn emit-extern-mode (call:?&Node mode:i32):void
+; `from-header`: a `.nuch` re-declaring a Nucleus global, which links under its
+; namespace's prefix. A hand-written extern names a foreign symbol, which does not.
+(defn emit-extern-mode (call:?&Node mode:i32 from-header:bool):void
   (let (cc:&Node (unsafe/cast &Node call))
     (require-extern-form (as ptr call))
     (let (attr-flags:i32 0
@@ -15916,12 +16060,14 @@
       ; function — not a reference this file wrote.
       (when (and (!= m NUCH-AFTER) (!= (scope-lookup-key g-globals name) null))
         (return))
-      ; Stage 12 N6: a namespaced library's global re-resolves to its mangled link
-      ; name. When this `extern` arrives from a `.nuch` whose leading `(ns NAME)`
-      ; set g-current-ns, ns-ir-base composes the prefix (`g` → `geom__g`) — the
-      ; same name emit-defvar produced. Identity under `user`, so a hand-written
-      ; `(extern stderr)` and the bootstrap stay byte-identical.
-      (let (ir-name:StrView (fstr "@" (ns-ir-base name)))
+      ; Stage 12 N6: a `.nuch` global re-resolves to the name emit-defvar gave it
+      ; (`g` → `geom__g`).
+      (let (ir-name:StrView (if from-header
+                              (fstr "@" (ns-ir-base name))
+                              (fstr "@" (ir-name-token (symbol-as-view name)))))
+        (when (not from-header)
+          (link-claim-c-decl (symbol-intern ir-name) name (symbol-intern (type-to-ir (as ?&Type ty)))
+                             g-source-path (cc 'line)))
         (check-ir-name-legal (cc 'line) name ir-name)
         ; Two namespaces' `(extern stderr:ptr)` are two keys and one link name.
         (when (and (!= m NUCH-REG)
@@ -16319,6 +16465,8 @@
               ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
               ; (`weak_odr` for a definition this unit only carries a copy of)
               ; are the same decision, taken once in `def-linkage`.
+              (defn-link-check fname (defn-ir-name fname param-types nparams ret)
+                               (fn-link-sig ret param-types nparams false) (cc 'line))
               (emit g-out "define " (def-linkage) (abi-ret-ir g-fn-ret-abi ret) " "
                     (defn-ir-name fname param-types nparams ret) "(")
               ; A MEMORY return prepends the hidden sret pointer parameter.
@@ -17088,14 +17236,14 @@
 
             ; Declare the host-defined node runtime if the body built any node.
             (when (!= ct-nodes 0)
-              (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@node-list-new") (symbol-intern "declare ptr @node-list-new(i32)\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@node-push") (symbol-intern "declare void @node-push(ptr, ptr)\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@node-extend") (symbol-intern "declare void @node-extend(ptr, ptr)\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
+              (macro-jit-declare-raw ct-decl (core-link-name "alloc-node") (symbol-intern (fstr "declare ptr " (core-link-name "alloc-node") "()\n")))
+              (macro-jit-declare-raw ct-decl (core-link-name "node-list-new") (symbol-intern (fstr "declare ptr " (core-link-name "node-list-new") "(i32)\n")))
+              (macro-jit-declare-raw ct-decl (core-link-name "node-push") (symbol-intern (fstr "declare void " (core-link-name "node-push") "(ptr, ptr)\n")))
+              (macro-jit-declare-raw ct-decl (core-link-name "node-extend") (symbol-intern (fstr "declare void " (core-link-name "node-extend") "(ptr, ptr)\n")))
+              (macro-jit-declare-raw ct-decl (core-link-name "intern-symbol") (symbol-intern (fstr "declare ptr " (core-link-name "intern-symbol") "(ptr)\n")))
               (macro-jit-ast-read-decls ct-decl)
-              (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
-                                     (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
+              (macro-jit-declare-raw ct-decl (core-link-name "symbol-intern-bytes")
+                                     (symbol-intern (fstr "declare i64 " (core-link-name "symbol-intern-bytes") "(ptr, i64)\n"))))
             ; Restored only now: every `macro-jit-declare-raw` above writes into
             ; THIS module's `ct-decl`, so the set it consults must be this
             ; module's until the last of them has run.
@@ -17418,14 +17566,14 @@
                   ; `` `foo ``, `'x`) goes through emit-quote-tree, and used to
                   ; emit `call @alloc-node` into a module that declared nothing.
                   (when (!= macro-nodes 0)
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-list-new") (symbol-intern "declare ptr @node-list-new(i32)\n"))
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-push") (symbol-intern "declare void @node-push(ptr, ptr)\n"))
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-extend") (symbol-intern "declare void @node-extend(ptr, ptr)\n"))
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
+                    (macro-jit-declare-raw ct-decl (core-link-name "alloc-node") (symbol-intern (fstr "declare ptr " (core-link-name "alloc-node") "()\n")))
+                    (macro-jit-declare-raw ct-decl (core-link-name "node-list-new") (symbol-intern (fstr "declare ptr " (core-link-name "node-list-new") "(i32)\n")))
+                    (macro-jit-declare-raw ct-decl (core-link-name "node-push") (symbol-intern (fstr "declare void " (core-link-name "node-push") "(ptr, ptr)\n")))
+                    (macro-jit-declare-raw ct-decl (core-link-name "node-extend") (symbol-intern (fstr "declare void " (core-link-name "node-extend") "(ptr, ptr)\n")))
+                    (macro-jit-declare-raw ct-decl (core-link-name "intern-symbol") (symbol-intern (fstr "declare ptr " (core-link-name "intern-symbol") "(ptr)\n")))
                     (macro-jit-ast-read-decls ct-decl)
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
-                                           (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
+                    (macro-jit-declare-raw ct-decl (core-link-name "symbol-intern-bytes")
+                                           (symbol-intern (fstr "declare i64 " (core-link-name "symbol-intern-bytes") "(ptr, i64)\n"))))
                   ; Restored only now, and restored at all: every declare above
                   ; writes into THIS module's `ct-decl`, and a nested `macrolet`
                   ; leaves its own set behind — which would make this module skip
@@ -18925,6 +19073,8 @@
         (when (= g-interactive 0)
           (diag-emit "warning" g-source-path (ff 'line)
                 (fstr "second ns directive; namespace re-set to '" (name-node 's) "'"))))
+      (when (not (core-ns? (name-node 's)))
+        (refuse-reserved-prefix (ns-prefix-sanitize (symbol-as-view (name-node 's))) (ff 'line) "ns"))
       (set! g-current-ns (name-node 's))
       (set! g-ns-seen 1)
       ; Stage 15 B2a (name-resolution.md §9.1): this is the one point at which a
@@ -18962,7 +19112,10 @@
       ; interned so the table key/value compare by pointer identity downstream.
       (if (str-empty? &prefix)
         (ns-ir-prefix-set g-current-ns (symbol-intern ""))
-        (ns-ir-prefix-set g-current-ns (ns-prefix-sanitize prefix))))))
+        (let (p:Symbol (ns-prefix-sanitize prefix))
+          (when (not (core-ns? g-current-ns))
+            (refuse-reserved-prefix p (ff 'line) "set-ir-prefix"))
+          (ns-ir-prefix-set g-current-ns p))))))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): `(fn-attr <name>
 ; "<attr>" …)` attaches one or more LLVM string function attributes to the `defn`
@@ -20839,13 +20992,16 @@
   ; Backends are already registered process-wide by targets-init-all (called from
   ; target-init, which runs before this on every batch code path),
   ; so no per-call target init is needed here.
+  ; LLVM prefixes its errors with the buffer name, and a line there is an IR line.
   (let (ctx:ptr (LLVMContextCreate)
-        mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len (symbol-as-cstr source-file))
+        bufname:Symbol (symbol-intern (fstr "<generated IR for " source-file ">"))
+        mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len (symbol-as-cstr bufname))
         mod:ptr null
         parse-err:ptr null
         rc:i32 (LLVMParseIRInContext ctx mb &mod &parse-err))
     (when (!= rc 0)
-      (eprint "nucleusc: failed to parse generated IR: " (as CStr parse-err) "\n")
+      (eprint "nucleusc: failed to parse generated IR (inspect it with --emit-llvm): "
+              (as CStr parse-err) "\n")
       (LLVMDisposeMessage parse-err)
       (exit 1))
 

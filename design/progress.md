@@ -920,6 +920,31 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 23 — core link names: the `nuc_` prefix built (2026-10-05)
+
+[stage23-namespaces/core-link-names.md](stage23-namespaces/core-link-names.md) §6. D-IR is reversed.
+
+- **The bug.** A user definition named like a core one was an unlocated LLVM error. Uniqueness was checked by registry key, while LLVM checks link names, and under D-IR `user` and `nucleus.*` both had the empty prefix.
+- **CL-1.** Core values and types link as `nuc_` + name (`@nuc_node-push`, `%nuc_String`; C `nuc_string_new`, `struct nuc_String`). Foreign externs stay bare, `main` is always `main`, and the compiler's hand-written runtime names go through `core-link-name`.
+- **CL-2.** Non-core `nuc_` link names are refused where they are written, and so is any `ns` or `set-ir-prefix` that composes them.
+- **CL-3.** Each `@` link name has one definition, refused at its line. A definition of a C-declared name must match the declaration's LLVM signature.
+- **CL-4.** IR-parse errors are labelled `<generated IR for FILE>`.
+- **B came free** from the per-prefix solitary rule (W9 item 23): a user overload no longer renames a core symbol.
+- **Two existing bugs fixed in passing.** In an `(ns …)` file, `main` and a hand-written `extern` both took the prefix.
+- **REPL rollback of claims (follow-up, same day).** A form that dies drops the link-name claims it made, and the index is unwound through each claim's `prev`. Before this, a dead `(defvar foo? …)` blocked a later `foo_QMARK`. Test: `cl3-repl-rollback-drops-claim`. Suite 1,322 passed, plus the five known failures. The boot was refreshed and is at a fixed point.
+
+**Gates.**
+- Suite: 1,321 passed, plus the five known failures.
+- Bootstrap: converged through a temporary JIT shim, which was then deleted. A clean rebuild gives boot == stage1 == stage2.
+- Examples: 162/162. `make abi-test` passes.
+- IR corpus: 441/457 files are identical after normalizing `nuc_`. The other 16 differ only in three ways:
+  - per-prefix solitary `invoke`/`append`;
+  - anonymous-type hashes;
+  - handler repair tokens.
+- Self-compile: +3%.
+
+---
+
 ## Stage 23 — AN-4 built: quasiquote names are full names (2026-10-04)
 
 [stage23-namespaces/ambient-namespaces.md](stage23-namespaces/ambient-namespaces.md) §8, "AN-4 as built"; [quasiquote-resolution.md](stage23-namespaces/quasiquote-resolution.md) carries an "AN-4 rebase" note.

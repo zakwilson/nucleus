@@ -5,19 +5,19 @@
 
 /* Generated from lib/nucleus/core.nuc by nucleusc --emit-cheader */
 
-typedef struct Symbol {
+typedef struct nuc_Symbol {
     uint8_t* p;
-} Symbol;
+} nuc_Symbol;
 
-typedef struct Node {
+typedef struct nuc_Node {
     int32_t kind;
     int32_t line;
     int64_t i;
-    struct Symbol s;
-    struct Node** elems;
+    struct nuc_Symbol s;
+    struct nuc_Node** elems;
     int32_t len;
     int32_t cap;
-} Node;
+} nuc_Node;
 
 enum NodeKind {
     NodeKind_NODE_INT = 0,
@@ -29,8 +29,8 @@ enum NodeKind {
     NodeKind_NODE_CHAR = 6
 };
 
-typedef struct StrView {
+typedef struct nuc_StrView {
     uint8_t* data;
     size_t len;
-} StrView;
+} nuc_StrView;
 
