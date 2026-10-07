@@ -165,3 +165,10 @@ printed (`T*` vs `void*` — fixed 2026-09-06) and still differ in what
 `--emit-nuch` prints. `raw:T` is the remaining case: it widens to `void*` in a C
 header deliberately, which is defensible for a nullable pointer and is still a
 header whose fidelity depends on which synonym the author typed.
+
+### C pointers aren't type checked — **no longer deferred**
+
+Built 2026-10-05 as
+[stage23-namespaces/typed-c-pointers.md](../stage23-namespaces/typed-c-pointers.md):
+a C `T *` imports as `(ptr T)`, so C calls are pointee-checked. Exceptions are
+byte signedness, a C type's several names, and the first-member upcast.

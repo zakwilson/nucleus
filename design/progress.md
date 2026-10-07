@@ -920,6 +920,35 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 23 — typed C pointers built (2026-10-05)
+
+[stage23-namespaces/typed-c-pointers.md](stage23-namespaces/typed-c-pointers.md) §6.
+
+- **The bug.** Every C `T *` imported as bare `ptr`, so a C call accepted any
+  pointer. In `charge.nuc`, a quoted symbol reached GTK as a widget and crashed.
+- **TP-1 / TP-6.** A C `T *…*` imports as `(ptr …(ptr T))`. `void *` and
+  unresolved pointees stay bare.
+- **TP-2.** `size_t` imports as `usize`, and `ssize_t` as `ssize`.
+- **TP-3.** A C `char`/`unsigned char` pointee meets either byte sign.
+- **TP-4.** A C struct pointer upcasts implicitly to its first member's struct,
+  at the outermost pointer only.
+- **TP-5.** `struct Tag *` declares an opaque `Tag` on first sight.
+  `typedef Opaque Name;` registers an alias. The tag of a typedef body is
+  registered and linked.
+- **TP-0 deferred.** The GTK import is 32% slower until the importer's linear
+  lookups are indexed.
+- **Prescan fix (2026-10-06).** The early scan that registers C type names for
+  global `defvar`s and `defn` signatures skipped each declaration to the next
+  `;`. After a `static inline` body, which ends at `}`, that swallowed the next
+  declaration. About 145 GTK/GLib names (`GtkComboBox`, `GString`) were unknown
+  in signatures. `cheader-skip-to-semi` now ends a function definition at its
+  body's `}`. Test: `prescan-type-after-inline-body`. Suite 1330 passed; boot
+  refreshed.
+- **Gates.** Suite 1329 passed, plus the five known failures. Boot refreshed,
+  boot == stage1 == stage2. Examples 162/162. `abi-test` passes.
+
+---
+
 ## Stage 23 — core link names: the `nuc_` prefix built (2026-10-05)
 
 [stage23-namespaces/core-link-names.md](stage23-namespaces/core-link-names.md) §6. D-IR is reversed.

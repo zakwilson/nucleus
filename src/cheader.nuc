@@ -343,16 +343,10 @@
   (when (= name "__fp16")    (return ty-f16))
   (when (= name "_Float128") (return ty-f128))
   (when (= name "__float128") (return ty-f128))
-  ; size_t / ssize_t stay intercepted by NAME rather than followed through the
-  ; typedef table (which would make the width follow whatever machine the
-  ; preprocessor read headers for), but the width is the EMISSION target's:
-  ; pointer-sized on every target the compiler registers a backend for. Stage 16
-  ; C4 — 16-bit on AVR, 32-bit on i386; it was a hardcoded 64 before.
-  (when (= name "size_t")
-    (when (= ((unsafe/cast &Target g-target) 'ptr-size) 2) (return ty-ui16))
-    (when (= ((unsafe/cast &Target g-target) 'ptr-size) 4) (return ty-ui32))
-    (return ty-ui64))
-  (when (= name "ssize_t") (return (as ?&Type (ptr-int-type))))
+  ; size_t / ssize_t by NAME, not through the typedef table, whose width is the
+  ; preprocessing host's; usize/ssize are the emission target's pointer width.
+  (when (= name "size_t") (return ty-usize))
+  (when (= name "ssize_t") (return ty-ssize))
   ; __gnuc_va_list / va_list — treat as ptr
   (when (= name "__gnuc_va_list") (return ty-ptr))
   (when (= name "va_list") (return ty-ptr))
@@ -562,6 +556,25 @@
 ; Parse a C type from the buffer. Handles qualifiers (const, restrict, volatile,
 ; unsigned, signed, long, short, struct), pointer stars.
 ; Returns the Nucleus Type*. Sets out-end to position after the type.
+; typed-c-pointers.md TP-1/TP-6: `T *…*` keeps its pointee when Nucleus can name
+; it. `void *` stays bare `ptr`, the wildcard, as does an unresolved pointee.
+(defn c-ptr-to (pointee:ptr depth:i32):ptr
+  (when (= pointee null) (return ty-ptr))
+  (let (acc:ptr (cond (= pointee (as ptr ty-void)) null
+                      (= pointee (as ptr ty-i8)) (as ptr ty-c-char)
+                      (= pointee (as ptr ty-ui8)) (as ptr ty-c-uchar)
+                      true pointee)
+        i:i32 0)
+    (while (< i depth)
+      (if (= acc null)
+        (set! acc ty-ptr)
+        (let (t:&Type (make-type TY-PTR))
+          (set! (t 'elem) (unsafe/cast &Type acc))
+          (set! (t 'pkind) PTR-RAW)
+          (set! acc (as ptr t))))
+      (inc! i))
+    (return acc)))
+
 (defn c-parse-type (buf:ptr pos:i64 len:i64 out-end:&i64):ptr
   (let (is-unsigned:i32 0
         is-long:i32 0
@@ -710,13 +723,18 @@
             (inc! ptr-depth)
             (set! look (c-skip-type-quals buf (+ look 1) len)))
           (set! @out-end look)))
-      (when (> ptr-depth 0) (return ty-ptr))
+      (when (> ptr-depth 0) (return (c-ptr-to (as ptr (c-int-type 0)) ptr-depth)))
       (return (as ptr (c-int-type 0))))
     ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
-    ; TY-STRUCT (TY-UNION for unions); Tag references look up by tag;
-    ; pointer-to-aggregate collapses to ptr.
+    ; TY-STRUCT (TY-UNION for unions); Tag references look up by tag. A pointer to
+    ; a tag not seen yet declares it, as in C: an opaque entry a body upgrades.
     (when (!= is-struct 0)
-      (when (> ptr-depth 0) (return ty-ptr))
+      (when (> ptr-depth 0)
+        (when (symbol-none? base-name) (return ty-ptr))
+        (let (sd:ptr (lookup-struct base-name))
+          (when (= sd null)
+            (set! sd (cheader-register-opaque base-name (cheader-line-at buf pos) is-union null)))
+          (return (c-ptr-to (as ptr (type-for-sdef (unsafe/cast &StructDef sd))) ptr-depth))))
       (let (look:i64 (c-skip-ws buf pos len)
             tag:Symbol base-name)
         (when (and (< look len) (= (cstr-byte-at buf look) 123))
@@ -786,10 +804,15 @@
           (when (and (!= sd null)
                      (= (-> sd (unsafe/cast &StructDef _) (_ 'opaque)) 0))
             (set! base-type (as ptr (type-for-sdef (unsafe/cast &StructDef sd)))))))
-      ; Apply pointer depth. A pointer to anything is `ptr` in Nucleus, so an
-      ; unresolvable POINTEE is harmless and must not mark the declaration —
-      ; `struct _IO_FILE *` and `void (*)(int)` are perfectly describable.
-      (when (> ptr-depth 0) (return ty-ptr))
+      ; An unresolvable POINTEE is harmless — the pointer stays bare `ptr` — and
+      ; must not mark the declaration. A typedef holding bare `ptr` as a stand-in
+      ; for an unreadable layout (`FILE`) yields to the struct of that name.
+      (when (> ptr-depth 0)
+        (when (or (= base-type null) (= base-type (as ptr ty-ptr)))
+          (let (sd:ptr (lookup-struct base-sym))
+            (when (!= sd null)
+              (set! base-type (as ptr (type-for-sdef (unsafe/cast &StructDef sd)))))))
+        (return (c-ptr-to base-type ptr-depth)))
       (when (= base-type null)
         ; W3c: a BY-VALUE type we could not resolve. The spec's rule for §1.4 is
         ; that a typedef the parser cannot follow must be an error or a skip,
@@ -2379,10 +2402,11 @@
     ; `struct S { … } f(void);` declares a FUNCTION, not a variable or a type
     ; name. Decline rather than record `f`.
     (when (and (< ab len) (= (cstr-byte-at buf ab) 40)) (return pos))
-    ; A pointer declarator is `ptr` whatever the body was — CD-2's rule.
     (when (!= stars 0)
       (when (!= is-typedef 0)
-        (c-typedef-record dn ty-ptr g-cheader-file tag-line))
+        (c-typedef-record dn (if (= sd null) ty-ptr
+                               (c-ptr-to (as ptr (type-for-sdef (unsafe/cast &StructDef sd))) stars))
+                          g-cheader-file tag-line))
       (return ne))
     (when (and (< ab len) (= (cstr-byte-at buf ab) 91))
       ; CD-3: `… } Name[N];` is an ARRAY of the body's shape; a StructDef alias
@@ -2423,6 +2447,9 @@
             (set! (alias 'from-c) 1)
             (cheader-adopt-shape alias (unsafe/cast &StructDef sd)))
           (let (psd:&StructDef (unsafe/cast &StructDef prior))
+            ; The prescan registered the name before its tag, so link it here.
+            (when (and (= (as ptr (psd 'alias-of)) null) (!= prior sd))
+              (set! (psd 'alias-of) (as ?&StructDef sd)))
             (when (!= (psd 'opaque) 0)
               (cheader-adopt-shape psd (unsafe/cast &StructDef sd)))))))
     (return ne)))
@@ -2537,13 +2564,16 @@
         ; (memoized by shape) and never registers `Tag` itself — so when `Tag`
         ; was forward-declared earlier in the header it would stay opaque
         ; forever. Adopt the shape into it (and into its own aliases) here.
+        ; The tag is registered here if nothing named it yet, so a later
+        ; `struct Tag *` finds this layout rather than declaring a new opaque Tag.
         (when (and (!= sd null) (!= is-typedef 0) (not (symbol-none? tag)))
-          (let (tsd:ptr (lookup-struct tag))
-            (when (!= tsd null)
-              (let (tsd2:&StructDef (unsafe/cast &StructDef tsd))
-                (when (!= (tsd2 'opaque) 0)
-                  (cheader-adopt-shape tsd2 (unsafe/cast &StructDef sd))
-                  (struct-upgrade-aliases tsd2))))))
+          (let (tsd2:&StructDef (unsafe/cast &StructDef
+                                  (cheader-register-opaque tag tag-line is-union sd)))
+            (when (= (as ptr (tsd2 'alias-of)) null)
+              (set! (tsd2 'alias-of) (as ?&StructDef sd)))
+            (when (!= (tsd2 'opaque) 0)
+              (cheader-adopt-shape tsd2 (unsafe/cast &StructDef sd))
+              (struct-upgrade-aliases tsd2))))
         ; For typedef, the typedef name comes after the body and may
         ; differ from the inner tag. Register a separate StructDef
         ; under the typedef name pointing at the same shape — but if
@@ -2594,6 +2624,22 @@
 ; Returns 1 when the declaration was consumed. A name is recorded even when its
 ; type is not representable (recording null): that is how a later by-value use
 ; gets a located skip naming the type, instead of the pre-W3c silent `ptr`.
+; TP-5: `typedef GdkSnapshot GtkSnapshot;` renames an opaque struct, which the
+; typedef table cannot hold by value, so the name registers as another alias.
+(defn c-typedef-struct-alias (buf:ptr te:i64 len:i64 name:Symbol line:i32):void
+  (let (q:i64 (c-skip-type-quals buf (c-skip-ws buf te len) len)
+        qe:i64 0
+        t:Symbol (c-read-ident buf q len (as &i64 &qe)))
+    ; The prescan sees every struct opaque; only the real import knows it is.
+    (when (or (!= g-cheader-typedef-provisional 0) (= (symbol-len t) 0)
+              (!= (lookup-struct name) null))
+      (return))
+    (let (sd:ptr (lookup-struct t))
+      (when (= sd null) (return))
+      (let (root:(ptr StructDef) (c-alias-root sd))
+        (when (!= (root 'opaque) 0)
+          (cheader-register-opaque name line (root 'is-union) (as ptr root)))))))
+
 (defn c-parse-typedef-decl (buf:ptr pos:i64 len:i64 out-end:&i64):i32
   (let (te:i64 0
         tok:Symbol (c-read-ident buf pos len (as &i64 &te)))
@@ -2620,7 +2666,8 @@
       ; `base`/`bad` for the FIRST declarator only.
       (let (p:i64 (c-skip-ws buf tend len)
             base0:ptr base
-            bad0:i32 bad)
+            bad0:i32 bad
+            plain:i32 0)
         (when (!= (c-span-has-star buf te tend) 0) (set! base0 null))
         ; `(*name)(args)` — a function-pointer typedef, which is a pointer
         ; whatever its return and argument types are. It has to be recognized
@@ -2642,6 +2689,7 @@
               (set! base (if (!= ft null) ft ty-ptr))
               (set! bad 0))))
         (when (symbol-none? name)
+          (set! plain 1)
           (let (ne:i64 0
                 dn:Symbol (c-read-ident buf p len (as &i64 &ne)))
             ; No declarator identifier — a shape not modelled at all. Decline, so
@@ -2655,6 +2703,7 @@
         ; array type to record, which is what makes `__jmp_buf` — and therefore
         ; every struct whose member is one — come out at the C size.
         (when (and (< p len) (= (cstr-byte-at buf p) 91))
+          (set! plain 0)
           (let (ae:i64 0
                 at:ptr (c-array-declarator buf base p len (as &i64 &ae) 0))
             (set! p ae)
@@ -2662,6 +2711,8 @@
               (set! bad 1)
               (set! base at))))
         (c-typedef-record name (if (!= bad 0) null base) g-cheader-file dline)
+        (when (and (!= plain 0) (= base0 base))
+          (c-typedef-struct-alias buf te len name dline))
         ; `typedef int a, *b;` — each declarator gets its own stars and extents
         ; over the shared specifiers; one whose base is gone is recorded null.
         (set! p (c-skip-ws buf p len))
@@ -2719,17 +2770,25 @@
 ; Advance past the end of the current declaration: the next `;` at brace depth 0,
 ; consuming balanced `{}` bodies whole. Linemarkers encountered on the way are
 ; recorded so provenance stays accurate across a multi-line declaration.
+; A function definition ends at its body's `}` — there is no `;` — so a `{`
+; opened right after a `)` ends the declaration when it closes.
 (defn cheader-skip-to-semi (buf:ptr pos:i64 len:i64):i64
   (let (p:i64 pos
         depth:i32 0
-        done:i32 0)
+        done:i32 0
+        last:i32 0
+        fn-body:bool false)
     (while (and (= done 0) (< p len))
       (let (c:i32 (cstr-byte-at buf p))
+        (when (and (= depth 0) (!= c 32) (!= c 9) (!= c 10) (!= c 13) (!= c 35) (!= c 123))
+          (set! last c))
         (case c
           (:or 34 39) (set! p (c-skip-quoted buf p len))
-          123 (do (inc! depth) (set! p (+ p 1)))
+          123 (do (when (= depth 0) (set! fn-body (= last 41)))
+                  (inc! depth) (set! p (+ p 1)))
           125 (do (when (> depth 0) (set! depth (- depth 1)))
-                        (set! p (+ p 1)))
+                  (set! p (+ p 1))
+                  (when (and (= depth 0) fn-body) (set! done 1)))
           59  (do (set! p (+ p 1)) (when (= depth 0) (set! done 1)))
           35  (let (dstart:i64 p)
                       (while (and (< p len) (!= (cstr-byte-at buf p) 10))

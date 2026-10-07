@@ -4390,7 +4390,7 @@
     ; (template-ref-equality.md §4); a null return raises the argument-mismatch
     ; diagnostic at the call site.
     (when (= sk dk)
-      (if (!= (slot-type-compat src target) 0) (return v) (return null)))
+      (if (!= (slot-value-compat src target) 0) (return v) (return null)))
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
       (return (coerce-int-val v target line)))
     ; Stage 15 W2d: any float→float pair, not just the widening f32→f64 this
@@ -8122,7 +8122,8 @@
           (die-at line
             (fstr (fstr subject ": argument " argno) " has type "
                   (type-display (slot 'type)) ", which does not match parameter type "
-                  (type-display (unsafe/cast &Type ptype)))))
+                  (type-display (unsafe/cast &Type ptype))
+                  (c-downcast-hint (slot 'type) (unsafe/cast &Type ptype)))))
         (when (!= nc (as ptr slot))
           (memcpy slot nc (sizeof Val))))))
 
@@ -14324,7 +14325,7 @@
         ; global was a silent reinterpretation. The same CALL the value path
         ; makes, not a copy of it; a `CStr` destination keeps its own rule.
         (when (and (= (ty 'kind) TY-PTR)
-                   (= (slot-type-compat pt ty) 0))
+                   (= (slot-value-compat pt ty) 0))
           (die-at line
             (fstr "defvar: ref: '" (tn 's) "' has type " (type-display pt)
                   ", which does not match " (type-display ty))))

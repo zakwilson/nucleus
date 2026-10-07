@@ -9,7 +9,7 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 - `pp:&&Node` → `(pp (ref (ref Node)))` — pointer-to-pointer-to-Node
 - `node:ptr:Node` → `(node (ptr Node))` — an *unchecked* pointer to Node
 
-A typed pointer is normally `&T` (non-null) or `?&T` (nullable, checked). `(ptr T)` is the unchecked pointer, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque, unchecked `void*` — the type of `null` and of an imported C pointer.
+A typed pointer is normally `&T` (non-null) or `?&T` (nullable, checked). `(ptr T)` is the unchecked pointer, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque, unchecked `void*` — the type of `null` and of an imported C `void *` pointer.
 
 Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `&x`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
 
@@ -273,7 +273,7 @@ unchecked.
 | `&T` ≡ `(ref T)` ≡ `ref:T` | **non-null** — always a valid `T` | always safe | no |
 | `?&T` ≡ `(Maybe (ref T))` | **nullable, checked** — may be none | **compile error** until narrowed | yes |
 | `(ptr T)` ≡ `ptr:T` | **unchecked** — the C-boundary escape | allowed (your problem) | yes |
-| bare `ptr` | **untyped, unchecked** — C's `void*`, the type of `null` and of an imported C `T*` | no pointee | yes |
+| bare `ptr` | **untyped, unchecked** — C's `void*`, the type of `null` and of an imported C `void *` (a C `T *` imports as `(ptr T)`, [structs-unions.md](structs-unions.md#imported-c-pointers-are-typed)) | no pointee | yes |
 
 Unchecked pointers are unsafe, so write `&T` or `?&T` wherever you can, and keep
 `(ptr T)` for code where the unchecked form saves real structure. The compiler's
@@ -770,7 +770,7 @@ alignment (`align 8` on x86-64, `align 4` on a 32-bit target), and it is the
 
 The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering an unchecked or nullable pointer into a non-null slot):
 
-- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `(ref Node)`, `?&Node` and `ptr:Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses an unchecked or `?` source into a `&T` slot (see [Pointer kinds](#pointer-kinds-t-t-and-ptr-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
+- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `(ref Node)`, `?&Node` and `ptr:Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses an unchecked or `?` source into a `&T` slot (see [Pointer kinds](#pointer-kinds-t-t-and-ptr-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types. A C-imported pointer adds byte signedness, one C type under several names, and the first-member upcast ([Imported C pointers are typed](structs-unions.md#imported-c-pointers-are-typed)).
 
   ```
   let: init type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)
