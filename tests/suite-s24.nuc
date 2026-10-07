@@ -1,0 +1,63 @@
+; Stage 24 — allocation and initialization (design/stage24-allocation/overview.md).
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+
+; ---------------------------------------------------------------------------
+; CQ-1…CQ-4: `conforms?` (design/stage24-allocation/conformance-query.md)
+; ---------------------------------------------------------------------------
+
+; Every conformance here is written BELOW its use, and `kind-of` names the
+; library's `Init`, which is not the caller's own `Init`.
+(deftest s24-conforms
+  (let (dir:String (try (test-scratch-sub "cq")))
+    (let (lib:String (try (write-into (string-as-view &dir) "s24cqlib.nuc" "(ns s24cqlib)
+(import-use nucleus.strview)
+(defprotocol Init (setup (self:&Self) :void))
+(defprotocol (InitFrom V) (setup-from (self:&Self v:V) :void))
+(defmacro kind-of (t)
+  (cond (conforms? t (InitFrom StrView)) `\"from-strview\"
+        (conforms? t Init) `\"init\"
+        true `\"plain\"))
+(defmacro from? (t v)
+  (if (conforms? t (InitFrom ~v)) `\"yes\" `\"no\"))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
+(import-use nucleus.strview)
+(import s24cqlib c)
+(defprotocol Init (setup (self:&Self) :void))
+(defprotocol Shout (shout (self:&Self) :i32))
+(defstruct A x:i32)
+(defstruct B x:i32)
+(defstruct C x:i32)
+(defstruct D x:i32)
+(defmacro shouty (t) (if (conforms? t Shout) `1 `0))
+(defmacro nfields (t) (if (= (ast-len (struct-fields t)) 2) `2 `1))
+(defn loud (p:&T :where (Shout T)):i32 (return (+ 1 (shout p))))
+(defn probe (x:T :where (Shout T)):i32 (return (+ (shouty T) (nfields T))))
+(defn main ():i32
+  (let (a:A (A 5))
+    (println (loud &a) \" \" (probe a) \" \" (shouty B) \" \" (shouty i32))
+    (println (c/kind-of A) \" \" (c/kind-of B) \" \" (c/kind-of C) \" \" (c/kind-of D))
+    (println (c/from? C StrView) \" \" (c/from? C i32) \" \" (c/from? D i64))
+    (return 0)))
+(defn setup (self:&A):void (set! (self 'x) 1))
+(defn shout (self:&A):i32 (return (self 'x)))
+(extend A Init)
+(extend A Shout)
+(defn setup (self:&B):void (set! (self 'x) 2))
+(extend B c/Init)
+(defn setup-from (self:&C v:StrView):void (set! (self 'x) 3))
+(extend C (c/InitFrom StrView))
+(defn setup-from (self:&D v:i64):void (set! (self 'x) 4))
+(extend D (c/InitFrom i64))
+"))
+          out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "6 2 0 0
+plain init from-strview plain
+yes no yes
+"))
+      (drop &out) (drop &m) (drop &lib))
+    (drop &dir))
+  (return (ok)))

@@ -2651,7 +2651,7 @@
         ; function-shaped method). derive-closure-conformance is idempotent, so
         ; a later generic-constraints-ok call that reaches the same (type, proto)
         ; sees the conformance already recorded and skips.
-        (when (and (= (conformance-lookup cvspell proto) 0)
+        (when (and (not (conformance-known cvspell proto))
                    (= (derive-closure-conformance cv proto line) 0))
           (return 0))
         (let (cn:i32 0
@@ -2888,17 +2888,7 @@
             var:Symbol   (crec 'var)
             idx:i32 (tyvar-index-of var (mm 'tyvars) (mm 'num-tyvars))
             bt:ptr (aref (unsafe/cast &ptr bound) idx))
-        ; Blanket protocols (§10.1) conform automatically; Valid (§10.2) matches
-        ; here and is checked structurally at the call site; otherwise require a
-        ; nominal conformance recorded by `extend`. Stage 13 L7: a closure that
-        ; has not hand-extended the protocol may still derive a structural
-        ; conformance on demand (derive-closure-conformance is idempotent — if
-        ; recover-one-constraint already fired during generic-method-bind, the
-        ; conformance is already recorded and this is a no-op).
-        (when (and (= (blanket-conforms bt proto) 0)
-                   (and (!= proto "Valid")
-                        (and (= (conformance-lookup (type-spelling bt) proto) 0)
-                             (= (derive-closure-conformance bt proto line) 0))))
+        (when (not (type-satisfies? bt proto line))
           (return 0))))
     (return 1)))
 
@@ -3527,7 +3517,7 @@
                         'ast-first 'ast-rest 'ast-at 'ast-len
                         'not '_and '_or 'cast 'ref 'deref 'ptr+ '_get
                         'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
-                        'struct-fields 'type-name
+                        'struct-fields 'type-name 'conforms?
                         'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
                         'as 'unsafe/cast 'unsafe/ptr+ 'unsafe/funcall-ptr-1 
@@ -3631,9 +3621,13 @@
         ; type pass need not model the wrapper; stamping happens at monomorphize.
         (when (or (= hp 'ref) (= hp 'raw) (= hp 'ptr)) (return null))
         ; Expand macros (if/when/-> …) so the body is core forms.
-        (when (!= (find-macro h) null)
-          (let (ex:ptr (macroexpand-form n 1))
-            (when (!= ex n) (return (gcheck ex scope m)))))
+        (if-some (md (find-macro h))
+          (do
+            ; A type query needs the stamp's concrete type (conformance-query.md §3).
+            (when (md 'type-query) (return null))
+            (let (ex:ptr (macroexpand-form n 1))
+              (when (!= ex n) (return (gcheck ex scope m)))))
+          0)
         (when (or (= hp 'quote) (= hp 'quasiquote)) (return ty-ptr))
         (when (or (= hp 'ast-first) (= hp 'ast-rest) (= hp 'ast-at)) (return (ty-ptr-node)))
         (when (= hp 'ast-len) (return ty-i32))
@@ -3957,9 +3951,12 @@
         (return null))
       (let (h:Symbol (head 's)
             hp:&Node head)
-        (when (!= (find-macro h) null)
-          (let (ex:ptr (macroexpand-form n 1))
-            (when (!= ex n) (return (valid-walk ex scope gname cty line)))))
+        (if-some (md (find-macro h))
+          (do
+            (when (md 'type-query) (return null))
+            (let (ex:ptr (macroexpand-form n 1))
+              (when (!= ex n) (return (valid-walk ex scope gname cty line)))))
+          0)
         (when (or (= hp 'quote) (= hp 'quasiquote)) (return ty-ptr))
         (when (or (= hp 'ast-first) (= hp 'ast-rest) (= hp 'ast-at)) (return (ty-ptr-node)))
         (when (= hp 'ast-len) (return ty-i32))
@@ -4407,14 +4404,128 @@
 ; Centralizing both in conformance-add/-lookup/-args covers every caller (extend,
 ; imported extend, dispatch constraint check, A2 recovery) with one chokepoint.
 (defn conformance-lookup (type-name:Symbol proto-name:Symbol):i32
+  (return (if (= (conformance-find type-name proto-name) null) 0 1)))
+
+(defn conformance-find (type-name:Symbol proto-name:Symbol):?&Conformance
   (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:&Conformance (invoke g-conformances i:usize))
       (when (and (= (c 'type-name) type-name)
                  (= (c 'proto-name) proto-name))
-        (return 1))))
-  (return 0))
+        (return c))))
+  (return null))
+
+; A recorded conformance, or a written `extend` not reached yet (CQ-1a).
+(defn conformance-known (type-name:Symbol proto-name:Symbol):bool
+  (when (!= (conformance-lookup type-name proto-name) 0) (return true))
+  (return (conformance-promise-redeem (type-canon-name type-name)
+                                      (protocol-canon-name proto-name))))
+
+; The one answer to "does `ty` conform to `proto`", for `:where` dispatch and
+; `conforms?` alike. Valid holds here and is checked structurally at the call.
+(defn type-satisfies? (ty:ptr:Type proto:Symbol line:i32):bool
+  (return (or (!= (blanket-conforms ty proto) 0)
+              (= proto "Valid")
+              (conformance-known (type-spelling ty) proto)
+              (!= (derive-closure-conformance ty proto line) 0))))
+
+; Every `(extend Type P)` among `forms`; a template subject is left to its stamp.
+(defn prescan-extends (forms:?&Node):void
+  (dotimes (i (node-len forms))
+    (let (f:?&Node (as ?&Node (node-at forms i)))
+      (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 3))
+        (let (h:?&Node (as ?&Node (node-at f 0))
+              s:?&Node (as ?&Node (node-at f 1))
+              p:?&Node (as ?&Node (node-at f 2)))
+          (when (and (= (node-kind h) NODE-SYM) (= (unsafe/cast &Node h) 'extend)
+                     (= (node-kind s) NODE-SYM)
+                     (not (symbol-contains-byte ((unsafe/cast &Node s) 's) 58))
+                     (or (= (node-kind p) NODE-SYM) (= (node-kind p) NODE-LIST)))
+            (let (pr:&ConformancePromise (new ConformancePromise))
+              (set! (pr 'subject) ((unsafe/cast &Node s) 's))
+              (set! (pr 'proto) p)
+              (set! (pr 'ns) g-current-ns)
+              (set! (pr 'path) g-source-path)
+              (set! (pr 'imports) g-file-imports)
+              (set! (pr 'line) (node-line f 0))
+              (conj g-conf-promises pr))))))))
+
+(defn promise-resolve (pr:&ConformancePromise):void
+  (when (pr 'resolved) (return))
+  (set! (pr 'resolved) true)
+  (let (here:NameEnv (name-env-enter (pr 'ns) (pr 'path) (pr 'imports))
+        pn:&Node (unsafe/cast &Node (pr 'proto))
+        head:Symbol (if (= (pn 'kind) NODE-SYM) (pn 's) (node-head-sym pn))
+        p:?&Protocol (if (symbol-none? head) null (protocol-lookup head)))
+    (set! (pr 'tkey) (type-canon-name (pr 'subject)))
+    (set! (pr 'pkey) (if (= p null) (symbol-none) (-> p (as &Protocol _) (_ 'name))))
+    (name-env-set here)))
+
+; Is `super` required by conforming to `sub`, through declared inheritance?
+(defn proto-requires? (sub:Symbol super:Symbol depth:i32):bool
+  (when (= sub super) (return true))
+  (when (> depth 32) (return false))
+  (doseq (e g-proto-supers (VecIter &Conformance))
+    (when (and (= (e 'type-name) sub) (proto-requires? (e 'proto-name) super (+ depth 1)))
+      (return true)))
+  (return false))
+
+; Record a promise's conformance, and its supers', ahead of its `extend`.
+(defn promise-record (pr:&ConformancePromise):void
+  (let (here:NameEnv (name-env-enter (pr 'ns) (pr 'path) (pr 'imports))
+        pn:&Node (unsafe/cast &Node (pr 'proto))
+        nargs:i32 (if (= (pn 'kind) NODE-LIST) (- (node-len pn) 1) 0)
+        args:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        saved:bool g-conf-promising)
+    (dotimes (i nargs)
+      (set! (aref (unsafe/cast &Symbol args) i)
+            (type-spelling (parse-type-from-node (node-at pn (+ i 1)) (pr 'line)))))
+    (set! g-conf-promising true)
+    (promise-record-in (pr 'tkey) (pr 'pkey) args nargs (pr 'line))
+    (set! g-conf-promising saved)
+    (name-env-set here)))
+
+(defn promise-record-in (tkey:Symbol pkey:Symbol args:ptr nargs:i32 line:i32):void
+  (conformance-add tkey pkey args nargs line)
+  (doseq (e g-proto-supers (VecIter &Conformance))
+    (when (= (e 'type-name) pkey)
+      (promise-record-in tkey (e 'proto-name) null 0 line))))
+
+(defn conformance-promise-redeem (tkey:Symbol pkey:Symbol):bool
+  (when (not g-promises-open) (return false))
+  (doseq (pr g-conf-promises (VecIter &ConformancePromise))
+    (when (not (pr 'redeemed))
+      (promise-resolve pr)
+      (when (and (= (pr 'tkey) tkey) (not (symbol-none? (pr 'pkey)))
+                 (proto-requires? (pr 'pkey) pkey 0))
+        (set! (pr 'redeemed) true)
+        (promise-record pr)
+        (return true))))
+  (return false))
+
+; CQ-1b: a conformance arriving after `conforms?` answered no for it.
+(defn conformance-refuse-after-no (tkey:Symbol pkey:Symbol line:i32):void
+  (doseq (q g-conf-noes (VecIter &ConformanceNo))
+    (when (and (= (q 'tkey) tkey) (= (q 'pkey) pkey))
+      (die-at line
+        (fstr (key-display tkey line) " conforms to " (display-key pkey) " here\n  note: "
+              (q 'path) ":" (q 'line) ": "
+              (if (= (q 'asked) pkey)
+                (fstr "conforms? answered no for (" (key-display tkey line) ", "
+                      (display-key pkey) ") before this")
+                (fstr "conforms? answered yes for (" (key-display tkey line) ", "
+                      (display-key (q 'asked)) ") before this, which holds only while it is not "
+                      (display-key pkey))))))))
+
+(defn conformance-note-no (tkey:Symbol pkey:Symbol asked:Symbol line:i32):void
+  (let (q:&ConformanceNo (new ConformanceNo))
+    (set! (q 'tkey) tkey)
+    (set! (q 'pkey) pkey)
+    (set! (q 'asked) asked)
+    (set! (q 'path) g-source-path)
+    (set! (q 'line) line)
+    (conj g-conf-noes q)))
 
 ; Retrieve the retained associated-type arguments for the `(type-name, proto-name)`
 ; conformance (assoc-types A1; consumed by A2's dispatch-time recovery). Returns the
@@ -4496,10 +4607,12 @@
               (fstr "type '" (key-display type-name line) "' re-extends protocol '" proto-name
                     "' with different associated arguments")))
           (return))))
+    (conformance-refuse-after-no type-name proto-name line)
     (let (c:&Conformance (unsafe/cast &Conformance (arena-alloc (sizeof Conformance))))
       (set! (c 'type-name) type-name)
       (set! (c 'proto-name) proto-name)
       (set! (c 'args) av)
+      (set! (c 'promised) g-conf-promising)
       (conj g-conformances c)
       (tmpl-retry-pending))))
 
@@ -5417,10 +5530,15 @@
   ; already-recorded case must still reach it. A plain protocol carries no args
   ; (npspellings 0), so the historical early-return is preserved exactly for it —
   ; keeping the hot, byte-identical path untouched.
-  (when (!= (conformance-lookup typename proto-name) 0)
-    (when (> npspellings 0)
-      (conformance-add typename proto-name pspellings npspellings line))
-    (return))
+  ; A promised record (CQ-1a) still owes this check, so it falls through, once.
+  (let (rec:?&Conformance (conformance-find typename proto-name))
+    (when (!= rec null)
+      (if (rec 'promised)
+        (set! (rec 'promised) false)
+        (do
+          (when (> npspellings 0)
+            (conformance-add typename proto-name pspellings npspellings line))
+          (return)))))
   ; B2a: `proto-name` is canonical by now — `emit-extend` resolved the source
   ; spelling and passed the Protocol's own name down, and the super-protocol
   ; recursion below passes an edge key. Either way this is a key lookup; the
@@ -6679,6 +6797,7 @@
         ; its value; void keeps it in lockstep with emit-macro-error.
         (when (= hp 'macro-error) (return ty-void))
         (when (or (= hp 'struct-fields) (= hp 'type-name)) (return (ty-ref-node)))
+        (when (= hp 'conforms?) (return ty-bool))
         ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
         ; resolve (the `unsafe` namespace is bound prefixed, never flattened), so
         ; there is nothing to refuse here either. Mirrors emit-list's routing in

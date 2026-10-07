@@ -1,0 +1,9 @@
+; A macro-produced conformance cannot be prescanned, so it arrives after the no.
+(defprotocol Shout (shout (self:&Self) :i32))
+(defstruct Pt x:i32 y:i32)
+(defmacro shouty (t) (if (conforms? t Shout) `1 `0))
+(defmacro late-extend (t)
+  `(do (defn shout ((self (ref ~t))):i32 (return 1)) (extend ~t Shout)))
+(defn main ():i32
+  (return (shouty Pt)))
+(late-extend Pt)

@@ -1,0 +1,4 @@
+; A parametric protocol is asked with its arguments.
+(defprotocol (P V) (pp (self:&Self v:V) :void))
+(defmacro m (t) (if (conforms? t P) `1 `0))
+(defn main ():i32 (return 0))

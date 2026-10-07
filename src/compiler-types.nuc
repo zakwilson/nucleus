@@ -1015,7 +1015,33 @@
   ; Stage 14 §14.4: the retained associated-type arguments as a (Vector Symbol) of
   ; canonical type-spellings (value-compared by conformance-args-eq); null
   ; for a plain (non-parametric) protocol. The count is `(count args)`.
-  (args ?&(Vector Symbol)))
+  (args ?&(Vector Symbol))
+  ; Recorded from a promise ahead of its `extend`, which still checks the methods.
+  promised:bool)
+
+; A written `(extend Type P)`, known before emission so a conformance below its
+; use still answers (design/stage24-allocation/conformance-query.md §2, CQ-1a).
+; The keys resolve lazily, in the writing file, once every protocol is registered.
+(defstruct ConformancePromise
+  subject:Symbol
+  (proto ?&Node)
+  ns:Symbol
+  path:Symbol
+  (imports ?&ImportVec)
+  line:i32
+  resolved:bool
+  redeemed:bool
+  tkey:Symbol
+  pkey:Symbol)
+
+; A `conforms?` that answered no; a later conformance for the pair is refused (CQ-1b).
+(defstruct ConformanceNo
+  tkey:Symbol
+  pkey:Symbol
+  ; The protocol asked: Clone's yes is a no for Drop.
+  asked:Symbol
+  path:Symbol
+  line:i32)
 
 ; Stage 11 parametric structs (T4): a recorded template-level conformance from
 ; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
@@ -1115,7 +1141,10 @@
   ; Stage 20 L4: the ir-names this body calls that do NOT resolve to the host,
   ; so `expand-macro-call` can mirror them before its lookup — the flush is at
   ; expansion, not here (design/stage20-macros/macro-call-linking.md §5.3).
-  ct-roots:&(Vector Symbol))
+  ct-roots:&(Vector Symbol)
+  ; The body asks about a type (`struct-fields`, `type-name`, `conforms?`), so a
+  ; generic's abstract check defers its calls to the stamp (conformance-query.md §3).
+  type-query:bool)
 
 ; Stage 20 L4: the same for a `(compile-time …)` block, which has no MacroDef.
 ; Keyed by the `__compile_time_main_N` symbol, because the flush belongs at

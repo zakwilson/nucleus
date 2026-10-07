@@ -1,0 +1,3 @@
+; `conforms?` names a protocol the macro's file does not define.
+(defmacro m (t) (if (conforms? t Nope) `1 `0))
+(defn main ():i32 (return 0))

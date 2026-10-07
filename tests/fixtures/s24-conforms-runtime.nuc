@@ -1,0 +1,3 @@
+; `conforms?` is a question for expansion time only.
+(defprotocol P (pp (self:&Self) :void))
+(defn main ():i32 (return (if (conforms? i32 P) 1 0)))

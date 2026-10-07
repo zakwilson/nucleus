@@ -49,6 +49,7 @@
 (import-use suite-audits)
 (import-use suite-s21)
 (import-use suite-s22)
+(import-use suite-s24)
 (import-use nucleus.intern)
 (import-use nucleus.coll)
 

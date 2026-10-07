@@ -61,6 +61,8 @@ A **protocol** names a capability — a set of required method signatures — an
 
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
+A conformance holds from the start of compilation, not from the `extend`'s position. A `:where` call written above `(extend Pt Shout)` is dispatched to `Pt`, and the `extend` still checks the methods when compilation reaches it. This covers an `extend` written as a top-level form in any file of the program. One a macro expands to (such as `derive-edn`'s) exists only from its expansion on.
+
 ```lisp
 (defn area (s:&Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
 (defn label (s:&Circle):ptr (return "circle"))

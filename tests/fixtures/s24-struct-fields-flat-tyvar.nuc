@@ -1,0 +1,10 @@
+; CQ-2: the abstract check of `probe` defers a macro that asks about `T`.
+(defprotocol Shout (shout (self:&Self) :i32))
+(defstruct Pt x:i32 y:i32)
+(defmacro nfields (t) (if (= (ast-len (struct-fields t)) 2) `0 `1))
+(defn probe (x:T :where (Shout T)):i32 (return (nfields T)))
+(defn shout (self:&Pt):i32 (return (self 'x)))
+(extend Pt Shout)
+(defn main ():i32
+  (let (p:Pt (Pt 1 2))
+    (return (probe p))))
