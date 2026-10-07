@@ -1,8 +1,13 @@
 # Stage 24 — allocation and initialization
 
-**Status: designed 2026-10-07. Only `conforms?` is built** (CQ-1…CQ-4,
-[conformance-query.md](conformance-query.md), 2026-10-07). Rulings Q1–Q6 (§10)
-are needed before AL-1. AL-0 (§9) is a bug fix that can go ahead without them.
+**Status: designed 2026-10-07; Q1–Q6 ruled 2026-10-07 (§10), every one as
+recommended.** Built so far: `conforms?` (CQ-1…CQ-4,
+[conformance-query.md](conformance-query.md)) and keyword-free union
+construction, which freed `make`. AL-0 is next. Q5 and Q6 are to be revisited
+after use ([deferred/overview.md](../deferred/overview.md)).
+The brief's "stack" allocator is named `FixedBuffer` (ruled 2026-10-07): it is a
+bump allocator over any borrowed buffer, and only the `frame-buffer` macro puts
+that buffer in a frame (§4.2).
 
 ## 1. The brief
 
@@ -12,7 +17,8 @@ are needed before AL-1. AL-0 (§9) is a bug fix that can go ahead without them.
 2. Allocating and initializing an object, with an allocator and optionally a
    value, should take one call.
 3. Nothing extends the `Allocator` protocol.
-4. Heap, stack and arena allocators should be available out of the box.
+4. Heap, stack and arena allocators should be available out of the box. (The
+   "stack" allocator became `FixedBuffer`, §4.2.)
 5. Allocators should extend `Drop`. What happens when an allocator is dropped
    while objects allocated from it are still alive? Should that be handled
    automatically, or left to the programmer as a contract?
@@ -63,7 +69,7 @@ is blocked by its method names, not by the language.
 - `(new T)` in the same file is an arena-only macro. It has 74 uses in `src/`
   and `lib/`.
 
-### 2.3 There is no stack allocator
+### 2.3 There is no allocator over frame or fixed storage
 
 Frame storage reaches collections only as an `alloca`'d header, such as
 `(with (v:&(Vector i32) (alloca (Vector i32))) (vector-init v) …)`, and the
@@ -144,7 +150,7 @@ placement for free.
 - **`align` is honored.** Every built-in allocator must return memory with the
   requested alignment. It is no longer advisory.
 - **`handle`** returns the type-erased value a collection stores (§4.3). This
-  lets constructors take any concrete allocator (`&Arena`, `&Stack`, `heap`) and
+  lets constructors take any concrete allocator (`&Arena`, `&FixedBuffer`, `heap`) and
   convert it themselves. The language has no implicit conversion that would do
   this at the call site.
 - **Every allocator also extends `Drop`** (§8).
@@ -155,27 +161,33 @@ placement for free.
 |---|---|---|---|
 | **`Heap`** (libc) | None. One process-wide instance, `heap`. | `free` | No-op |
 | **`Arena`** | A chain of blocks, current offset, and a parent allocator for the blocks (default `heap`) | No-op, or a rewind when `p` is the most recent allocation | Frees every block |
-| **`Stack`** | A caller-owned byte buffer and an offset | Pops when `p` is the top allocation; otherwise a no-op | No-op (the frame releases the buffer) |
+| **`FixedBuffer`** | A borrowed byte buffer (pointer and length) and an offset | Pops when `p` is the top allocation; otherwise a no-op | No-op (the buffer's owner releases it) |
 
 The arena also gets `arena-reset`, which rewinds to the first block and keeps
 the blocks. The compiler's process-lifetime arena becomes one global `Arena`
 value, `g-arena`. The existing `g-arena-alloc` handle and 377 `arena-alloc`
 calls then point at it. This fixes the lost-block leak (§2.2) as a side effect.
 
-**"Stack" here means a bump allocator over frame storage.** A function cannot
-`alloca` memory in its caller's frame, so `(allocate s …)` cannot itself use
-`alloca`. The buffer has to be reserved by the scope that owns it:
+**`FixedBuffer` has nothing to do with the stack.** It bump-allocates from a
+buffer it borrows, and the buffer can live anywhere: the current frame, a global
+array (a target with no heap, such as AVR), a block from `heap` reused across
+calls, a block from an `Arena` (giving a region that can pop), or memory from C
+or `mmap`. `(fixed-buffer p len)` takes any pointer and length.
+
+The frame case needs a macro, because a function cannot `alloca` memory in its
+caller's frame. `frame-buffer` reserves the buffer in the scope that expands it:
 
 ```lisp
-(with (s (stack-allocator 4096))          ; macro: alloca 4096 bytes here, plus a Stack header
+(with (s (frame-buffer 4096))             ; macro: alloca 4096 bytes here, plus a FixedBuffer header
   (let (v (new (Vector i32) s)) …))
 ```
 
-When the buffer is full, `allocate` returns null, as the protocol contract
-already allows. A collection then follows its existing OOM path. Q5 asks
-whether a full `Stack` should instead fall back to a parent allocator, as Zig's
-`stackFallback` does. The frame-escape analysis covers `s`'s address the same
-way it covers any other frame address.
+Whoever owns the buffer frees it, so `FixedBuffer`'s drop is a no-op. When the
+buffer is full, `allocate` returns null, as the protocol contract already
+allows, and a collection follows its existing OOM path (Q5). The frame-escape
+analysis covers a `frame-buffer`'s address the same way it covers any other
+frame address; a `FixedBuffer` over a global or heap buffer may outlive the
+function that made it.
 
 ### 4.3 The stored handle: dynamic dispatch
 
@@ -183,7 +195,7 @@ A collection stores one allocator value and does not know its concrete type.
 There are three ways to provide that:
 
 - **(a) Extend the tagged handle (recommended now).** `AllocHandle` is renamed
-  `Alloc` and gets the kinds `HEAP`, `ARENA`, `STACK` and `CUSTOM`. `data`
+  `Alloc` and gets the kinds `HEAP`, `ARENA`, `FIXED` and `CUSTOM`. `data`
   points at the allocator instance. The `CUSTOM` kind points at
   `{instance, allocate-fn, reallocate-fn, deallocate-fn}`, a hand-built vtable,
   which §2.1 showed is callable now. `Alloc` itself extends `Allocator`, so a
@@ -266,7 +278,7 @@ Both expand to the same steps:
 ```lisp
 (with (v (make (Vector i32) heap))  …)                  ; header in the frame, buffer on the heap; drop at exit
 (let  (s (new String g-arena "prelude"))  …)            ; header and buffer in the arena; nothing to drop
-(with (buf (stack-allocator 1024)
+(with (buf (frame-buffer 1024)
        k  (make String buf "key"))  …)                  ; reverse drop order: k, then buf
 ```
 
@@ -318,7 +330,7 @@ means for live objects depends on the allocator:
 |---|---|
 | `Heap` | **Still valid.** The heap is the process. `Heap` has no state to lose, and `heap` is a global that is never dropped. A `Heap` going out of scope is not an event. |
 | `Arena` | **Dangling.** Releasing the blocks all at once is the reason to use an arena. |
-| `Stack` | **Dangling**, but because the frame ends, not because of the drop. The drop is a no-op. |
+| `FixedBuffer` | **Dangling** once the buffer's owner releases it (for `frame-buffer`, when the frame ends), not because of the drop. The drop is a no-op. |
 
 So the answer to "could the objects continue to exist" is: yes for the heap, and
 no for allocators that own memory. Making it yes for an arena would mean
@@ -327,7 +339,7 @@ would also give up the reason to choose an arena.
 
 ### 8.2 The three ways it goes wrong
 
-1. **A dangling object.** The object outlives its arena or stack.
+1. **A dangling object.** The object outlives its arena or fixed buffer.
 2. **A dangling handle.** An object outlives its allocator and later calls
    `drop`, which calls `deallocate` through `Alloc.data`, which points at the
    dead allocator. This is use-after-free even when the bytes were heap bytes.
@@ -358,7 +370,7 @@ would also give up the reason to choose an arena.
     to.
 - **C. Checked contract.** An allocator that expects every allocation to be
   freed counts outstanding allocations in a checked build. When it is dropped
-  with a non-zero count, it reports the leak. `Stack` gets this almost for free.
+  with a non-zero count, it reports the leak. `FixedBuffer` gets this almost for free.
   A `Tracking` wrapper could add it to any parent allocator, like Zig's
   `GeneralPurposeAllocator`. It does not apply to `Arena`, because abandoning
   objects there is the normal case.
@@ -373,7 +385,7 @@ would also give up the reason to choose an arena.
 - **A is the rule.**
 - **D comes free** from `with`'s drop order. The docs should show allocators
   bound first in the same `with` as the objects that use them.
-- **C ships for `Stack`** in AL-1. A `Tracking` allocator comes later as AL-6.
+- **C ships for `FixedBuffer`** in AL-1. A `Tracking` allocator comes later as AL-6.
 - **B is not the default.** If AL-6 adds it, it should be a separate type,
   `FinalizingArena`, whose `new` returns a reference that `with` does not take
   ownership of. That needs a non-owning return marker, which does not exist
@@ -395,15 +407,15 @@ would also give up the reason to choose an arena.
   `set-remove` for this reason.
 - **AL-1. Allocators.** Rename the protocol methods and add `handle`. Honor
   alignment. Add `Heap` (with `heap`), `Arena` (with `arena-reset`, a block
-  chain, and a parent allocator), `Stack` (with the `stack-allocator` macro and
-  a checked outstanding count), and `Alloc` with the `HEAP`/`ARENA`/`STACK`/
+  chain, and a parent allocator), `FixedBuffer` (with `fixed-buffer`, the `frame-buffer` macro,
+  and a checked outstanding count), and `Alloc` with the `HEAP`/`ARENA`/`FIXED`/
   `CUSTOM` kinds. Every allocator extends `Allocator` and `Drop`. The compiler's
   arena becomes the global `Arena` `g-arena`. Existing call sites change only by
   the rename.
 - **AL-2. `Init`, `InitFrom` and `TryInitFrom`,** plus conformances for the four
   collections and the default-allocator generic.
-- **AL-3. `new` and `make` (§6),** as library macros over `conforms?` or as
-  compiler forms, per Q2. Union construction no longer uses the name. Tests cover a plain struct, each kind of `init`, a `!` from
+- **AL-3. `new` and `make` (§6),** as library macros over `conforms?` (Q2).
+  Union construction no longer uses the name. Tests cover a plain struct, each kind of `init`, a `!` from
   `TryInitFrom`, and `with` drop order with an allocator bound in the same form.
 - **AL-4. Sweep the codebase.** Remove the prefixed constructors from `lib/`,
   `src/`, `examples/` and `tests/` (§7), and the arena `new` macro. Boot shims
@@ -412,10 +424,24 @@ would also give up the reason to choose an arena.
   `collections.md` (including the stale §2.4 line) and `strings.md`.
 - **AL-5 (gated on DP and a borrowing `dyn`).** Change `Alloc` to
   `(dyn &Allocator)` and retire the `CUSTOM` kind.
-- **AL-6 (optional).** The `Tracking` allocator, and `FinalizingArena` if Q1
-  rules for it.
+- **AL-6 (optional).** The `Tracking` allocator. Q1 ruled out
+  `FinalizingArena`.
 
 ## 10. Questions for a ruling
+
+**Ruled 2026-10-07:**
+
+| | Ruling |
+|---|---|
+| Q1 | A contract plus cheap checks (§8.4). No automatic finalization. |
+| Q2 | `new` (placed, `&T`) and `make` (by value), as library macros over `conforms?`. |
+| Q3 | `allocate`/`reallocate`/`deallocate`. |
+| Q4 | The extended tagged `Alloc` now; `(dyn &Allocator)` later (AL-5). |
+| Q5 | A full `FixedBuffer` returns null. Revisit after some use (deferred). |
+| Q6 | The fixed global `heap` for now. Revisit after some use (deferred). |
+| Name | The brief's "stack" allocator is `FixedBuffer`, with `fixed-buffer` and the `frame-buffer` macro (§4.2). |
+
+The questions as they were put:
 
 - **Q1. Dropping an allocator with live objects.** Contract plus cheap checks,
   as recommended in §8.4, or automatic finalization (B)?

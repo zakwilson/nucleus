@@ -920,6 +920,18 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 24 — allocation rulings (2026-10-07)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §10. Every ruling is as recommended:
+- Q1: a contract plus cheap checks.
+- Q2: `new`/`make` as library macros over `conforms?`.
+- Q3: `allocate`/`reallocate`/`deallocate`.
+- Q4: a tagged `Alloc` now, `dyn` later.
+- Q5: a full `FixedBuffer` returns null.
+- Q6: the global `heap` is the default.
+
+Q5 and Q6 are filed in [deferred/overview.md](deferred/overview.md) to revisit after some use. The brief's "stack" allocator is named `FixedBuffer`: it borrows a buffer from anywhere, and the `frame-buffer` macro puts one in the current frame. Next: AL-0.
+
 ## Stage 24 — union construction without `make` (2026-10-07)
 
 `(make Shape rect 3.0 4.0)` is now `(Shape rect 3.0 4.0)`. A template instance takes its type as the head, `((Result i64 Err) ok 5)`. So do the sugars `(?i64 some 5)`/`(!i64 ok 5)` and an alias naming a union. Uncommitted. `make bootstrap` reaches its fixed point. The suite has 1346 tests: 1341 pass, and the 5 failures are the same `suite-target` datalayout tests as before.

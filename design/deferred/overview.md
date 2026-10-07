@@ -525,3 +525,19 @@ import went from 1.77 s to 2.33 s (+32%), and before that change
 name for each table is the likely fix. typed-c-pointers.md §4 TP-0.
 
 **Not wanted until** import time matters more than it does today.
+
+## Stage 24 allocator rulings to revisit after use
+
+Both were ruled on 2026-10-07 to take the simpler option first
+([stage24-allocation/overview.md](../stage24-allocation/overview.md) §10).
+
+- **Q5: a full `FixedBuffer` returns null.** The alternative
+  is to fall back to a parent allocator, as Zig's `stackFallback` does. With a
+  parent, the type is an `Arena` whose first block it does not own, like C++'s
+  `monotonic_buffer_resource`, so the two types could merge. Revisit once
+  real code shows whether callers keep writing their own fallback.
+- **Q6: the default allocator is the fixed global `heap`.** The alternative is
+  an implicit, dynamically scoped current allocator, like Odin's
+  `context.allocator`, rebound by a `(with-allocator a …)` form. Revisit once
+  there is enough code to judge whether threading an allocator explicitly is a
+  burden, or whether a hidden one would make call sites unclear.
