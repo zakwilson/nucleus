@@ -331,7 +331,7 @@
     (when (and p q) (set! n (+ n 4)))
     (when (or p q) (set! n (+ n 8)))
     (let (c:(Maybe i64) p)
-      (while c (set! n (+ n 16)) (set! c (make (Maybe i64) none))))
+      (while c (set! n (+ n 16)) (set! c ((Maybe i64) none))))
     (return n)))
 
 (defn main ():i32
@@ -340,8 +340,8 @@
         s:CStr c\"x\"
         t:CStr c\"y\"
         nc:CStr (as CStr null)
-        sm:(Maybe i64) (make (Maybe i64) some 5)
-        nm:(Maybe i64) (make (Maybe i64) none))
+        sm:(Maybe i64) ((Maybe i64) some 5)
+        nm:(Maybe i64) ((Maybe i64) none))
     (printf \"raw %d %d %d %d\\n\"
       (probe-raw (as (ptr Pt) a) (as (ptr Pt) b))
       (probe-raw (as (ptr Pt) a) null)

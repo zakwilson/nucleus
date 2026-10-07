@@ -10,7 +10,7 @@ fallible function returns a `(Result T E)` — `ok` with a `T`, or `err` with an
   the handler chain ([below](#handler-aware-err-and-with-handler-e3)).
 - **the payload tier**: any type of your own, when a failure must carry data —
   a line, a formatted message. It is built and eliminated exactly like `!T`
-  (bare `ok`/`err`/`err!` target-type against the declared return, no `make`),
+  (bare `ok`/`err`/`err!` target-type against the declared return, no type written),
   and one `defcast E Err` lets `try` carry it into a plain `!T` caller. See
   [`Err` is the code; `(Result T E)` is the payload](#err-is-the-code-result-t-e-is-the-payload).
 
@@ -75,7 +75,7 @@ declared return type (the union target-typing rule):
   (return (ok n)))
 ```
 
-needs no `make`. **Reading rule (builtin `Err` only):** `(err E)` means "give
+needs no type written. **Reading rule (builtin `Err` only):** `(err E)` means "give
 up unless a bound handler repairs"; `(err! E)` means "give up
 unconditionally" — it bypasses the handler chain and returns the error value.
 Use `err!` when you want an unconditional error return regardless of any
@@ -83,13 +83,13 @@ bound handlers; with a custom `E` there is no handler chain to bypass (only
 the builtin `Err` gets one — [Handler-aware `err` and
 `with-handler`](#handler-aware-err-and-with-handler-e3) below), so `err` and
 `err!` behave alike there. Away from `return`, the same bare forms construct
-against a typed binding, a `set!` target, a `make` or struct-literal field or a
+against a typed binding, a `set!` target, a union-literal or struct-literal field or a
 call argument
 (target typing — see [Templates](structs-unions.md#templates-defunion-result-t-e-)).
 Handler negotiation yields a value of the function's return type, so only a
 binding or `set!` of exactly that type negotiates as a return would; any other
-slot, and every call, `make` or struct-literal argument, builds the error value as `err!` does.
-With no type to construct against, write `(make (Result T E) ok v)`; stored
+slot, and every call, union-literal or struct-literal argument, builds the error value as `err!` does.
+With no type to construct against, write `((Result T E) ok v)`; stored
 Results are plain data with no handler machinery either way.
 
 **Elimination.**

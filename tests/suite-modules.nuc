@@ -419,7 +419,7 @@
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
         ar:&W9LayArr (alloca W9LayArr)
-        u (make W9LayOpt W9LaySome 5))
+        u (W9LayOpt W9LaySome 5))
     (set! (aref (ar 'xs) 2) 6)
     (set! (ar 'n) 7)
     (printf \"%d %d %d %d %d\\n\"
@@ -871,8 +871,8 @@
 (defn w9nu-body ():StrView
   (return "(import-use \"stdio.h\")
 (defn go ():i32
-  (let (a (make w9nu/Opt Some 41)
-        b (make w9nu/Opt None))
+  (let (a (w9nu/Opt Some 41)
+        b (w9nu/Opt None))
     (return (+ (w9nu/opt-or a 0) (w9nu/opt-or b 1)))))
 (defn main ():i32 (printf \"%d\\n\" (go)) (return 0))
 "))
@@ -943,11 +943,11 @@
         dir:StrView (try (test-scratch))
         asrc:String (str "(ns w9nua)
 (import-use w9nu)
-(defn tag-a ():i32 (return (w9nu/opt-or (make w9nu/Opt Some 1) 0)))
+(defn tag-a ():i32 (return (w9nu/opt-or (w9nu/Opt Some 1) 0)))
 ")
         bsrc:String (str "(ns w9nub)
 (import-use w9nu)
-(defn tag-b ():i32 (return (w9nu/opt-or (make w9nu/Opt Some 1) 0)))
+(defn tag-b ():i32 (return (w9nu/opt-or (w9nu/Opt Some 1) 0)))
 ")
         ap:String (try (write-into lv "w9nua.nuc" (string-as-view &asrc)))
         bp:String (try (write-into lv "w9nub.nuc" (string-as-view &bsrc)))
@@ -1003,7 +1003,7 @@
         out:String (try (nuch-link-run &l "bare" "(import-use \"stdio.h\")
 (import-use w9nub0)
 (defn main ():i32
-  (printf \"%d\\n\" (w9nu-bare-or (make W9NuBare W9NuOne 9) 0))
+  (printf \"%d\\n\" (w9nu-bare-or (W9NuBare W9NuOne 9) 0))
   (return 0))
 ")))
     (try (check-eq (string-as-view &out) "9\n"))

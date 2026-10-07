@@ -778,7 +778,7 @@ Consequences worth knowing:
 
   Struct and union **layouts** used to be listed here beside it and are not any
   more: a literal, a field access, a by-value parameter/return/field and
-  `make`/`match` over an imported union all resolve on reachability, in both
+  union literals and `match` over an imported union all resolve on reachability, in both
   spellings — a `.nuch` header's `defunion` included, which was the last case
   listed here and now behaves exactly like its `.nuc` source, namespaced or not.
   One narrow case still needs the import above the use: a struct whose `(array

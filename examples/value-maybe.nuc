@@ -39,8 +39,8 @@
 (defn main ():i32
   (show (half 8))
   (show (half 7))
-  (show (make ?i64 some 99))
-  (show (make ?i64 none))
+  (show (?i64 some 99))
+  (show (?i64 none))
   (show-r (lookup 5))
   (show-r (lookup 0))
   (show-r (lookup -1))

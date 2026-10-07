@@ -444,8 +444,8 @@
 
 ; ============================================================
 ; Stage 10: tagged-sum construction and elimination (unions.md §3–§5).
-; `make` is the explicit-instance construction form; arm constructors and
-; return-position target typing both lower to it. `match` is the sole
+; `(Type arm args…)` is the explicit-instance construction form; arm
+; constructors and target typing lower to its internal spelling `__make`. `match` is the sole
 ; eliminator: switch on the tag, typed binder loads per arm, cond's strict
 ; cross-branch join.
 ; ============================================================
@@ -508,7 +508,7 @@
           (set! (rv 'taint-frame) tframe)
           (return rv))))))
 
-; (make Type arm args...) — explicit-instance construction (unions.md §5a).
+; `(Type arm args...)` — explicit-instance construction (unions.md §5a).
 ; The niche layout (LAYOUT-NICHE-MAYBE / LAYOUT-NICHE-ERRPTR) a Type encodes, or
 ; LAYOUT-TAGGED for everything else. A niche type is a bare TY-PTR carrying the
 ; niche pkind (PTR-MAYBE / PTR-ERRPTR) and a present elem — exactly what the
@@ -538,28 +538,28 @@
       (if (= arm "some")
         (do
           (when (!= (node-len cc) (+ argi 1))
-            (die-at line "make: some takes one (ref T) field"))
+            (die-at line "some takes one (ref T) field"))
           (let (v:&Val (emit-node (node-at cc argi) scope))
             (when (or (-> v (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
                       (= (ptr-pkind (v 'type)) PTR-MAYBE))
-              (die-at line "make: some expects a non-null (ref T) value"))
+              (die-at line "some expects a non-null (ref T) value"))
             (let (rv:&Val (alloc-val (type-as-pkind ty PTR-MAYBE) (v 'val)))
               (val-copy-taint rv v)
               (return rv))))
         (if (= arm "none")
           (do
             (when (!= (node-len cc) argi)
-              (die-at line "make: none takes no fields"))
+              (die-at line "none takes no fields"))
             (return (alloc-val (type-as-pkind ty PTR-MAYBE) "null")))
-          (die-at line (fstr "make: niche (Maybe (ref T)) has arms `some`/`none`, not '" arm "'"))))
+          (die-at line (fstr "niche (Maybe (ref T)) has arms `some`/`none`, not '" arm "'"))))
       ; --- rule 3: ERR_PTR-encoded pointer ---
       (if (= arm "ok")
         (do
           (when (!= (node-len cc) (+ argi 1))
-            (die-at line "make: ok takes one (ref T) field"))
+            (die-at line "ok takes one (ref T) field"))
           (let (v:&Val (emit-node (node-at cc argi) scope))
             (when (-> v (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
-              (die-at line "make: ok expects a (ref T) pointer value"))
+              (die-at line "ok expects a (ref T) pointer value"))
             ; p is stored directly; the flip guarantees it is non-null and never
             ; in the reserved top page, so it can't collide with an error.
             (let (rv:&Val (alloc-val (type-as-pkind ty PTR-ERRPTR) (v 'val)))
@@ -568,12 +568,12 @@
         (if (= arm "err")
           (do
             (when (!= (node-len cc) (+ argi 1))
-              (die-at line "make: err takes one Err field"))
+              (die-at line "err takes one Err field"))
             (let (ev0:&Val (emit-node (node-at cc argi) scope)
                   evc:?&Val (if (!= (is-int-type (ev0 'type)) 0) ev0
                               (coerce-via-cast-rule ev0 ty-err)))
               (when (= evc null)
-                (die-at line "make: err expects an Err (i32) value"))
+                (die-at line "err expects an Err (i32) value"))
               ; (err E) = inttoptr(0 - zext(E to iptr)). Id 0 ("no error") maps to
               ; null, which is never a valid (ok) either, so it is a safe sentinel.
               (let (eid64:StrView (new-tmp)
@@ -583,7 +583,7 @@
                 (emit g-body-stream "  " neg " = sub " (ptr-int-ir) " 0, " eid64 "\n")
                 (emit g-body-stream "  " pres " = inttoptr " (ptr-int-ir) " " neg " to ptr\n")
                 (return (alloc-val (type-as-pkind ty PTR-ERRPTR) pres)))))
-          (die-at line (fstr "make: niche (Result (ref T) Err) has arms `ok`/`err`, not '" arm
+          (die-at line (fstr "niche (Result (ref T) Err) has arms `ok`/`err`, not '" arm
                              "'")))))))
 
 ; (__niche-ctor arm args…) — internal: niche construction in return position,
@@ -600,33 +600,40 @@
       (die-at ln "__niche-ctor: enclosing return type is not a niche"))
     (return (emit-niche-construct ty layout (arm-node 's) call 2 scope ln))))
 
-; Works for any defunion type, including stamped template instances, which
-; have no constructor functions of their own.
-(defn emit-make (call:ptr scope:&Scope):&Val
-  (let (cc:&Node (unsafe/cast &Node call))
-    (when (< (node-len cc) 3)
-      (die-at (cc 'line) "make: expects (make Type arm args...)"))
-    (let (ty:ptr (parse-type-from-node (node-at cc 1) (cc 'line))
-          layout:i32 (niche-layout-of ty))
-      ; Niche layouts (rules 2/3) have no backing struct — construct the encoded
-      ; pointer directly. uniondef-for-type would return null for these.
+; `(T arm args…)` with `T` a union — a defunion, a stamped template instance or
+; a niche — given as `ty`; the arm is at `armi`, its fields follow. Shared by the
+; keyword-free literal (armi 1) and the compiler's own `(__make T arm …)` (armi 2).
+(defn emit-union-lit (call:ptr scope:&Scope ty:ptr armi:i32):&Val
+  (let (cc:&Node (unsafe/cast &Node call)
+        layout:i32 (niche-layout-of ty)
+        arm-node:?&Node (as ?&Node (node-at cc armi)))
+    (when (!= (node-kind arm-node) NODE-SYM)
+      (die-at (node-line arm-node (cc 'line))
+        (fstr (type-display ty) ": expects an arm name, as in (" (type-display ty) " arm field…)")))
+    (let (arm:Symbol ((unsafe/cast &Node arm-node) 's))
+      ; A niche has no backing struct — construct the encoded pointer directly.
       (when (!= layout LAYOUT-TAGGED)
-        (let (arm-node:&Node (unsafe/cast &Node (node-at cc 2)))
-          (when (!= (arm-node 'kind) NODE-SYM)
-            (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
-          (return (emit-niche-construct ty layout (arm-node 's) call 3 scope (cc 'line)))))
+        (return (emit-niche-construct ty layout arm call (+ armi 1) scope (cc 'line))))
       (let (ud:?&UnionDef (uniondef-for-type ty))
         (when (= ud null)
-          (die-at (cc 'line) "make: type is not a defunion"))
-        (let (arm-node:&Node (unsafe/cast &Node (node-at cc 2)))
-          (when (!= (arm-node 'kind) NODE-SYM)
-            (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
-          (let (udd:&UnionDef (unsafe/cast &UnionDef ud)
-                ai:i32 (union-arm-index (as ptr udd) (arm-node 's)))
-            (when (< ai 0)
-              (die-at (node-line (as ptr arm-node) (cc 'line))
-                (fstr "make: no arm '" (arm-node 's) "' on '" (udef-display udd) "'")))
-            (return (emit-union-construct (as ptr udd) ai call 3 scope))))))))
+          (die-at (cc 'line) (fstr (type-display ty) " is not a tagged union")))
+        (let (udd:&UnionDef (unsafe/cast &UnionDef ud)
+              ai:i32 (union-arm-index (as ptr udd) arm))
+          (when (< ai 0)
+            (die-at (node-line arm-node (cc 'line))
+              (fstr "no arm '" arm "' on '" (udef-display udd) "'")))
+          (return (emit-union-construct (as ptr udd) ai call (+ armi 1) scope)))))))
+
+(defn emit-make (call:ptr scope:&Scope):&Val
+  (let (cc:&Node (unsafe/cast &Node call))
+    (return (emit-union-lit call scope (parse-type-from-node (node-at cc 1) (cc 'line)) 2))))
+
+; The union `head` names, tagged or niche, or null for any other type.
+(defn union-lit-type (head:?&Node line:i32):?&Type
+  (let (ty:&Type (parse-type-from-node (as ptr head) line))
+    (when (!= (niche-layout-of ty) LAYOUT-TAGGED) (return ty))
+    (when (!= (as ptr (uniondef-for-type ty)) null) (return ty))
+    (return null)))
 
 ; emit-handler-call — the shared chain-walk core of the handler negotiation
 ; (errors.md §4, §11.4), used by both the err-return form (__err-handled) and
@@ -881,7 +888,7 @@
 
 ; Target typing (unions.md §5c, generalized by TC-5): when `target` is a
 ; defunion/niche and `form` reads `(arm args...)` for one of its arms, it is
-; construction — rewrite to (make Type arm args...). Arm names win over
+; construction — rewrite to (__make Type arm args...). Arm names win over
 ; functions/macros in exactly this position; everything else is untouched.
 ; `target` is the enclosing type: the function return type (g-fn-ret-type) at
 ; return positions, or the declared slot type at any want position (let/with
@@ -928,7 +935,7 @@
                  (= (n 's) "none")
                  (>= (union-arm-index (as ptr udd) (symbol-intern "none")) 0))
         (let (ln:i32 (n 'line))
-          (return (node-list3 'make
+          (return (node-list3 '__make
                     (union-target-spelling udd (unsafe/cast &Type target))
                     'none ln))))
       (when (!= (n 'kind) NODE-LIST) (return form))
@@ -940,7 +947,7 @@
         ; never consults handlers). It is the err arm with its `!` stripped.
         (when (= (head 's) "err!")
           (when (< (union-arm-index (as ptr udd) (symbol-intern "err")) 0) (return form))
-          (return (node-cons 'make
+          (return (node-cons '__make
                     (node-cons (union-target-spelling udd (unsafe/cast &Type target))
                       (node-cons 'err (node-rest n) ln) ln) ln)))
         ; Plain `err` at an `!T` (err arm = Err) return site, with the error
@@ -948,7 +955,7 @@
         ; original `(err E [detail])` cdr is carried on a new internal special
         ; form `(__err-handled E [detail])`; emit-__err-handled does the IR.
         ; Without the library, or for a custom (Result T NonErr), `err` falls
-        ; through to the plain `(make … err …)` construct below (== err!).
+        ; through to the plain `(__make … err …)` construct below (== err!).
         ; A payload-less `ok` arm (`!void`) is excluded: §11's negotiation repairs
         ; by supplying the ok VALUE, and there is none, so `err` there is `err!`.
         ; The negotiation builds a return-typed value, so a want of any other type
@@ -960,10 +967,10 @@
                    (= (error-lib-in-scope) 1))
           (return (node-cons '__err-handled (node-rest n) ln)))
         (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
-        (return (node-cons 'make
+        (return (node-cons '__make
                   (node-cons (union-target-spelling udd (unsafe/cast &Type target)) (as ptr n) ln) ln))))))
 
-; A call/`make` argument is not a want position (its type may pick the overload),
+; A call or union-literal argument is not a want position (its type may pick the overload),
 ; so only the built-in sum constructors are target-typed there, against a slot
 ; type the caller already knows; `err` constructs as `err!`, since handler
 ; negotiation belongs to a return site.

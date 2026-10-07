@@ -1,0 +1,4 @@
+; The arm of a union literal must be one of the union's.
+(defunion Shape (circle r:f64) (rect w:f64 h:f64))
+(defn main ():i32
+  (let (s:Shape (Shape square 1.0)) (return 0)))

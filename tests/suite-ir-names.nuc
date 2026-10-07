@@ -55,7 +55,7 @@
 (defn main ():i32
   (let (p:ptr:2Pair (2Pair 3 4))
     (printf \"%d %d %d %d %d %d\\n\"
-      (2fast 20) 2count 2LIM (get p 'a) (2pick (make 2Shape 2circle 7)) (2loop)))
+      (2fast 20) 2count 2LIM (get p 'a) (2pick (2Shape 2circle 7)) (2loop)))
   0)
 "))
 
@@ -118,7 +118,7 @@
     (when (< i! 3) (goto top!))
     i!))
 (defn main ():i32
-  (printf \"%d %d %d\\n\" (add? 1 20) (peek! (make Sh! circ! 7)) (spin?))
+  (printf \"%d %d %d\\n\" (add? 1 20) (peek! (Sh! circ! 7)) (spin?))
   0)
 "))
 

@@ -368,8 +368,8 @@ auto-`ref` injection. For a **pointer** operand it niche-encodes
 are the same niche); for a
 **value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
 union from the prelude template. One spelling, two layouts. The value `(Maybe T)` is
-built with `make` / target typing (bare `none` / `(some v)` resolve against a
-`(Maybe T)` return, typed binding, `make` field or parameter) and eliminated with `match`
+built with a union literal (`((Maybe i64) some 5)`, `(?i64 some 5)`) / target typing (bare `none` / `(some v)` resolve against a
+`(Maybe T)` return, typed binding, union-literal field or parameter) and eliminated with `match`
 (`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
 where no value `(Maybe T)` is wanted, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
 pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
