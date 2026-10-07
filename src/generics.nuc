@@ -3502,6 +3502,13 @@
                                   line))))))))))))
     (return null)))
 
+; `?T` or `!T` in head position: a union literal over the sugared type.
+(defn sum-sugar-head? (h:Symbol):bool
+  (let (v:StrView (symbol-as-view h))
+    (return (and (> (strview-byte-len &v) 1)
+                 (or (strview-has-prefix v "?") (strview-has-prefix v "!"))
+                 (not (strview-has-prefix v "!="))))))
+
 ; Is this head one of the core special forms (mirrors emit-list's dispatch)?
 ; Such forms are handled structurally by gcheck, never as function calls.
 ; hp is the head Node* itself (not its string spelling) — every symbol Node
@@ -3524,7 +3531,7 @@
                         'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
                         'unsafe/funcall-ptr-ptr 'some 'as-ref 'unwrap
                         'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
-                        'match 'make 'err! 'try 'type-token 'signal}
+                        'match '__make 'err! 'try 'type-token 'signal}
                        head)
            false))
 
@@ -3684,9 +3691,17 @@
         (when (gcheck-special-form hp)
           (gcheck-walk-children n scope m)
           (return null))
+        (when (and (sum-sugar-head? h) (= (generic-lookup h) null))
+          (dotimes (i (- (node-len n) 2)) (gcheck (node-at n (+ i 2)) scope m))
+          (return null))
         ; A struct constructor, found as `emit-dispatch` finds it; a designated
         ; `(field v)` is not a call, so only its value is checked.
         (when-some (hit (binding-find h scope BK-DISPATCH-FIRST BINDING-KIND-COUNT 0 NK-NONE))
+          (when (and (= (hit 'kind) BK-STRUCT)
+                     (!= ((unsafe/cast &StructDef (hit 'payload)) 'udef) null))
+            ; A union literal: the arm name is not a value.
+            (dotimes (i (- (node-len n) 2)) (gcheck (node-at n (+ i 2)) scope m))
+            (return null))
           (when (= (hit 'kind) BK-STRUCT)
             (let (sd:&StructDef (unsafe/cast &StructDef (hit 'payload))
                   pt:&Type (as &Type (make-type TY-PTR))
@@ -3988,6 +4003,15 @@
         (when (gcheck-special-form hp)
           (valid-walk-children n scope gname cty line)
           (return (node-type n scope)))
+        ; A union literal: the arm name is not a value.
+        (when (and (sum-sugar-head? h) (= (generic-lookup h) null))
+          (dotimes (i (- (node-len n) 2)) (valid-walk (node-at n (+ i 2)) scope gname cty line))
+          (return null))
+        (when-some (hit (binding-find h scope BK-DISPATCH-FIRST BINDING-KIND-COUNT 0 NK-NONE))
+          (when (and (= (hit 'kind) BK-STRUCT)
+                     (!= ((unsafe/cast &StructDef (hit 'payload)) 'udef) null))
+            (dotimes (i (- (node-len n) 2)) (valid-walk (node-at n (+ i 2)) scope gname cty line))
+            (return null)))
         ; A genuine call: type the arguments, then require it to resolve.
         (let (nargs:i32 (- (node-len n) 1)
               argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))

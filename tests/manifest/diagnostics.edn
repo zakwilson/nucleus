@@ -1202,3 +1202,10 @@
 ; CQ-2: `struct-fields` on a flat `x:T` parameter, which the abstract check used to expand.
 {:name "s24-struct-fields-flat-tyvar" :expect :accept
  :file "tests/fixtures/s24-struct-fields-flat-tyvar.nuc"}
+; Stage 24: union construction without `make` — `(Shape rect 3.0 4.0)`.
+{:name "s24-union-literal-no-arm" :expect :reject
+ :file "tests/fixtures/s24-union-literal-no-arm.nuc" :line 4
+ :messages ["no arm 'square' on 'Shape'"]}
+{:name "s24-union-literal-arm-missing" :expect :reject
+ :file "tests/fixtures/s24-union-literal-arm-missing.nuc" :line 4
+ :messages ["Shape: expects an arm name, as in (Shape arm field…)"]}

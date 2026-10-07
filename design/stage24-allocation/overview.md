@@ -101,7 +101,7 @@ stopped being true when `vector-new` landed.
 | The same generic called with a string literal for `v` | `V` binds to `StrView`, not `CStr` (`constraint 'ConstructFrom' parameter mismatch: expected StrView, found CStr`). A literal therefore initializes a `String` through `(InitFrom StrView)`, which is the conformance `String` should have anyway. |
 | A protocol method with no `self`, such as `(default ():Self)` | **Refused** at `extend` (`Pt does not implement Default.default`), even though the method exists. |
 | A generic whose type variable appears only in the return type, `(defn create (a) T :where ((Construct T)))` | **Refused** (`unknown type: T`). The want channel binds `T` only when the return type is a template such as `(Vector T)`. |
-| `make` as a library name | **Taken.** It is the `defunion` arm-construction special form. |
+| `make` as a library name | **Taken** when measured. It was the `defunion` arm-construction special form; union construction has since become `(Shape rect …)`, freeing it. |
 | **A user function named `init`** | **Breaks the core `for` and `dotimes` macros.** The error is `lib/nucleus/macros.nuc:180: error: macro 'for' calls 'init', which is defined later in this unit`, even when `init` is defined *above* its use. `step`, `test` and `body`, the macro's other parameter names, cause no error. |
 
 So creation protocols need no new compiler feature as long as the type is
@@ -284,9 +284,10 @@ it is an allocator. `new` becomes a compiler form beside it. The arena macro
 written when it was not. A library macro can now do step 3, so `new` can be a
 macro in `lib/` rather than a compiler form. A macro also takes `T` as an
 operand, so the return-type inference problem does not arise for either form.
-The one obstacle left is the name `make`, which belongs to the union special
-form. Either that form hands every non-union `T` to a library macro, or the
-by-value form takes another name. That is now part of Q2.
+The one obstacle left was the name `make`, which belonged to the union special
+form. **Resolved the same day:** union construction became keyword-free,
+`(Shape rect 3.0 4.0)` and `((Result i64 Err) ok 5)`, the way Rust, Swift, Ada
+and Nim write it. `make` is now an ordinary name, free for a library macro.
 
 ## 7. Retiring the prefixed constructors
 
@@ -402,7 +403,7 @@ would also give up the reason to choose an arena.
 - **AL-2. `Init`, `InitFrom` and `TryInitFrom`,** plus conformances for the four
   collections and the default-allocator generic.
 - **AL-3. `new` and `make` (§6),** as library macros over `conforms?` or as
-  compiler forms, per Q2. `make` keeps its union path. Tests cover a plain struct, each kind of `init`, a `!` from
+  compiler forms, per Q2. Union construction no longer uses the name. Tests cover a plain struct, each kind of `init`, a `!` from
   `TryInitFrom`, and `with` drop order with an allocator bound in the same form.
 - **AL-4. Sweep the codebase.** Remove the prefixed constructors from `lib/`,
   `src/`, `examples/` and `tests/` (§7), and the arena `new` macro. Boot shims
@@ -420,11 +421,9 @@ would also give up the reason to choose an arena.
   as recommended in §8.4, or automatic finalization (B)?
 - **Q2. Names.** `new` (placed through an allocator, returns `&T`) and `make`
   (by value, generalized from unions), as recommended? Or one form with a
-  placement keyword? And, now that `conforms?` is built: library macros
-  (recommended, since `conforms?` makes them possible and keeps the compiler
-  smaller) or compiler forms? As macros, `make` needs either the union special
-  form to hand non-union types to the library, or a different name
-  ([conformance-query.md](conformance-query.md) §6).
+  placement keyword? And, now that `conforms?` is built and `make` is free:
+  library macros (recommended, since `conforms?` makes them possible and keeps
+  the compiler smaller) or compiler forms?
 - **Q3. Method names.** `allocate`/`reallocate`/`deallocate`, as recommended, or
   fix AL-0b first and keep `alloc`/`realloc`/`free`?
 - **Q4. The handle.** The extended tagged `Alloc` now and `dyn` later, as

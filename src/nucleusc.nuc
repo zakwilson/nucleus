@@ -6529,7 +6529,7 @@
   (when (!= (sd 'udef) null)
     (die-at line
       (fstr op ": '" (sdef-display sd)
-            "' is a tagged union — eliminate with (match ...), construct with (make ...) or an arm constructor; raw access requires an explicit cast"))))
+            "' is a tagged union — eliminate with (match ...), construct with (Type arm ...) or an arm constructor; raw access requires an explicit cast"))))
 
 (defn struct-field-index (sd:?&StructDef fname:Symbol):i32
   (let (sdd:(ptr StructDef) sd)
@@ -13157,8 +13157,20 @@
     NODE-LIST (return (qq-resolve-list (unsafe/cast &Node e) ret-at line))
     (return e)))
 
+; A `(Shape rect …)` or `((Result T E) ok …)` literal, whose second element is an arm.
+(defn qq-union-lit? (lst:&Node):bool
+  (let (hd:?&Node (as ?&Node (node-at lst 0)))
+    (case (node-kind hd)
+      NODE-SYM
+        (if-some (sd (struct-lookup-ref ((unsafe/cast &Node hd) 's)))
+          (return (!= (sd 'udef) null))
+          (return (sum-sugar-head? ((unsafe/cast &Node hd) 's))))
+      NODE-LIST (return (!= (as ptr (node-union-template-of hd)) null))
+      0)
+    (return false)))
+
 ; §3.7: data at every level is resolved; `quote`d data and anything under an
-; unquote are left as written. A `match` pattern and `make`'s arm name arms, not globals.
+; unquote are left as written. A `match` pattern and a union literal's arm name arms, not globals.
 (defn qq-resolve-list (lst:&Node ret-at:i32 line:i32):?&Node
   (let (h:Symbol (qq-head lst)
         here:i32 (node-line (as ?&Node lst) line)
@@ -13170,7 +13182,7 @@
     (dotimes (i n)
       (let (e:?&Node (node-at lst i)
             r:?&Node e)
-        (cond (and (= h "make") (= i 2)) 0
+        (cond (and (= i 1) (qq-union-lit? lst)) 0
               (= i (qq-binder-slot h))
                 (set! r (if (= (node-kind e) NODE-LIST)
                           (qq-resolve-binders (unsafe/cast &Node e) (qq-binder-stride h) here)
@@ -13435,7 +13447,13 @@
             (return (emit-dispatch-hit n scope h h2 head))
             (return (emit-generic-call n scope g)))))
       (return (emit-dispatch-hit n scope h hit head)))
-    (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h))))
+    (do
+      ; `(?i64 some 3)`, `(!i64 ok 3)`: a sum type's sugar names it, as `Shape` does.
+      (when (sum-sugar-head? h)
+        (if-some (ut (union-lit-type head ((unsafe/cast &Node n) 'line)))
+          (return (emit-union-lit n scope ut 1))
+          0))
+      (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h)))))
 
 ; Emit the head-position meaning of one table row's hit. Split out of
 ; `emit-dispatch` so the solitary-generic fall-through above reuses it verbatim.
@@ -13452,6 +13470,12 @@
                    (= (sym 'is-local) 0))
           (return (emit-call n scope sym)))
         (return (emit-callable-value n scope (emit-symbol-ref head scope ((unsafe/cast &Node n) 'line))))))
+    ; A union's name constructs one of its arms: (Shape rect 3.0 4.0).
+    (when (or (and (= k BK-STRUCT) (!= ((unsafe/cast &StructDef (hit 'payload)) 'udef) null))
+              (= k BK-TYPE-ALIAS))
+      (if-some (ut (union-lit-type head ((unsafe/cast &Node n) 'line)))
+        (return (emit-union-lit n scope ut 1))
+        0))
     ; struct-name-as-constructor (S init...) -> &S compound literal.
     (when (= k BK-STRUCT)
       (return (emit-struct-lit n scope (unsafe/cast &StructDef (hit 'payload)))))
@@ -13753,6 +13777,11 @@
             (when (!= hcar null)
               (let (hcar-node:&Node (unsafe/cast &Node hcar))
                 (when (= (hcar-node 'kind) NODE-SYM)
+                  ; ((Result i64 Err) ok v) — a union template's instance names an arm.
+                  (when (!= (as ptr (node-union-template-of head)) null)
+                    (if-some (ut (union-lit-type head (head 'line)))
+                      (return (emit-union-lit n scope ut 1))
+                      0))
                   (when (!= (as ptr (struct-template-lookup-ref (hcar-node 's))) null)
                     (let (stamped-ty:ptr (parse-type-from-node (as ptr head) (head 'line)))
                       (when (= ((unsafe/cast &Type stamped-ty) 'kind) TY-STRUCT)
@@ -13904,7 +13933,7 @@
         ; but picks the ok arm's binder count from the operand's type (`!void`'s
         ; ok arm is payload-less) — which is why it is not a macro.
         (when (= hp 'try) (return (emit-try n scope)))
-        (when (= hp 'make) (return (emit-make n scope)))
+        (when (= hp '__make) (return (emit-make n scope)))
         ; Internal: niche construction in return position (unions.md §6 rules
         ; 2/3), produced only by union-target-rewrite for a niche return type.
         (when (= hp '__niche-ctor) (return (emit-niche-ctor n scope)))
@@ -16005,7 +16034,7 @@
           (node-push margs (as &Node (intern-node fname))))
         (set! fcur (node-rest (unsafe/cast &Node fcur))))
       (let (make-args:ptr (as ptr (node-list-done margs))
-            body:ptr (node-cons 'make
+            body:ptr (node-cons '__make
                        (node-cons (intern-node uname)
                          (node-cons (intern-node aname) make-args line) line) line)
             pb:&Node (node-list-new line))
@@ -20939,7 +20968,7 @@
        ; option / result
        "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
        ; ownership / control
-       "move" "defer" "match" "make"
+       "move" "defer" "match" "__make"
        ; error handling
        "defunion" "deferror" "err!" "err-name" "err-message" "try"
        "type-token" "__err-handled" "signal"

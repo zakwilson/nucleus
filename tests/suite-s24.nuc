@@ -61,3 +61,46 @@ yes no yes
       (drop &out) (drop &m) (drop &lib))
     (drop &dir))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Union construction without a keyword: `(Shape rect …)`, `((Maybe T) some …)`
+; ---------------------------------------------------------------------------
+
+; A niche, an alias, sugar inside a generic, a macro template read in another
+; namespace, and `make` as an ordinary function name.
+(deftest s24-union-literal
+  (let (dir:String (try (test-scratch-sub "ul")))
+    (let (lib:String (try (write-into (string-as-view &dir) "s24ullib.nuc" "(ns s24ullib)
+(defunion Shape (circle r:f64) (rect w:f64 h:f64))
+(defmacro unit-rect () `(Shape rect 1.0 2.0))
+(defn area (s:Shape):f64
+  (match s ((circle r) (return r)) ((rect w h) (return (* w h)))))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
+(import s24ullib u)
+(defstruct Pt x:i32)
+(deftype Opt (Maybe i32))
+(defn make (x:i32):i32 (return (* x 2)))
+(defn pick (x:T :where (Any T)):?T (return (?T some x)))
+(defn main ():i32
+  (let (p:Pt (Pt 7)
+        d:(Maybe &Pt) ((Maybe &Pt) some &p)
+        e:Opt (Opt some 9)
+        r:!i64 (!i64 ok 5))
+    (match d ((some q) (println (q 'x))) (none (println \"none\")))
+    (match e ((some v) (println v)) (none (println \"none\")))
+    (match r ((ok v) (println v)) ((err x) (println \"err\")))
+    (match (pick 3) ((some v) (println v)) (none (println \"none\")))
+    (println (u/area (u/Shape circle 4.0)) \" \" (u/area (u/unit-rect)) \" \" (make 21))
+    (return 0)))
+"))
+          out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "7
+9
+5
+3
+4 2 42
+"))
+      (drop &out) (drop &m) (drop &lib))
+    (drop &dir))
+  (return (ok)))

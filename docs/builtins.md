@@ -190,7 +190,7 @@ Use `(ref obj 'field)` to obtain a pointer to a field without loading it. Result
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: a member place and the 2-argument `ref` need the receiver's storage, so they take the same receivers `&x` does — a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (mk ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: a member place and the 2-argument `ref` need the receiver's storage, so they take the same receivers `&x` does — a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -250,9 +250,13 @@ fields. By-value passing/returning rides the stage-8 struct ABI.
 
 **Constructors** are generated ordinary functions named `Union-arm`:
 `(Shape-circle 2.0)`, `(Shape-point)` — value-returning, no allocation.
-`(make Shape rect 3.0 4.0)` is the equivalent explicit form (and the only
-spelling for template instances, below). The arm names themselves are not
-bound (one-symbol-one-kind); only the prefixed constructors are.
+`(Shape rect 3.0 4.0)` is the equivalent explicit form: the union's name in
+head position, then the arm, then its fields, as a struct literal is the struct's
+name then its fields. A template instance is written the same way with its type
+as the head, `((Result i64 Err) ok 5)`, and so is a sum type's sugar,
+`(?i64 some 5)` or `(!i64 ok 5)`, and an alias that names a union. The arm
+names themselves are not bound (one-symbol-one-kind); only the prefixed
+constructors are.
 
 **No raw access outside `match`**: the tag and payload are not readable as
 fields (`(s 'tag)` is an error directing you to `match`); the escape hatch is
@@ -305,14 +309,14 @@ fully-applied use stamps and memoizes a concrete instance:
 ```
 
 Substitution is purely syntactic (use sites are explicit; no inference).
-Construction is via `(make (Result i64 i32) ok v)` or **target typing**:
+Construction is via `((Result i64 i32) ok v)` or **target typing**:
 wherever a typed value is wanted — `return` (and the implicit-return tail) of a
 function declared to return a `defunion` (or template instance), a typed
 `let`/`with` binding init, a `set!`/`.set!` value — a bare `(arm args...)`
 resolves against that type, and the want carries into the value tails of
-`if`/`cond`/`do`/`let`/`with`/`match`. A call, `make` or struct-literal argument is narrower:
+`if`/`cond`/`do`/`let`/`with`/`match`. A call, union-literal or struct-literal argument is narrower:
 only the built-in `(some v)`/`none`/`(ok v)`/`(err e)`/`(err! e)`, as the
-argument itself, against the `make` or struct-literal field, a single-definition function's
+argument itself, against the union-literal or struct-literal field, a single-definition function's
 parameter, or the type every same-arity overload agrees on — see
 [structs-unions.md](structs-unions.md). The `name:(Type ...)` colon-paren sugar works for parenthesized
 types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
@@ -610,10 +614,10 @@ unless a bound handler repairs"; `(err! E)` means "give up unconditionally" —
 it bypasses the handler chain and returns the error value. Use `err!` when you
 want an unconditional error return regardless of any bound handlers. Away from
 `return` the bare forms construct against a typed binding, `set!` target,
-`make` or struct-literal field or call argument; only a binding or `set!` of exactly the return
+union-literal or struct-literal field or call argument; only a binding or `set!` of exactly the return
 type negotiates with handlers, and anywhere else `err` builds the error value
 as `err!` does. With no type to construct against, use
-`(make (Result T Err) ok v)`; stored Results are plain data with no handler
+`((Result T Err) ok v)`; stored Results are plain data with no handler
 machinery.
 
 **Elimination.**
@@ -909,7 +913,6 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
-| `make` | Construct a `defunion` value by arm: `(make Type arm args...)` — the explicit-instance spelling required for template instances, e.g. `(make (Result i64 i32) ok v)`. | designated initializer |
 | `while` | Loop; yields `void` | `while` |
 | `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
 | `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |

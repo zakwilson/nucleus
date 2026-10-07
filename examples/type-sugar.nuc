@@ -118,9 +118,9 @@
       (printf "field: %d %d %d %d\n" (mv-len (h 'mv)) (rv-len (h 'rv)) ((h 'link) 'y) (qr-len (h 'qr))))
     ; defunion arms.
     (let (v0:(Vector i32) (vector-new)
-          s1:Slot (make Slot held &v0)
-          s2:Slot (make Slot listed (as-ref &pt))
-          s3:Slot (make Slot empty))
+          s1:Slot (Slot held &v0)
+          s2:Slot (Slot listed (as-ref &pt))
+          s3:Slot (Slot empty))
       (match s1
         ((held p) (if-some (vp p) (printf "arm: held %d\n" (unsafe/cast i32 (count vp))) (printf "arm: held none\n")))
         ((listed p) (printf "arm: listed\n"))
@@ -134,7 +134,7 @@
         ((listed p) (printf "arm: listed\n"))
         (empty (printf "arm: empty\n"))))
     (let (qp:?Pt (some pt)
-          pr:Pair (make Pair both a qp))
+          pr:Pair (Pair both a qp))
       (match pr
         ((both m q) (match q
                       ((some p) (printf "value arm: %d %d\n" (mv-len m) (p 'y)))

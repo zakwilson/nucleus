@@ -58,7 +58,7 @@ are left as written, and mean the caller's thing as before:
 - the core names (`nucleus.core`, `nucleus.macros`) and the built-in operators
   (`when`, `+`, `Node`, …), special forms, and `unsafe/…`;
 - anything under `quote` (`'field`) or under an unquote (`~x`);
-- a union arm's name, wherever it appears: in a `match` pattern, as `make`'s
+- a union arm's name, wherever it appears: in a `match` pattern, as a union literal's
   arm, or as a target-typed constructor `(circle r)`, even when the macro's file
   also has a function `circle`;
 - the name half of a typed token (in `x:Point` only `Point` is rewritten),

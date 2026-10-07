@@ -289,7 +289,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   the stamp. A struct constructor (`(Pt 1 2)`, `(Pt (y 5) (x 4))`) is read as it
   is in any body: each initializer is checked, a designated `(field v)` as its
   value `v`. A template application over a variable is a type, not a call:
-  `(make (Either T i32) l x)` and `(Vector T)` alike. A local annotated over a
+  `((Either T i32) l x)` and `(Vector T)` alike. A local annotated over a
   variable inside a compound (`o:?T`, `v:(Vector T)`) has its spelling checked
   (a misspelled `(Vectr T)` is `unknown type`) and its type left to the stamp;
   a bare `y:T` is typed abstractly. The check is **lenient**: the only hard def-time error is a

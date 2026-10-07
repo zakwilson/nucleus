@@ -40,7 +40,7 @@
         s:(Slot i32) ((Slot i32) m7 none o1)
         sp:(Slot Pt) ((Slot Pt) mp pp opt)
         sm:(Slot ?Pt) ((Slot ?Pt) mmp none om)
-        h:(Held i32) (make (Held i32) one m3))
+        h:(Held i32) ((Held i32) one m3))
     (show-i (peek &s))
     (show-pt (peek &sp))
     (if-some (p (peek-ptr &sp)) (printf "ptr %d\n" (p 'y)) (printf "no ptr\n"))

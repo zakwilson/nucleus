@@ -920,6 +920,14 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 24 — union construction without `make` (2026-10-07)
+
+`(make Shape rect 3.0 4.0)` is now `(Shape rect 3.0 4.0)`. A template instance takes its type as the head, `((Result i64 Err) ok 5)`. So do the sugars `(?i64 some 5)`/`(!i64 ok 5)` and an alias naming a union. Uncommitted. `make bootstrap` reaches its fixed point. The suite has 1346 tests: 1341 pass, and the 5 failures are the same `suite-target` datalayout tests as before.
+
+- **One emitter.** `emit-union-lit` (`src/union-emit.nuc`) serves the literal and the compiler's own synthesized constructions (target typing, `err!`, arm constructors). Those now build the internal `(__make T arm …)`, like `__niche-ctor`, because their type is often a marker symbol that does not resolve as a head.
+- **Where the head is recognised.** `emit-dispatch-hit` takes a union's `BK-STRUCT` row or a type alias. `emit-list` takes a union template application, and `emit-dispatch` a `?T`/`!T` head before reporting an unknown name. `gcheck` and `valid-walk` skip the arm operand, as does quasiquote resolution (`qq-union-lit?`). `node-type` already returned null for a type head, so the lockstep is unchanged.
+- **`make` is an ordinary name.** It left the special-form and reserved sets. Every example, test and doc was converted.
+
 ## Stage 24 — `conforms?` built (2026-10-07)
 
 [stage24-allocation/conformance-query.md](stage24-allocation/conformance-query.md) §8. CQ-1…CQ-4 are built, uncommitted. `make bootstrap` reaches its fixed point. The suite result is 1338 passed and 5 failed. The 5 are the `suite-target` datalayout tests, which fail under Debian's LLVM 23 in the container regardless of this change. All 8 new `s24-*` tests pass.
