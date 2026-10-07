@@ -145,8 +145,96 @@
       (return 1))
     ; Pointer kind is not part of the question: compare pointees, not pkinds.
     (when (and (= (s 'kind) TY-PTR) (= (d 'kind) TY-PTR))
+      (when (!= (c-byte-pointees (s 'elem) (d 'elem)) 0) (return 1))
       (return (slot-type-compat (s 'elem) (d 'elem))))
+    ; `CStr` is C's `char *`, so it meets a C byte pointer at any depth.
+    (when (or (and (= (s 'kind) TY-CSTR) (!= (c-byte-ptr d) 0))
+              (and (= (d 'kind) TY-CSTR) (!= (c-byte-ptr s) 0)))
+      (return 1))
+    (when (and (!= (struct-kind? s) 0) (= (s 'kind) (d 'kind))
+               (c-same-struct (s 'sdef) (d 'sdef)))
+      (return 1))
     (return (type-eq src dst))))
+
+; The C byte pointees: a C header's `char`/`unsigned char` as a pointee. C mixes
+; the two with a warning (`-Wpointer-sign`), so they meet each other's sign here.
+(defvar ty-c-char:&Type (make-type TY-I8))
+(defvar ty-c-uchar:&Type (make-type TY-UI8))
+
+(defn c-byte-marker? (t:?&Type):bool
+  (return (or (= t ty-c-char) (= t ty-c-uchar))))
+
+(defn byte-kind? (t:?&Type):bool
+  (if-some (tt t)
+    (return (or (= (tt 'kind) TY-I8) (= (tt 'kind) TY-UI8)))
+    (return false)))
+
+; typed-c-pointers.md TP-3: one side came from a C header, and both are bytes.
+(defn c-byte-pointees (a:?&Type b:?&Type):i32
+  (if (and (or (c-byte-marker? a) (c-byte-marker? b)) (byte-kind? a) (byte-kind? b)) 1 0))
+
+(defn c-byte-ptr (t:?&Type):i32
+  (if-some (tt t)
+    (if (and (= (tt 'kind) TY-PTR) (c-byte-marker? (tt 'elem))) 1 0)
+    0))
+
+(defn struct-kind? (t:(ptr Type)):i32
+  (if (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION)) 1 0))
+
+; `typedef struct _W {…} W;` registers several entries for one C type: aliases,
+; and entries that adopted one body's field table (cheader-adopt-shape).
+(defn c-same-struct (a:(ptr StructDef) b:(ptr StructDef)):bool
+  (when (= a b) (return true))
+  (when (or (= a null) (= b null) (= (a 'from-c) 0) (= (b 'from-c) 0)) (return false))
+  (when (= (c-alias-root a) (c-alias-root b)) (return true))
+  (return (and (!= (as ptr (a 'fields)) null) (= (as ptr (a 'fields)) (as ptr (b 'fields))))))
+
+(defn c-alias-root (sd:(ptr StructDef)):(ptr StructDef)
+  (let (r:(ptr StructDef) sd)
+    (while (and (!= r null) (!= (as ptr (r 'alias-of)) null))
+      (set! r (as ptr (r 'alias-of))))
+    (return r)))
+
+; A value conversion: `slot-type-compat`, plus the C first-member upcast at the
+; outermost pointer only — one level down it would let a `GtkWindow **` slot
+; receive a `GtkWidget *` (typed-c-pointers.md TP-4).
+(defn slot-value-compat (src:?&Type dst:?&Type):i32
+  (when (!= (slot-type-compat src dst) 0) (return 1))
+  (if (c-first-member-upcast src dst) 1 0))
+
+; Two C struct pointers that no upcast joins: C code casts here (`GTK_WINDOW(w)`).
+(defn c-downcast-hint (src:?&Type dst:?&Type):StrView
+  (let (s:(ptr Type) src
+        d:(ptr Type) dst)
+    (when (or (= s null) (= d null) (!= (s 'kind) TY-PTR) (!= (d 'kind) TY-PTR)) (return ""))
+    (let (se:(ptr Type) (s 'elem)
+          de:(ptr Type) (d 'elem))
+      (when (or (= se null) (= de null) (!= (se 'kind) TY-STRUCT) (!= (de 'kind) TY-STRUCT))
+        (return ""))
+      (when (or (= ((se 'sdef) 'from-c) 0) (= ((de 'sdef) 'from-c) 0)) (return ""))
+      (return (fstr " — where C would cast, write (unsafe/cast " (type-display d) " x)")))))
+
+; C11 6.7.2.1¶15: a pointer to a struct is a pointer to its first member, so
+; `GtkWindow *` → `GtkWidget *` → `GObject *` follows the first field down.
+(defn c-first-member-upcast (src:?&Type dst:?&Type):bool
+  (when (or (= src null) (= dst null)) (return false))
+  (let (s:(ptr Type) src
+        d:(ptr Type) dst)
+    (when (or (!= (s 'kind) TY-PTR) (!= (d 'kind) TY-PTR)) (return false))
+    (let (se:(ptr Type) (s 'elem)
+          de:(ptr Type) (d 'elem))
+      (when (or (= se null) (= de null)) (return false))
+      (when (or (!= (se 'kind) TY-STRUCT) (!= (de 'kind) TY-STRUCT)) (return false))
+      (let (target:(ptr StructDef) (de 'sdef)
+            cur:(ptr StructDef) (se 'sdef))
+        (while (!= cur null)
+          (when (or (= (cur 'from-c) 0) (!= (cur 'opaque) 0) (= (cur 'num-fields) 0))
+            (return false))
+          (let (f0:(ptr Type) ((field-at (cur 'fields) 0) 'type))
+            (when (!= (f0 'kind) TY-STRUCT) (return false))
+            (set! cur (f0 'sdef))
+            (when (c-same-struct cur target) (return true))))
+        (return false)))))
 
 (defn fn-sig-compat (src:?&Type dst:?&Type):i32
   (let (s:ptr:Type src
@@ -1555,7 +1643,7 @@
     ; every kind. template-ref-equality.md §4. No IR either way: a compatible
     ; pair is the identity return it always was.
     (when (= sk dk)
-      (if (!= (slot-type-compat src target) 0) (return v) (return null)))
+      (if (!= (slot-value-compat src target) 0) (return v) (return null)))
     ; Stage 15 W5d (design/stage15-stress-test/ergonomics.md §3.9): a
     ; pointer-to-S value flowing into a BY-VALUE S slot is loaded here. A struct
     ; compound literal `(S …)` is alloca-backed and evaluates to `(ref S)`, so

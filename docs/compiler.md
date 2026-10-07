@@ -806,7 +806,7 @@ whose triple is the host's — passes no flags at all and is unchanged.
 
 The C type names follow the emission target with it. `int` is 16 bits on AVR and
 32 elsewhere; `long` is 4 bytes wherever a pointer is 4 bytes or smaller, or on
-Windows, and 8 otherwise; `size_t` / `ssize_t` are pointer-sized. Array extents
+Windows, and 8 otherwise; `size_t` / `ssize_t` import as `usize` / `ssize`. Array extents
 are folded with the target's own `sizeof`, so `char buf[sizeof(void*) * 4]` is
 8 bytes on AVR and 32 on x86-64.
 

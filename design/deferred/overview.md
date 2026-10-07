@@ -512,6 +512,16 @@ List literals are (ptr Node), but functions defined in node.nuc like `contains?`
 
 ## Namespace issues
 
-- A user defvar or defn whose link name matches a core one gives an LLVM or link error with no source location. Structs get a proper located error.
 - After a failed import in the REPL, its namespace stays cached.
 - A .nuch header drops an import-use of a library in user, so the import closure is lost through that header.
+
+## The C importer's lookups are linear scans
+
+`lookup-struct` (`src/union-registry.nuc`) walks every registered struct, and
+`c-typedef-find` (`src/type-utils.nuc`) walks a linked list. Typed C pointers
+look up more names than the importer did before. As a result, a `gtk/gtk.h`
+import went from 1.77 s to 2.33 s (+32%), and before that change
+`c-parse-type` was already 39% of a GTK import's samples. A HashMap keyed by
+name for each table is the likely fix. typed-c-pointers.md §4 TP-0.
+
+**Not wanted until** import time matters more than it does today.

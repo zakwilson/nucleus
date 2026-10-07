@@ -2736,6 +2736,21 @@ Stage 15 W3a). Three rules keep this coherent:
   everything else, so an undefined `%Foo` can never reach an IR stream and become
   an LLVM parse error thousands of lines away. Never substitute a size.
 
+## One C type is several `StructDef`s — compare C structs with `c-same-struct`
+
+`typedef struct _W {…} W;` registers up to three entries: an anonymous body (the
+parser memoizes bodies by shape), the tag `_W`, and the typedef name `W`. The
+tag and name *adopt* the body's shape (`cheader-adopt-shape` shares the field
+table), and `alias-of` links only some of them. So `sdef` identity — which is
+what `type-eq` uses — says `struct _W *` and `W *` differ. Pointee checks on C
+types go through `c-same-struct` (`src/abi.nuc`), which accepts either the same
+alias root or one shared field table (typed-c-pointers.md §6).
+
+Anything the importer registers during the **signature prescan** sees every
+struct opaque (`g-cheader-typedef-provisional` = 1). Never decide "this struct is
+opaque, so record X permanently" there: TP-5's alias did, and glibc's `sigset_t`
+stayed opaque for good.
+
 ## A C struct is opaque at the GLOBAL prescan, so `(array Tag N)` is refused in a `defvar` only
 
 `prescan-defvar-name` resolves a `defvar`'s type **before** any `(import-use

@@ -396,6 +396,58 @@ A function declaration whose first token is `struct` or `union` and which omits
 `extern`, but musl deliberately omits it, so on Alpine every function returning a
 `struct X *` used to be dropped without a word.
 
+## Imported C pointers are typed
+
+A C `T *` imports as the unchecked `(ptr T)`, so a call to a C function checks
+its pointer arguments exactly as a call to a Nucleus function does. Passing a
+quoted symbol where GTK wants a `GtkWidget *` is a compile-time error:
+
+```
+main.nuc:56: error: gtk_box_append: argument 2 has type &Node, which does not
+match parameter type (ptr GtkWidget)
+```
+
+The pointee is kept at any depth (`GError **` is `(ptr (ptr GError))`), for
+parameters, returns, struct fields and typedefs. It is dropped, leaving bare
+`ptr`, in three cases:
+* **`void *`.** It stays bare `ptr` and matches any pointer, as in C.
+* **A pointee the importer cannot name.** The pointer keeps working, unchecked.
+* **A hand-written `declare` or `.nuch` signature.** It means what it says.
+
+Nullability is not imported. `(ptr T)` is the unchecked kind, so a C pointer
+still needs `as-ref` or a narrowing to reach a `&T` slot.
+
+**Rules C would only warn about, or allow:**
+* **Byte signedness.** A C `char *` or `unsigned char *` meets an `i8` or `ui8`
+  pointer of either sign, so a `&ui8` buffer passes to `strlen`. C only warns
+  here (`-Wpointer-sign`). The rule applies only where one side came from a C
+  header; other integer pointees must match (`&ui32` into `int *` is refused).
+* **`CStr` is `char *`.** `(ptr CStr)` passes to a `char **` parameter.
+* **`size_t` is `usize` and `ssize_t` is `ssize`**, so `&usize` passes to a
+  `size_t *`.
+* **One C type under several names.** `struct _GtkWidget *` and `GtkWidget *` are
+  the same type. So are the names of `typedef GdkSnapshot GtkSnapshot;`.
+* **First-member upcast.** A pointer to a C struct converts implicitly to a
+  pointer to its first member's struct, transitively. C guarantees that layout
+  (C11 6.7.2.1¶15), and GObject builds inheritance on it. So a `GtkApplication *`
+  passes to `g_application_run`'s `GApplication *` without the
+  `G_APPLICATION()` cast C would need. The rule applies only to C-imported
+  structs whose layout is known, and only at the outermost pointer: a
+  `GtkWindow **` does not convert to `GtkWidget **`.
+
+**Downcasts stay explicit**, as in C. GTK's constructors return `GtkWidget *` and
+its methods take the class, so where C writes `GTK_WINDOW(w)`, Nucleus writes
+`(unsafe/cast (ptr GtkWindow) w)`. The error says so:
+
+```
+error: gtk_window_present: argument 1 has type ?&GtkWidget, which does not match
+parameter type (ptr GtkWindow) — where C would cast, write
+(unsafe/cast (ptr GtkWindow) x)
+```
+
+The compiler cannot check a downcast. GTK 4 makes many widget structs opaque, so
+even an upcast from `GtkLabel *` to `GtkWidget *` needs the cast.
+
 ## Type qualifiers in imported declarations
 
 `const`, `volatile`, `restrict` (and its `__restrict` / `__restrict__`
@@ -470,8 +522,9 @@ wrong struct *layout*, silently. `examples/cheader-posix.nuc` is a worked exampl
 
 A typedef the parser cannot follow is **never silently `ptr`**. The name is
 recorded as known-but-unrepresentable and any *by-value* use of it is refused
-(below); a *pointer* to it stays `ptr`, which is correct — every C pointer is one
-machine word. Stage 16 FL-7 emptied most of this set: `long double`, `_Float128`,
+(below); a *pointer* to it stays bare `ptr`, which is safe — every C pointer is
+one machine word — and loses only the pointee check ([Imported C pointers are
+typed](#imported-c-pointers-are-typed)). Stage 16 FL-7 emptied most of this set: `long double`, `_Float128`,
 `__float128`, `_Float16` and `__fp16` all import as real types now (see [The
 wide float widths](types.md#the-wide-float-widths-and-which-targets-have-them)).
 What remains is `__int128` and `_BitInt`, both deliberately unscheduled, and a

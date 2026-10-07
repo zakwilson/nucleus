@@ -812,3 +812,91 @@ int main(void){
       (drop &p))
     (drop &h))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Typed C pointers: a C `T *` keeps its pointee, so a call is checked
+; (design/stage23-namespaces/typed-c-pointers.md)
+; ---------------------------------------------------------------------------
+
+(defn tp-src (body:StrView):String
+  (return (str "(import-use nucleus.node)\n(import-use \"tests/fixtures/tp-pointers.h\")\n"
+               "(defn main ():i32 " body " (return 0))\n")))
+
+(defn tp-accepts (body:StrView):!void
+  (let (src:String (tp-src body)
+        c:Compiled (try (compile-source (string-as-view &src))))
+    (try (check-no-errors (ref c 'diags)))
+    (drop &c)
+    (drop &src)
+    (return (ok))))
+
+(defn tp-refuses (body:StrView needle:StrView):!void
+  (let (src:String (tp-src body)
+        c:Compiled (try (compile-source (string-as-view &src))))
+    (when (c 'ok?) (fail! "accepted: " body))
+    (try (check-error-anywhere (ref c 'diags) needle))
+    (drop &c)
+    (drop &src)
+    (return (ok))))
+
+; The charge.nuc crash: a quoted symbol reached GTK as a widget.
+(deftest tp1-wrong-pointee-refused
+  (try (tp-refuses "(tp_take_base (quote x))"
+                   "tp_take_base: argument 1 has type &Node, which does not match parameter type (ptr TpBase)"))
+  (try (tp-refuses "(tp_take_hidden (quote x))"
+                   "argument 1 has type &Node, which does not match parameter type (ptr TpHidden)"))
+  (try (tp-refuses "(let (n:i32 0) (tp_take_charp &n))" "does not match parameter type (ptr i8)"))
+  (return (ok)))
+
+; The tag and the typedef name are one type; `void *` is still the wildcard.
+(deftest tp1-matching-pointee-accepted
+  (try (tp-accepts "(let (b:?&TpBase null) (tp_take_base b) (tp_take_tagged b) (tp_take_voidp b))"))
+  (try (tp-accepts "(tp_take_charp \"x\") (let (s:CStr \"y\") (tp_take_charp s))"))
+  (try (tp-accepts "(let (n:?&tp_node null) (when-some (m n) (tp_take_node (m 'next))))"))
+  (return (ok)))
+
+(deftest tp2-size-t-is-usize
+  (try (tp-accepts "(let (n:usize 0) (tp_take_sizep &n))"))
+  (return (ok)))
+
+; C's `char` and `unsigned char` meet each other's sign; other ints do not.
+(deftest tp3-char-sign
+  (try (tp-accepts "(let (a:ui8 0 b:i8 0) (tp_take_charp &a) (tp_take_ucharp &b))"))
+  (try (tp-refuses "(let (n:ui32 0) (tp_take_intp &n))"
+                   "argument 1 has type &ui32, which does not match parameter type (ptr i32)"))
+  (return (ok)))
+
+; A pointer to a C struct converts to a pointer to its first member's struct.
+(deftest tp4-first-member-upcast
+  (try (tp-accepts "(tp_take_base (tp_make_leaf)) (tp_take_mid (tp_make_leaf)) (tp_take_tagged (tp_make_leaf))"))
+  (try (tp-accepts "(let (b:?&TpBase (tp_make_leaf)) (tp_take_base b))"))
+  (try (tp-refuses "(let (b:?&TpBase null) (tp_take_mid b))"
+                   "which does not match parameter type (ptr TpMid) — where C would cast, write (unsafe/cast (ptr TpMid) x)"))
+  (return (ok)))
+
+; `typedef TpHidden TpHidden2;` renames an opaque struct.
+(deftest tp5-opaque-typedef-chain
+  (try (tp-accepts "(tp_take_hidden (tp_make_hidden2))"))
+  (try (tp-refuses "(tp_take_base (tp_make_hidden2))" "which does not match parameter type (ptr TpBase)"))
+  (return (ok)))
+
+; Pointer kind is ignored at every level; an upcast is not, below the top.
+(deftest tp6-pointer-to-pointer
+  (try (tp-accepts "(let (e:?&TpBase null) (tp_take_basepp &e))"))
+  (try (tp-accepts "(let (v:(ptr CStr) null) (tp_take_strv v))"))
+  (try (tp-accepts "(let (v:?&TpBase null) (tp_take_voidpp &v))"))
+  (try (tp-refuses "(let (e:?&TpMid null) (tp_take_basepp &e))"
+                   "argument 1 has type &?&TpMid, which does not match parameter type (ptr (ptr TpBase))"))
+  (return (ok)))
+
+; The signature prescan skipped a `static inline` body to the NEXT `;`, which
+; swallowed the declaration after it: 145 GTK names were unknown in a signature.
+(deftest prescan-type-after-inline-body
+  (let (c:Compiled (try (compile-source "(import-use \"tests/fixtures/prescan-after-inline.h\")
+(defvar g:?&PaiThing null)
+(defn f (t:?&PaiOther):void (return))
+(defn main ():i32 (pai_take g) (return 0))
+")))
+    (try (check-no-errors (ref c 'diags)))
+    (drop &c)
+    (return (ok))))
