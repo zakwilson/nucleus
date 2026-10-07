@@ -475,6 +475,12 @@
 ; (Vector (ref Conformance)) of Conformance* (each individually arena-allocated,
 ; registration order).
 (defvar g-conformances:&(Vector &Conformance) (vector-new-in &g-arena-alloc))
+; CQ-1 (design/stage24-allocation/conformance-query.md §2). Promises are redeemed
+; only once emission starts, when every file's protocols are registered.
+(defvar g-conf-promises:&(Vector &ConformancePromise) (vector-new-in &g-arena-alloc))
+(defvar g-conf-noes:&(Vector &ConformanceNo) (vector-new-in &g-arena-alloc))
+(defvar g-promises-open:bool false)
+(defvar g-conf-promising:bool false)
 ; Protocol inheritance edges (Stage 9 §10.3): `(extend Ord Eq)` records that
 ; conforming to Ord additionally requires conforming to Eq. Reuses the
 ; Conformance layout: type-name = sub-protocol, proto-name = required super.
@@ -2870,6 +2876,56 @@
           tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = call ptr @" fn "(ptr " (tv 'val) ")\n")
       (return (alloc-val (ty-ref-node) tmp)))))
+
+(defn conforms-str-node (s:Symbol line:i32):&Node
+  (let (sn:&Node (alloc-node))
+    (set! (sn 'kind) NODE-STR)
+    (set! (sn 's) s)
+    (set! (sn 'line) line)
+    (return sn)))
+
+; `(conforms? t P)`: `t` is evaluated and resolves in the caller's file; `P` is
+; syntax resolved here, in the macro's own (design/stage24-allocation/conformance-query.md §4).
+; The host gets (protocol-key arg…), a string being a spelling already resolved.
+(defn emit-conforms (call:?&Node scope:&Scope):&Val
+  (let (cc:(ptr Node) call)
+    (when (= (in-jit-module) 0)
+      (die-at (cc 'line) "conforms?: only available inside a defmacro, macrolet or compile-time body"))
+    (when (!= (node-len call) 3)
+      (die-at (cc 'line) "conforms?: expects a type and a protocol"))
+    (let (pn:?&Node (as ?&Node (node-at cc 2))
+          line:i32 (node-line pn (cc 'line))
+          app:bool (= (node-kind pn) NODE-LIST)
+          head:?&Node (if app (as ?&Node (node-at pn 0)) pn))
+      (when (!= (node-kind head) NODE-SYM)
+        (die-at line "conforms?: the protocol must be a name or (Protocol Arg…)"))
+      (let (spelling:Symbol ((unsafe/cast &Node head) 's)
+            p:?&Protocol (protocol-lookup spelling)
+            pkey:Symbol (if (= p null) spelling (-> p (as &Protocol _) (_ 'name)))
+            np:i32 (if (= p null) 0 (-> p (as &Protocol _) (_ 'num-params)))
+            nargs:i32 (if app (- (node-len pn) 1) 0))
+        (when (and (= p null) (= (blanket-lookup spelling) 0))
+          (die-at line (protocol-ref-message
+                         (fstr "conforms?: unknown protocol '" spelling "'") spelling)))
+        (when (!= nargs np)
+          (die-at line (fstr "conforms?: protocol '" (display-key pkey) "' takes "
+                             np (if (= np 1) " argument" " arguments") ", not " nargs)))
+        (let (lst:&Node (node-list-new line))
+          (node-push lst (conforms-str-node pkey line))
+          (dotimes (ai nargs)
+            (let (an:?&Node (as ?&Node (node-at pn (+ ai 1))))
+              (if (!= (qq-is-tagged an 'unquote) 0)
+                (node-push lst an)
+                (node-push lst (conforms-str-node
+                                 (type-spelling (parse-type-from-node (as ptr an) line)) line)))))
+          (let (tv:&Val (emit-node (as ?&Node (node-at cc 1)) scope)
+                lv:&Val (emit-qq-form lst scope 1)
+                r:StrView (new-tmp)
+                b:StrView (new-tmp))
+            (emit g-body-stream "  " r " = call i32 @nucleus_conforms(ptr " (tv 'val)
+                  ", ptr " (lv 'val) ")\n")
+            (emit g-body-stream "  " b " = icmp ne i32 " r ", 0\n")
+            (return (alloc-val ty-bool b))))))))
 
 ; ============================================================
 ; Stage 10: flow narrowing (nullability.md §4) + escape analysis (lifecycle.md)
@@ -6566,6 +6622,32 @@
               "type-name: an anonymous struct has no name"))
     (when (symbol-contains-byte nm 47) (return (intern-node nm)))
     (return (intern-node (symbol-intern (fstr "user/" nm))))))
+
+; `conforms?`'s answer; `p` is emit-conforms' (protocol-key arg…). A no is
+; remembered so a later conformance cannot contradict it (conformance-query.md §2).
+(defn nucleus_conforms (t:?&Node p:&Node):i32
+  (let (line:i32 (node-line t (ct-fault-call-line))
+        ty:&Type (parse-type-from-node (as ptr t) line)
+        pkey:Symbol ((unsafe/cast &Node (node-at p 0)) 's)
+        n:i32 (- (node-len p) 1)
+        tkey:Symbol (type-canon-name (type-spelling ty))
+        yes:bool (type-satisfies? ty pkey line))
+    (when (and yes (> n 0))
+      (let (want:&(Vector Symbol) (vector-new-in &g-arena-alloc)
+            cn:i32 0)
+        (dotimes (i n)
+          (let (a:&Node (unsafe/cast &Node (node-at p (+ i 1))))
+            (conj want (if (= (a 'kind) NODE-STR)
+                         (a 's)
+                         (type-spelling (parse-type-from-node (as ptr a) line))))))
+        (set! yes (!= (conformance-args-eq (conformance-args tkey pkey (as &i32 &cn)) want) 0))))
+    (when (and (not yes) (= (conformance-lookup tkey pkey) 0))
+      (conformance-note-no tkey pkey pkey line))
+    ; A blanket Clone holds only while the type is not Drop.
+    (when (and yes (core-named? pkey "Clone") (= (conformance-lookup tkey pkey) 0)
+               (or (= (ty 'kind) TY-STRUCT) (= (ty 'kind) TY-UNION)))
+      (conformance-note-no tkey (core-proto-key "Drop") pkey line))
+    (return (if yes 1 0))))
 
 ; Set by struct-field-ref when a name was reachable through two different
 ; anonymous members — C's own ambiguity rule, reported by the emit sites, which
@@ -13693,6 +13775,7 @@
         (when (= hp 'macro-error) (return (emit-macro-error n scope)))
         (when (= hp 'struct-fields) (return (emit-macro-type-query n scope "struct-fields" "nucleus_struct_fields")))
         (when (= hp 'type-name) (return (emit-macro-type-query n scope "type-name" "nucleus_type_name")))
+        (when (= hp 'conforms?) (return (emit-conforms n scope)))
         ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
         ; resolve because the `unsafe` namespace is bound PREFIXED in every file
         ; and never flattened — the binding is the mechanism, and the targeted
@@ -17256,6 +17339,7 @@
             (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
             (emit ct-decl "declare ptr @nucleus_struct_fields(ptr)\n")
             (emit ct-decl "declare ptr @nucleus_type_name(ptr)\n")
+            (emit ct-decl "declare i32 @nucleus_conforms(ptr, ptr)\n")
 
             ; D9: the flush at the top of this function is stale by now — the CT
             ; body itself stamps types — so re-drain and re-flush before
@@ -17345,6 +17429,18 @@
       (set! @out-variadic variadic)
       (return pcount))))
 
+; Does a macro body name a type query anywhere? Over-approximate: deferring costs nothing.
+(defn node-queries-types? (n:?&Node):bool
+  (case (node-kind n)
+    NODE-SYM
+      (let (s:&Node (unsafe/cast &Node n))
+        (return (or (= s 'struct-fields) (= s 'type-name) (= s 'conforms?))))
+    NODE-LIST
+      (dotimes (i (node-len n))
+        (when (node-queries-types? (as ?&Node (node-at n i))) (return true)))
+    0)
+  (return false))
+
 (defn emit-defmacro (form:?&Node):void
   ; (defmacro name (params...) body...)
   (let (ff:&Node (unsafe/cast &Node form))
@@ -17418,6 +17514,7 @@
             ; same array `compile-macro-body` binds the body against.
             (set! (mdef 'param-names) pnames)
             (set! (mdef 'docstring) (body-docstring ff 3))
+            (set! (mdef 'type-query) (node-queries-types? form))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef)
 
@@ -17586,6 +17683,7 @@
                   (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
                   (emit ct-decl "declare ptr @nucleus_struct_fields(ptr)\n")
                   (emit ct-decl "declare ptr @nucleus_type_name(ptr)\n")
+                  (emit ct-decl "declare i32 @nucleus_conforms(ptr, ptr)\n")
 
 
                   ; Union type defs are emitted lazily; make sure any pending
@@ -19019,6 +19117,7 @@
                               ; Stage 15 W8 G-0: the value half, registered under the
                               ; same per-path guard and the same applied namespace.
                               (prescan-value-names ifs)
+                              (prescan-extends ifs)
                               (prescan-imported-signatures ifs)
                               ; Stage 15 W9 item 40: layouts LAST, and therefore
                               ; POST-order while the three passes above stay
@@ -19542,7 +19641,8 @@
       ; unit's root file is on no import list, so this is the only place it is
       ; reached; an imported file already walked by prescan-imported-signatures
       ; takes the `sigs-done` branch and is not re-registered.
-      (prescan-value-names forms))
+      (prescan-value-names forms)
+      (prescan-extends forms))
     (finalize-generics))
   ; Stage 15 W9 item 1: this file has now been prescanned, so record it on the
   ; SAME two identity lists an imported file lands on. Nothing imports the unit's
@@ -19595,6 +19695,7 @@
   ; `sigs-done`: an imported file re-entered at depth 2 finds its layouts done.
   (prescan-struct-layouts forms)
   (prescan-union-layouts forms)
+  (when (= g-toplevel-depth 1) (set! g-promises-open true))
   (let (fi:i32 0
         nforms:i32 (node-len forms)
         redo:i32 0)
@@ -20828,7 +20929,7 @@
         ; logic
         "not" "_and" "_or"
        ; macros / functions
-       "gensym" "macro-error" "struct-fields" "type-name" "funcall" "funcall-void"
+       "gensym" "macro-error" "struct-fields" "type-name" "conforms?" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
        ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
        ; each routes to the exact same emitter as its bare alias above. UN-5

@@ -1,0 +1,9 @@
+; CQ-1a: a `:where` call sees an `extend` written below it.
+(defprotocol Shout (shout (self:&Self) :i32))
+(defstruct Pt x:i32)
+(defn loud (p:&T :where (Shout T)):i32 (return (shout p)))
+(defn main ():i32
+  (let (p:Pt (Pt 0))
+    (return (loud &p))))
+(defn shout (self:&Pt):i32 (return (self 'x)))
+(extend Pt Shout)

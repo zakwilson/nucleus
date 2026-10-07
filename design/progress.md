@@ -920,6 +920,32 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 24 — `conforms?` built (2026-10-07)
+
+[stage24-allocation/conformance-query.md](stage24-allocation/conformance-query.md) §8. CQ-1…CQ-4 are built, uncommitted. `make bootstrap` reaches its fixed point. The suite result is 1338 passed and 5 failed. The 5 are the `suite-target` datalayout tests, which fail under Debian's LLVM 23 in the container regardless of this change. All 8 new `s24-*` tests pass.
+
+- **`(conforms? t P)`** in macro, `macrolet` and `compile-time` bodies. `t` resolves in the caller's file. `P` is resolved in the macro's file when the macro is compiled. A parametric `(P Arg…)` compares its arguments, and `~v` takes one from the caller. The answer comes from `type-satisfies?`, which `:where` dispatch now calls too.
+- **CQ-1a fixes dispatch.** A `:where` call now sees an `extend` written below it (`s24-where-extend-below`). Written extends are promises, redeemed on demand; the `extend` still checks the methods.
+- **CQ-1b.** A conformance that contradicts an earlier `conforms?` no is a located error with a note at the question. A blanket `Clone` yes is treated as a no for `Drop`.
+- **CQ-2 fixes `struct-fields`/`type-name` in generics.** A macro whose body asks about a type is deferred by the A2 check and `valid-walk`, so a flat `x:T` parameter no longer fails with `unknown type: T` (`s24-struct-fields-flat-tyvar`).
+- **Overview.** Q2 now recommends library macros for `new`/`make`; the open part is the name `make`.
+
+## Stage 24 — asking about conformance at expansion time, analysed (2026-10-07)
+
+[stage24-allocation/conformance-query.md](stage24-allocation/conformance-query.md). **Analysis only.** It reopens the overview's Q2: with `conforms?`, `new` could be a library macro.
+
+- **Live bug.** A `:where` call fails when the type's `extend` is lower in the file (CQ-1a: prescan `extend`).
+- **Live bug.** The A2 check expands `struct-fields`/`type-name` with `T` unbound, giving `unknown type: T`, whenever the parameter is a flat `x:T` (CQ-2).
+
+## Stage 24 — allocation and initialization designed (2026-10-07)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md). **Design only; nothing built.** Rulings Q1–Q6 are open; AL-0 can start without them.
+
+- **Measured.** `Allocator` has no conformers. Of Stage 11's three reasons, the function-pointer arity limit is stale (a 3-argument function-pointer field call works). The libc-name collision is live, and wider than documented: a user `free` method breaks `lib/nucleus/allocator.nuc`'s own `free` call. Multi-method `dyn` is still gated.
+- **Arena.** The arena is three globals, and `arena-grow` drops the previous block. `align` is ignored.
+- **Bugs found.** A user function named `init` breaks `for` and `dotimes`, with a wrong "defined later" message (AL-0a). A generic whose type variable appears only in its return type is refused, so a value-returning `make` has to be a compiler form.
+- **Plan.** AL-1 allocators, AL-2 `Init` protocols, AL-3 `new`/`make`, AL-4 the sweep away from the prefixed constructors. AL-5, `(dyn &Allocator)`, waits on DP and a borrowing `dyn`.
+
 ## Stage 23 — typed C pointers built (2026-10-05)
 
 [stage23-namespaces/typed-c-pointers.md](stage23-namespaces/typed-c-pointers.md) §6.

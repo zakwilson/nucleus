@@ -2536,7 +2536,7 @@ The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-
 
 ## A macro-body form that calls into the compiler is six edits
 
-`gensym`, `macro-error`, `struct-fields` and `type-name` each touch:
+`gensym`, `macro-error`, `struct-fields`, `type-name` and `conforms?` each touch:
 1. the host export (`nucleus_gensym`, `nucleus_struct_fields`, … in `src/nucleusc.nuc`);
 2. its lowering in `emit-list`;
 3. its `node-type` arm (`src/generics.nuc`);
@@ -2545,6 +2545,12 @@ The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-
 6. the reserved-name set.
 
 Miss a `declare` and only the module kind you did not test fails to link.
+
+**A form that asks about a type is a seventh edit:** add it to `node-queries-types?` (`src/nucleusc.nuc`). That walk sets `MacroDef.type-query`, and `gcheck`/`valid-walk` then defer the macro's calls to the stamp. Otherwise a generic's abstract check runs the macro with `T` unbound and fails with `unknown type: T`.
+
+## A conformance can be known before its `extend` is emitted
+
+`prescan-extends` records each top-level `(extend Sym P)` as a promise. `conformance-known` redeems it, recording the conformance with the `promised` flag, and `verify-conformance-params` still checks the methods when it reaches the `extend`. Only `conformance-known` redeems; plain `conformance-lookup` sees a conformance only after it is recorded. A new caller that must not depend on source order should ask `conformance-known` (or `type-satisfies?`), not `conformance-lookup` (design/stage24-allocation/conformance-query.md §8).
 
 **Private macros are not exported to a `.nuch`.** A public macro whose body or expansion uses a `defmacro-` works from source and fails through the header, so make the helper public (`lib/nucleus/edn.nuc`'s `edn-str-node`).
 

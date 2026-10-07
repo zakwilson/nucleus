@@ -1,0 +1,7 @@
+; A blanket Clone holds only while the type is not Drop.
+(import-use nucleus.coll)
+(defstruct R x:i32)
+(defmacro copyable (t) (if (conforms? t Clone) `1 `0))
+(defn main ():i32 (return (copyable R)))
+(defn drop (self:&R):void (return))
+(extend R Drop)

@@ -514,6 +514,52 @@ derive code from it: a serializer, a printer, a comparison. `lib/edn`'s
 - **Only in a macro body** (or a `macrolet`/`compile-time` body): there is no
   run-time reflection, so a derived serializer costs nothing in a program that
   does not derive one.
+- **In a generic body, `T` is the stamped type.** A call such as
+  `(field-count T)` inside `(defn f (x:T :where (P T)) …)` is expanded once per
+  instantiation, with `T` already replaced. The generic's definition-time check
+  skips any macro whose body uses `struct-fields`, `type-name` or `conforms?`.
+
+## `conforms?` — asking about a protocol at expansion time
+
+`(conforms? t P)` is true when the type `t` conforms to the protocol `P`. It
+gives the same answer a `:where (P T)` constraint gets when a call is
+dispatched. That includes blanket conformances (`Any`, `Struct`, and `Clone` for
+a type that is not `Drop`) and closures that conform structurally.
+
+```lisp
+(defprotocol Shout (shout (self:&Self) :i32))
+(defmacro describe (t)
+  (if (conforms? t Shout) `"shouts" `"quiet"))
+
+(describe Pt)    ; => "shouts" when Pt extends Shout
+(describe i32)   ; => "quiet"
+```
+
+- **`t` is evaluated.** It is the type as the macro's caller spelled it, and it
+  resolves in the caller's file, as with `struct-fields`.
+- **`P` is not evaluated.** It names a protocol in the macro's own file, and is
+  resolved when the macro is compiled. A caller with an unrelated protocol of
+  the same name does not change the answer. An unknown protocol is refused at
+  the macro's definition.
+- **A parametric protocol is asked with its arguments**, and they must match
+  the conformance's: `(conforms? t (InitFrom StrView))`. An argument written
+  `~v` is the caller's type, taken from the macro parameter `v`:
+  `(conforms? t (InitFrom ~v))`.
+- **An `extend` written below the call still counts**, when it is written as
+  a top-level form in any file of the program.
+- **A conformance a macro produces can only come after the question.**
+  `derive-edn`, for example, writes its `extend` when it expands. If
+  `conforms?` answered no and that conformance then appears, compilation stops
+  at the conformance, with a note at the question:
+
+  ```
+  file.nuc:9: error: Pt conforms to Shout here
+    note: file.nuc:8: conforms? answered no for (Pt, Shout) before this
+  ```
+
+  A `Clone` answer of yes is held to the same rule, because it holds only while
+  the type is not `Drop`.
+- **Only in a macro body**, like `struct-fields`.
 
 ## When a macro body crashes
 

@@ -1177,3 +1177,28 @@
 {:name "s22-edn-key-type" :expect :reject
  :file "tests/fixtures/s22-edn-key-type.nuc" :line 9
  :messages ["no matching method for 'edn-read'"]}
+; Stage 24 CQ-1…CQ-4: `conforms?` (design/stage24-allocation/conformance-query.md).
+{:name "s24-conforms-unknown" :expect :reject
+ :file "tests/fixtures/s24-conforms-unknown.nuc" :line 2
+ :messages ["conforms?: unknown protocol 'Nope'"]}
+{:name "s24-conforms-arity" :expect :reject
+ :file "tests/fixtures/s24-conforms-arity.nuc" :line 3
+ :messages ["conforms?: protocol 'P' takes 1 argument, not 0"]}
+{:name "s24-conforms-runtime" :expect :reject
+ :file "tests/fixtures/s24-conforms-runtime.nuc" :line 3
+ :messages ["conforms?: only available inside a defmacro, macrolet or compile-time body"]}
+; CQ-1b: a no stays right — the conformance that would contradict it is refused.
+{:name "s24-conforms-late" :expect :reject
+ :file "tests/fixtures/s24-conforms-late.nuc" :line 9
+ :messages ["Pt conforms to Shout here"]
+ :notes ["s24-conforms-late.nuc:8: conforms? answered no for (Pt, Shout) before this"]}
+{:name "s24-conforms-clone-drop" :expect :reject
+ :file "tests/fixtures/s24-conforms-clone-drop.nuc" :line 7
+ :messages ["R conforms to Drop here"]
+ :notes ["conforms? answered yes for (R, Clone) before this, which holds only while it is not Drop"]}
+; CQ-1a: dispatch on a conformance written below the call.
+{:name "s24-where-extend-below" :expect :accept
+ :file "tests/fixtures/s24-where-extend-below.nuc"}
+; CQ-2: `struct-fields` on a flat `x:T` parameter, which the abstract check used to expand.
+{:name "s24-struct-fields-flat-tyvar" :expect :accept
+ :file "tests/fixtures/s24-struct-fields-flat-tyvar.nuc"}
