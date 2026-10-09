@@ -23,8 +23,8 @@
 (if (> 2 1) 555 666)
 (let (v [7 8]) (unsafe/cast i32 (count v)))
 ; D8: `lib/nucleus/error.nuc` does `(import-ct nucleus.node)`, so `alloc-node` reaches the
-; preamble as a declare; `lib/nucleus/arena.nuc`'s `defmacro new` then builds a node and
-; its JIT module declared it a second time. The arena is imported for real first,
+; preamble as a declare; arena's `defmacro new` (now in `nucleus.create`) then built a node
+; and its JIT module declared it a second time. The arena is imported for real first,
 ; as `vector` once did through `allocator`.
 (import-use nucleus.arena)
 (import-use nucleus.error)

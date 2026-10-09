@@ -20,13 +20,19 @@
 
 (extern stderr:ptr)
 
-; An arena's blocks are zero already.
+; An arena's blocks are zero already, including one behind a Tracking handle.
+(defn alloc-zeroes? (a:&Alloc):bool
+  (when (= (a 'kind) ALLOC-ARENA) (return true))
+  (when (= (a 'kind) ALLOC-TRACKING)
+    (return (alloc-zeroes? (ref (unsafe/cast &Tracking (a 'data)) 'parent))))
+  (return false))
+
 (defn create-bytes (a:&Alloc size:usize align:usize):&ui8
   (let ((p ?&ui8) (alloc-allocate a size align))
     (when (= (as ptr p) null)
       (fprintf stderr "new: out of memory\n")
       (exit 1))
-    (when (!= (a 'kind) ALLOC-ARENA)
+    (when (not (alloc-zeroes? a))
       (memset (as ptr p) 0 size))
     (return (unsafe/cast &ui8 (as ptr p)))))
 
