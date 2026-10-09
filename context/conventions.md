@@ -5961,10 +5961,10 @@ applies to a `cond` clause body.
 module it is writing. Under the REPL that module is assembled as **preamble +
 ct-decl + ct-def**, and the import arm's declare-backfill may already have put
 the same line in the preamble — so a second `declare ptr @alloc-node()` lands in
-one module and LLVM refuses it with `invalid redefinition of function`. Reproduce
-with `(import-use nucleus.error)` then `(import-use nucleus.arena)`: `lib/nucleus/error.nuc` does
-`(import-ct nucleus.node)`, which registers `alloc-node` as a `TY-FN` global, and
-`lib/nucleus/arena.nuc`'s `defmacro new` builds a node.
+one module and LLVM refuses it with `invalid redefinition of function`. Before
+Stage 24 it reproduced with `(import-use nucleus.error)` then `(import-use nucleus.arena)`:
+`lib/nucleus/error.nuc` does `(import-ct nucleus.node)`, which registers `alloc-node` as a
+`TY-FN` global, and arena's `defmacro new` (now `nucleus.create`'s) built a node.
 
 It predates Stage 16 R2 (the pre-R1 boot binary fails identically) and R2 only
 made it reachable, by making both imports succeed on their own. The rule it

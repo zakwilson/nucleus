@@ -2,6 +2,7 @@
 (ns nucleus.create)
 (import-use nucleus.allocator)
 (import-use nucleus.coll)
+(declare alloc-zeroes? ((a (ref Alloc))) :bool)
 (declare create-bytes ((a (ref Alloc)) (size usize) (align usize)) :ref:ui8)
 (declare create-zero ((p ptr) (size usize)) :void)
 (defmacro new (t :rest args) (when (= (ast-len args) 0) (macro-error t "new: name the allocator, as in (new T heap)")) (quasiquote (create-form 1 (unquote t) (unquote-splice args))))
