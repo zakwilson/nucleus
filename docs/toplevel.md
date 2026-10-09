@@ -326,9 +326,9 @@ each namespace the file flattened (its `import-use`s, then the prelude), then
 one, while in a `user` file the file's own definitions come first.
 
 **Core link names carry `nuc_`.** Every `nucleus.*` namespace links under the one
-reserved prefix `nuc_`, joined with no separator: `string-new` links as
-`@nuc_string-new`, `String` is `%nuc_String`, and the C names in
-`lib/nucleus/*.h` are `nuc_string_new` and `struct nuc_String`. A program's own
+reserved prefix `nuc_`, joined with no separator: `string-push-char` links as
+`@nuc_string-push-char`, `String` is `%nuc_String`, and the C names in
+`lib/nucleus/*.h` are `nuc_string_push_char` and `struct nuc_String`. A program's own
 names stay bare, so a `user` type, function or global named like a core one is a
 different symbol and coexists with it. `main` always links as `main`, whatever
 namespace defines it, and a hand-written `extern` keeps the foreign symbol's own
@@ -546,12 +546,41 @@ refused at its own line, naming the first:
 main.nuc:2: error: 'foo_QMARK' links as @foo_QMARK, the symbol of 'foo?' at main.nuc:1 — rename one, or give one file an (ns …)
 ```
 
-A definition of a name a C header or an `extern` declares is the program
-implementing that declaration, so its LLVM signature must match it:
+**A `defn` of a name a C header or a `declare` also binds is either the
+implementation of that C function or an overload beside it.** It is the
+implementation when it is a plain user-namespace `defn` that writes the C
+parameter and return types (only a bare `ptr` writes `void *`). Then it takes
+the C symbol: `(defn puts (s:CStr):int …)` is the program's `@puts`. Otherwise
+the C function joins the generic as one more overload and keeps its symbol, and
+the `defn` is mangled like any overload. So a struct can have a `free`, `realloc`
+or `remove` method without displacing libc's, in the user's files and in
+namespaced libraries alike:
+
+```
+(import-use "stdlib.h")
+(defstruct Box n:i32)
+(defn free (self:&Box):void (set! (self 'n) 0))   ; Box's free
+(defn main ():i32
+  (let (b:Box (Box 5))
+    (free &b)                ; Box's free
+    (free (malloc 16))       ; libc free
+    (return (b 'n))))
+```
+
+A call that only one `defn` can take by arity is checked and converted the way a
+call to a lone function is. Among same-arity candidates the usual overload tiers
+pick, and the C function takes whatever no `defn` claimed, with C's argument
+conversions.
+
+The REPL has no overloads, so there a `defn` of a C function's name is still its
+implementation and must match its LLVM signature:
 
 ```
 main.nuc:2: error: 'puts' links as @puts, which /usr/include/stdio.h:714 declares as i32 (ptr), not i64 (i64) — match that declaration, or rename it
 ```
+
+The same refusal applies when a C header is imported after a `defn` of the name
+has already been emitted.
 
 Notes on what this does and does not cover:
 
@@ -1144,7 +1173,7 @@ address into the global is refused (the escape sink of
                                        ;   the initializer function returns
 (defvar opts:(Vector i32) [1 2 3])    ; fine — the header is copied into the global and
                                        ;   the copy owns the heap buffer; use &opts at call sites
-(defvar opts:&(Vector i32) (vector-new-in (default-allocator)))  ; fine — heap-placed header
+(defvar opts:&(Vector i32) (new (Vector i32) heap))  ; fine — heap-placed header (nucleus.create)
 ```
 
 ### A non-null global must be initialized

@@ -10,7 +10,7 @@
   (return))
 
 (defn main ():i32
-  (let (n:i32 0
-        h (cfn (default-allocator) (a:ptr b:ptr):void (set! n 1)))
+  (let (n:i32 0 al:Alloc (handle heap)
+        h (cfn &al (a:ptr b:ptr):void (set! n 1)))
     (connect (unsafe/cast ((fn void) (ptr ptr)) h))
     (return n)))

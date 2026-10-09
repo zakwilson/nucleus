@@ -18,7 +18,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.strview)
 (import-use nucleus.parse)
-(import-use nucleus.test)
+(import-use nucleus.test) (import-use nucleus.create)
 (defn fl-kinds ():StrView
   (return "f16|_Float16|f16
 f32|float|f
@@ -195,7 +195,7 @@ f128|__float128|q"))
 ; `(ptr , half`. A run of spaces, and any space before `,`, `)` or the end, is
 ; not part of what the signature claims.
 (defn fl-squeeze (s:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         sp:StrView " "
         n:usize (strview-byte-len &s)
         i:usize 0)
@@ -220,7 +220,7 @@ f128|__float128|q"))
 ; prefix, and SSA VALUE names — `%0` and `%s.arg` name one argument. A
 ; surviving `%`-token is a TYPE, so it keeps its text and loses its sigil.
 (defn fl-strip-ssa (s:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         n:usize (strview-byte-len &s)
         i:usize 0)
     (while (< i n)
@@ -283,7 +283,7 @@ f128|__float128|q"))
 ; The types of a call's arguments, `, `-joined: each is `<type> <ssa name>`,
 ; and the type is the claim the shell made with five `[^,]*` wildcards.
 (defn fl-arg-types (args:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         sep:StrView ", "
         first:bool true
         it:SplitIter (strview-split &args &sep))
@@ -320,8 +320,8 @@ __attribute__((used)) static __float128 q = 1;
 
 (deftest s16-fl-constants-vs-clang
   (try (require-extended-float-widths))
-  (let (nucsrc:String (string-new)
-        csrc:String (string-new)
+  (let (nucsrc:String (make String)
+        csrc:String (make String)
         nb:ref:String &nucsrc
         cb:ref:String &csrc
         n:usize 0)

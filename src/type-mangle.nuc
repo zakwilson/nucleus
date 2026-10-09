@@ -13,6 +13,8 @@
 (import-use nucleus.node)
 (import-use nucleus.fmt)
 (import-use nucleus.strview)
+(import-use nucleus.arena)
+(import-use nucleus.create)
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
@@ -84,7 +86,7 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar g-fnty:&(HashMap Symbol &Type) (hashmap-new-in &g-arena-alloc))
+(defvar g-fnty:&(HashMap Symbol &Type) (new (HashMap Symbol &Type) g-arena))
 
 (defn fnty-intern (t:&Type):Symbol
   (doseq (entry g-fnty (HashMapEntryIter Symbol &Type))
@@ -166,7 +168,7 @@
   (when (= (symbol-contains-byte s 58) false)
     (return (subst-tyvar-segment s tyvars spellings ntv)))
   (let (segs:ptr (split-colon-segments s line)
-        acc:String (string-new)
+        acc:String (make String)
         any:i32 0)
     (dotimes (i (node-len segs))
       (let (e:?&Node (as ?&Node (node-at segs i))

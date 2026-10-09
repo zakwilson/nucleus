@@ -31,7 +31,7 @@
 (import-use nucleus.coll)
 (import-use nucleus.test)
 (import-use nucleus.fmt)
-(import-use nucleus.strview)
+(import-use nucleus.strview) (import-use nucleus.create)
 (defstruct Exports ll:String nuch:String h:String llpath:String nuchpath:String)
 
 (extend Exports Drop)
@@ -178,8 +178,8 @@
 ; literals: what the unit claims is that a namespace's symbol is the same string
 ; whether or not another namespace is in the same compilation unit.
 (defn check-same-symbols (a:StrView b:StrView base:StrView):!void
-  (let (va:(Vector StrView) (vector-new)
-        vb:(Vector StrView) (vector-new))
+  (let (va:(Vector StrView) (make (Vector StrView))
+        vb:(Vector StrView) (make (Vector StrView)))
     (ir-symbols a base &va)
     (ir-symbols b base &vb)
     (when (= (count &va) 0)
@@ -207,7 +207,7 @@
     (return (ok))))
 
 (defn check-symbol-count (ir:StrView base:StrView want:usize):!void
-  (let (v:(Vector StrView) (vector-new))
+  (let (v:(Vector StrView) (make (Vector StrView)))
     (ir-symbols ir base &v)
     (let (got:usize (count &v)
           t:String (views-text &v))

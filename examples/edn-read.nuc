@@ -11,6 +11,7 @@
 (import-use nucleus.read)
 (import-use nucleus.edn)
 (import-use nucleus.fmt)
+(import-use nucleus.create)
 
 (defn config ():StrView (return "
 ; a little configuration file
@@ -73,7 +74,7 @@
       (let (absent:i32 0)
         (report "missing" (edn-read &absent (edn-get cfg "nope"))))))
   ; Writing scalars, then refusals the reader leaves to the library.
-  (let (out:String (string-new))
+  (let (out:String (make String))
     (write-str &out "[")
     (edn-write &out 42) (write-str &out " ")
     (edn-write &out 2.0) (write-str &out " ")

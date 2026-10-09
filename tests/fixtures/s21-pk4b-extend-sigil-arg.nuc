@@ -6,7 +6,7 @@
 ; :where constraint` (the sigil made `?E` a different symbol to `E`).
 (import-use "stdio.h")
 (import-use nucleus.vector)
-(import-use nucleus.iterator)
+(import-use nucleus.iterator) (import-use nucleus.create)
 
 (defstruct (Wrap I) source:I)
 (extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))
@@ -17,7 +17,7 @@
       (none (return none)))))
 
 (defn main ():i32
-  (let (v:(Vector i32) (vector-new))
+  (let (v:(Vector i32) (make (Vector i32)))
     (conj &v 7)
     (let (it:VecIter.i32 (iter &v)
           w:(Wrap VecIter.i32) ((Wrap VecIter.i32) it))

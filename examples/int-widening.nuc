@@ -34,7 +34,7 @@
 
 (defn main ():i32
   (with (v:&(Vector i64) (alloca (Vector i64)))
-    (vector-init v)
+    (init v)
 
     ; LW-1: castless conj — the stamped `conj` method on (Vector i64) binds
     ; T=i64 from the receiver, then adapts each i32 literal element to i64.

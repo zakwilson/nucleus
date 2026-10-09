@@ -51,7 +51,7 @@
 (import-use suite-s22)
 (import-use suite-s24)
 (import-use nucleus.intern)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.create)
 
 
 
@@ -108,7 +108,7 @@
     (dotimes (i (edn-count row))
       (let (k:?&Node (edn-key row (as usize i)))
         (when (not (row-key-known? k))
-          (let (t:String (string-new))
+          (let (t:String (make String))
             (edn-write &t k)
             (fail! "manifest line " ln ": unknown key " (string-as-view &t))))))
     (when (or (!= (edn-kind (edn-get row "name")) EDN-STR)
@@ -196,7 +196,7 @@
 ; Unchecked, where the rest of this file validates: a child's streams are bytes,
 ; and a fixture may deliberately print what is not UTF-8.
 (defn ran-stream (v:StrView):String
-  (let (s:String (string-new))
+  (let (s:String (make String))
     (string-push-str-unchecked &s &v)
     (return s)))
 
@@ -689,7 +689,7 @@
 ; then wants its NEGATIVE has no other way to build one that is wrong in exactly
 ; one respect.
 (defn replace-all (hay:StrView needle:StrView repl:StrView):!String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         rest:StrView hay
         more:bool true)
     (while more
@@ -787,7 +787,7 @@
           (fail! "nm failed\n     " (test-show (string-as-view (ref o 'err)))))
         (let (ov:StrView (string-as-view (ref o 'out))
               nl:StrView "\n"
-              out:String (string-new)
+              out:String (make String)
               it:SplitIter (strview-split &ov &nl))
           (while (not (split-iter-done &it))
             (let (l:StrView (split-iter-next &it))
@@ -816,7 +816,7 @@
           (fail! "nm failed\n     " (test-show (string-as-view (ref o 'err)))))
         (let (ov:StrView (string-as-view (ref o 'out))
               nl:StrView "\n"
-              out:String (string-new)
+              out:String (make String)
               it:SplitIter (strview-split &ov &nl))
           (while (not (split-iter-done &it))
             (let (l:StrView (split-iter-next &it))
@@ -1240,7 +1240,7 @@
 ; preserves SOURCE operand order, so `mul i32 2, %t2` against `mul i32 %t2, 2`
 ; is an unavoidable and meaningless difference, and the header names the file.
 (defn normalize-commutative (ir:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         it:LineIter (strview-lines &ir))
     (while (not (lines-iter-done &it))
       (let (l:StrView (lines-iter-next &it))
@@ -1362,7 +1362,7 @@
 ; COUNT of `define` lines is a weaker claim than it looks: two different sets of
 ; the same size compare equal.
 (defn define-names (ir:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         it:LineIter (strview-lines &ir))
     (while (not (lines-iter-done &it))
       (let (nm:StrView (define-line-name (lines-iter-next &it)))
@@ -1373,7 +1373,7 @@
 ; the module still parses; the second definition simply wins, which is how a
 ; re-drain silently doubles a library's contents.
 (defn duplicate-define-name (ir:StrView):StrView
-  (let (names:(Vector StrView) (vector-new)
+  (let (names:(Vector StrView) (make (Vector StrView))
         it:LineIter (strview-lines &ir))
     (while (not (lines-iter-done &it))
       (let (nm:StrView (define-line-name (lines-iter-next &it)))

@@ -116,7 +116,7 @@ Four rules cover every spelling:
 * **A prefixed import does *not* put the library's own namespace in scope.** With `(import-prefixed shapes sh)`, `shapes/Shape` is an error: the prefix is the whole of what the import bound. The diagnostic says so and lists what *is* in scope.
 * **A bare name falls back to the flattened namespaces, the prelude's included, and then `user`.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols (`nucleus.core`) with no qualifier. If two namespaces each declare a `Describe` and neither is flattened into this file, a bare `Describe` names neither and is an error — qualify it.
 
-A protocol's method signatures are the declaring file's text, so they name that file's types however the protocol is reached. `Self`, the protocol's type arguments and the conformer's methods belong to the file that writes the `extend`. A private `defstruct-` conformer in another namespace, or a conformer named like one of the protocol library's own types, therefore conforms. A library generic that calls a protocol method reaches the conformer's method wherever the `extend` put it — solitary, overloaded or `defn-` — though the library imports nothing of that namespace. The pass is for a method that answers a protocol whose methods the calling spelling names (bare in the protocol's own namespace or a flattened one, or through a qualifier naming it); any other name in another namespace stays unreachable. See [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
+A protocol's method signatures are the declaring file's text, so they name that file's types however the protocol is reached. `Self`, the protocol's type arguments and the conformer's methods belong to the file that writes the `extend`. A private `defstruct-` conformer in another namespace, or a conformer named like one of the protocol library's own types, therefore conforms. A library generic that calls a protocol method reaches the conformer's method wherever the `extend` put it — solitary, overloaded or `defn-` — though the library imports nothing of that namespace. The pass is for a method that answers a protocol whose methods the calling spelling names (bare in the protocol's own namespace or a flattened one, or through a qualifier naming it); any other name in another namespace stays unreachable. A generic conformer method, such as `conj` on `&(Vector T)`, is reached the same way when its namespace conforms one of its own types to the protocol. So `nucleus.coll/conj` and a library macro's `conj`, which hygiene writes as that full name, find it. See [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
 
 The rules are the same in every position that names a protocol: `extend`'s protocol operand, `(dyn P)`, and a `:where` constraint, including a protocol application such as `((sh/Peek E) S)`. A `:where` is read before an imported library's protocols are registered, so the constraint keeps the environment of the file that wrote it and is resolved against that file's imports once the protocol exists. A name the file cannot spell is still `defn: :where names unknown protocol '…'` at the `defn`, with the same scope note, and so is a library namespace named through a prefixed import (`shapes/Shape` under `(import-prefixed shapes sh)`). A call that reaches such a template before the check does is refused the same way, at the `defn`, with `note: while binding a call to 'f' (at file:line)`, rather than as the call's `no matching method`.
 
@@ -328,16 +328,16 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
 
 - **A type variable may be determined by the *expected* type alone.** The usual
   case binds every variable from the arguments, but a constructor like
-  `(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)` mentions `T`
+  `(defn vec-in (a:&Alloc):&(Vector T) …)` mentions `T`
   only in its return type, and takes it from whatever the position names — a
   `let`/`with` annotation, a `set!` place, a `return`, or an
   `as`. With nothing to take it from, the call is refused by name:
   ```
-  error: cannot infer type variable 'T' for 'vector-new-in': no expected type
+  error: cannot infer type variable 'T' for 'vec-in': no expected type
     at this position — annotate the binding
   ```
   Such instantiations are distinguished by their return type in the emitted
-  symbol (`@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i64`), because the parameter
+  symbol (`@vec_in.pnuc_Alloc.$r.pnuc_Vector.i64`), because the parameter
   types alone do not identify them — so one unit may use as many element types as
   it likes. (Before Stage 16 SE-2 it could not: the first instantiation answered
   for all of them, silently.) A variable a `:where` constraint recovers counts as
@@ -730,7 +730,7 @@ pointer into a `(BoxedFn …)` slot triggers the boxing coercion automatically:
 
 1. The env struct is moved by value to a fresh heap block (the process-default
    libc allocator; the two-word fat pointer has no room for a per-box
-   `AllocHandle`).
+   `Alloc`).
 2. The per-env vtable global `@__vt.<env>.<sig>` is synthesized lazily once
    (the vtable `invoke` slot = the already-synthesized `@invoke.p<Env>.<…>`
    method; the `drop` slot = the synthesized env `drop` thunk, or null for a
@@ -779,7 +779,7 @@ See `examples/boxedfn.nuc` for the full working example.
 **Known v1 limits.**
 
 - Boxes through the **process-default libc allocator** only; no per-box
-  `AllocHandle`. A `cfn` env's vtable drop slot is forced null (avoiding a
+  `Alloc`. A `cfn` env's vtable drop slot is forced null (avoiding a
   double-free: the `cfn` drop would also free the block the box owns); the
   original cfn env then leaks — a documented cfn-box ownership gap.
 - Boxes are **move-only**: no `clone` on a `BoxedFn` value (the vtable

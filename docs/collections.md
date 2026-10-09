@@ -2,7 +2,7 @@
 
 `(import-use nucleus.coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`, and the AST's own `Node`) are separate libraries and must be imported individually.
 
-These collections are **mutable and in-place** in the STL spirit — `conj`, `assoc`, and the set-algebra operations mutate the receiver. They own heap memory through a stored `AllocHandle` and free it via `Drop` at `with`-scope exit. See [Allocators](allocators.md) for the allocator protocol and handle type.
+These collections are **mutable and in-place** in the STL spirit — `conj`, `assoc`, and the set-algebra operations mutate the receiver. They own heap memory through a stored `Alloc` and free it via `Drop` at `with`-scope exit. See [Allocators](allocators.md) for the allocator protocol and handle type.
 
 ## Core protocols (`lib/nucleus/coll.nuc`)
 
@@ -116,7 +116,7 @@ All four methods take `(ref Self)` receivers. The algebra methods (`union`, `dif
   (drop:void (self:ptr:Self)))
 ```
 
-Every owning collection conforms to `Drop` so a `with`-bound value frees its buffer at scope exit, in reverse binding order. The method is named `drop` (not `free`) so it does not shadow libc `@free`. See [Special forms](special-forms.md) for `with`/`move`/`defer` semantics.
+Every owning collection conforms to `Drop` so a `with`-bound value frees its buffer at scope exit, in reverse binding order. See [Special forms](special-forms.md) for `with`/`move`/`defer` semantics.
 
 `Drop` is declared in `lib/nucleus/coll.nuc` so every owning collection library can `(import-use nucleus.coll)` and extend it.
 
@@ -181,7 +181,7 @@ Choose between the two key types by what the key *is*: `Keyword` for a name that
 
 (defn main ():i32
   (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m :width 1920)
     (assoc m :height 1080)
     (match (get m :width)
@@ -208,29 +208,29 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
 
 ### Construction
 
-Vectors are initialised in place — there is no value constructor because a zero-argument call has no argument from which to infer `T`, and returning an owning collection by value does not compose with `with`/`Drop`. The canonical idiom:
+**`make` and `new`** (`(import-use nucleus.create)`, see [allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make)) take the type as an operand, so they need no annotation: `(make (Vector i32) heap)` is an empty vector by value, `(make (Vector i32) heap [1 2 3])` one filled from a literal, `(make (Vector i32) a v)` a copy of `v` (`(InitFrom (Vector T))`), and `(new (Vector i32) a)` a vector whose header also comes from `a`. `Vector` conforms to `Init`, so `(init v a)` initializes in place and `(init v)` uses `heap`.
+
+`(make (Vector i32))` is `(make (Vector i32) heap)`. Without `nucleus.create`, initialize in place:
 
 ```lisp
 (with ((v (ref (Vector i32))) (alloca (Vector i32)))
-  (vector-init v)          ; empty, default (libc) allocator
+  (init v)                 ; empty, on the heap
   (conj v 10) (conj v 20) (conj v 30)
   ...)                     ; (drop v) fires here, freeing the buffer
+
+(let (w:(Vector i64) ((Vector i64)))   ; a zero Vector, not yet usable
+  (init &w (handle g-arena))           ; any Alloc
+  (reserve &w 64)                      ; capacity: initialize, then reserve
+  ...)
 ```
 
-| Constructor | Signature | Description |
-|-------------|-----------|-------------|
-| `vector-init` | `((v (ref (Vector T)))) -> void` | Initialise empty with the default libc allocator. |
-| `vector-init-capacity` | `((v (ref (Vector T))) n:usize) -> void` | Initialise empty with at least `n` slots pre-reserved. |
-| `vector-init-alloc` | `((v (ref (Vector T))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator. |
+| Init | Signature | Description |
+|------|-----------|-------------|
+| `init` | `(v:&(Vector T)):void` | Empty, on the heap (`nucleus.allocator`'s one-argument `init`). |
+| `init` | `(v:&(Vector T) a:Alloc):void` | Empty, storing and allocating through `a`. |
+| `init` | `(v:&(Vector T) a:Alloc src:&(Vector T)):void` | A copy of `src` (also by value). |
 
-There are also **value** constructors — `vector-new`, `vector-new-alloc`,
-`vector-new-capacity` (by value) and `vector-new-in` (heap-placed, returning an
-escapable `(ref (Vector T))`) — for which `T` comes from the *declared type of
-the position*, since no argument carries it. They therefore need one: a bare
-`(vector-new-in a)` with no annotation to read is refused with `cannot infer type
-variable 'T'`. See [generics.md](generics.md#bounded-generic-defn). An owning
-collection still may not escape by `return` without `move`, so the in-place
-`*-init` family above remains the idiom for a `with`-scoped vector.
+An owning collection may not escape by `return` without `move`; `new` places it in an allocator and returns an escapable `&(Vector T)`.
 
 ### Operations
 
@@ -297,7 +297,7 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
-    (vector-init v)
+    (init v)
     (conj v 10) (conj v 20) (conj v 30)
     (printf "count=%llu\n" (as ui64 (count v)))     ; count=3
     (printf "get[1]=%d\n"  (v (as usize 1)))        ; get[1]=20
@@ -319,16 +319,18 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 ```lisp
 (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
-  (hashmap-init m)
+  (init m)
   (assoc m "one" 1)
   (assoc m "two" 2)
   ...)   ; (drop m) fires here
 ```
 
-| Constructor | Signature | Description |
-|-------------|-----------|-------------|
-| `hashmap-init` | `((m (ref (HashMap K V)))) -> void` | Initialise empty with the default libc allocator, initial capacity 8. |
-| `hashmap-init-alloc` | `((m (ref (HashMap K V))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator (e.g. an arena), initial capacity 8. |
+| Init | Signature | Description |
+|------|-----------|-------------|
+| `init` | `(m:&(HashMap K V)):void` | Empty, on the heap, initial capacity 8. |
+| `init` | `(m:&(HashMap K V) a:Alloc):void` | Empty, storing and allocating through `a` (e.g. `(handle g-arena)`), initial capacity 8. |
+
+`HashMap` conforms to `Init`, so `(make (HashMap K V))` is an empty map by value and `(make (HashMap K V) a {k v …})` fills one from a literal ([allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make)).
 
 ### Operations
 
@@ -446,7 +448,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 (defn main ():i32
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m "one" 1) (assoc m "two" 2) (assoc m "three" 3)
     (printf "count=%llu\n" (as ui64 (count m)))  ; 3
     (match (get m "two")
@@ -469,15 +471,17 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ```lisp
 (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
-  (hashset-init s)
+  (init s)
   (insert s "dog") (insert s "cat")
   ...)   ; (drop s) fires here
 ```
 
-| Constructor | Signature | Description |
-|-------------|-----------|-------------|
-| `hashset-init` | `((s (ref (HashSet T)))) -> void` | Initialise empty with the default libc allocator, initial capacity 8. |
-| `hashset-init-alloc` | `((s (ref (HashSet T))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator (e.g. an arena), initial capacity 8. |
+| Init | Signature | Description |
+|------|-----------|-------------|
+| `init` | `(s:&(HashSet T)):void` | Empty, on the heap, initial capacity 8. |
+| `init` | `(s:&(HashSet T) a:Alloc):void` | Empty, storing and allocating through `a` (e.g. `(handle g-arena)`), initial capacity 8. |
+
+`HashSet` conforms to `Init`, so `(make (HashSet T))` is an empty set by value and `(make (HashSet T) a #{x …})` fills one from a literal ([allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make)).
 
 ### Operations
 
@@ -496,7 +500,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 (empty?:i32  ((self (ref (HashSet T)))))
 ```
 
-`insert` is a no-op if the element is already present. `set-remove` is named that (not `remove`) to avoid shadowing libc `remove`. The set-algebra methods mutate `self` in place.
+`insert` is a no-op if the element is already present. The set-algebra methods mutate `self` in place.
 
 ### Iteration with `HashSetIter T`
 
@@ -532,7 +536,7 @@ Iteration order is hash-dependent and unspecified.
 (defn main ():i32
   ; Basic membership
   (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
-    (hashset-init s)
+    (init s)
     (insert s "dog") (insert s "cat") (insert s "fish")
     (printf "contains dog: %d\n"  (contains? s "dog"))   ; 1
     (printf "contains bird: %d\n" (contains? s "bird"))  ; 0
@@ -541,10 +545,10 @@ Iteration order is hash-dependent and unspecified.
 
   ; Set algebra (i32 elements)
   (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
-    (hashset-init a)
+    (init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
     (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
-      (hashset-init b)
+      (init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (union a b)
       (printf "union count: %llu\n" (as ui64 (count a))))) ; 6
@@ -604,17 +608,17 @@ nodes.
 
 The reader provides bracket literals that construct and initialise a collection
 from scalar elements. Commas are whitespace, so `{:a 1, :b 2}` is `{:a 1 :b 2}`. Each expands, in the reader, to a `let` that
-stack-allocates the (stamped) collection, runs its in-place init constructor
-with the **default (libc) allocator**, `conj`/`assoc`-es every element, and
+stack-allocates the (stamped) collection, runs the one-argument `init` (so its
+buffers come from the **heap**), `conj`/`assoc`-es every element, and
 yields the `(ref Coll)`. Placed as the right-hand side of a `with` binding, the
 outer `with` fires `Drop` at scope exit because every collection conforms to
 `Drop`.
 
 | Literal | Expands to | Element type |
 |---|---|---|
-| `[e1 e2 …]` | `(Vector E)` + `vector-init` + `conj` | inferred from elements |
-| `{k1 v1 k2 v2 …}` | `(HashMap K V)` + `hashmap-init` + `assoc` | keys infer `K`, values infer `V` |
-| `#{e1 e2 …}` | `(HashSet E)` + `hashset-init` + `conj` | inferred from elements |
+| `[e1 e2 …]` | `(Vector E)` + `init` + `conj` | inferred from elements |
+| `{k1 v1 k2 v2 …}` | `(HashMap K V)` + `init` + `assoc` | keys infer `K`, values infer `V` |
+| `#{e1 e2 …}` | `(HashSet E)` + `init` + `conj` | inferred from elements |
 
 ```lisp
 (with ((v (ref (Vector i32))) [1 2 3])
@@ -634,7 +638,7 @@ lets an element be a variable rather than only a literal:
 
 ```lisp
 (let ((__gs_N (ref (Vector i32))) (alloca (Vector i32)))
-  (vector-init __gs_N)
+  (init __gs_N)
   (conj __gs_N 1) (conj __gs_N 2) (conj __gs_N 3)
   __gs_N)
 ```
@@ -669,7 +673,10 @@ symbol `(ref Node)`, and any other
 expression contributes its own type. A value is never narrowed to suit the
 collection, so `[n 1]` at a declared `(Vector i32)` with `n:i64` is refused
 rather than truncated. With nothing but adaptable literals the defaults are
-`i32` and `f64`, and there is no magnitude-based `i64` promotion.
+`i32` and `f64`, and there is no magnitude-based `i64` promotion. An empty
+literal with no declared type has nothing to infer from and is refused; the
+message names the alternative, e.g. `empty vector literal: use (make (Vector T))
+from nucleus.create`.
 
 **A keyword literal needs `(import-use nucleus.keyword)`.** The other three literal
 element types are builtins, but `Keyword` is defined in `lib/nucleus/keyword.nuc` and is
@@ -726,5 +733,3 @@ the refusals are covered by the `s16-kwlit-refused-*` and
 **Owning collections and scope.** Owning collections store their allocator handle by value and must not escape their `with` binding by return or store-out. `Drop` fires at scope exit; a double-drop is a no-op (the pointer is nulled). The `move` form (when available) transfers ownership.
 
 **`HashMap` `conj` takes an `Entry`, not a raw value.** `(conj m e)` inserts the `(Entry K V)` pair `e` into the map. Use `assoc` directly when key and value are already separate.
-
-**`HashSet` uses `set-remove`, not `remove`.** The name `remove` is libc's file-removal function; shadowing it would break `(import-use "stdio.h")` consumers that use `remove` in the same unit.

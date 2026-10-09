@@ -84,9 +84,13 @@
 
 (defstruct RMacro prefix:StrView wrap:Symbol)
 
-; A table lives as long as the nodes read through it, so it is built through
-; the arena like everything else the reader hands out, and never dropped.
-(defvar g-read-alloc:AllocHandle)
+; A table lives as long as the nodes read through it, so it is built in the
+; arena like everything else the reader hands out, and never dropped.
+(defn rd-macro-table ():&(Vector RMacro)
+  (let (tbl:&(Vector RMacro) (unsafe/cast &(Vector RMacro)
+                                (arena-alloc (sizeof (Vector RMacro)))))
+    (init tbl (handle g-arena))
+    (return tbl)))
 
 ; The prefix is interned so a table outlives whatever buffer it was spelled in.
 (defn rd-macro-add (tbl:&(Vector RMacro) prefix:StrView wrap:Symbol):void
@@ -108,7 +112,7 @@
 ; A fresh table holding the six built-ins, for a caller that wants to own one
 ; (a REPL session's, shared across its inputs through `reader-with-macros`).
 (defn read-macro-table-new ():&(Vector RMacro)
-  (let (tbl:&(Vector RMacro) (vector-new-in (arena-allocator &g-read-alloc)))
+  (let (tbl:&(Vector RMacro) (rd-macro-table))
     (rd-macro-add tbl "~@" (symbol-intern "unquote-splice"))
     (rd-macro-add tbl "~" (symbol-intern "unquote"))
     (rd-macro-add tbl "'" (symbol-intern "quote"))
@@ -159,7 +163,7 @@
 
 ; A reader for EDN text (design/stage22-edn/overview.md).
 (defn reader-edn (src:StrView):Reader
-  (let (tbl:&(Vector RMacro) (vector-new-in (arena-allocator &g-read-alloc))
+  (let (tbl:&(Vector RMacro) (rd-macro-table)
         r:Reader (reader-with-macros src tbl))
     (set! (r 'edn) true)
     (return r)))
@@ -202,8 +206,9 @@
 ; The note names the first column-0 form opened while this one was still open;
 ; with no such candidate it says only how many forms EOF left open.
 (defn rd-unterminated (self:&Reader open-line:i32 msg:StrView closer:StrView):ReadError
-  (let (note:String (string-new)
+  (let (note:String (String)
         c0:i32 (self 'col0-open-line))
+    (init &note)
     (if (and (!= c0 0) (!= c0 open-line))
       (str-into &note "line " c0 " starts a new form in column 0 while "
                 (self 'col0-open-depth) " form(s) are still open -- a '" closer
@@ -400,10 +405,11 @@
       (set! i (+ i 1)))
     (when (= count 0) (return (symbol-intern tv)))
     (when (rd-legacy-marker? tv) (return (symbol-intern tv)))
-    (let (out:String (string-new)
+    (let (out:String (String)
           j:usize 0
           seg2:i32 1
           ref-colon:StrView "ref:")
+      (init &out)
       (while (< j n)
         (let (c:i32 (rd-tv-at tp j))
           (if (and (= c 38) (!= seg2 0))
@@ -458,8 +464,9 @@
 
 ; No length ceiling: the buffer grows.
 (defn rd-string (self:&Reader open-line:i32 is-cstr:bool):ReadResult
-  (let (buf:String (string-new)
+  (let (buf:String (String)
         one:&ui8 (as &ui8 (alloca ui8 1)))
+    (init &buf)
     (while true
       (let (c:i32 (rd-next self))
         (cond
@@ -786,9 +793,10 @@
       ; Split the body on ':'. The first segment is the binding name for a
       ; symbol (empty for a keyword, whose colon the lexer already stripped);
       ; the rest wrap the paren form right-to-left as unary constructors.
-      (let (segs:(Vector Symbol) (vector-new)
+      (let (segs:(Vector Symbol) ((Vector Symbol))
             cur:StrView body
             done:bool false)
+        (init &segs)
         (while (not done)
           (let (seg-len:usize (cur 'len)
                 more:bool false)
@@ -1136,7 +1144,8 @@
           true (do))))
 
 (defn node-str (n:?&Node):String
-  (let (s:String (string-new))
+  (let (s:String (String))
+    (init &s)
     (node-write &s n)
     (return s)))
 

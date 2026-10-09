@@ -26,6 +26,7 @@
 (import-use nucleus.test)
 (import-use nucleus.string-split)
 (import-use nucleus.strview)
+(import-use nucleus.create)
 (defn target-emit (target:StrView extra:StrView path:StrView):!Compiled
   (let (c:Command (command (compiler-path))
         flag:String (str "--target=" target))
@@ -496,7 +497,7 @@
 ; underscore rule and so could not test this one.
 (defn first-clang-predefine ():!String
   (let (c:Command (command "clang")
-        out:String (string-new))
+        out:String (make String))
     (command-arg &c "-E")
     (command-arg &c "-dM")
     (command-arg &c "-x")
@@ -1158,7 +1159,7 @@ int main(void) {
   (let (label:String (str "<" name ">:")
         lv:StrView (string-as-view &label)
         it:LineIter (strview-lines &dis)
-        out:String (string-new)
+        out:String (make String)
         seen:bool false
         done:bool false)
     (while (not (lines-iter-done &it))

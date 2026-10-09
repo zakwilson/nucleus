@@ -32,7 +32,7 @@
 (import-use nucleus.numeric)             ; Ord (constantly's value-type bound)
 (import-use nucleus.strview)             ; StrView (string.nuc's !String fns reference it)
 (import-use nucleus.vector)              ; Vector / VecIter / conj / count / iter
-(import-use nucleus.string)              ; String / string-new / string-push-bytes-raw
+(import-use nucleus.string)              ; String / string-push-bytes-raw
 (import-use nucleus.coll)
 
 ; ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@
                         :where ((Iterator S) I)
                                ((UnaryFn S E) G)) (Vector E)
   (let (out:&(Vector E) (alloca (Vector E)))
-    (vector-init out)
+    (init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
@@ -70,7 +70,7 @@
                            :where ((Iterator S) I)
                                   ((UnaryFn S bool) P)) (Vector S)
   (let (out:&(Vector S) (alloca (Vector S)))
-    (vector-init out)
+    (init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
@@ -84,7 +84,7 @@
                               :where ((Iterator S) I)
                                      ((UnaryFn S bool) P)) (Vector S)
   (let (out:&(Vector S) (alloca (Vector S)))
-    (vector-init out)
+    (init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
@@ -116,7 +116,7 @@
                                     ((Coll E It) R)
                                     ((Iterator E) It)) (Vector E)
   (let (out:&(Vector E) (alloca (Vector E)))
-    (vector-init out)
+    (init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
@@ -233,7 +233,7 @@
                  :where ((Iterator S) I)
                         ((FoldFn Acc S) G)):Acc
   (let (buf:&(Vector S) (alloca (Vector S)))
-    (vector-init buf)
+    (init buf)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
@@ -366,9 +366,10 @@
 (defn join (renderf:&RF sep:StrView it:&I
                    :where ((Iterator S) I)
                           ((UnaryFn S StrView) RF)):String
-  (let (out:String (string-new)
+  (let (out:String (String)
         first:i32 1
         done:i32 0)
+    (init &out)
     (while (= done 0)
       (match (next it)
         ((some v)

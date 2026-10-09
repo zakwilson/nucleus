@@ -959,7 +959,10 @@
   ; principle is `fn-force-generic-mangled`'s ("no already-emitted symbol is
   ; renamed"), stated per method instead of by freezing the whole generic, so a
   ; local overload added afterwards still gets a mangled name of its own.
-  ir-fixed:i32)
+  ir-fixed:i32
+  ; A C function that shares its name with a Nucleus generic: it takes the calls
+  ; no other method can (design/stage24-allocation/c-name-overloads.md).
+  c-decl:bool)
 
 (defstruct Generic
   name:Symbol

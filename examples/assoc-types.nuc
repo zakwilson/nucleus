@@ -82,7 +82,7 @@
 
   ; collect-all: range [10,13) -> Vector i32, print elements.
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v)
+    (init v)
     (let (it:&IntRangeIter (alloca IntRangeIter))
       (set! (it 'start) 10)
       (set! (it 'end) 13)

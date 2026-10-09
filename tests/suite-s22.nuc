@@ -16,11 +16,12 @@
 (import-use nucleus.hashmap)
 (import-use nucleus.string-split)
 (import-use nucleus.strview)
+(import-use nucleus.create)
 
 ; What a read produced: the canonical text, then each top-level list's
 ; bracket mark, or the error.
 (defn s22-read (src:StrView edn:bool):String
-  (let (out:String (string-new))
+  (let (out:String (make String))
     (match (if edn (read-all-edn src) (read-all src))
       ((ok forms)
         (node-write &out forms)
@@ -127,7 +128,7 @@
 ; ---------------------------------------------------------------------------
 
 (defn s22-parse (src:StrView):String
-  (let (out:String (string-new))
+  (let (out:String (make String))
     (match (edn-parse src)
       ((ok v) (do (write-str &out (edn-kind-name (edn-kind v)))
                   (write-str &out " ")
@@ -236,7 +237,7 @@
   (return (ok)))
 
 (defn s22-read-error (r:ReadResult):String
-  (let (out:String (string-new))
+  (let (out:String (make String))
     (match r
       ((ok v) (write-str &out "ok"))
       ((err e) (str-into &out (err-name (e 'code)) ": " (e 'msg))))
@@ -294,10 +295,10 @@
   (return (ok)))
 
 (deftest s22-edn-write-scalars
-  (let (out:String (string-new)
+  (let (out:String (make String)
         f1:f32 0.1
         sv:StrView "q\"\n"
-        st:String (string-new))
+        st:String (make String))
     (string-push-str-unchecked &st &sv)
     (try (edn-write &out (as i8 -5))) (write-str &out " ")
     (try (edn-write &out (as ui32 4294967295))) (write-str &out " ")
@@ -498,7 +499,7 @@
         sv:StrView (string-as-view &src)
         hv:StrView (string-as-view &hdr))
     (try (s22-companion-files sv))
-    (let (objs:String (string-new))
+    (let (objs:String (make String))
       (dotimes (i 3)
         (let (nm:StrView (case i 0 "s22codec" 1 "s22geom" "s22geomenc")
               lib:String (str sv "/" nm ".nuc")
@@ -548,10 +549,10 @@
 (import-use nucleus.read)
 (import-use nucleus.string)
 (import-use nucleus.node)
-(import-use nucleus.intern)
+(import-use nucleus.intern) (import-use nucleus.create)
 (import s22sfgeom g)
 (defmacro show (t)
-  (let (o:String (string-new))
+  (let (o:String (make String))
     (node-write &o (struct-fields t))
     (let (sn:&Node (alloc-node))
       (set! (sn 'kind) NODE-STR)
@@ -653,7 +654,7 @@ user/Here
     ((err e) (return null))))
 
 (defn s22-encoded (v:&T :where (EdnCodec T)):String
-  (let (s:String (string-new))
+  (let (s:String (make String))
     (match (edn-write &s v)
       ((ok) 0)
       ((err e) (write-str &s "<error>")))
@@ -811,7 +812,7 @@ user/Here
     (let (m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
 (import-use nucleus.string)
 (import-use nucleus.read)
-(import-use nucleus.edn)
+(import-use nucleus.edn) (import-use nucleus.create)
 (import s22geometry g)
 (import-use s22geometry-edn)
 (defn main ():i32
@@ -821,7 +822,7 @@ user/Here
                 ((ok v) (println (g/seg-len2 s)))
                 ((err e) (println (e 'msg)))))
       ((err e) (println (e 'msg))))
-    (let (out:String (string-new))
+    (let (out:String (make String))
       (edn-write &out s)
       (println (string-as-view &out))))
   (return 0))
@@ -854,7 +855,7 @@ user/Here
         sv:StrView (string-as-view &src)
         hv:StrView (string-as-view &hdr))
     (try (s22-geometry-files sv))
-    (let (objs:String (string-new))
+    (let (objs:String (make String))
       (dotimes (i 2)
         (let (nm:StrView (if (= i 0) "s22geometry" "s22geometry-edn")
               lib:String (str sv "/" nm ".nuc")
@@ -872,11 +873,11 @@ user/Here
         (drop &hp))
       (let (m:String (try (test-write-file "main.nuc" "(import-use nucleus.io)
 (import-use nucleus.string)
-(import-use nucleus.edn)
+(import-use nucleus.edn) (import-use nucleus.create)
 (import-use s22geometry)
 (import-use s22geometry-edn)
 (defn main ():i32
-  (let (s:Seg (Seg (Point 1 2) (Point 3 4)) out:String (string-new))
+  (let (s:Seg (Seg (Point 1 2) (Point 3 4)) out:String (make String))
     (edn-write &out &s)
     (println (string-as-view &out)))
   (return 0))
@@ -1066,10 +1067,10 @@ user/Here
   (let (p:Pt (Pt 1 2)) (edn-write s &p)))
 "))
           m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
-(import-use nucleus.string)
+(import-use nucleus.string) (import-use nucleus.create)
 (import-use s22hygcaller)
 (defn main ():i32
-  (let (s:String (string-new))
+  (let (s:String (make String))
     (pt-edn &s)
     (println (string-as-view &s)))
   (return 0))
@@ -1098,8 +1099,8 @@ user/Here
 ; An arm name is never a global: a template's `(circle r)` constructs the arm
 ; even where its file also defines a function `circle`, and through a prefix.
 (deftest s22-hyg-arm-name
-  (let (names:(Vector StrView) (vector-new)
-        texts:(Vector StrView) (vector-new))
+  (let (names:(Vector StrView) (make (Vector StrView))
+        texts:(Vector StrView) (make (Vector StrView)))
     (conj &names "armlib.nuc")
     (conj &texts "(ns armlib)
 (defunion Shape (circle r:i32) (square s:i32))
@@ -1120,8 +1121,8 @@ user/Here
 
 ; A template may name a macro its file defines further down (§3.10).
 (deftest s22-hyg-forward-macro
-  (let (names:(Vector StrView) (vector-new)
-        texts:(Vector StrView) (vector-new))
+  (let (names:(Vector StrView) (make (Vector StrView))
+        texts:(Vector StrView) (make (Vector StrView)))
     (conj &names "fwdlib.nuc")
     (conj &texts "(ns fwdlib)
 (defmacro outer (e) `(inner (inner ~e)))
@@ -1137,8 +1138,8 @@ user/Here
 ; Level 2: a macro-defining macro's inner template names its file's helper, and
 ; the caller's local of that name does not capture it.
 (deftest s22-hyg-level-two
-  (let (names:(Vector StrView) (vector-new)
-        texts:(Vector StrView) (vector-new))
+  (let (names:(Vector StrView) (make (Vector StrView))
+        texts:(Vector StrView) (make (Vector StrView)))
     (conj &names "mm.nuc")
     (conj &texts "(ns mm)
 (defn helper (x:i32):i32 (return (+ x 100)))
@@ -1155,8 +1156,8 @@ user/Here
 ; `str` through a prefixed `fmt` in a namespaced caller: the level-2 `to-str`
 ; reaches the caller's conforming `Pt`, and the caller's local `to-str` is a value.
 (deftest s22-hyg-str-prefixed-fmt
-  (let (names:(Vector StrView) (vector-new)
-        texts:(Vector StrView) (vector-new))
+  (let (names:(Vector StrView) (make (Vector StrView))
+        texts:(Vector StrView) (make (Vector StrView)))
     (conj &names "s22hygapp.nuc")
     (conj &texts "(ns s22hygapp)
 (import-use nucleus.string)
@@ -1251,8 +1252,8 @@ user/Here
 ; `lib/edn` has its own namespace: a namespaced companion derives through a
 ; prefix alone, and so does the program that writes the value.
 (deftest s22-hyg-edn-prefix-only
-  (let (names:(Vector StrView) (vector-new)
-        texts:(Vector StrView) (vector-new))
+  (let (names:(Vector StrView) (make (Vector StrView))
+        texts:(Vector StrView) (make (Vector StrView)))
     (conj &names "s22hygco.nuc")
     (conj &texts "(ns s22hygco)
 (import nucleus.edn e)
@@ -1260,11 +1261,11 @@ user/Here
 (e/derive-edn Pt)
 ")
     (try (s22-hyg-files "hco" &names &texts "(import-use nucleus.io)
-(import-use nucleus.string)
+(import-use nucleus.string) (import-use nucleus.create)
 (import nucleus.edn e)
 (import-use s22hygco)
 (defn main ():i32
-  (let (s:String (string-new) p:Pt (Pt 1 2))
+  (let (s:String (make String) p:Pt (Pt 1 2))
     (e/edn-write &s &p)
     (println (string-as-view &s)))
   (return 0))

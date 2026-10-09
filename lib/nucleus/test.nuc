@@ -26,6 +26,7 @@
 (import-use nucleus.io)
 (import-use nucleus.file)
 (import-use nucleus.allocator)
+(import-use nucleus.arena)
 (import-use nucleus.read)
 (import-use nucleus.keyword)
 (import-use nucleus.edn)
@@ -56,11 +57,15 @@
   run:(fn !void)(ptr)
   data:ptr)
 
-; Process-lifetime state, so it is built through the arena: its `drop` is a
-; no-op and nothing here is ever torn down.
-(defvar g-test-alloc:AllocHandle)
-(defvar g-tests:&(Vector TestCase)
-  (vector-new-in (arena-allocator &g-test-alloc)))
+; Process-lifetime state, so it is built in the arena: its `drop` is a no-op
+; and nothing here is ever torn down.
+(defn test-cases-new ():&(Vector TestCase)
+  (let (v:&(Vector TestCase) (unsafe/cast &(Vector TestCase)
+                                (arena-alloc (sizeof (Vector TestCase)))))
+    (init v (handle g-arena))
+    (return v)))
+
+(defvar g-tests:&(Vector TestCase) (test-cases-new))
 ; Lazily built, like lib/nucleus/io.nuc's output buffer: a global String with a
 ; constant initializer would need an allocator this module has no reason to own.
 (defvar g-fail-buf:String)
@@ -100,7 +105,7 @@
 ; Clears the failure buffer and hands it back to be written into.
 (defn test-fail-begin ():&String
   (when (= g-fail-ready 0)
-    (set! g-fail-buf (string-new))
+    (init &g-fail-buf)
     (set! g-fail-ready 1))
   (string-clear &g-fail-buf)
   (return &g-fail-buf))
@@ -361,6 +366,13 @@
   message:StrView
   notes:&(Vector StrView))
 
+; Arena-placed, like `g-tests`: a Diagnostic is copied freely and never dropped.
+(defn test-notes-new ():&(Vector StrView)
+  (let (v:&(Vector StrView) (unsafe/cast &(Vector StrView)
+                               (arena-alloc (sizeof (Vector StrView)))))
+    (init v (handle g-arena))
+    (return v)))
+
 ; A `nil` file reads as "" and a `nil` line as -1, the compiler's own spelling
 ; of "no location".
 (defn diag-of-node (m:?&Node):!Diagnostic
@@ -376,7 +388,7 @@
     (set! (d 'file) (if (= (edn-kind file) EDN-NIL) "" (try (edn-str file))))
     (set! (d 'line) (if (= (edn-kind line) EDN-NIL) -1 (unsafe/cast i32 (try (edn-int line)))))
     (set! (d 'message) (try (edn-str (edn-get m "message"))))
-    (set! (d 'notes) (vector-new-in (arena-allocator &g-test-alloc)))
+    (set! (d 'notes) (test-notes-new))
     (dotimes (i (edn-count notes))
       (conj (d 'notes) (try (edn-str (edn-nth notes (as usize i))))))
     (return (ok @d))))
@@ -386,8 +398,9 @@
 ; string -- so a line that is not one is skipped rather than failing the parse,
 ; which is what lets output from a tool `nucleusc` invoked ride along.
 (defn read-diagnostics (text:StrView):!(Vector Diagnostic)
-  (let (out:(Vector Diagnostic) (vector-new)
+  (let (out:(Vector Diagnostic) ((Vector Diagnostic))
         it:LineIter (strview-lines &text))
+    (init &out)
     (while (not (lines-iter-done &it))
       (let (line:StrView (lines-iter-next &it))
         (when (strview-has-prefix line "{:severity ")
@@ -396,9 +409,10 @@
 
 ; Every diagnostic, one per line, for a failure message.
 (defn diag-list-text (ds:&(Vector Diagnostic)):String
-  (let (s:String (string-new)
+  (let (s:String (String)
         n:usize (count ds)
         i:usize 0)
+    (init &s)
     (when (= n 0) (str-into &s "\n     (no diagnostics)"))
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))

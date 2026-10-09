@@ -29,7 +29,7 @@
 (defn main ():i32
   ; Set membership. The repeated 'alpha dedupes: interning made them one value.
   (with (s:&(HashSet &Node) (alloca (HashSet &Node)))
-    (hashset-init s)
+    (init s)
     (conj s 'alpha)
     (conj s 'alpha)
     (conj s 'beta)
@@ -44,7 +44,7 @@
   ; — `(m 'count)` reads HashMap's `count` FIELD and returns a wrong answer
   ; rather than an error. `invoke` is the always-a-value escape hatch.
   (with (m:&(HashMap &Node i32) (alloca (HashMap &Node i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m 'width 640)
     (assoc m 'height 480)
     (match (invoke m 'width)  ((some v) (printf "map width=%d\n" v))  (none (printf "map width=?\n")))
@@ -53,7 +53,7 @@
 
   ; Ordered, duplicates kept.
   (with (v:&(Vector &Node) (alloca (Vector &Node)))
-    (vector-init v)
+    (init v)
     (conj v 'x) (conj v 'y) (conj v 'x)
     (printf "vec n=%llu\n" (as ui64 (count v)))          ; vec n=3
     (printf "vec x=%d\n" (contains? v 'x)))               ; vec x=1
@@ -62,7 +62,7 @@
   ; same value as one written inline.
   (let (k:&Node 'alpha)
     (with (s2:&(HashSet &Node) (alloca (HashSet &Node)))
-      (hashset-init s2)
+      (init s2)
       (conj s2 'alpha)
       (printf "interned=%d\n" (contains? s2 k))))         ; interned=1
 

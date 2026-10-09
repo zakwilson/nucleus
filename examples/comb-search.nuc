@@ -10,10 +10,11 @@
 (import-use nucleus.vector)
 (import-use nucleus.iterator)
 (import-use nucleus.combinators)
+(import-use nucleus.allocator)
 
 (defn main ():i32
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v) (conj v 3) (conj v 1) (conj v 4) (conj v 1) (conj v 5) (conj v 9)
+    (init v) (conj v 3) (conj v 1) (conj v 4) (conj v 1) (conj v 5) (conj v 9)
     (let (thr:i32 3)
 
       ; ---- find (Maybe E) ----

@@ -290,7 +290,7 @@
 ; value-Maybe test reads the tag word.
 (deftest s16-truthiness-six-sites
   (let (src:StrView "(import-use \"stdio.h\")
-(import-use nucleus.arena)
+(import-use nucleus.arena) (import-use nucleus.create)
 
 (defstruct Pt x:i32)
 
@@ -335,8 +335,8 @@
     (return n)))
 
 (defn main ():i32
-  (let (a:(ref Pt) (new Pt)
-        b:(ref Pt) (new Pt)
+  (let (a:(ref Pt) (new Pt g-arena)
+        b:(ref Pt) (new Pt g-arena)
         s:CStr c\"x\"
         t:CStr c\"y\"
         nc:CStr (as CStr null)
@@ -378,7 +378,7 @@ mval 29 25 10 2
 ; fails, i.e. the sugar would break exactly the case that motivates it.
 (deftest s16-truthiness-narrows-bare-symbol
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use nucleus.arena)
+(import-use nucleus.arena) (import-use nucleus.create)
 
 (defstruct Pt x:i32)
 
@@ -402,7 +402,7 @@ mval 29 25 10 2
     (return n)))
 
 (defn main ():i32
-  (let (a:(ref Pt) (new Pt))
+  (let (a:(ref Pt) (new Pt g-arena))
     (set! (a 'x) 7)
     (printf \"%d %d %d %d %d %d %d %d\\n\"
       (f-when (as-ref a))  (f-when null)
@@ -601,7 +601,7 @@ map=2
 (deftest s16-litvar-refused-empty-no-target
   (try (check-litvar-rejects
          "(defn main ():i32 (let (v []) (return 0)))"
-         "empty vector literal: use (vector-new)")))
+         "empty vector literal: use (make (Vector T)) from nucleus.create")))
 (deftest s16-litvar-refused-narrow-value
   (try (check-litvar-rejects
          "(defn main ():i32 (let (n:i64 5) (with ((v (ref (Vector i32))) [n 1]) (return 0))))"
@@ -725,7 +725,7 @@ map=2
 (import-use nucleus.vector)
 (import-use nucleus.hashmap)
 (import-use nucleus.node)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.allocator)
 (defn ca (x:ref:HashMap:CStr:i32):i32 (return 1))
 (defn cb (x:ref:Vector:i32):i32 (return 2))
 (defn cc (x:ref:(Vector (ref Node))):i32 (return 3))
@@ -734,7 +734,7 @@ map=2
 (defn tyv (v:(ref (Vector T))):i64 (return (as i64 (count v))))
 (defn main ():i32
   (with (v:(ref (Vector i32)) (alloca (Vector i32)))
-    (vector-init v)
+    (init v)
     (conj v 9)
     (printf \"%d %ld\\n\" (cb v) (tyv v)))
   (return 0))
@@ -776,7 +776,7 @@ map=2
 (deftest s16-deftype-every-position
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.hashset)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.allocator)
 (deftype NameSet (ref (HashSet CStr)))
 (deftype Count i64)
 (defstruct Reg names:NameSet)
@@ -784,7 +784,7 @@ map=2
 (defn size (s:NameSet):Count (return (as Count (count s))))
 (defn main ():i32
   (with (s:NameSet (alloca (HashSet CStr)))
-    (hashset-init s)
+    (init s)
     (conj s (as CStr \"a\"))
     (conj s (as CStr \"b\"))
     (let (t:NameSet s)
@@ -974,7 +974,7 @@ map=2
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
 (import-use nucleus.hashmap)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.allocator)
 (deftype (Vec T) (ref (Vector T)))
 (deftype (Table V) (ref (HashMap CStr V)))
 (deftype (Ref T) ref:T)
@@ -987,7 +987,7 @@ map=2
   (with (v:(Vec i32) (alloca (Vector i32))
          m:(Table i32) (alloca (HashMap CStr i32))
          p:(Ref Pt) (alloca Pt))
-    (vector-init v) (hashmap-init m)
+    (init v) (init m)
     (conj v 4) (conj v 5)
     (assoc m \"a\" 1)
     (set! (p 'x) 9)
@@ -1003,13 +1003,13 @@ map=2
 (deftest s16-deftype-parametric-receiver
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.allocator)
 (deftype (Vec T) (ref (Vector T)))
 (defn second (v:(Vec T)):T (return (invoke v (as usize 1))))
 (defn main ():i32
   (with (a:(Vec i32) (alloca (Vector i32))
          b:(Vec CStr) (alloca (Vector CStr)))
-    (vector-init a) (vector-init b)
+    (init a) (init b)
     (conj a 10) (conj a 20)
     (conj b \"x\") (conj b \"y\")
     (printf \"%d %s\\n\" (second a) (second b)))
@@ -1089,10 +1089,11 @@ map=2
         usesrc:String (str "(import-use \"stdio.h\")
 (import-use nucleus.vector)
 (import-use nucleus.coll)
+(import-use nucleus.allocator)
 (import-use \"" (string-as-view &hp) "\")
 (defn main ():i32
   (with (v:(ref (Vector i32)) (alloca (Vector i32)))
-    (vector-init v) (conj v 1) (conj v 2) (conj v 3)
+    (init v) (conj v 1) (conj v 2) (conj v 3)
     (printf \"%ld\\n\" (plen v)))
   (return 0))
 ")
@@ -1599,6 +1600,31 @@ map=2
     (drop &out)
     (drop &use)
     (drop &lib)
+    (drop &libdir)))
+
+; A file reached only through `import-ct` still has its imports' types
+; registered: `ctb`'s signature names `ctc`'s struct.
+(deftest s16-import-ct-nested-signature-types
+  (let (libdir:String (try (test-scratch-sub "l"))
+        a:String (try (test-write-file "l/cta.nuc" "(import-use ctb)
+(defn cta-f ():i32 (return 1))
+"))
+        b:String (try (test-write-file "l/ctb.nuc" "(import-use ctc)
+(defn ctb-g (h:CtcT):i32 (return (h 'x)))
+"))
+        c:String (try (test-write-file "l/ctc.nuc" "(defstruct CtcT x:i32)\n"))
+        use:String (try (test-write-file "nested-types.nuc" "(import-use \"stdio.h\")
+(import-ct cta)
+(defn main ():i32 (printf \"ok\\n\") (return 0))
+"))
+        out:String (try (build-run-file (string-as-view &libdir) ""
+                                        (string-as-view &use))))
+    (try (check-eq (string-as-view &out) "ok\n"))
+    (drop &out)
+    (drop &use)
+    (drop &c)
+    (drop &b)
+    (drop &a)
     (drop &libdir)))
 
 ; What `import-ct` is FOR: the compile-time surface is really registered, so a
@@ -2531,12 +2557,12 @@ map=2
 
 ; §3.2's one-arena invariant, on the GLOBAL rather than the allocator: a
 ; `lib/` global the running compiler exports stays a `declare`, so the mirrored
-; helper reads the HOST's arena counter. A copy of `g-arena-used` would be a
-; fresh zero, and the expansion would be 99.
+; helper reads the HOST's arena. A copy of `g-arena` would be an empty arena
+; with no first block, and the expansion would be 99.
 (deftest s20-macro-lib-global-is-the-hosts
   (try (check-source-exit "(import-use nucleus.arena)
-(defn s20-arena-used ():i64 (return g-arena-used))
-(defmacro probe () (if (> (s20-arena-used) 0) `7 `99))
+(defn s20-arena-live ():bool (return (!= (as ptr (g-arena 'first)) null)))
+(defmacro probe () (if (s20-arena-live) `7 `99))
 (defn main ():i32 (return (probe)))
 " 7)))
 
@@ -2892,15 +2918,15 @@ map=2
 (deftest s16-set-generic-collections
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
-(import-use nucleus.hashmap)
+(import-use nucleus.hashmap) (import-use nucleus.allocator)
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
-    (vector-init v) (conj v 10) (conj v 20) (conj v 30)
+    (init v) (conj v 10) (conj v 20) (conj v 30)
     (let (i:usize (as usize 1))
       (set! (v i) 99)
       (printf \"%d %d %d\\n\" (v (as usize 0)) (v i) (v (as usize 2)))))
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
-    (hashmap-init m)
+    (init m)
     (let (k:CStr \"a\")
       (set! (m k) 1)
       (set! (get m k) 7)
@@ -3376,9 +3402,14 @@ map=2
   (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
 (import-use nucleus.allocator)
+(defn vec-in (a:&Alloc):&(Vector T)
+  (let (v (unsafe/cast &(Vector T) (allocate a (as usize (sizeof (Vector T))) 8)))
+    (init v @a)
+    (return v)))
 (defn main ():i32
-  (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
-        b:(ref (Vector i64)) (vector-new-in (default-allocator)))
+  (let (h:Alloc (handle heap)
+        a:(ref (Vector i32)) (vec-in &h)
+        b:(ref (Vector i64)) (vec-in &h))
     (conj a 5) (conj b 7000000000)
     (let (i:usize 0)
       (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
@@ -3386,18 +3417,23 @@ map=2
 "))
         iv:StrView (compiled-ir &c))
     (try (check-eq-int
-           (count-matching-lines iv "define*@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i32(*")
+           (count-matching-lines iv "define*@vec_in.pnuc_Alloc.$r.pnuc_Vector.i32(*")
            1 "one stamp for the i32 instance"))
     (try (check-eq-int
-           (count-matching-lines iv "define*@nuc_vector_new_in.pnuc_AllocHandle.$r.pnuc_Vector.i64(*")
+           (count-matching-lines iv "define*@vec_in.pnuc_Alloc.$r.pnuc_Vector.i64(*")
            1 "one stamp for the i64 instance"))
     (drop &c))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
 (import-use nucleus.allocator)
+(defn vec-in (a:&Alloc):&(Vector T)
+  (let (v (unsafe/cast &(Vector T) (allocate a (as usize (sizeof (Vector T))) 8)))
+    (init v @a)
+    (return v)))
 (defn main ():i32
-  (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
-        b:(ref (Vector i64)) (vector-new-in (default-allocator)))
+  (let (h:Alloc (handle heap)
+        a:(ref (Vector i32)) (vec-in &h)
+        b:(ref (Vector i64)) (vec-in &h))
     (conj a 5) (conj b 7000000000)
     (let (i:usize 0)
       (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
@@ -3469,10 +3505,10 @@ map=2
 ; assertion is `llvm-as` rather than the shell's hand-rolled `comm` over the
 ; call and define lines.
 (defn check-tyname-stamps (t:StrView):!void
-  (let (s:String (str "(import-use nucleus.vector)
+  (let (s:String (str "(import-use nucleus.vector) (import-use nucleus.allocator)
 (defn main ():i32
   (with ((v (ref (Vector " t "))) (alloca (Vector " t ")))
-    (vector-init v))
+    (init v))
   (return 0))
 ")
         c:Compiled (try (compile-source (string-as-view &s))))

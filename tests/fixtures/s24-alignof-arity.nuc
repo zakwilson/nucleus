@@ -1,0 +1,2 @@
+; `alignof` takes one type, as `sizeof` does.
+(defn main ():i32 (return (as i32 (alignof i32 i64))))

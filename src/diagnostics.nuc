@@ -10,6 +10,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.intern)
 (import-use nucleus.io)
+(import-use nucleus.create)
 
 (deferror parse-error "parse error")
 
@@ -122,7 +123,7 @@
     (when (not (str-empty? &g-diag-note))
       (set! full (fstr full "\n  note: " g-diag-note))
       (set! g-diag-note ""))
-    (let (s:String (string-new))
+    (let (s:String (make String))
       (diag-render &s severity path line full)
       (eprint (string-as-view &s))
       (drop &s))))

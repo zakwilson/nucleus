@@ -5,7 +5,7 @@
 (import-use nucleus.strview)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
-(import-use nucleus.io)
+(import-use nucleus.io) (import-use nucleus.create)
 
 ; The shape that broke: `ptr-int-ir` in the compiler itself.
 (defn width-ir (bytes:i32):StrView
@@ -34,7 +34,7 @@
   (println (width-ir 8))
   (let (v:StrView (width-ir 2))
     (println (strview-byte-len v)))
-  (let ((b String) (string-new))
+  (let ((b String) (make String))
     (println (name-of 0 b))
     (println (name-of 7 b)))
   (let (n:i32 3)

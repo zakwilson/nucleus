@@ -27,7 +27,7 @@
 
   ; Keyword as a HashMap key.
   (with (m:&(HashMap Keyword i32) (alloca (HashMap Keyword i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m :a 1)
     (assoc m :b 2)
     (printf "count=%llu\n" (as ui64 (count m)))           ; count=2

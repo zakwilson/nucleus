@@ -28,6 +28,7 @@
 (import-use nucleus.string)
 (import-use nucleus.strview-str)
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.strview)
 (import-use nucleus.fmt)
 (defn emit-some (call:ptr scope:&Scope):&Val
@@ -1090,8 +1091,8 @@
         id:i32 (new-label-id)
         def-lbl:StrView (fstr "match.def" id)
         end-lbl:StrView (fstr "match.end" id)
-        vals:&(Vector StrView) (vector-new-in &g-arena-alloc)
-        preds:&(Vector StrView) (vector-new-in &g-arena-alloc)
+        vals:&(Vector StrView) (new (Vector StrView) g-arena)
+        preds:&(Vector StrView) (new (Vector StrView) g-arena)
         result-type:ptr null
         result-lit:i32 0
         result-taint:ptr null
@@ -1323,8 +1324,8 @@
           err-lbl:StrView (fstr "match.err" id)
           ok-lbl:StrView (fstr "match.ok" id)
           end-lbl:StrView (fstr "match.end" id)
-          vals:&(Vector StrView) (vector-new-in &g-arena-alloc)
-          preds:&(Vector StrView) (vector-new-in &g-arena-alloc)
+          vals:&(Vector StrView) (new (Vector StrView) g-arena)
+          preds:&(Vector StrView) (new (Vector StrView) g-arena)
           ; result-type/result-taint are threaded through both arms; a single-
           ; element i32/ptr array stands in for a by-reference local. ltbox
           ; (LW-6) tracks whether every arm folded into rtbox so far was a
@@ -1455,8 +1456,8 @@
           none-lbl:StrView (fstr "match.none" id)
           some-lbl:StrView (fstr "match.some" id)
           end-lbl:StrView (fstr "match.end" id)
-          vals:&(Vector StrView) (vector-new-in &g-arena-alloc)
-          preds:&(Vector StrView) (vector-new-in &g-arena-alloc)
+          vals:&(Vector StrView) (new (Vector StrView) g-arena)
+          preds:&(Vector StrView) (new (Vector StrView) g-arena)
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           tfbox:ptr (arena-alloc 4)
@@ -1776,7 +1777,7 @@
         ; or false (or) — so the lhs's facts hold while it is emitted. This
         ; is what makes (and (!= m null) (m kind)) check.
         (let (scmark:i32 (narrow-mark)
-              scfacts:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+              scfacts:&(Vector Symbol) (new (Vector Symbol) g-arena))
           (if (!= is-and 0)
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
@@ -1841,3 +1842,50 @@
                       rnode
                       ok-arm err-arm ln)
                     scope)))))))
+
+; ============================================================
+; `(__init-then CALL VALUE [UNDO])`, from `new`/`make`: a special form for `try`'s
+; reason, the shape follows CALL's type (design/stage24-allocation/overview.md §9).
+; ============================================================
+
+; CALL is emitted once and spilled, rather than typed with node-type first, so
+; an error can never be dropped because node-type did not model the call.
+(defn emit-init-then (call:ptr scope:&Scope):&Val
+  (let (cc:&Node (unsafe/cast &Node call)
+        n:i32 (node-len call))
+    (when (and (!= n 3) (!= n 4))
+      (die-at (cc 'line) "__init-then: expects (__init-then call value [undo])"))
+    (let (ln:i32 (cc 'line)
+          cv:&Val (emit-node (as ?&Node (node-at cc 1)) scope)
+          ud:?&UnionDef (result-union-of (cv 'type)))
+      (when (= ud null) (return (emit-node (as ?&Node (node-at cc 2)) scope)))
+      (let (ct:&Type (unsafe/cast &Type (cv 'type))
+            rt0:?&Type (init-then-type ct (node-type (as ?&Node (node-at cc 2)) scope) ln))
+        (when (= rt0 null)
+          (die-at ln "__init-then: the value's type is not known before it is emitted"))
+        (let (rt:&Type (unsafe/cast &Type rt0)
+              rtn:ptr (as ptr (intern-node (env-arg-of-type rt)))
+              slot:StrView (new-tmp)
+              align:i32 (abi-slot-align ct)
+              inner:&Scope (scope-new scope)
+              rn:&Node (unsafe/cast &Node (nucleus_gensym))
+              ev:ptr (as ptr (nucleus_gensym))
+              sv:?&Val (coerce-int-val cv ct ln))
+          (when (= sv null) (die-at ln "__init-then: the call's result cannot be stored"))
+          (emit g-entry-stream "  " slot " = alloca " (type-to-ir ct) ", align " align "\n")
+          (emit g-body-stream "  store " (type-to-ir ct) " " (sv 'val)
+                ", ptr " slot ", align " align "\n")
+          (scope-define inner (rn 's) ct slot 1)
+          (let (ok-pat:ptr (if (= (try-ok-nfields (as ptr ct)) 0)
+                             (node-list1 'ok ln)
+                             (node-list2 'ok '_ ln))
+                ok-body:ptr (node-list4 '__make rtn 'ok (node-at cc 2) ln)
+                made-err:ptr (node-list4 '__make rtn 'err ev ln)
+                err-body:ptr (if (= n 4)
+                               (node-list3 'do (node-at cc 3) made-err ln)
+                               made-err))
+            (return (emit-match
+                      (node-list4 'match (as ptr rn)
+                        (node-list2 ok-pat ok-body ln)
+                        (node-list2 (node-list2 'err ev ln) err-body ln) ln)
+                      inner))))))))

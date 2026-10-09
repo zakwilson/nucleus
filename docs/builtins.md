@@ -196,7 +196,7 @@ A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or ret
 
 C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (stage 10 — see [Unions and tagged sums](#unions-and-tagged-sums)); headers like SDL's or pthread's no longer degrade over them. Bit-fields, C11 anonymous members, multi-declarator field lines (`int a, b;`) and flexible array members are all represented; see [Bit-fields](structs-unions.md#bit-fields--bits-w-namet) and [Anonymous members](structs-unions.md#anonymous-members--anon-t). Field types the parser still cannot represent (an array extent that does not fold, a declarator list of mixed pointer depth like `int *p, q;`) cause the whole struct to be skipped — registered as opaque `ptr` at use sites — rather than registering a layout-incompatible partial struct.
 
-In inline type positions (the type argument of `as`, `unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(as (ptr Node) x)` and `(as ptr:Node x)` are equivalent.
+In inline type positions (the type argument of `as`, `unsafe/cast`, `sizeof`, `alignof`, `alloca`), either the canonical list form or the colon sugar works: `(as (ptr Node) x)` and `(as ptr:Node x)` are equivalent.
 
 Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
 
@@ -826,7 +826,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
-`(import-use nucleus.arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use nucleus.arena)`.
+`(import-use nucleus.create)` provides `(new T a args…)` — allocate one `T` from allocator `a` (`g-arena`, `heap`, …), typed `(ref T)`, and initialize it — and `(make T a args…)`, its by-value twin. Both are library macros; see [allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make).
 
 ## Macros and pass-through arguments
 
@@ -1556,66 +1556,15 @@ Pre-declared C standard library functions, available without `extern`.
 | `dup2` | `(i32, i32) -> i32` | `<unistd.h>` |
 | `close` | `(i32) -> i32` | `<unistd.h>` |
 
-## Allocators (`lib/nucleus/allocator.nuc`, Stage 11)
+## Allocators (`lib/nucleus/allocator.nuc`)
 
-The collection library owns and frees memory through an **allocator** rather than
-a bare `malloc`, so a collection can be built against libc, an arena, or a future
-allocator and still free with the same backend that built it. `(import-use nucleus.allocator)`
-brings in the protocol, the handle type, the backends, and a default.
-
-### The `Allocator` protocol
-
-The documented contract (Zig-shaped). `align` is part of the contract even where
-a backend ignores it. The byte type is `?&ui8` (= C `unsigned char *`; null is
-an allocation failure, and `free` of null is a no-op, as in C):
-
-```lisp
-(defprotocol Allocator
-  (alloc   (self:&Self size:usize align:usize) ?&ui8)
-  (realloc (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
-  (free    (self:&Self (p ?&ui8) size:usize align:usize):void))
-```
-
-A method's return type follows its parameter list — `?&ui8` as a bare type, or
-attached as `):void` / `):?&ui8`; `(p ?&ui8)` and `p:?&ui8` are the
-same parameter.
-
-### Runtime dispatch: `AllocHandle`
-
-A collection stores **one** allocator handle field and dispatches through it
-without knowing the concrete backend — the design's "stored field" plumbing. The
-protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
-3+-arg function pointer, so dispatch is a **tagged handle**, not a vtable:
-
-```lisp
-(defenum AllocKind ALLOC-LIBC ALLOC-ARENA)
-(defstruct AllocHandle kind:i32 data:ptr)
-```
-
-| Helper | Signature | Behaviour |
-|--------|-----------|-----------|
-| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> ?&ui8` | libc `malloc` (null on OOM), or `arena-alloc`; `kind` selects |
-| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p ?&ui8) old:usize new:usize align:usize) -> ?&ui8` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
-| `alloc-handle-free` | `((h (ref AllocHandle)) (p ?&ui8) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
-
-### Default and constructors
-
-| Function | Signature | Use |
-|----------|-----------|-----|
-| `default-allocator` | `() -> (ref AllocHandle)` | the process-global libc handle; backs convenience constructors that omit an allocator |
-| `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
-| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/nucleus/arena.nuc`'s globals) |
-
-A collection stores the `AllocHandle` by value; use `(ref coll 'alloc-field)` to get
-a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
-
-**Why no static `(extend MyAlloc Allocator)` in the library.** A generic method
-literally named `free`/`realloc`/`malloc` shadows the libc symbol of that name for
-the whole compilation unit (this is why `Drop` uses `drop`), and such a
-conformance currently cannot be `import`ed at all — the imported file's transitive
-`(import-use "stdlib.h")` re-declares the libc symbol before the importing generics
-finalize. A conformance defined *directly* in the consuming unit does compile.
-See `design/stage11/progress.md` (M1) for the details and the deferred compiler fix.
+`(import-use nucleus.allocator)` brings in the `Allocator` protocol
+(`allocate`/`reallocate`/`deallocate`/`handle`), the stored handle `Alloc`, and
+the four built-in allocators: `Heap` (the global `heap`), `Arena`,
+`FixedBuffer` (with `fixed-buffer` and the `frame-buffer` macro) and `Tracking`
+(a leak-counting wrapper over any parent allocator).
+`(import-use nucleus.arena)` adds the process-lifetime arena `g-arena` and
+`arena-alloc`. See [allocators.md](allocators.md).
 
 ## Iterators (`lib/nucleus/iterator.nuc`, Stage 11)
 

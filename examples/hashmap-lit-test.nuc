@@ -1,7 +1,7 @@
 ; Stage 11 M5 — HashMap literal sugar `{…}`.
 ;
 ; `{"foo" 42 "bar" 7}` expands (in the reader) to a let that stack-allocates a
-; (HashMap CStr i32), runs hashmap-init with the default allocator, assoc-es
+; (HashMap CStr i32), runs `init` over the heap, assoc-es
 ; each key/value pair, and yields the (ref (HashMap CStr i32)). The outer `with`
 ; fires Drop at scope exit.
 

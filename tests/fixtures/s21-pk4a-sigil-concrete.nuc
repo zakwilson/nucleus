@@ -4,7 +4,7 @@
 ; types that accept exactly themselves. Before PK-4a `?&Pt` here died `cannot
 ; infer type variable '?ref:Pt'` and the other two were fake type variables.
 (import-use "stdio.h")
-(import-use nucleus.vector)
+(import-use nucleus.vector) (import-use nucleus.create)
 (defstruct Pt x:i32 y:i32)
 
 (defn n-qpt ((v (ref (Vector ?Pt)))):i32 (return (unsafe/cast i32 (count v))))
@@ -13,9 +13,9 @@
 
 (defn main ():i32
   (let (pt:Pt (Pt 5 6)
-        v:(Vector ?Pt) (vector-new)
-        w:(Vector ?&Pt) (vector-new)
-        b:(Vector !i32) (vector-new))
+        v:(Vector ?Pt) (make (Vector ?Pt))
+        w:(Vector ?&Pt) (make (Vector ?&Pt))
+        b:(Vector !i32) (make (Vector !i32)))
     (printf "%d %d %d\n" (n-qpt &v) (n-qrefpt &w) (n-bang &b))
     (let (mp:?Pt (some pt)
           ok3:!i32 (ok 3))

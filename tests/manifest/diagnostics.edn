@@ -1209,3 +1209,19 @@
 {:name "s24-union-literal-arm-missing" :expect :reject
  :file "tests/fixtures/s24-union-literal-arm-missing.nuc" :line 4
  :messages ["Shape: expects an arm name, as in (Shape arm field…)"]}
+; Stage 24 AL-3: `new`/`make` (overview.md §6) and `alignof`.
+{:name "s24-new-no-allocator" :expect :reject
+ :file "tests/fixtures/s24-new-no-allocator.nuc" :line 4
+ :messages ["new: name the allocator, as in (new T heap)"]}
+{:name "s24-make-two-values" :expect :reject
+ :file "tests/fixtures/s24-make-two-values.nuc" :line 5
+ :messages ["new/make: an Init type takes one value after the allocator"]}
+{:name "s24-make-no-source" :expect :reject
+ :file "tests/fixtures/s24-make-no-source.nuc" :line 5
+ :messages ["no matching method for overloaded 'init' with argument types (&(Vector i32), Alloc, StrView)"]}
+{:name "s24-new-not-allocator" :expect :reject
+ :file "tests/fixtures/s24-new-not-allocator.nuc" :line 4
+ :messages ["no matching method for overloaded 'handle' with argument types (i32)"]}
+{:name "s24-alignof-arity" :expect :reject
+ :file "tests/fixtures/s24-alignof-arity.nuc" :line 2
+ :messages ["alignof expects 1 arg"]}

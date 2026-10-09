@@ -18,17 +18,17 @@ enum TestStatus {
 extern bool nuc_g_test_no_skip asm("nuc_g-test-no-skip");
 /* nuc_TestCase: a field uses an error-union or option type; not exported */
 struct nuc_TestCase;
-extern struct nuc_AllocHandle nuc_g_test_alloc asm("nuc_g-test-alloc");
 #ifndef NUC_INST_nuc_Vector_nuc_TestCase
 #define NUC_INST_nuc_Vector_nuc_TestCase
 typedef struct nuc_Vector_nuc_TestCase {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_nuc_TestCase;
 #endif
 
+struct nuc_Vector_nuc_TestCase* nuc_test_cases_new(void) asm("nuc_test-cases-new");
 extern struct nuc_Vector_nuc_TestCase* nuc_g_tests asm("nuc_g-tests");
 extern struct nuc_String nuc_g_fail_buf asm("nuc_g-fail-buf");
 extern int32_t nuc_g_fail_ready asm("nuc_g-fail-ready");
@@ -66,7 +66,7 @@ typedef struct nuc_Vector_nuc_StrView {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_nuc_StrView;
 #endif
 
@@ -78,6 +78,7 @@ typedef struct nuc_Diagnostic {
     struct nuc_Vector_nuc_StrView* notes;
 } nuc_Diagnostic;
 
+struct nuc_Vector_nuc_StrView* nuc_test_notes_new(void) asm("nuc_test-notes-new");
 /* diag-of-node: uses an error-union or option type; not exported */
 /* read-diagnostics: uses an error-union or option type; not exported */
 #ifndef NUC_INST_nuc_Vector_nuc_Diagnostic
@@ -86,7 +87,7 @@ typedef struct nuc_Vector_nuc_Diagnostic {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_nuc_Diagnostic;
 #endif
 

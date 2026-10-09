@@ -8,6 +8,7 @@
 (import-use nucleus.iterator)
 (import-use nucleus.combinators)
 (import-use nucleus.string)
+(import-use nucleus.allocator)
 
 ; A named UnaryFn conformer rendering a small int to a fixed name (join).
 (defstruct NameFn dummy:i32)
@@ -32,7 +33,7 @@
 
 (defn main ():i32
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v) (conj v 3) (conj v 1) (conj v 2) (conj v 5) (conj v 4)
+    (init v) (conj v 3) (conj v 1) (conj v 2) (conj v 5) (conj v 4)
     (let (one:i32 1)
 
       ; ---- sort ascending (inline BinaryFn "less" comparator; captures `one`) ----
@@ -70,7 +71,7 @@
 
     ; ---- join into a String (inline render closure i32 -> StrView) ----
     (with (w:&(Vector i32) (alloca (Vector i32)))
-      (vector-init w) (conj w 1) (conj w 2) (conj w 3)
+      (init w) (conj w 1) (conj w 2) (conj w 3)
       (let (q:i32 0
             render (vfn (x:i32):StrView (if (= (+ x q) 1) (return "a")
                                       (if (= x 2) (return "b") (return "c")))))

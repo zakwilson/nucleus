@@ -460,10 +460,10 @@ Two related facts from the same step:
 
 - **A `defvar` whose initializer is a constant STRUCT literal must be declared
   after the struct's layout is available**, not merely after its name resolves.
-  `g-arena-alloc` could not move above the first registry as
-  `design/global-init.md` §2.10 planned, because `%AllocHandle` comes in with
+  The (since retired) `g-arena-alloc` could not move above the first registry as
+  `design/global-init.md` §2.10 planned, because `%Alloc` comes in with
   `(import-use nucleus.vector)` far below; the renderer sees a fieldless registry entry
-  and dies *"too many initializers for struct 'AllocHandle'"*. It did not need
+  and dies *"too many initializers for struct 'Alloc'"*. It did not need
   to move up: a constant initializer is applied by the loader, so it has no
   order, and every reference to it is `&…`, which is an address rather
   than a read.
@@ -497,7 +497,7 @@ does not carry those comments forward.
 implicit `return`, `.set!` value position — and, since G-5, at **`as`**. `as` was
 the missing one, and the failure it produced is the model for the class: a
 generic whose type variable appears only in its *return* type
-(`vector-new-in`, the whole `*-new` family) has no argument to bind from, so
+(the since-retired `vector-new-in` and `*-new` family) has no argument to bind from, so
 with no want it resolves against whichever instance the unit stamped **first**.
 `scope-new`'s `(as (ref (Vector (ref Cleanup))) (vector-new-in …))` read
 correctly for the compiler's whole life only because that call site *was* the
@@ -508,7 +508,7 @@ error; **in the `unsafe/cast` spelling it is completely silent.**
 Two takeaways. First, if you add a position that names a type, ask whether it
 arms the want — the arm sites are enumerable by grepping `g-want-type`. Second,
 when a construction site's element type comes from an annotation, prefer binding
-it (`(let (v:(ref (Vector T)) (vector-new-in a)) …)`) over casting it; the
+it (`(let (v:(ref (Vector T)) (vec-in a)) …)`) over casting it; the
 binding has always armed the want and says where `T` comes from.
 
 ## A drain at `emit-toplevel-forms` depth 1 has a SECOND caller: the REPL
@@ -622,7 +622,7 @@ head and never reaches this check. The precise stamped type is produced at monom
 for the A2 walk the type is check-only (deferred/null is correct).
 
 **The `ref`/`raw`/`ptr` half needed a 2-stage manual bootstrap.** The `-in` heap
-constructors (`(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)`) use
+constructors (`(defn vector-new-in ((a (ref Alloc))) (ref (Vector T)) …)`) use
 `(cast (ref (Vector T)) …)` in the body, which needs the wrapper-keyword recognition.
 But that recognition is itself in src/generics.nuc — source the OLD boot compiles — and
 the old boot lacked it, so `make` died on the `-in` bodies (chicken-and-egg). Resolution
@@ -783,7 +783,7 @@ list, since a second script counting a second directory would only move the line
 ## A template function nothing instantiates has never been compiled
 
 `lib/nucleus/hashset.nuc`'s `hashset-new-in` spelled its allocation
-`(as (ref (HashSet T)) (alloc-handle-alloc …))`, which `as` refuses — the handle
+`(as (ref (HashSet T)) (alloc-allocate …))`, which `as` refuses — the handle
 returns `ptr:ui8`, and reinterpreting it needs `unsafe/cast` (which
 `hashmap-new-in`, three files over, already used). It shipped that way because
 every `(HashSet …)` in the tree comes from a by-value `#{…}` literal, so the
@@ -1008,7 +1008,7 @@ inherits the outer want). The shared resolver `generic-resolve-adapt-tier` and
 `generic-method-bind(-adapt)` carry a `want:?ptr:Type`; `unify-tpat` fills a still-null
 tyvar slot from want over the method's return pattern (fill-only — sets a null slot,
 `type-eq`s an already-bound one; never overrides an arg-derived binding). A return-only-
-tyvar generic (zero-arg `vector-new`) now registers as METHOD-GENERIC and resolves at a
+tyvar generic (a zero-arg constructor) now registers as METHOD-GENERIC and resolves at a
 typed position; with no want it reports `cannot infer type variable '%s' for '%s': no
 expected type at this position — annotate the binding`.
 
@@ -1019,12 +1019,13 @@ identically to emit. Keep the resolver threaded through both: emit and node-type
 diverge on a want-dependent call (the lockstep).
 
 **TC-3 binding materialization:** a declared `(ref S)` binding (S a struct) initialized
-with a by-value `S` (e.g. `(with (v:(ref (Vector i32)) (vector-new)) …)`) materializes —
+with a by-value `S` (e.g. `(with (v:(ref (Vector i32)) (make (Vector i32))) …)`) materializes —
 `tc3-emit-binding-init` derives the want via two non-emitting probes (whole `(ref S)`,
 then pointee `S`), emits once, and `tc3-materialize` allocas a backing slot + stores +
 binds the ref. The materialized backing is frame storage, dropped through the existing
 `with-drop-method` TY-PTR arm. Methods take `(ref …)`, so no `&` per call (resolves
-the receiver-shape problem).
+the receiver-shape problem). The probes cannot see through a macro (`make` is one), so
+`tc3-emit-binding-init` also materializes whenever the *emitted* value is by-value `S`.
 
 **TC-5 union target-typing:** `union-target-rewrite` (src/union-emit.nuc) is parameterized
 by the target type and runs at the let/with init, `set!` RHS, AND the value-position tails
@@ -3728,8 +3729,8 @@ question, not an oversight.** `generic-lookup`/`generic-register-method` key on
 the **raw** name, so two namespaces defining the same function name collapse
 into one `Generic` mangled under whichever was seen first (`@qa__describe.pDog`
 for a method defined in `qb`). Conversely `scope-lookup` qualifies a global key
-with **no** bare fallback, which is why a file with an explicit `(ns …)` cannot
-reach `default-allocator` and therefore cannot box a value at all. Both are
+with **no** bare fallback, which is why a file with an explicit `(ns …)` could not
+reach the (since retired) `default-allocator` and therefore could not box a value. Both are
 pre-existing (W9 items 22/23); know which registry answers your question before
 assuming a cross-namespace path works.
 
@@ -3925,7 +3926,7 @@ equivalent tell, so do not assume the next kind will.
 
 **The residue is the dangerous part, and it is silent.** ~15 sites look up a
 string the *compiler itself* wrote — `"printf"`, `"fflush"`,
-`"default-allocator"`, `"alloc-handle-alloc"`, `"g-handler-top"`, and the
+`"heap-allocate"`, `"alloc-allocate"`, `"g-handler-top"`, and the
 `"fn"`/`"vfn"`/`"mfn"`/`"cfn"` shadow tests. These are neither a user's spelling
 nor a stored key, nothing in the code distinguishes them, and **both
 classifications compile and pass every test**. They are references: the question
@@ -6275,7 +6276,7 @@ Three things to carry forward.
 
 ## A generic's tyvar may come from the WANT — and then the parameter types are not its key
 
-`vector-new-in` is `(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)`:
+`vector-new-in` (since retired) was `(defn vector-new-in ((a (ref Alloc))) (ref (Vector T)) …)`:
 `T` appears only in the return type, so the want channel binds it per call site.
 Two things were keyed on the parameter types alone and stopped being keys the
 moment `T` could vary — `generic-find-method-exact` (the monomorphizer's memo
@@ -7395,3 +7396,102 @@ Write new code this way, and apply it when refactoring:
 `case`'s default is a **lone trailing element**, not a `true X` pair. `true X`
 compiles as `(= k true)` and leaves the `case` with no default
 (`lib/nucleus/macros.nuc`, `case`). `cond` takes `true X`.
+
+## A quasiquote binder slot may itself be an unquote
+
+`qq-resolve-binders` and the binder checks read `let`'s second element as a
+binding list. In `for`, `` `(let ~init …) `` makes that element the form
+`(unquote init)`, and a stride-2 walk resolves `init` as a value. Through the
+flattened `user` namespace, it rewrote a caller's `init` to `user/init`, and the
+macro JIT then reported "calls 'init', which is defined later". Any new
+binder-aware walker must return early on `qq-escaped?`, as the existing three
+do (design/stage24-allocation/c-name-overloads.md §1).
+
+## A C function sharing a generic's name is a METHOD, and "implements" is decided on Nucleus types
+
+Since AL-0b, a C function or `declare` whose name a Nucleus generic also has
+joins it as an `ir-fixed` method with `c-decl` set (`generic-adopt-c-fn`),
+unless a user-prefix `defn` implements it
+(design/stage24-allocation/c-name-overloads.md §2).
+- **Do not compare link signatures to decide "implements".** `free (self:&Box)`
+  and libc `free` both link as `void (ptr)`. `c-impl-slot?` requires a bare
+  `ptr` where C has `void *`.
+- **Keep the routing in lockstep.** `emit-dispatch`'s mangled branch routes a
+  call only one method can take by arity to `emit-call`
+  (`generic-c-sole-at-arity`), and `node-type-call` must do the same.
+  Otherwise the C function joining makes a user's own call stricter.
+- **The REPL is gated off** (`g-interactive`). A REPL `defn` of a bound name is
+  a redefinition, and adoption breaks its thunk.
+
+## `lib/nucleus/allocator.nuc` is compiled for every target, through `import-ct`
+
+`nucleus.error` ct-imports `nucleus.node` → `arena` → `allocator`, so allocator
+code is emitted (and must verify) in AVR builds too:
+- **`usize` is 16 bits there.** A literal above 65535 is refused; size policy
+  in words (`(* 8192 (sizeof usize))`), not bytes.
+- **A function-pointer call needs `ptr addrspace(1)`.** `emit-funcall-value`
+  casts through `fnptr-callee`; a new indirect-call emitter must do the same.
+- **A file reached only through `import-ct` must still type-prescan its
+  imports** (`emit-toplevel-forms`). Without it, `arena.nuc` reported
+  "unknown type: Alloc" only when error.nuc was the entry point.
+
+## Calling an `Allocator` method: pass the allocator by ADDRESS
+
+`allocate` has several conformers, so a call goes through generic dispatch,
+where a literal adapts to `usize` only when the receiver is written as an
+address: `(allocate &heap 64 16)` works, `(allocate heap 64 16)` is refused.
+Code the OLD boot compiles (src/, and lib/ that the compiler imports) must also
+write `(as usize (sizeof …))`, since that boot types `sizeof` as `i64`.
+In lib code, do not name a parameter after a short word a user might define
+as a generic (`f`, or `t`, which `s21-extend-alias-subject` defines): a user `:where` generic of that name hijacks
+`(f 'field)` (deferred/overview.md, "Possible bugs").
+
+## A library macro is a bare name in EVERY program that loads its file
+
+A macro defined in a lib file claims its name program-wide, even under a prefixed
+import: a user `defn make` then dies with "'make' already names a function", at
+the LIBRARY's line. Put a macro with a common name (`new`, `make`) in its own
+module (`nucleus.create`) that only deliberate importers load. Two
+`import-use`d macros of one name do not conflict: whichever file loads first
+wins, silently.
+
+## A macro template's protocol calls are FULL names — test them on a fresh instance
+
+Hygiene writes `conj`/`init` in a template as `nucleus.coll/conj` etc. A
+qualified spelling filters a generic's methods by namespace, so a reach rule
+that only handles `METHOD-USER` misses a conformer's template method until some
+bare call has stamped the instance (generics.nuc `method-answers-protocol-here`).
+Probe a library macro with the instance's FIRST use inside the expansion.
+
+## A type the macro cannot see: add a small special form, typed in BOTH places
+
+A macro cannot ask whether a call returns `!void`. `__init-then` (union-emit.nuc)
+decides from the emitted call, and `node-type` must give the same answer
+through a shared rule (`init-then-type`, union-registry.nuc). Returning null from
+`node-type` makes an untyped `let` binding of the form lose its union type
+("match: scrutinee must be a defunion value").
+
+## The boot compiles every lib file `src/` imports — new forms wait for a refresh
+
+`alignof`, `__init-then` and the `make` name are unknown to an older boot. A lib
+file the compiler imports (vector, string, hashmap, allocator, …) may not use
+them, even in a function body, until `make update-bootstrap`. Quasiquote DATA is
+fine, as long as the boot never expands it.
+
+## A REPL library global needs a preamble `external global`
+
+A stamp drained into a later REPL module that reads a library `defvar` (`heap`)
+needs the declaration. `repl-backfill-progglobal-decls` adds it after each
+import, as `repl-backfill-progdefn-decls` does for functions.
+
+## A library template's overloaded protocol call: spell the PROTOCOL's namespace
+
+`user` is flattened into every file, so a user `defn init` joins a lib file's
+view of `init`, and hygiene's search for one namespace reaching every method
+fails ("names 'init', whose methods here come from namespaces 'user', …"). Write
+the protocol's namespace in the template — `nucleus.allocator/init` (fmt's
+`str`, create's `create-form`) — which reaches every conformer and nothing else.
+Lib modules do not import `nucleus.create` (the bare-name claim above); they
+`init` a zero literal in place: `(let (s:String (String)) (init &s) …)`.
+A user template that BINDS a name an imported macro owns (`new` as a parameter)
+is refused once `nucleus.create` is imported; rename the binder.

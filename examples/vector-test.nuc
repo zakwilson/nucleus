@@ -13,10 +13,10 @@
 (import-use nucleus.vector)
 
 (defn main ():i32
-  ; Stack-allocate a Vector i32 owned by `with`; vector-init sets the libc
+  ; Stack-allocate a Vector i32 owned by `with`; `init` sets the heap
   ; allocator and zeroes the fields. `drop` fires automatically at scope exit.
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v)
+    (init v)
 
     ; conj three elements (exercises capacity doubling: 0 -> 4).
     (conj v 10) (conj v 20) (conj v 30)

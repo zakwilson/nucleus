@@ -356,7 +356,7 @@ Result printing is type-aware: integer kinds print as decimal (unsigned kinds an
 
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed. Any other C library needs its header imported and its shared object loaded into the session before its functions are callable — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt).
 
-Imported libraries work, in every spelling a source file may use: `(import-use mathlib)` makes `square`, `cube`, etc. available; `(import nsgeom)` and `(import-prefixed nsgeom g)` bind `nsgeom/area` and `g/area`; `(import-ct lib)` registers a library's compile-time surface only, so a reference to one of its functions is refused as compile-time-only; `(unsafe/import-private lib p)` also reaches the library's private symbols; `(require lib)` binds nothing and makes the library's namespace — and every namespace it loads — reachable by full name, since the session is the REPL's import closure. Each import prints what it did — `  imported mathlib`, or `  mathlib already imported` when the form was a no-op, so a retry that is deduplicated away is distinguishable from one that loaded. The REPL boots by importing the standard prelude, exactly as a batch compile does, so `Node`, the `NODE-*` constants, `StrView`, `(Maybe T)`/`?T`, `(Result T E)`/`!T`, `Clone` and the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are all in scope without an explicit import, and mean the same thing they mean in a batch compile.
+Imported libraries work, in every spelling a source file may use: `(import-use mathlib)` makes `square`, `cube`, etc. available; `(import nsgeom)` and `(import-prefixed nsgeom g)` bind `nsgeom/area` and `g/area`; `(import-ct lib)` registers a library's compile-time surface only, so a reference to one of its functions is refused as compile-time-only; `(unsafe/import-private lib p)` also reaches the library's private symbols; `(require lib)` binds nothing and makes the library's namespace — and every namespace it loads — reachable by full name, since the session is the REPL's import closure. A library's globals (`heap`, `g-arena`) are declared to every later entry, so a prompt expression, or a template stamped at the prompt, can read them. Each import prints what it did — `  imported mathlib`, or `  mathlib already imported` when the form was a no-op, so a retry that is deduplicated away is distinguishable from one that loaded. The REPL boots by importing the standard prelude, exactly as a batch compile does, so `Node`, the `NODE-*` constants, `StrView`, `(Maybe T)`/`?T`, `(Result T E)`/`!T`, `Clone` and the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are all in scope without an explicit import, and mean the same thing they mean in a batch compile.
 
 Every library in `lib/` imports at the prompt, including `node`, and a library the compiler itself links is no exception: the session compiles and uses **its own** copy, which is why a REPL-defined function may shadow a name the compiler happens to export. One consequence is worth knowing. `lib/nucleus/node.nuc` carries the symbol intern table, and the compiler compares symbols by pointer, so after `(import-use nucleus.node)` a macro **first expanded after** that import mints its symbols from the session's table and a special-form head in its expansion is not recognized — `(mc 9)` reports `unknown: cond`. It always fails loudly, never silently; it does not affect a macro whose expansion has a function head; and a macro already expanded *before* the import keeps working. Expand the macros you need before importing `node`.
 
@@ -552,7 +552,7 @@ typedef struct nuc_Vector_i32 {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_i32;
 #endif
 
@@ -561,7 +561,7 @@ typedef struct H {
 } H;
 ```
 
-A core type is named by its link name everywhere in a header, as `lib/nucleus/*.h` defines it: `struct nuc_String`, `struct nuc_StrView`. So is a core function: `nuc_string_new`, labelled `asm("nuc_string-new")`.
+A core type is named by its link name everywhere in a header, as `lib/nucleus/*.h` defines it: `struct nuc_String`, `struct nuc_StrView`. So is a core function: `nuc_string_push_char`, labelled `asm("nuc_string-push-char")`.
 
 A `defunion` arm's field is a declarator, as a struct field is, so `(cb f:(fn i32)(i32))` is `int32_t (*cb)(int32_t);`.
 

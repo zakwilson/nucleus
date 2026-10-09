@@ -23,6 +23,7 @@
 
 (import-use "stdio.h")
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
@@ -32,20 +33,11 @@
 (import-use nucleus.file)
 (import-use nucleus.intern-str)   ; Symbol's ToStr, so a name can flow into `fstr`/`emit`
 
-; The arena's own handle. A separate `defvar` from nucleusc.nuc's
-; `g-arena-alloc` only because a module cannot see its importer's globals; the
-; arena itself is `lib/nucleus/arena.nuc`'s single process-wide one, so both handles
-; allocate from the same bump pointer and neither ever frees.
-(defvar g-strfmt-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
-
-(defn strfmt-alloc ():&AllocHandle
-  (return &g-strfmt-alloc))
-
 ; The honest form: the length the formatting already knew, carried out with the
 ; bytes instead of thrown away and re-derived by a `strlen`.
 (defmacro fstr (:rest parts)
   (let (s:ptr (gensym))
-    `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
+    `(let ((~s String) (str-alloc g-arena ~@parts))
        (string-as-view ~s))))
 
 ; ---------------------------------------------------------------------------
@@ -68,7 +60,8 @@
 
 (defn emit-buf ():&String
   (when (= g-emit-buf-ready 0)
-    (set! g-emit-buf (string-with-capacity 1024))
+    (set! g-emit-buf (make String))
+    (string-reserve &g-emit-buf 1024)
     (set! g-emit-buf-ready 1))
   (return &g-emit-buf))
 

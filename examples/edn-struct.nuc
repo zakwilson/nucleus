@@ -11,6 +11,7 @@
 (import-use nucleus.keyword)
 (import-use nucleus.read)
 (import-use nucleus.edn)
+(import-use nucleus.create)
 
 (defstruct Endpoint (host String) port:ui16)
 (defstruct Service
@@ -57,7 +58,7 @@
       (match (get (ref svc 'limits) (keyword-intern "qps"))
         ((some q) (println "qps:      " q))
         (none (println "qps:      unset")))
-      (let (out:String (string-new))
+      (let (out:String (make String))
         (edn-write &out (ref svc 'at))
         (println (string-as-view &out))
         (drop &out))

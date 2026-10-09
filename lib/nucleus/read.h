@@ -44,17 +44,17 @@ typedef struct nuc_RMacro {
     struct nuc_Symbol wrap;
 } nuc_RMacro;
 
-extern struct nuc_AllocHandle nuc_g_read_alloc asm("nuc_g-read-alloc");
 #ifndef NUC_INST_nuc_Vector_nuc_RMacro
 #define NUC_INST_nuc_Vector_nuc_RMacro
 typedef struct nuc_Vector_nuc_RMacro {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_nuc_RMacro;
 #endif
 
+struct nuc_Vector_nuc_RMacro* nuc_rd_macro_table(void) asm("nuc_rd-macro-table");
 void nuc_rd_macro_add(struct nuc_Vector_nuc_RMacro* tbl, struct nuc_StrView prefix, struct nuc_Symbol wrap) asm("nuc_rd-macro-add");
 int32_t nuc_rd_macro_find(struct nuc_Vector_nuc_RMacro* tbl, struct nuc_StrView prefix) asm("nuc_rd-macro-find");
 struct nuc_Vector_nuc_RMacro* nuc_read_macro_table_new(void) asm("nuc_read-macro-table-new");

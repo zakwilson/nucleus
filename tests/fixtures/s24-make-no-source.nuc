@@ -1,0 +1,5 @@
+; A value the type has no `init` for is the ordinary no-method diagnostic.
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(defn main ():i32 (with (v (make (Vector i32) heap "x")) (return 0)))

@@ -31,9 +31,9 @@
 (import-use nucleus.fmt)
 (import-use nucleus.test)
 (import-use nucleus.keyword)
-(import-use nucleus.coll)
+(import-use nucleus.coll) (import-use nucleus.create)
 (defn lib-sources ():!(Vector String)
-  (let (out:(Vector String) (vector-new))
+  (let (out:(Vector String) (make (Vector String)))
     (try (lib-sources-in "lib" &out))
     (try (lib-sources-in "lib/nucleus" &out))
     (return (ok out))))
@@ -238,7 +238,7 @@
 ; the other object is undefined in main.o (`U`, so something really crosses the
 ; boundary), and each unit's own root form is the only strong definition it
 ; carries. Asserted on `w9-bump`, this fixture's own inlined import, not on the
-; prelude's `arena-init`: since the Stage 16 split the prelude emits no runtime
+; prelude's arena: since the Stage 16 split the prelude emits no runtime
 ; at all (compile-time-imports.md §4b).
 (deftest w9-multi-object-weak-prelude
   (let (o:W9Objects (try (w9-objects))

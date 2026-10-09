@@ -18,6 +18,7 @@
 (import-use nucleus.parse)
 (import-use nucleus.node)
 (import-use nucleus.read)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.hashset)
 (import-use nucleus.hashmap)
@@ -273,7 +274,8 @@
                     (let (j:i32 (+ i step))
                       (while (< j len)
                         (when (edn-eq (node-at n i) (node-at n j))
-                          (let (s:String (string-new))
+                          (let (s:String (String))
+                            (init &s)
                             (edn-write &s (node-at n i))
                             (let (m:String (if (= k EDN-MAP)
                                              (str "duplicate map key " (string-as-view &s))
@@ -388,7 +390,8 @@
             (do (write-str out "(") (edn-write-elems out n 0) (write-str out ")")))))
 
 (defn edn-text (n:?&Node):String
-  (let (s:String (string-new))
+  (let (s:String (String))
+    (init &s)
     (edn-write &s n)
     (return s)))
 
@@ -426,7 +429,8 @@
   (when (or (not (= v v)) (> v 1.7976931348623157e308) (< v -1.7976931348623157e308))
     (return (err! edn-range)))
   (let (from:usize (byte-len out)
-        s:String (string-new))
+        s:String (String))
+    (init &s)
     (string-push-f64 &s v c"%.15g")
     (let (sv:StrView (string-as-view &s)
           back:f64 0.0)
@@ -444,7 +448,8 @@
   (when (or (not (= v v)) (> v 3.4028234663852886e38) (< v -3.4028234663852886e38))
     (return (err! edn-range)))
   (let (from:usize (byte-len out)
-        s:String (string-new))
+        s:String (String))
+    (init &s)
     (string-push-f64 &s (as f64 v) c"%.7g")
     (let (sv:StrView (string-as-view &s)
           back:f64 0.0)
@@ -585,7 +590,7 @@
 (defn edn-read (dst:&String n:?&Node):ReadResult
   (when (or (= n null) (!= (edn-kind n) EDN-STR)) (return (edn-expected "a string" n)))
   (let (sv:StrView (symbol-as-view (n 's)))
-    (set! @dst (string-new))
+    (init dst)
     (string-push-str-unchecked dst &sv))
   (return (ok n)))
 
@@ -656,7 +661,7 @@
 
 (defn edn-decode (dst:&(Vector T) n:?&Node :where (EdnCodec T)):ReadResult
   (when (!= (edn-kind n) EDN-VECTOR) (return (edn-expected "a vector" n)))
-  (vector-init dst)
+  (init dst)
   (let (xp:&T (alloca T)
         len:usize (edn-count n)
         i:usize 0)
@@ -694,7 +699,7 @@
 
 (defn edn-decode (dst:&(HashSet T) n:?&Node :where (EdnCodec T) (EdnKey T)):ReadResult
   (when (!= (edn-kind n) EDN-SET) (return (edn-expected "a set" n)))
-  (hashset-init dst)
+  (init dst)
   (let (xp:&T (alloca T)
         len:usize (edn-count n)
         i:usize 0)
@@ -726,7 +731,7 @@
 
 (defn edn-decode (dst:&(HashMap K V) n:?&Node :where (EdnCodec K) (EdnKey K) (EdnCodec V)):ReadResult
   (when (!= (edn-kind n) EDN-MAP) (return (edn-expected "a map" n)))
-  (hashmap-init dst)
+  (init dst)
   (let (kp:&K (alloca K)
         vp:&V (alloca V)
         len:usize (edn-count n)
@@ -857,8 +862,9 @@
         encb:&Node (node-list-new (t 'line))
         decb:&Node (node-list-new (t 'line))
         undo:&Node (node-list-new (t 'line))
-        names:String (string-new)
+        names:String (String)
         tags:&Node (edn-str-node (tag 's)))
+    (init &names)
     (node-push out 'do)
     (dotimes (i (ast-len fields))
       (let (f:ptr:Node (ast-at fields i)

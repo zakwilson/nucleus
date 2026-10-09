@@ -11,6 +11,7 @@
 (import-use nucleus.string)
 (import-use nucleus.fmt)
 (import-use nucleus.io)
+(import-use nucleus.create)
 
 (defn main ():i32
 
@@ -29,7 +30,7 @@
     (write-str o (strview-from-cstr "through write-str\n")))
 
   ; A String is a Writer too, so the same code fills a buffer instead.
-  (let (s:String (string-new))
+  (let (s:String (make String))
     (write-str s (strview-from-cstr "through a String"))
     (println (string-as-view s) " len=" (byte-len s)))
 

@@ -70,7 +70,7 @@
   ; exactly once. The Vector's own Drop frees the buffer at scope exit. No leak,
   ; no double-free.
   (with (v:&(Vector (dyn Describe)) (alloca (Vector (dyn Describe))))
-    (vector-init v)
+    (init v)
     (let (cat:(dyn Describe)  (Cat 1)
           dog:(dyn Describe)  (Dog 2)
           cat2:(dyn Describe) (Cat 9))

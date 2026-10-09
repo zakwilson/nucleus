@@ -1,21 +1,23 @@
 ; Stage 11 collections — HashMap K V: an open-addressing hash map with linear
 ; probing and tombstone deletion. O(1) amortized assoc/dissoc/get. Owns
-; three parallel byte arrays (keys, vals, states) through a stored AllocHandle
+; three parallel byte arrays (keys, vals, states) through a stored Alloc
 ; and frees them via Drop at with-scope exit.
 ;
 ; Design: design/stage11/collections.md §"Assoc" + §"HashMap" + §"Memory model".
 ;
 ; ---------------------------------------------------------------------------
-; USAGE (the working construction pattern):
+; USAGE:
 ;
-;   (with ((m (ref (HashMap StrView i32))) (alloca (HashMap StrView i32)))
-;     (hashmap-init m)
-;     (assoc m "one" 1)
-;     (assoc m "two" 2)
-;     (match (get m "one")
+;   (with (m (make (HashMap StrView i32)))   ; nucleus.create; buffers from `heap`
+;     (assoc &m "one" 1)
+;     (assoc &m "two" 2)
+;     (match (get &m "one")
 ;       ((some v) (printf "got %d\n" v))
 ;       (none     (printf "absent\n")))
 ;     ...)   ; (drop m) fires here, freeing keys/vals/states
+;
+; Construction is the `Init` protocol: `(init m a)` / `(init m)` on a
+; caller-owned `&(HashMap K V)`, or nucleus.create's `make`/`new`.
 ;
 ; States byte per bucket: 0=empty, 1=occupied, 2=tombstone (deleted).
 ; Cap is always a power of two; mask = cap-1 enables fast modular arithmetic.
@@ -71,23 +73,24 @@
   (states ?&ui8)
   count:usize
   cap:usize
-  alloc:AllocHandle)
+  alloc:Alloc)
 
 ; ---------------------------------------------------------------------------
-; Constructor: initialise an empty HashMap with the default (libc) allocator
-; and an initial capacity of 8 buckets. All states bytes are zeroed (=empty).
+; Init: an empty HashMap whose buffers come from `a`, with an initial capacity
+; of 8 buckets. All states bytes are zeroed (=empty).
 ; ---------------------------------------------------------------------------
-(defn hashmap-init (m:&(HashMap K V)):void
-  (let (init-cap:usize 8
+(defn init (self:&(HashMap K V) a:Alloc):void
+  (let (m:&(HashMap K V) self
+        init-cap:usize 8
         ksz:usize (* init-cap (as usize (sizeof K)))
         vsz:usize (* init-cap (as usize (sizeof V))))
-    (libc-allocator (ref m 'alloc))
-    (let (ah:&AllocHandle (ref m 'alloc))
-      (let ((kbuf ?&ui8) (alloc-handle-alloc ah ksz 8))
+    (set! (m 'alloc) a)
+    (let (ah:&Alloc (ref m 'alloc))
+      (let ((kbuf ?&ui8) (allocate ah ksz (as usize (alignof K))))
         (when (= (as ptr kbuf) null) (hashmap-oom))
-        (let ((vbuf ?&ui8) (alloc-handle-alloc ah vsz 8))
+        (let ((vbuf ?&ui8) (allocate ah vsz (as usize (alignof V))))
           (when (= (as ptr vbuf) null) (hashmap-oom))
-          (let ((sbuf ?&ui8) (alloc-handle-alloc ah init-cap 1))
+          (let ((sbuf ?&ui8) (allocate ah init-cap 1))
             (when (= (as ptr sbuf) null) (hashmap-oom))
             (memset (as ptr sbuf) 0 (as i64 init-cap))
             (set! (m 'keys) kbuf)
@@ -95,50 +98,6 @@
             (set! (m 'states) sbuf)
             (set! (m 'count) 0)
             (set! (m 'cap) init-cap)))))))
-
-; hashmap-init-alloc: initialise an empty HashMap with an explicit allocator
-; handle (copied in), mirroring vector-init-alloc / hashset-init-alloc. The three
-; buffers are allocated through the passed handle, so the map owns its storage
-; through it (arena = process-lifetime, no per-allocation free).
-(defn hashmap-init-alloc (m:&(HashMap K V) a:&AllocHandle):void
-  (let (init-cap:usize 8
-        ksz:usize (* init-cap (as usize (sizeof K)))
-        vsz:usize (* init-cap (as usize (sizeof V))))
-    (set! (m 'alloc) @a)
-    (let (ah:&AllocHandle (ref m 'alloc))
-      (let ((kbuf ?&ui8) (alloc-handle-alloc ah ksz 8))
-        (when (= (as ptr kbuf) null) (hashmap-oom))
-        (let ((vbuf ?&ui8) (alloc-handle-alloc ah vsz 8))
-          (when (= (as ptr vbuf) null) (hashmap-oom))
-          (let ((sbuf ?&ui8) (alloc-handle-alloc ah init-cap 1))
-            (when (= (as ptr sbuf) null) (hashmap-oom))
-            (memset (as ptr sbuf) 0 (as i64 init-cap))
-            (set! (m 'keys) kbuf)
-            (set! (m 'vals) vbuf)
-            (set! (m 'states) sbuf)
-            (set! (m 'count) 0)
-            (set! (m 'cap) init-cap)))))))
-
-; ---------------------------------------------------------------------------
-; Value/heap constructors (target-typed — design/stage14/target-typed-
-; constructors.md). K,V bind from the declared type via the want channel. The
-; by-value family materializes into a `(ref (HashMap K V))` binding (TC-3); the
-; `-in` family allocates the struct itself through the handle.
-; ---------------------------------------------------------------------------
-(defn hashmap-new () (HashMap K V)
-  (let (r (alloca (HashMap K V)))
-    (hashmap-init r)
-    (return @r)))
-(defn hashmap-new-alloc (a:&AllocHandle) (HashMap K V)
-  (let (r (alloca (HashMap K V)))
-    (hashmap-init-alloc r a)
-    (return @r)))
-(defn hashmap-new-in (a:&AllocHandle):&(HashMap K V)
-  (let (v (unsafe/cast &(HashMap K V)
-             (alloc-handle-alloc a (sizeof (HashMap K V)) 8)))
-    (hashmap-init-alloc v a)
-    (return v)))
-
 
 ; ---------------------------------------------------------------------------
 ; Internal: rehash all occupied buckets from old arrays into new-cap arrays.
@@ -147,15 +106,15 @@
 ; old-cap is captured at the top of the outer let so it's visible for frees.
 ; ---------------------------------------------------------------------------
 (defn hashmap-resize (m:&(HashMap K V) new-cap:usize):void
-  (let (ah:&AllocHandle (ref m 'alloc)
+  (let (ah:&Alloc (ref m 'alloc)
         old-cap:usize (m 'cap)
         ksz-new:usize (* new-cap (as usize (sizeof K)))
         vsz-new:usize (* new-cap (as usize (sizeof V))))
-    (let ((nk ?&ui8) (alloc-handle-alloc ah ksz-new 8))
+    (let ((nk ?&ui8) (allocate ah ksz-new (as usize (alignof K))))
       (when (= (as ptr nk) null) (hashmap-oom))
-      (let ((nv ?&ui8) (alloc-handle-alloc ah vsz-new 8))
+      (let ((nv ?&ui8) (allocate ah vsz-new (as usize (alignof V))))
         (when (= (as ptr nv) null) (hashmap-oom))
-        (let ((ns ?&ui8) (alloc-handle-alloc ah new-cap 1))
+        (let ((ns ?&ui8) (allocate ah new-cap 1))
           (when (= (as ptr ns) null) (hashmap-oom))
           (memset (as ptr ns) 0 (as i64 new-cap))
           ; Rehash every occupied bucket from the old arrays into the new arrays.
@@ -186,9 +145,9 @@
                           (set! ni (bit-and (+ ni 1) mask))))))))
               (set! oi (+ oi 1))))
           ; Free old arrays.
-          (alloc-handle-free ah (m 'keys)   (* old-cap (as usize (sizeof K))) 8)
-          (alloc-handle-free ah (m 'vals)   (* old-cap (as usize (sizeof V))) 8)
-          (alloc-handle-free ah (m 'states) old-cap                              1)
+          (deallocate ah (m 'keys)   (* old-cap (as usize (sizeof K))) (as usize (alignof K)))
+          (deallocate ah (m 'vals)   (* old-cap (as usize (sizeof V))) (as usize (alignof V)))
+          (deallocate ah (m 'states) old-cap                              1)
           ; Install new arrays.
           (set! (m 'keys) nk)
           (set! (m 'vals) nv)
@@ -201,6 +160,7 @@
 ; The extend is placed after those structs are defined.
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) Drop)
+(extend (HashMap K V) Init)
 
 ; assoc: insert or overwrite the value for key. Grows at 75% load.
 (defn assoc (self:&(HashMap K V) key:K val:V):void
@@ -344,11 +304,11 @@
 ; ---------------------------------------------------------------------------
 (defn drop (self:&(HashMap K V)):void
   (when (!= (as ptr (self 'keys)) null)
-    (let (ah:&AllocHandle (ref self 'alloc)
+    (let (ah:&Alloc (ref self 'alloc)
           cap:usize (self 'cap))
-      (alloc-handle-free ah (self 'keys)   (* cap (as usize (sizeof K))) 8)
-      (alloc-handle-free ah (self 'vals)   (* cap (as usize (sizeof V))) 8)
-      (alloc-handle-free ah (self 'states) cap                              1)))
+      (deallocate ah (self 'keys)   (* cap (as usize (sizeof K))) (as usize (alignof K)))
+      (deallocate ah (self 'vals)   (* cap (as usize (sizeof V))) (as usize (alignof V)))
+      (deallocate ah (self 'states) cap                              1)))
   (set! (self 'keys) null)
   (set! (self 'vals) null)
   (set! (self 'states) null)

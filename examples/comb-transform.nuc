@@ -7,13 +7,14 @@
 (import-use nucleus.vector)
 (import-use nucleus.iterator)
 (import-use nucleus.combinators)
+(import-use nucleus.allocator)
 
 ; A named UnaryFn conformer for flat-map: x -> a fresh Vector [x, x+k].
 (defstruct ExpandFn k:i32)
 (extend ExpandFn (UnaryFn i32 (Vector i32)))
 (defn apply (self:&ExpandFn (x i32)) (Vector i32)
   (let (r:&(Vector i32) (alloca (Vector i32)))
-    (vector-init r) (conj r x) (conj r (+ x (self 'k)))
+    (init r) (conj r x) (conj r (+ x (self 'k)))
     (return @r)))
 
 (defn show (label:CStr v:&(Vector i32)):void
@@ -27,7 +28,7 @@
 
 (defn main ():i32
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v) (conj v 1) (conj v 2) (conj v 3)
+    (init v) (conj v 1) (conj v 2) (conj v 3)
     (let (k:i32 10
           thr:i32 1)
 

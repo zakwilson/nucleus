@@ -16,6 +16,7 @@
 (import-use nucleus.strview-str)
 (import-use nucleus.io)
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.file)
 (import-use nucleus.process)
 
@@ -147,7 +148,7 @@
 (defn repl-type-to-nuc (t:?&Type):StrView
   (when (= t null) (return "?"))
   (when (!= (t 'kind) TY-FN) (return (type-display t)))
-  (let ((out String) (string-new-alloc (strfmt-alloc))
+  (let ((out String) (make String g-arena)
         np:i32 (t 'num-params))
     (str-into &out "(fn " (repl-type-to-nuc (t 'ret)))
     (dotimes (i np)
@@ -533,7 +534,7 @@
           (when (< (node-len f) 2)
             (repl-list-symbols g-cflags)
             (return 1))
-          (let (args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+          (let (args:&(Vector Symbol) (new (Vector Symbol) g-arena))
             (when (!= (repl-build-args form "cflag" args) 0)
               (repl-apply-cflags args)))
           (return 1))
@@ -541,7 +542,7 @@
           (when (< (node-len f) 2)
             (repl-list-symbols g-include-paths)
             (return 1))
-          (let (args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+          (let (args:&(Vector Symbol) (new (Vector Symbol) g-arena))
             (when (!= (repl-build-args form "import-path" args) 0)
               (repl-apply-dirs args "import-path" g-include-paths
                                "  import path: " (f 'line))))
@@ -550,7 +551,7 @@
           (when (< (node-len f) 2)
             (repl-list-symbols g-library-paths)
             (return 1))
-          (let (args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+          (let (args:&(Vector Symbol) (new (Vector Symbol) g-arena))
             (when (!= (repl-build-args form "library-path" args) 0)
               (repl-apply-dirs args "library-path" g-library-paths
                                "  library path: " (f 'line))))
@@ -559,7 +560,7 @@
           (when (< (node-len f) 2)
             (repl-list-symbols g-loaded-libraries)
             (return 1))
-          (let (args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+          (let (args:&(Vector Symbol) (new (Vector Symbol) g-arena))
             (when (!= (repl-build-args form "load-library" args) 0)
               (repl-apply-libs args (f 'line))))
           (return 1))
@@ -567,7 +568,7 @@
           (when (< (node-len f) 2)
             (repl-error (f 'line) "pkg-config: missing package argument")
             (return 1))
-          (let (args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+          (let (args:&(Vector Symbol) (new (Vector Symbol) g-arena))
             (when (!= (repl-build-args form "pkg-config" args) 0)
               (repl-pkg-config args (f 'line))))
           (return 1))
@@ -589,7 +590,7 @@
 ; Read lines from stdin until parens are balanced, return the accumulated buffer,
 ; or `none` at EOF.
 (defn repl-read-input ():?String
-  (let ((buf String) (string-new)
+  (let ((buf String) (make String)
         depth:i32 0
         got-input:i32 0
         in-string:i32 0
@@ -1150,6 +1151,7 @@
                     ; every overloaded defn the library exports, which lives in
                     ; the generic registry rather than in g-globals.
                     (repl-backfill-progdefn-decls)
+                    (repl-backfill-progglobal-decls)
                     ; Add declares for newly imported functions to preamble
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
@@ -1398,7 +1400,7 @@
         ret-ir:StrView (abi-ret-ir ret-info (ftt 'ret)))
     ; Global pointer holding the address of the current implementation.
     (emit out "@" fname ".tgt = global ptr null\n")
-    (let ((ob String) (string-new)
+    (let ((ob String) (make String)
           os:&String &ob)
       (let (need-comma:i32 0)
         (when (= (ret-info 'kind) ABI-MEMORY)
@@ -1448,7 +1450,7 @@
     (let (pv:StrView (string-as-view g-repl-preamble))
       (when (= (strview-contains pv "declare i32 @printf") false)
         (emit out "declare i32 @printf(ptr, ...)\n")))
-    (let (ob:String (string-new)
+    (let (ob:String (make String)
           os:&String &ob)
       (let (need-comma:i32 0)
         (when (= (ret-info 'kind) ABI-MEMORY)
@@ -1489,7 +1491,7 @@
 ; The shim under its own resource tracker, returned so `untrace` can remove it.
 (defn jit-trace-module (line:i32 fname-ir:Symbol ft:?&Type):ptr
   (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib)
-        (s String) (string-new))
+        (s String) (make String))
     (emit s "; ModuleID = '<repl-trace>'\n")
     (emit s "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     (repl-put-preamble s (symbol-none))
@@ -1506,7 +1508,7 @@
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
 (defn jit-thunk-module (line:i32 fname-ir:Symbol ft:?&Type):void
-  (let ((s String) (string-new))
+  (let ((s String) (make String))
     (emit s "; ModuleID = '<repl-thunk>'\n")
     (emit s "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     ; The accumulated preamble carries the `%Name = type {…}` lines for every
@@ -1597,7 +1599,7 @@
   ; module's type buffer before it is captured.
   (drain-pending-union-irs)
   (repl-absorb-type-buf)
-  (let ((irs String) (string-new))
+  (let ((irs String) (make String))
     (emit irs "; ModuleID = '<repl>'\n")
     (emit irs "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     ; Preamble (accumulated types + declarations from includes), minus any
@@ -1725,6 +1727,15 @@
   (dotimes (i (unsafe/cast i32 (count g-program-defns)))
     (repl-preamble-declare-progdefn (invoke g-program-defns i:usize))))
 
+; The `defvar` half: a stamp drained in a later module (a library template that
+; reads `heap`, say) names the library's global, which no later module declares.
+(defn repl-backfill-progglobal-decls ():void
+  (doseq (pg g-program-globals (VecIter &ProgGlobal))
+    (when (and (not (symbol-none? (pg 'ty-ir)))
+               (= (repl-preamble-has-decl (pg 'ir-name)) 0))
+      (repl-preamble-note-decl (pg 'ir-name))
+      (emit g-repl-preamble (pg 'ir-name) " = external global " (pg 'ty-ir) "\n"))))
+
 ; Emit the bodies of every stamped instance, lifted lambda and closure
 ; invoke/drop queued since the last flush. `drain-mono-worklist`'s only compiler
 ; call site is the tail of `emit-toplevel-forms`, which a prompt entry never
@@ -1756,9 +1767,9 @@
         s-out:?&String g-out
         s-macro-decls:&(Vector Symbol) g-macro-decls
         s-prog-defns:&(Vector &ProgDefn) g-program-defns)
-    (set! g-type-stream (string-new))
-    (set! g-decl-stream (string-new))
-    (set! g-def-buf (string-new))
+    (set! g-type-stream (make String))
+    (set! g-decl-stream (make String))
+    (set! g-def-buf (make String))
     (open-module-streams)
     ; Before drain-pending-union-irs (repl-jit-module's first step): a drained
     ; body can stamp new parametric instances that then need their type lines.
@@ -1910,7 +1921,7 @@
 (defvar repl-rmacros:&(Vector RMacro) (read-macro-table-new))
 ; Reused, not rebuilt: a snapshot per top-level form would grow the arena forever.
 (defvar g-repl-generic-marks:&(Vector &GenericMark)
-  (vector-new-in &g-arena-alloc))
+  (new (Vector &GenericMark) g-arena))
 
 ; Every registry below is append-only, so dropping the tail is a true rollback.
 (defn repl-vec-truncate (v:&(Vector T) n:i32):void
@@ -2009,7 +2020,7 @@
           gi:i32 0)
       (while (< gi n)
         (when (>= gi have)
-          (conj g-repl-generic-marks (new GenericMark)))
+          (conj g-repl-generic-marks (new GenericMark g-arena)))
         (let (mk:&GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
               gg:&Generic (as &Generic (invoke g-generics gi:usize)))
           (set! (mk 'n-methods) (unsafe/cast i32 (count (gg 'methods))))
@@ -2233,7 +2244,7 @@
 (defn repl-pkg-config-words (out:&String into:&(Vector Symbol)):void
   (let (v:StrView (string-as-view out)
         n:i64 (as i64 (v 'len))
-        w:String (string-new)
+        w:String (make String)
         i:i64 0)
     (while (< i n)
       (let (c:i32 (text-byte-at v i))
@@ -2266,8 +2277,8 @@
 ; Both children succeed before anything is applied, then the batch order: cflags,
 ; `-L`, `-l`. What the REPL cannot use (`-pthread`) is named once, not dropped.
 (defn repl-pkg-config (pkgs:&(Vector Symbol) line:i32):void
-  (let (cf:String (string-new) cf-err:String (string-new)
-        lb:String (string-new) lb-err:String (string-new)
+  (let (cf:String (make String) cf-err:String (make String)
+        lb:String (make String) lb-err:String (make String)
         ok:i32 1)
     (let (st:i32 (repl-pkg-config-run pkgs "--cflags" &cf &cf-err))
       (when (!= st 0)
@@ -2279,11 +2290,11 @@
           (repl-error line (repl-pkg-config-failure &lb-err st))
           (set! ok 0))))
     (when (!= ok 0)
-      (let (cflags:&(Vector Symbol) (vector-new-in &g-arena-alloc)
-            libs:&(Vector Symbol) (vector-new-in &g-arena-alloc)
-            dirs:&(Vector Symbol) (vector-new-in &g-arena-alloc)
-            names:&(Vector Symbol) (vector-new-in &g-arena-alloc)
-            other:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+      (let (cflags:&(Vector Symbol) (new (Vector Symbol) g-arena)
+            libs:&(Vector Symbol) (new (Vector Symbol) g-arena)
+            dirs:&(Vector Symbol) (new (Vector Symbol) g-arena)
+            names:&(Vector Symbol) (new (Vector Symbol) g-arena)
+            other:&(Vector Symbol) (new (Vector Symbol) g-arena))
         (repl-pkg-config-words &cf cflags)
         (repl-pkg-config-words &lb libs)
         (dotimes (i (count libs))

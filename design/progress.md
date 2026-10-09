@@ -920,6 +920,103 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 24 — multi-conformance deferred (2026-10-09)
+
+The rule that a type conforms to a parametric protocol at most once stays. Its risks and the safe shape for lifting it are in [deferred/overview.md](deferred/overview.md), "A type conforms to a parametric protocol at most once". String's `&String` source stays an `init` overload.
+
+## Stage 24 — AL-6: the `Tracking` allocator (2026-10-08)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §9 AL-6, as built there. Uncommitted. `Tracking` (`parent:Alloc live:usize bytes:usize`, in `lib/nucleus/allocator.nuc`) forwards to its parent and counts outstanding allocations and bytes. Its `drop` reports a leak to stderr in FixedBuffer's style, and a `deallocate`/`reallocate` of more than is outstanding is reported and not forwarded.
+
+- **A new kind, `ALLOC-TRACKING`, rather than `ALLOC-CUSTOM`.** See §9 for why. Appended after `ALLOC-CUSTOM`, so no existing kind value moved.
+- **`Tracking` conforms to `Init`**, so `(make Tracking a)` is a tracker over `a`; a zero-filled one is over the heap.
+- **No compiler change, no boot refresh.** The compiler's own IR changes (it loads `allocator.nuc`), but the committed boot compiles the tree and `make bootstrap` reaches the fixed point.
+- **Gates.** `make test`: 1362 tests, 1357 pass, the 5 failures being the known `suite-target` datalayout tests. One new unit, `s24-tracking`. `make bootstrap` passes (stage1.ll == stage2.ll). `make check-headers` passes (91 headers; `allocator.h`/`allocator.nuch` regenerated). `make abi-test` and `make avr-test` (8/8) pass.
+- **The filed "user generic hijacks a lib parameter" bug bit again.** The first draft named the parameter `t`, and `s21-extend-alias-subject` defines `(defn t …)`; renamed to `tr`, noted in deferred/overview.md.
+
+---
+
+## Stage 24 — boot refresh + AL-4 (2026-10-08)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §9 AL-4, with the as-built deviations listed there. Uncommitted. The prefixed constructors are gone from `lib/`, `src/`, `examples/`, `tests/` and `docs/`; so are `default-allocator`, `libc-allocator`, `g-default-alloc`, `arena-allocator`, `g-arena-alloc` and arena's `new` macro.
+
+- **Two boot refreshes, no shims.** The first (from AL-3's tree) taught the boot `create.nuc`, `alignof` and `__init-then`. Then the compiler alone changed: `[…]`/`{}`/`#{}` lower to the one-argument `init`, and the box paths call `heap-allocate` directly. A second refresh carried that into the boot, so deleting `vector-init`/`hashmap-init`/`hashset-init`/`default-allocator` broke nothing. Both converged (boot == stage 1), and all three boot IRs were rewritten each time.
+- **Sites rewritten.**
+  - `src/`: 139 `*-new-in &g-arena-alloc` → `(new T g-arena)`, 74 arena `(new X)` → `(new X g-arena)`, 23 `(unsafe/cast &X (arena-alloc (sizeof X)))` → `(new X g-arena)`, and every `(string-new)` / `(strfmt-alloc)`.
+  - `lib/`: about 60 sites, all to `init` in place, because a library must not import `nucleus.create`.
+  - `tests/`: 130 by script plus about 25 by hand. `examples/`: 73 by script plus 10 by hand.
+- **Compiler fixes.** TC-3 now materializes a macro result into a `(ref S)` binding. Templates in `fmt.nuc` and `create.nuc` write `nucleus.allocator/init`, because a user `defn init` made bare `init` unresolvable by hygiene. That bug was live for `make`/`new` since AL-3. The empty-literal refusals now name `make`.
+- **Kept.** `string-from-view`, `string-from-cstr` and `string-from-cstr-unchecked`; `alloc-allocate`/`alloc-deallocate`. The collections size their buffers by `(alignof T)`.
+- **Gates.** `make bootstrap` passes (stage1.ll == stage2.ll). The suite has 1361 tests: 1356 pass, and the 5 failures are the known `suite-target` datalayout tests. `make check-headers` passes: 91 headers, 23 regenerated. `make abi-test` and `make avr-test` pass.
+- **For AL-6.** Library code that stores an allocator takes `Alloc` (from `handle`). A `Tracking` allocator therefore needs nothing beyond an `Allocator` conformance and a `handle` returning `ALLOC-CUSTOM`.
+
+---
+
+## Stage 24 — AL-2/AL-3 (2026-10-08)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §9 AL-2 and AL-3, with the as-built deviations listed there. Uncommitted. `make bootstrap` reaches its fixed point (stage1.ll == stage2.ll), so the boot was not refreshed. `make check-headers` passes: 91 generated headers, including the new `create.h`/`create.nuch`, with 10 others regenerated. The suite has 1361 tests: 1356 pass, and the 5 failures are the same `suite-target` datalayout tests as before.
+
+- **AL-2, library.** `allocator.nuc` has `Init`, `(InitFrom V)` and `(TryInitFrom V)`, with the last two extending `Init`, plus the generic `(init x)` → `(init x (handle &heap))`.
+  - `Vector`, `HashMap`, `HashSet` and `String` conform to `Init`.
+  - `Vector` conforms to `(InitFrom (Vector T))`.
+  - `String` conforms to `(InitFrom StrView)` (lossy, U+FFFD) and `(TryInitFrom (Vector ui8))` (strict).
+  - The other sources are `init` overloads: `&(Vector T)`, `&String` and `&(Vector ui8)`. A type conforms to a parametric protocol only once.
+  - `vector-init[-alloc]`, `hashmap-init[-alloc]`, `hashset-init[-alloc]` and `string-new[-alloc]` now wrap `init`.
+- **AL-3, library.** `lib/nucleus/create.nuc` (`nucleus.create`) has the `new`/`make` macros over a shared `create-form`.
+  - `(conforms? T Init)` picks between `init` and a struct literal or zero fill.
+  - A collection literal source becomes `init` plus one `conj`/`assoc` per element.
+  - The allocator operand goes through `handle` once.
+  - `new` zero-fills, exits on out-of-memory, and deallocates when `init` fails.
+- **Compiler.**
+  - `alignof` is a new special form (`emit-alignof`, with a `node-type` arm).
+  - `__init-then` is internal: `emit-init-then` in union-emit.nuc, with `init-then-type` in union-registry.nuc shared by `node-type`. It makes a `new`/`make` `!` exactly when the selected `init` returns `!void`.
+  - Qualified spellings now reach conformers' template methods (`ns-conforms-own-type?`, generics.nuc). Before this, `nucleus.coll/conj` on a not-yet-stamped `(Vector i32)` was "no matching method". So was every protocol call in a library macro's template.
+  - REPL: a library's globals are declared to later modules (`repl-backfill-progglobal-decls`).
+- **Tests.** `s24-new-make` covers:
+  - a plain struct with args and zero-filled;
+  - `alignof`;
+  - `TryInitFrom` both ok and err, including a refused `new` that hands its bytes back to a `FixedBuffer`;
+  - lossy `StrView`;
+  - Arena, FixedBuffer, `Alloc` and `heap` operands;
+  - copies, literals, the default `(init x)`, a user `Init` type, and `(make String)`;
+  - `with` drop order;
+  - `make` in a loop.
+
+  `s24-new-make-prefixed` and `s24-qualified-template-method` are new, plus five diagnostic rows (`s24-new-no-allocator`, `-make-two-values`, `-make-no-source`, `-new-not-allocator`, `-alignof-arity`).
+- **Docs.** allocators.md (new Init and new/make sections), collections.md, strings.md, special-forms.md/builtins.md/types.md (`alignof`), generics.md (template-method reach), compiler.md (REPL globals), index.md.
+- **For AL-4.** The boot cannot load `create.nuc`: it still has `make` as a special form, and lacks `alignof`/`__init-then`. Run `make update-bootstrap` first.
+
+---
+
+## Stage 24 — AL-1: allocators (2026-10-07)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §9 AL-1, with the as-built deviations listed there. Uncommitted. `make bootstrap` reaches its fixed point (stage1.ll == stage2.ll), so boot was not refreshed, and `make check-headers` passes after 15 generated headers were regenerated. The suite has 1353 tests: 1348 pass, and the 5 failures are the same `suite-target` datalayout tests as before.
+
+- **Library.** `lib/nucleus/allocator.nuc` now holds:
+  - the protocol, with `allocate`, `reallocate`, `deallocate` and `handle`;
+  - `Heap`/`heap`, which handles over-alignment through a slot before the pointer;
+  - `Arena`, a block chain over a parent `Alloc` that grows by doubling, with `arena-reset`, a rewind of the top allocation, and a `drop` that frees every block;
+  - `FixedBuffer`, with `fixed-buffer`, `frame-buffer` and a live count reported by `drop`;
+  - `Alloc`, with HEAP/ARENA/FIXED/CUSTOM, and `CustomAlloc`.
+
+  `AllocHandle` and `alloc-handle-*` are gone. `lib/nucleus/arena.nuc` is now one global `Arena`, `g-arena`, plus `arena-alloc`, `arena-bytes`, `arena-allocator` and `new`. The compiler's `g-arena-alloc` and strfmt's handle are constants `(Alloc ALLOC-ARENA &g-arena)`.
+- **Compiler.**
+  - A file reached only through `import-ct` (error → node → arena → allocator) now type-prescans its imports (`emit-toplevel-forms`).
+  - `emit-funcall-value` addrspacecasts a function-pointer callee on targets with a program address space (AVR).
+  - Synthesized cfn and box code calls `alloc-allocate`/`alloc-deallocate`.
+- **Tests.** Added `s24-allocators`, `s24-fixed-buffer-leak` and `s16-import-ct-nested-signature-types`. Three tests that named the old globals or mangled names were updated. `tests/repl/stdlib.in` imports `nucleus.arena` before `nucleus.error`, to avoid a REPL bug filed in [deferred/overview.md](deferred/overview.md).
+- **Found, not fixed** (filed in deferred, "Possible bugs"):
+  - a user generic hijacks a library parameter of the same name in head position;
+  - the REPL cannot really import a library that an earlier import ct-imported.
+
+## Stage 24 — AL-0a/AL-0b: two name collisions fixed (2026-10-07)
+
+[stage24-allocation/c-name-overloads.md](stage24-allocation/c-name-overloads.md). Uncommitted. `make bootstrap` reaches its fixed point. The suite has 1350 tests: 1345 pass, and the 5 failures are the same `suite-target` datalayout tests as before. The IR of 502 examples, tests and fixtures, and the compiler's own IR, match HEAD's, so boot was not refreshed.
+
+- **AL-0a.** A user `init` broke `for`. Hygiene's binder pass read `(let ~init …)` as a binding list and resolved `init` in its value slot to `user/init`. The "defined later" error named that invented reference. `qq-escaped?` now leaves an unquoted binder slot alone in `qq-resolve-binders` and both binder checks.
+- **AL-0b.** A `defn free (self:&Box)` took libc's key and symbol. Unless a user `defn` implements the C declaration, which needs Nucleus-level slot types where only a bare `ptr` writes `void *`, the C function now joins the generic as an `ir-fixed` `Method.c-decl` overload. This happens at C-import time (`c-finish-fn-decl`), in a `finalize-generics` hook for macro-made `defn`s, and for an explicit `declare`. A call that only one `defn` can take by arity is handled as a solitary call. At equal arity, the C method is `generic-resolve`'s last resort. The REPL keeps the CL-3 refusal.
+- **Tests.** Four new `s24-*` tests. `cl3-c-declaration-signature` now expects an overload where it expected a refusal. The `set-remove` workaround notes are gone.
+
 ## Stage 24 — allocation rulings (2026-10-07)
 
 [stage24-allocation/overview.md](stage24-allocation/overview.md) §10. Every ruling is as recommended:

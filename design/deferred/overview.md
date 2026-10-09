@@ -111,6 +111,31 @@ design/stage15-stress-test/progress.md. `as` now admits a float literal that rou
 accepted. One asymmetry survives on purpose: the implicit path still *rounds* `3.14` silently (W2d Option A) where `as` refuses it, because if `as` rounded too
 then nothing in the language would mean "this conversion is exact".
 
+**A user generic hijacks a library parameter of the same name in head position**
+(found 2026-10-07, Stage 24 AL-1). A library function whose parameter `f` is
+read as `(f 'off)` stops compiling when the program defines a `:where` generic
+named `f`. The head resolves to the generic, and the error names the quote:
+"quote needs the node runtime". A local binding should out-rank every global.
+`lib/nucleus/allocator.nuc` names its `FixedBuffer` parameter `fb` to stay clear
+of it, and its `Tracking` parameter `tr`: AL-6 first wrote `t`, which
+`s21-extend-alias-subject`'s `(defn t …)` hijacked.
+
+**The REPL cannot really import a library that an earlier import pulled in
+through `import-ct`** (found 2026-10-07, Stage 24 AL-1). `(import-use
+nucleus.error)` ct-imports `nucleus.node`, and with it `arena` and `allocator`.
+A later `(import-use nucleus.arena)` then reports each definition as "imported
+compile-time-only". The batch compiler resolves this order correctly
+(`s16-import-ct-real-import-wins-ct-first`). `tests/repl/stdlib.in` imports
+`nucleus.arena` before `nucleus.error` to avoid it.
+
+**Macros are not namespaced by their library** (found 2026-10-08, Stage 24 AL-3).
+Suppose two `import-use`d libraries both define a macro `new` (`nucleus.arena`
+and `nucleus.create`). The bare name expands whichever loaded first, and no
+diagnostic is given. A library macro also claims its name against a user
+`defn` even under a prefixed import: "'make' already names a function", at the
+library's line. AL-4 removes the arena's `new`. The general fix is to resolve
+macros by namespace, as functions are.
+
 
 ## Flow-sensitive typing
 
@@ -541,3 +566,55 @@ Both were ruled on 2026-10-07 to take the simpler option first
   `context.allocator`, rebound by a `(with-allocator a …)` form. Revisit once
   there is enough code to judge whether threading an allocator explicitly is a
   burden, or whether a hidden one would make call sites unclear.
+
+## A type conforms to a parametric protocol at most once
+
+Stage 11 made the one-record-per-(type, protocol) rule the associated-type
+coherence rule ([stage11/assoc-types.md](../stage11/assoc-types.md) §0, §5): a
+`:where ((Iterator E) I)` recovers `E` from `I`'s single record
+(`recover-one-constraint`, `src/generics.nuc`). Stage 24 ran into it: §5 of
+[stage24-allocation/overview.md](../stage24-allocation/overview.md) has `String`
+conform to both `(InitFrom StrView)` and `(InitFrom &String)`, which is refused
+(`re-extends protocol 'InitFrom' with different associated arguments`). The
+`&String`, `&(Vector ui8)` and `&(Vector T)` sources are therefore plain `init`
+overloads. `new`/`make` reach them through dispatch, but `conforms?` cannot see
+them.
+
+Risks of lifting the rule outright:
+
+- **Recovery goes silently wrong.** With two records, `conformance-args` returns
+  the first, so a generic infers the wrong parameter instead of failing.
+- **Some protocols cannot be multi-conformed at all.** A parameter that appears
+  only in a return type (`(Iterator E)`'s `next`) would give methods that differ
+  only by return type, which overload resolution cannot pick between.
+- **Lost error checking.** `(extend Foo (Seq i32))` then `(extend Foo (Seq i64))`
+  is an error today. It catches typos and two libraries disagreeing.
+- **Every registry site assumes one record**, and each would need the arguments
+  in its key:
+  - `conformance-find`, `-lookup` and `-args`;
+  - the re-extend path in `verify-conformance-params`;
+  - the `conforms?` argument comparison;
+  - the CQ-1b "no" records, where a no for `(InitFrom i32)` would refuse a later
+    `(InitFrom StrView)`;
+  - template conformances and `.nuch` replay.
+
+  A missed site answers wrongly rather than failing.
+- **Future `dyn`.** DP's vtable names would need the protocol arguments.
+
+**The safe shape**, if a second protocol needs this, is Rust's split between a
+trait's generic parameters and its associated types, inferred rather than
+declared:
+- Allow a second conformance only when every parameter appears in some method's
+  argument list. `InitFrom` and `TryInitFrom` qualify; `Iterator`, `Seq`, `Coll`
+  and `Assoc` keep the rule.
+- In a `:where` on such a protocol, pick the record using parameters the call
+  has already bound. Report ambiguity when a parameter is unbound and several
+  records exist; never take the first.
+- Add the arguments to the key at every site above.
+
+The compiler's own source has no multi-conformance, so a byte-identical boot
+gate applies.
+
+**Not wanted until** a second protocol needs it. Today it only makes `String`'s
+`&String` source visible to `conforms?`, and `(InitFrom StrView)` over
+`(string-as-view &s)` already copies a `String` losslessly.

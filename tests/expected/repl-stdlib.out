@@ -11,7 +11,8 @@ nuc> nuc> nuc> nuc>   imported nucleus.vector
 nuc>   20
 nuc>   555
 nuc>   2
-nuc> nuc> nuc> nuc>   imported nucleus.error
+nuc> nuc> nuc> nuc> nuc>   imported nucleus.arena
+nuc>   imported nucleus.error
 nuc>   nucleus.arena already imported
 nuc>   777
 nuc> 

@@ -12,6 +12,7 @@
 ; argument, deftype, and a macro argument.
 (import-use "stdio.h")
 (import-use nucleus.vector)
+(import-use nucleus.create)
 
 (defstruct Pt x:i32 y:i32)
 
@@ -52,11 +53,11 @@
   (match q ((some r) (return (rv-len r))) (none (return -1))))
 (defn give-mv (n:i32):?(Vector i32)
   (when (< n 0) (return none))
-  (let (v:(Vector i32) (vector-new))
+  (let (v:(Vector i32) (make (Vector i32)))
     (dotimes (i n) (conj &v i))
     (return (some v))))
 (defn give-rv (n:i32) !(Vector i32)
-  (let (v:(Vector i32) (vector-new))
+  (let (v:(Vector i32) (make (Vector i32)))
     (dotimes (i n) (conj &v i))
     (return (ok v))))
 (defn give-qr (n:i32):?!(Vector i32)
@@ -117,7 +118,7 @@
           h:Holder (Holder hm hr pp hq))
       (printf "field: %d %d %d %d\n" (mv-len (h 'mv)) (rv-len (h 'rv)) ((h 'link) 'y) (qr-len (h 'qr))))
     ; defunion arms.
-    (let (v0:(Vector i32) (vector-new)
+    (let (v0:(Vector i32) (make (Vector i32))
           s1:Slot (Slot held &v0)
           s2:Slot (Slot listed (as-ref &pt))
           s3:Slot (Slot empty))
@@ -149,7 +150,7 @@
     (let ((f (fn ?(Vector i32)) (?(Vector i32))) (fn (m:?(Vector i32)):?(Vector i32) (return m)))
       (printf "lambda: %d\n" (mv-len (f a))))
     ; lambda return of each nullable pointer kind: null, or the argument back.
-    (let (v1:(Vector i32) (vector-new)
+    (let (v1:(Vector i32) (make (Vector i32))
           nq (fn (p:&Pt):?&Pt (return null))
           rp (fn (p:&Pt):&Pt (return p))
           nv (fn (p:&(Vector i32)):?&(Vector i32) (return null))
@@ -160,9 +161,9 @@
                 (if (= (nv &v1) null) 1 0) (if (= (rv &v1) null) 0 1) (if (= (qv &v1) null) 1 0))
         (printf "lambda return: none\n")))
     ; template argument in let, in sizeof, and in a generic defn's pattern.
-    (let (vv:(Vector ?(Vector i32)) (vector-new)
-          vb:(Vector !(Vector i32)) (vector-new)
-          vq:(Vector ?Pt) (vector-new)
+    (let (vv:(Vector ?(Vector i32)) (make (Vector ?(Vector i32)))
+          vb:(Vector !(Vector i32)) (make (Vector !(Vector i32)))
+          vq:(Vector ?Pt) (make (Vector ?Pt))
           mp:?Pt (some pt))
       (conj &vv (give-mv 1))
       (conj &vv (give-mv -1))

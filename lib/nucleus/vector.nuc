@@ -6,20 +6,17 @@
 ; Design: design/stage11/collections.md §"Vector" + §"Memory model".
 ;
 ; ---------------------------------------------------------------------------
-; USAGE (the working construction pattern):
+; USAGE:
 ;
-;   (with (v:(ref (Vector i32)) (vector-new))   ; T inferred from declared type
-;     (conj v 10) (conj v 20)
-;     (printf "%d\n" (v 0))        ; index access -> 10
-;     ...)                      ; (drop v) fires here, freeing the buffer
+;   (with (v (make (Vector i32)))   ; nucleus.create; buffer from `heap`
+;     (conj &v 10) (conj &v 20)
+;     (printf "%d\n" (&v 0))       ; index access -> 10
+;     ...)                         ; (drop v) fires here, freeing the buffer
 ;
-; `vector-new` is a target-typed value constructor: T is bound from the
-; binding's declared type via the want channel (design/stage14/target-typed-
-; constructors.md), and the by-value result materializes into the declared
-; `(ref (Vector T))`. The `*-init` family below stays for caller-managed
-; storage (`(with ((v (ref (Vector T))) (alloca (Vector T))) (vector-init v) …)`);
-; `vector-new-in` allocates the struct itself through a handle and returns an
-; escapable ref. An owning collection may not escape by return without `move`.
+; Construction is the `Init` protocol (lib/nucleus/allocator.nuc): `(init v a)`
+; initialises a caller-owned `&(Vector T)` with buffers from `a`, `(init v)` from
+; the heap, and nucleus.create's `make`/`new` place one by value or through an
+; allocator. An owning collection may not escape by return without `move`.
 ; ---------------------------------------------------------------------------
 
 (ns nucleus.vector)
@@ -65,56 +62,14 @@
   (data ?&ui8)   ; list-form: (ptr ui8) is a parenthesised type
   len:usize
   cap:usize
-  alloc:AllocHandle)
+  alloc:Alloc)
 
-; ---------------------------------------------------------------------------
-; Constructors. Each takes a caller-owned (ref (Vector T)) to initialise in
-; place; T is inferred from the receiver. Returns void; the receiver is ready
-; to use afterwards.
-; ---------------------------------------------------------------------------
-
-; Initialise an empty Vector with the default (libc) allocator.
-(defn vector-init (v:&(Vector T)):void
-  (set! (v 'data) null)
-  (set! (v 'len) 0)
-  (set! (v 'cap) 0)
-  (libc-allocator (ref v 'alloc)))
-
-; Initialise an empty Vector with an explicit allocator handle (copied in).
-(defn vector-init-alloc (v:&(Vector T) a:&AllocHandle):void
-  (set! (v 'data) null)
-  (set! (v 'len) 0)
-  (set! (v 'cap) 0)
-  (set! (v 'alloc) @a))
-
-; ---------------------------------------------------------------------------
-; Value/heap constructors (target-typed — design/stage14/target-typed-
-; constructors.md). T is bound from the binding's declared type via the want
-; channel, so a zero-arg `(vector-new)` resolves at a typed position. The by-
-; value family materializes into a `(ref (Vector T))` binding (TC-3); the `-in`
-; family allocates the struct itself through the handle and returns an
-; escapable ref. The `*-init` family above stays for caller-managed storage.
-; ---------------------------------------------------------------------------
-; by value — stack/binding use (materializes into a declared (ref (Vector T)))
-(defn vector-new () (Vector T)
-  (let (r (alloca (Vector T)))
-    (vector-init r)
-    (return @r)))
-(defn vector-new-alloc (a:&AllocHandle) (Vector T)
-  (let (r (alloca (Vector T)))
-    (vector-init-alloc r a)
-    (return @r)))
-(defn vector-new-capacity (n:usize) (Vector T)
-  (let (r (alloca (Vector T)))
-    (vector-init-capacity r n)
-    (return @r)))
-; heap placement — struct allocated through the handle; returns an escapable ref.
-(defn vector-new-in (a:&AllocHandle):&(Vector T)
-  (let (v (unsafe/cast &(Vector T)
-             (alloc-handle-alloc a (sizeof (Vector T)) 8)))
-    (vector-init-alloc v a)
-    (return v)))
-
+; Init: an empty Vector whose buffer will come from `a`.
+(defn init (self:&(Vector T) a:Alloc):void
+  (set! (self 'data) null)
+  (set! (self 'len) 0)
+  (set! (self 'cap) 0)
+  (set! (self 'alloc) a))
 
 ; ---------------------------------------------------------------------------
 ; Internal: grow the buffer. Doubles capacity (or seeds 4 when empty),
@@ -127,9 +82,9 @@
         elem-size:usize (as usize (sizeof T)))
     (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
-          ah:&AllocHandle (ref v 'alloc))
+          ah:&Alloc (ref v 'alloc))
       (let ((new-data ?&ui8)
-            (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
+            (reallocate ah (_get v 'data) old-bytes new-bytes (as usize (alignof T))))
         (when (= (as ptr new-data) null) (vector-oom))
         (set! (v 'data) new-data)
         (set! (v 'cap) new-cap)))))
@@ -219,12 +174,6 @@
 (defn reserve (self:&(Vector T) n:usize):void
   (while (< (_get self 'cap) n) (vector-grow self)))
 
-; vector-init-capacity: initialise empty (default allocator) with >= n slots
-; reserved. The with-capacity constructor for known-size builds.
-(defn vector-init-capacity (v:&(Vector T) n:usize):void
-  (vector-init v)
-  (reserve v n))
-
 ; ---------------------------------------------------------------------------
 ; Bulk append. `conj` in a loop costs a bounds test, a capacity test and a call
 ; per element; these reserve once and copy once (design/stage17-native-strings/
@@ -257,13 +206,25 @@
 ; ---------------------------------------------------------------------------
 (extend (Vector T) (Seq T))
 (extend (Vector T) Drop)
+(extend (Vector T) Init)
+(extend (Vector T) (InitFrom (Vector T)))
+
+; InitFrom: a copy of `v`'s elements, in a buffer from `a`. The copy is bitwise,
+; as `conj` is; `v` is unchanged.
+(defn init (self:&(Vector T) a:Alloc v:&(Vector T)):void
+  (init self a)
+  (vector-extend self v))
+
+(defn init (self:&(Vector T) a:Alloc v:(Vector T)):void
+  (init self a)
+  (vector-extend self &v))
 
 (defn drop (self:&(Vector T)):void
   (when (!= (as ptr (_get self 'data)) null)
-    (alloc-handle-free (ref self 'alloc)
+    (deallocate (ref self 'alloc)
                        (_get self 'data)
                        (* (_get self 'cap) (as usize (sizeof T)))
-                       8))
+                       (as usize (alignof T))))
   (set! (self 'data) null)
   (set! (self 'len) 0)
   (set! (self 'cap) 0))

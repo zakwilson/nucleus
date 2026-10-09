@@ -12,6 +12,7 @@
 (import-use nucleus.strview-str)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
+(import-use nucleus.create)
 
 (extern stdout:ptr)
 
@@ -21,7 +22,7 @@
 (defn main ():i32
 
   ; ---- ToStr, one conformance per line ---------------------------------------
-  (let (s:String (string-new))
+  (let (s:String (make String))
     (to-str -9223372036854775808 s)         ; i64's minimum: negated unsigned
     (to-str \, s)
     (to-str 0 s)
@@ -39,7 +40,7 @@
 
   ; ---- str-into: append into an existing String -------------------------------
   (let (n:i64 3 m:i64 7
-        s:String (string-new))
+        s:String (make String))
     (str-into s "expected " n " args, got " m)
     (show s))
 
@@ -54,13 +55,11 @@
     (show one))
 
   ; ---- str-alloc: same, over a caller-chosen allocator ------------------------
-  (let (ah:&AllocHandle (alloca AllocHandle))
-    (arena-allocator ah)
-    (let (a:String (str-alloc ah "arena " 99))
-      (show a)))
+  (let (a:String (str-alloc g-arena "arena " 99))
+    (show a))
 
   ; ---- Writer: a String and a FILE* take the same bytes -----------------------
-  (let (w:String (string-new))
+  (let (w:String (make String))
     (write-str w (strview-from-cstr "to a String"))
     (show w))
 

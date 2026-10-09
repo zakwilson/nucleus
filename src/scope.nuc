@@ -12,21 +12,15 @@
 
 (import-use nucleus.string)
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.vector)
 (import-use nucleus.intern)
 (import-use nucleus.strview)
 (import-use nucleus.hashmap)
 (import-use nucleus.intern-str)
 (defn scope-new (parent:?&Scope):&Scope
-  ; The Vector is bound before it is stored rather than written inline through
-  ; an `(as (ref (Vector (ref Cleanup))) …)`: a binding is a declared-type
-  ; position the want channel has always armed, so `vector-new-in`'s return-only
-  ; tyvar is inferred from the annotation regardless of which element type the
-  ; unit stamped first. (`emit-as` arms the want too as of Stage 15 W8 G-5, but
-  ; this spelling does not depend on that and is clearer about where T comes
-  ; from.)
-  (let (s:&Scope (new Scope)
-        cs:&(Vector &Cleanup) (vector-new-in &g-arena-alloc))
+  (let (s:&Scope (new Scope g-arena)
+        cs:&(Vector &Cleanup) (new (Vector &Cleanup) g-arena))
     (set! (s 'parent) parent)
     (set! (s 'cleanup-slots) cs)
     (return s)))
@@ -90,7 +84,7 @@
 ; The global frame's newest slot per key, so a reference probe costs O(1) — a
 ; namespaced unit probes each flattened namespace. A hit is verified: a Sym may be
 ; re-keyed in place, and a REPL rollback truncates the frame.
-(defvar g-globals-index:&(HashMap Symbol i32) (hashmap-new-in &g-arena-alloc))
+(defvar g-globals-index:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
 
 ; The indexed answer for the global frame: 1 found at `*out`, 0 absent, -1 unknown.
 (defn globals-index-find (sc:ptr:Scope key:Symbol public:bool out:&?&Sym):i32
@@ -220,7 +214,7 @@
 (defn intern-string (sv:StrView):i32
   (let (p:&StrView &sv
         id:i32 (unsafe/cast i32 (count g-strs))
-        sl:&StrLit (unsafe/cast &StrLit (arena-alloc (sizeof StrLit))))
+        sl:&StrLit (new StrLit g-arena))
     (set! (sl 'bytes) (strview (unsafe/cast &ui8
                                  (arena-bytes (as ptr (p 'data)) (p 'len)))
                                (p 'len)))
@@ -271,26 +265,26 @@
 
 (defn ensure-emit-buffers ():void
   (when (= g-emit-buffers-ready 0)
-    (set! g-entry-stream (string-new))
-    (set! g-body-stream (string-new))
-    (set! g-type-stream (string-new))
-    (set! g-decl-stream (string-new))
-    (set! g-def-buf (string-new))
-    (set! g-repl-preamble (string-new))
+    (set! g-entry-stream (make String))
+    (set! g-body-stream (make String))
+    (set! g-type-stream (make String))
+    (set! g-decl-stream (make String))
+    (set! g-def-buf (make String))
+    (set! g-repl-preamble (make String))
     (set! g-emit-buffers-ready 1)))
 
 (defn reset-function-state ():void
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)
-  (set! g-lbl-tbl (unsafe/cast &(Vector &LabelEntry) (vector-new-in &g-arena-alloc)))
+  (set! g-lbl-tbl (new (Vector &LabelEntry) g-arena))
   (set! g-cur-fname "")
   (set! g-fn-ret-abi null)
   (set! g-fn-sret-name "")
   (set! g-fn-ret-type null)
   (set! g-init-fn-active 0)
   (set! g-loop-depth 0)
-  (set! g-nundo (vector-new-in &g-arena-alloc))
+  (set! g-nundo (new (Vector &NarrowUndo) g-arena))
   (inc! g-narrow-gen-next)
   (set! g-narrow-gen g-narrow-gen-next)
   (ensure-emit-buffers)
@@ -310,7 +304,7 @@
 ; Kept adjacent to `reset-function-state` deliberately — a global added there
 ; and not here is the drift this placement exists to make obvious.
 (defn push-function-state ():&FnState
-  (let (s:&FnState (unsafe/cast &FnState (arena-alloc (sizeof FnState))))
+  (let (s:&FnState (new FnState g-arena))
     (set! (s 'tmp) g-tmp)
     (set! (s 'label) g-label)
     (set! (s 'block-term) g-block-term)
@@ -326,8 +320,8 @@
     ; which would clear the outer function's buffer if it were still installed.
     (set! (s 'entry-stream) (string-box g-entry-stream))
     (set! (s 'body-stream) (string-box g-body-stream))
-    (set! g-entry-stream (string-new))
-    (set! g-body-stream (string-new))
+    (set! g-entry-stream (make String))
+    (set! g-body-stream (make String))
     (set! (s 'abi-gpr-left) g-abi-gpr-left)
     (set! (s 'abi-fpr-left) g-abi-fpr-left)
     (set! (s 'abi-varargs) g-abi-varargs)
@@ -419,7 +413,7 @@
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return null))
-  (let (pd:&ProgDefn (unsafe/cast &ProgDefn (arena-alloc (sizeof ProgDefn))))
+  (let (pd:&ProgDefn (new ProgDefn g-arena))
     (set! (pd 'ir-name) irn)
     (set! (pd 'ret) ret)
     (set! (pd 'ptypes) ptypes)
@@ -454,7 +448,7 @@
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-global-lookup irn)) null) (return null))
-  (let (pg:&ProgGlobal (unsafe/cast &ProgGlobal (arena-alloc (sizeof ProgGlobal))))
+  (let (pg:&ProgGlobal (new ProgGlobal g-arena))
     (set! (pg 'ir-name) irn)
     (set! (pg 'ty-ir) (symbol-none))
     (set! (pg 'is-const) is-const)

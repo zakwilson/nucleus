@@ -18,6 +18,7 @@
 ; explicit path: a bare (import-use nucleus.list) resolves to examples/list.nuc.
 (import-use "lib/nucleus/list.nuc")
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; node with no name is simply a zeroed one.
@@ -29,7 +30,7 @@
 (defn main ():i32
   ; ===== 1. Vector (i32) =====
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v) (conj v 10) (conj v 20) (conj v 30) (conj v 40)
+    (init v) (conj v 10) (conj v 20) (conj v 30) (conj v 40)
     (let ((it (VecIter i32)) (iter v))
       (let ((m (Vector i32)) (map (vfn (x:i32):i32 (return (/ x 10))) &it))
         (printf "vec map0=%d\n" (&m 0)) (drop &m)))

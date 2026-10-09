@@ -15,6 +15,7 @@
 
 (import-use nucleus.error)
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.coll)
@@ -101,9 +102,9 @@
 
 (defn command (prog:StrView):Command
   (let (c:&Command (alloca Command))
-    (set! (c 'buf) (string-new))
-    (vector-init (ref c 'offs))
-    (vector-init (ref c 'envs))
+    (init (ref c 'buf))
+    (init (ref c 'offs))
+    (init (ref c 'envs))
     (set! (c 'cwd-off) -1)
     (set! (c 'search) true)
     (set! (c 'capture) false)
@@ -227,8 +228,8 @@
   (return (self 'pid)))
 
 (defn spawn (self:&Command):!Process
-  (let (argv:(Vector ptr) (vector-new)
-        envp:(Vector ptr) (vector-new)
+  (let (argv:(Vector ptr) ((Vector ptr))
+        envp:(Vector ptr) ((Vector ptr))
         has-env:bool (> (count (ref self 'envs)) 0)
         prog:ptr null
         cwd:ptr null
@@ -240,6 +241,8 @@
         in-fd:i32 -1
         op:&i32 (as &i32 (alloca i32 2))
         ep:&i32 (as &i32 (alloca i32 2)))
+    (init &argv)
+    (init &envp)
     (command-argv self &argv)
     (when has-env (command-envp self &envp))
     (set! prog (invoke &argv 0))
@@ -481,8 +484,8 @@
   (let (o:&Output (alloca Output)
         p:Process (try (spawn self)))
     (set! (o 'status) (ExitStatus-exited 0))
-    (set! (o 'out) (string-new))
-    (set! (o 'err) (string-new))
+    (init (ref o 'out))
+    (init (ref o 'err))
     (match (process-capture &p (ref o 'out) (ref o 'err))
       (ok
        (match (process-wait &p)

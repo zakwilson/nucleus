@@ -226,7 +226,7 @@
 ;
 ; Example:
 ;   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
-;     (vector-init v) (conj v 1) (conj v 2)
+;     (init v) (conj v 1) (conj v 2)
 ;     (doseq (x v (VecIter i32)) (printf "%d\n" x)))
 (defmacro doseq (binding :rest body)
   ; binding is (var coll-expr IterType). (iter coll-expr) yields an IterType

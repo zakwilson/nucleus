@@ -2,6 +2,7 @@
 (ns nucleus.process)
 (import-use nucleus.error)
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.coll)

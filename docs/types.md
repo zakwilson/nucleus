@@ -13,7 +13,7 @@ A typed pointer is normally `&T` (non-null) or `?&T` (nullable, checked). `(ptr 
 
 Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `&x`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
 
-In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
+In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alignof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
 **In value position, `name:type` is an `as` cast.** `baz:CStr` means `(as CStr baz)` — so the same annotation spelling declares a type in a binding position, *names* a type in a type position, and *converts* in a value position, chosen by where it appears:
 
@@ -80,7 +80,7 @@ Both the sugared `:` syntax and the canonical list form are accepted in all bind
 **Multi-binding `let`.** A single `let` accepts any number of name/init pairs in one flat binding list — both `:` sugar and list forms compose freely in the same binding list:
 
 ```lisp
-(let ((a (ref AllocHandle)) (alloca AllocHandle)
+(let ((a (ref Alloc)) (alloca Alloc)
       (v (ref (Vector i32))) (alloca (Vector i32))
       n:i32 7)
   ...)
@@ -160,7 +160,7 @@ position — parameter, return, `defstruct` field, `defvar` name, `let`, `with`:
 (defn tally (m:SymTab):Count (return (as Count (count m))))
 (defn main ():i32
   (with (m:SymTab (alloca (HashMap CStr i32)))
-    (hashmap-init m)
+    (init m)
     (printf "%ld\n" (tally m)))
   (return 0))
 ```
@@ -1097,7 +1097,7 @@ A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, maki
 
   ; Keywords as HashMap keys.
   (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m :a 1)
     (assoc m :b 2)
     (match (hmap-get m :a)

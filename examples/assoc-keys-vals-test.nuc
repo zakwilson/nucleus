@@ -15,7 +15,7 @@
 
 (defn main ():i32
   (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m 1 10)
     (assoc m 2 20)
     (assoc m 3 30)

@@ -11,6 +11,7 @@
 (import-use nucleus.string)
 (import-use nucleus.intern)
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.read)
 (defn make-type (k:i32):&Type
   (let (t:&Type (alloc-type))
@@ -163,7 +164,7 @@
       (set! (prev 'provisional) 0)
       (return))
     0)
-  (let (e:&CTypedef (new CTypedef))
+  (let (e:&CTypedef (new CTypedef g-arena))
     (set! (e 'name) name)
     (set! (e 'ty) (as ?&Type ty))
     (set! (e 'file) file)

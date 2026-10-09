@@ -6,11 +6,7 @@
 /* Generated from lib/nucleus/hashset.nuc by nucleusc --emit-cheader */
 
 void nuc_hashset_oom(void) asm("nuc_hashset-oom");
-/* hashset-init: generic template; not exported */
-/* hashset-init-alloc: generic template; not exported */
-/* hashset-new: generic template; not exported */
-/* hashset-new-alloc: generic template; not exported */
-/* hashset-new-in: generic template; not exported */
+/* init: generic template; not exported */
 /* hashset-resize: generic template; not exported */
 /* insert: generic template; not exported */
 /* contains?: generic template; not exported */

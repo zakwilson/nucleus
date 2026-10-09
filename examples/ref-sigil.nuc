@@ -21,6 +21,7 @@
 (import-use nucleus.node)
 (import-use nucleus.vector)
 (import-use nucleus.allocator)
+(import-use nucleus.create)
 
 (defstruct Point
   x:i32
@@ -53,7 +54,7 @@
 
 ; The keyword-led return spelling, with `&` on the paren form.
 (defn only (p:&Point) :&(Vector &Point)
-  (let (v:&(Vector &Point) (vector-new-in (default-allocator)))
+  (let (v:&(Vector &Point) (new (Vector &Point) heap))
     (conj v p)
     (return v)))
 
@@ -65,7 +66,7 @@
         bp:&Point &b
         pp:&&Point &ap
         h:Holder (Holder bp 7)
-        v:&(Vector &Point) (vector-new-in (default-allocator)))
+        v:&(Vector &Point) (new (Vector &Point) heap))
     (conj v ap)
     (conj v bp)
     (printf "sum-xy=%d\n" (sum-xy &a))

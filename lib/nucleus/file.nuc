@@ -19,6 +19,7 @@
 (import-use nucleus.string-errors)
 (import-use nucleus.char)
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
@@ -62,7 +63,8 @@
 ; open(2) wants a NUL-terminated path and a StrView is not one, so the path is
 ; copied. Unchecked: a path is bytes, not necessarily UTF-8.
 (defn file-open-flags (path:&StrView flags:i32 mode:i32):!File
-  (let (buf:String (string-new))
+  (let (buf:String (String))
+    (init &buf)
     (string-push-str-unchecked buf path)
     (let (fd:i32 (open (string-as-cstr buf) flags mode))
       (drop &buf)
@@ -103,9 +105,10 @@
 ; because the compiler reads source files whose encoding is the *program's*
 ; problem to diagnose, not the reader's to refuse.
 (defn file-read-to-string (self:&File):!String
-  (let (out:String (string-new)
+  (let (out:String (String)
         buf:&ui8 (as &ui8 (alloca ui8 FILE-CHUNK))
         go:bool true)
+    (init &out)
     (while go
       (let (n:i64 (as i64 (read (self 'fd) (as ptr buf) FILE-CHUNK)))
         (when (< n 0)
@@ -127,7 +130,8 @@
 (defn buf-writer (f:File):BufWriter
   (let (b:&BufWriter (alloca BufWriter))
     (set! (b 'out) f)
-    (set! (b 'buf) (string-with-capacity BUF-WRITER-CAP))
+    (init (ref b 'buf))
+    (string-reserve (ref b 'buf) BUF-WRITER-CAP)
     (return @b)))
 
 (defn flush (self:&BufWriter):!void
@@ -252,8 +256,8 @@
     (let (e:&DirEntries (alloca DirEntries)
           seen:i32 0
           ent:ptr (readdir d))
-      (set! (e 'buf) (string-new))
-      (vector-init (ref e 'offs))
+      (init (ref e 'buf))
+      (init (ref e 'offs))
       (while (!= ent null)
         (let (nm:StrView (strview-from-cstr
                            (as CStr (unsafe/ptr+ (unsafe/cast &i8 ent) DIRENT-D-NAME-OFFSET))))
