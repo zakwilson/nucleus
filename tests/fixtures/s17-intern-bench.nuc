@@ -25,7 +25,7 @@
 (import-use nucleus.vector)
 (import-use nucleus.allocator)
 (import-use nucleus.intern)
-(import-use nucleus.intern-str)
+(import-use nucleus.intern-str) (import-use nucleus.create)
 
 (defconst N-NAMES 20000)
 (defconst N-LOOKUPS 20)
@@ -42,8 +42,8 @@
   ; Strings are deliberately never dropped — the corpus outlives every loop.
   ; Both shapes are kept: the CStr the compiler passes today, and the StrView it
   ; will pass after the conversion, where the length is already carried.
-  (let (cstrs:(ref (Vector ptr)) (vector-new-in (default-allocator))
-        views:(ref (Vector StrView)) (vector-new-in (default-allocator)))
+  (let (cstrs:(ref (Vector ptr)) (new (Vector ptr) heap)
+        views:(ref (Vector StrView)) (new (Vector StrView) heap))
     (dotimes (i N-NAMES)
       (let (s:String (str "nucleus-symbol-name-" i)
             cs:CStr (string-as-cstr s))

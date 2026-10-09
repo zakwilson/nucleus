@@ -1,0 +1,110 @@
+; nucleus.create — `new` and `make`: an object in one call
+; (design/stage24-allocation/overview.md §6).
+;
+;   (new T a args…)   ; → &T, the object's own bytes from allocator a
+;   (make T a args…)  ; → T by value; storage it owns comes from a
+;   (make T)          ; (make T heap)
+;
+; A type that conforms to `Init` (or to `InitFrom`/`TryInitFrom`, which extend
+; it) is initialized with `(init p (handle a) args…)`; any other type is built
+; like a struct literal, or zero-filled when there are no args. The templates
+; spell `nucleus.allocator/init` so a caller's own `init` cannot shadow it.
+
+(ns nucleus.create)
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+
+(extern stderr:ptr)
+
+; An arena's blocks are zero already.
+(defn create-bytes (a:&Alloc size:usize align:usize):&ui8
+  (let ((p ?&ui8) (alloc-allocate a size align))
+    (when (= (as ptr p) null)
+      (fprintf stderr "new: out of memory\n")
+      (exit 1))
+    (when (!= (a 'kind) ALLOC-ARENA)
+      (memset (as ptr p) 0 size))
+    (return (unsafe/cast &ui8 (as ptr p)))))
+
+(defn create-zero (p:ptr size:usize):void
+  (memset p 0 size))
+
+(defmacro new (t :rest args)
+  (when (= (ast-len args) 0)
+    (macro-error t "new: name the allocator, as in (new T heap)"))
+  `(create-form 1 ~t ~@args))
+
+(defmacro make (t :rest args)
+  (if (= (ast-len args) 0)
+    `(create-form 0 ~t heap)
+    `(create-form 0 ~t ~@args)))
+
+; MODE is 1 for `new`, 0 for `make`. A collection literal is the source only as
+; elements: initializing from the temporary it builds would leak its buffer.
+(defmacro create-form (mode t a :rest vals)
+  (let (n:i32 (ast-len vals)
+        is-new:i32 (if (= (mode 'i) 1) 1 0)
+        h (gensym)
+        p (gensym)
+        lit:i32 0
+        v (ast-at vals 0))
+    (when (= n 1)
+      (let (hd (ast-first v))
+        (when (and (= (v 'kind) NODE-LIST) (!= hd null) (= (hd 'kind) NODE-SYM))
+          (let (s:ptr (as ptr ((hd 's) 'p)))
+            (cond (= s (as ptr (('vector-lit 's) 'p))) (set! lit 1)
+                  (= s (as ptr (('hashset-lit 's) 'p))) (set! lit 1)
+                  (= s (as ptr (('hashmap-lit 's) 'p))) (set! lit 2))))))
+    (let (slot (if (= is-new 1)
+                 `((~p (ref ~t)) (unsafe/cast (ref ~t)
+                                   (create-bytes (ref ~h) (as usize (sizeof ~t))
+                                                 (as usize (alignof ~t)))))
+                 `((~p (ref ~t)) (alloca ~t)))
+          result (if (= is-new 1) p `(deref ~p)))
+      (when (and (> n 1) (conforms? t Init))
+        (macro-error (ast-at vals 1)
+          "new/make: an Init type takes one value after the allocator"))
+      (cond
+        (not (conforms? t Init))
+          (cond (= n 0)
+                  (if (= is-new 1)
+                    `(let ((~h Alloc) (handle ~a) ~@slot) ~p)
+                    `(let ((~h Alloc) (handle ~a) ~@slot)
+                       (create-zero ~p (as usize (sizeof ~t)))
+                       (deref ~p)))
+                (= is-new 1)
+                  `(let ((~h Alloc) (handle ~a) ~@slot) (set! (deref ~p) (~t ~@vals)) ~p)
+                true
+                  `(let ((~h Alloc) (handle ~a)) (~t ~@vals)))
+        (= n 0)
+          `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~result)
+        (= lit 1)
+          (let (steps (ast-rest v)
+                i:i32 0
+                m:i32 (ast-len (ast-rest v))
+                (acc ?&Node) null)
+            (while (< i m)
+              (set! acc `(~@acc (conj ~p ~(ast-at steps i))))
+              (set! i (+ i 1)))
+            `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~@acc ~result))
+        (= lit 2)
+          (let (steps (ast-rest v)
+                i:i32 0
+                m:i32 (ast-len (ast-rest v))
+                (acc ?&Node) null)
+            (while (< (+ i 1) m)
+              (set! acc `(~@acc (assoc ~p ~(ast-at steps i) ~(ast-at steps (+ i 1)))))
+              (set! i (+ i 2)))
+            `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~@acc ~result))
+        (= is-new 1)
+          `(let ((~h Alloc) (handle ~a) ~@slot)
+             (__init-then (nucleus.allocator/init ~p ~h ~v) ~p
+               (alloc-deallocate (ref ~h) (unsafe/cast ?&ui8 ~p) (as usize (sizeof ~t))
+                                 (as usize (alignof ~t)))))
+        true
+          `(let ((~h Alloc) (handle ~a) ~@slot)
+             (__init-then (nucleus.allocator/init ~p ~h ~v) (deref ~p)))))))

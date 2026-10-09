@@ -45,7 +45,7 @@
 ;     its own protocol's method.
 ;
 ; Boxing happens here rather than in the libraries because a file with an
-; explicit `(ns …)` cannot currently reach `default-allocator` — see the note in
+; explicit `(ns …)` could not reach the box allocator — see the note in
 ; lib/nsdescribe.nuc.
 ;
 ; What this file does NOT pin, and was once misread as pinning (§9.4 → §9.5):

@@ -1,13 +1,6 @@
-; Arena allocator.
-;
-; Self-contained: declares its own globals and includes the libc functions it
-; needs. Initialization is lazy — the first call to arena-alloc allocates the
-; first block, so programs that never allocate from the arena pay no malloc
-; cost.
-;
-; The arena is growable: when the current block is full, a new block is
-; allocated. Old blocks remain valid (pointers into them are never
-; invalidated).
+; The process-lifetime arena: one `Arena` (lib/nucleus/allocator.nuc) that
+; nothing ever drops, plus the zeroed, never-null `arena-alloc` the compiler and
+; the node runtime allocate through.
 
 (ns nucleus.arena)
 
@@ -15,47 +8,16 @@
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(defconst ARENA-SIZE 16777216)
+(import-use nucleus.allocator)
 
-(defvar g-arena:ptr)
-(defvar g-arena-used:i64 0)
-(defvar g-arena-cap:i64 0)
-
-(defn arena-init ():void
-  (set! g-arena (malloc (as i64 ARENA-SIZE)))
-  (when (= g-arena null)
-        (do (perror "arena malloc") (exit 1)))
-  (set! g-arena-used 0)
-  (set! g-arena-cap (as i64 ARENA-SIZE)))
-
-(defn arena-grow (min-size:i64):void
-  (let (new-cap:i64 g-arena-cap)
-    (while (< new-cap min-size)
-      (set! new-cap (* new-cap 2)))
-    (let (new-arena:ptr (malloc new-cap))
-      (when (= new-arena null)
-        (do (perror "arena grow") (exit 1)))
-      (set! g-arena new-arena)
-      (set! g-arena-used 0)
-      (set! g-arena-cap new-cap))))
+; Zero-filled: an empty arena over the heap. The first allocation makes a block.
+(defvar g-arena:Arena)
 
 (defn arena-alloc (n:i64):ptr
-  (when (= g-arena-cap 0)
-    (arena-init))
-  (set! n (bit-and (+ n 7) -8))
-  (when (> (+ g-arena-used n) g-arena-cap)
-    (arena-grow n))
-  (let (p:ptr (unsafe/ptr+ (unsafe/cast &i8 g-arena) g-arena-used))
-    (set! g-arena-used (+ g-arena-used n))
-    (memset p 0 n)
-    (return p)))
-
-; (new T) — allocate one zeroed T from the arena, typed (ref T).
-;   (new Scope)  =>  (unsafe/cast &Scope (arena-alloc (sizeof Scope)))
-; arena-alloc aborts on exhaustion rather than return null, which is the
-; assertion the cast makes.
-(defmacro new (T)
-  `(unsafe/cast &~T (arena-alloc (sizeof ~T))))
+  (let ((p ?&ui8) (arena-allocate &g-arena (unsafe/cast usize n) 8))
+    (when (= (as ptr p) null)
+      (do (perror "arena-alloc") (exit 1)))
+    (return (as ptr p))))
 
 ; `n` bytes copied into the arena, so a borrowed buffer's contents can outlive
 ; it. Was `arena-strndup`, which also wrote a NUL its one caller never read.

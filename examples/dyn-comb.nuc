@@ -32,7 +32,7 @@
 
 (defn main ():i32
   (with (v:&(Vector (dyn Render)) (alloca (Vector (dyn Render))))
-    (vector-init v)
+    (init v)
     (let (c:(dyn Render) (Circle 5)
           s:(dyn Render) (Square 4)
           l:(dyn Render) (Label 7))

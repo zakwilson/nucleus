@@ -206,13 +206,18 @@
 ; String)` and the caller has to name the String anyway.
 (defmacro str (:rest parts)
   (let (s:ptr (gensym))
-    `(let ((~s String) (string-new))
+    ; Init's namespace reaches every conformer and nothing else, so a caller's
+    ; own `init` cannot make the name ambiguous.
+    `(let ((~s String) (String))
+       (nucleus.allocator/init &~s)
        (str-into ~s ~@parts)
        ~s)))
 
-; Same, over an explicit allocator handle — an arena's String costs no free.
+; Same, over an explicit allocator — anything `handle` takes. An arena's String
+; costs no free.
 (defmacro str-alloc (a :rest parts)
   (let (s:ptr (gensym))
-    `(let ((~s String) (string-new-alloc ~a))
+    `(let ((~s String) (String))
+       (nucleus.allocator/init &~s (handle ~a))
        (str-into ~s ~@parts)
        ~s)))

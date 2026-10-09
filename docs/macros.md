@@ -99,7 +99,10 @@ main.nuc:6: error: cannot bind 'mylib/count': a binding name may not be qualifie
 
 To bind the caller's name, write `~'count`. For example, a template that defines
 a protocol method for the caller's type does this. For a fresh local, use
-`(gensym)`.
+`(gensym)`. A binder slot that is itself an unquote, as in `(let ~bindings …)`
+or `(fn ~params …)`, holds the caller's code and is left alone like any other
+unquote. A caller's `let` can therefore bind a name the macro's file defines,
+such as `init` or `params`.
 
 Messages, `macroexpand` and REPL output show the expansion as it is, and it
 re-reads: pasting a `macroexpand` result back into a file compiles.
@@ -165,7 +168,7 @@ A value may be written `(:or v ...)`, which matches any one of the listed values
 
 The **keyword head is what marks the list** — a plain parenthesised value stays an ordinary expression, evaluated and compared like any other, so `(case x (f y) r d)` still calls `f`. That is why the marker exists at all: the values people group are overwhelmingly bare enum constants (`TY-STRUCT`, `NODE-SYM`), which are indistinguishable from a call's head, so nothing about the elements themselves can decide it ([case-alternatives.md](../design/stage16-ergonomics/case-alternatives.md)). Alternatives are ordinary expressions, each compared with the same `=`; `form` is re-evaluated once per alternative, and an empty `(:or)` is false, matching no value.
 
-`(import-use nucleus.arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. `arena-alloc` returns an unchecked bare `ptr`, and `as` refuses to make that non-null, so the macro asserts it with `unsafe/cast` — true because `arena-alloc` aborts rather than return null. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use nucleus.arena)`.
+`(import-use nucleus.create)` provides `(new T a args…)` — allocate one `T` from allocator `a` (`g-arena`, `heap`, …), typed `(ref T)`, and initialize it — and `(make T a args…)`, its by-value twin. Both are library macros; see [allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make).
 
 ## Variadic Arithmetic
 

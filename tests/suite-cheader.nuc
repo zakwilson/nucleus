@@ -20,6 +20,7 @@
 (import-use nucleus.string-split)
 (import-use nucleus.file)
 (import-use nucleus.fmt)
+(import-use nucleus.create)
 (defn asm-label (l:StrView):StrView
   (let (m:StrView "asm(\"")
     (match (strview-find &l &m)
@@ -365,7 +366,7 @@ int main(void) {
   (let (dir:StrView (try (test-scratch))
         base:CLib (try (c-lib "w37base" (w37-base)))
         use:CLib (try (c-lib "w37use" (w37-use)))
-        stripped:String (string-new)
+        stripped:String (make String)
         nl:StrView "\n"
         text:StrView (c-lib-text &use)
         it:SplitIter (strview-split &text &nl))
@@ -412,7 +413,7 @@ int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
   (let (r:CcCheck (try (c-consumer-syntax "."
 "#include \"lib/nucleus/string.h\"
 int main(void) {
-    nuc_String s = nuc_string_new();
+    nuc_String s = nuc_string_from_cstr_unchecked(\"hi\");
     struct nuc_StrView v = nuc_string_as_view(&s);   /* imported struct, by value */
     (void)nuc_eq_nuc_String_nuc_String(s, s);        /* and by-value parameters */
     (void)v;

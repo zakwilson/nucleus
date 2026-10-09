@@ -16,7 +16,7 @@
 ;
 ;  - A parameter or return type spelled as a parenthesised form must use the
 ;    list binding form: `(self (ref Self))`, NOT `self:(ref Self)`. A colon
-;    CHAIN with no parens DOES tokenise: `ptr:Self`, `ref:AllocHandle`.
+;    CHAIN with no parens DOES tokenise: `ptr:Self`, `ref:Alloc`.
 ;  - usize is the pointer-sized unsigned index/length type.
 ;  - Dispatch is STATIC (no vtables). A conformance is verified at stamp time
 ;    and a bound call lowers to a direct monomorphized call.

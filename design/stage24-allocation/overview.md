@@ -3,7 +3,9 @@
 **Status: designed 2026-10-07; Q1–Q6 ruled 2026-10-07 (§10), every one as
 recommended.** Built so far: `conforms?` (CQ-1…CQ-4,
 [conformance-query.md](conformance-query.md)) and keyword-free union
-construction, which freed `make`. AL-0 is next. Q5 and Q6 are to be revisited
+construction, which freed `make`. AL-0 through AL-4 and AL-6 are built
+(AL-2/AL-3/AL-4/AL-6 2026-10-08); AL-5 remains gated on DP and a borrowing
+`dyn` (§9). Q5 and Q6 are to be revisited
 after use ([deferred/overview.md](../deferred/overview.md)).
 The brief's "stack" allocator is named `FixedBuffer` (ruled 2026-10-07): it is a
 bump allocator over any borrowed buffer, and only the `frame-buffer` macro puts
@@ -146,7 +148,7 @@ placement for free.
 
 - **Rename the methods.** The new names avoid the libc collision (§2.1) without
   waiting on a compiler fix. They also read better next to `drop`. The
-  collision itself is still a bug and is recorded in §9 AL-0b.
+  collision itself was a bug, fixed by §9 AL-0b.
 - **`align` is honored.** Every built-in allocator must return memory with the
   requested alignment. It is no longer advisory.
 - **`handle`** returns the type-erased value a collection stores (§4.3). This
@@ -233,8 +235,8 @@ There are three ways to provide that:
 ```
 
 - **One method name, `init`.** §2.5 showed that protocols sharing a method name
-  at different arities work. Prerequisite: AL-0a must fix the `for` macro first,
-  because today a function named `init` breaks it.
+  at different arities work. AL-0a fixed the `for` macro, which a function
+  named `init` used to break.
 - **`a` is the storage allocator** (§3). A type that owns no buffers ignores
   `a`.
 - **Omitting the allocator.** One generic in the library supplies the default:
@@ -400,11 +402,16 @@ would also give up the reason to choose an arena.
   reports that `init` is defined later when it is defined earlier. Find the
   cause in macro-body compilation, not by renaming the parameter. Add a
   regression test that defines a user `init` and uses `for` and `dotimes`.
+  **Built 2026-10-07** ([c-name-overloads.md](c-name-overloads.md) §1): hygiene
+  rewrote the unquoted binder slot `~init` to `user/init`.
 - **AL-0b. Make a user method named after a libc function overload it instead of
   replacing it (§2.1).** The library should not need this once the allocator
   methods are renamed, but it is still a bug. User code hits it with `free`,
   `remove` and `realloc`. `docs/collections.md` already works around
   `set-remove` for this reason.
+  **Built 2026-10-07** ([c-name-overloads.md](c-name-overloads.md) §2): unless a
+  user `defn` implements it, the C function joins the generic as one more
+  overload.
 - **AL-1. Allocators.** Rename the protocol methods and add `handle`. Honor
   alignment. Add `Heap` (with `heap`), `Arena` (with `arena-reset`, a block
   chain, and a parent allocator), `FixedBuffer` (with `fixed-buffer`, the `frame-buffer` macro,
@@ -412,20 +419,185 @@ would also give up the reason to choose an arena.
   `CUSTOM` kinds. Every allocator extends `Allocator` and `Drop`. The compiler's
   arena becomes the global `Arena` `g-arena`. Existing call sites change only by
   the rename.
+  **Built 2026-10-07.** Docs: `docs/allocators.md`. As built, it differs from §4 in these ways:
+  - **Kind names keep the `ALLOC-` prefix** (`ALLOC-HEAP` … `ALLOC-CUSTOM`).
+    A bare `HEAP` would be a global enumerator in every importer.
+  - **`Alloc` dispatches through plain functions**: `alloc-allocate`,
+    `alloc-reallocate` and `alloc-deallocate`, which `Alloc`'s methods call.
+    Compiler-synthesized cfn-environment and box code names them, because a
+    generic has no single symbol. `Alloc` is not `Drop`, since it borrows.
+  - **A CUSTOM handle points at a `CustomAlloc`**: `instance` plus three plain
+    function pointers, each taking `instance` first. The table must outlive the
+    handle; keeping it inside the allocator does that. A function name cannot
+    be a constant initializer, so the table is filled in at run time.
+  - **`Arena`** is `first cur off block-size parent:Alloc`.
+    - A zero-filled `Arena` is an empty arena over the heap, so `g-arena` needs
+      no initializer. `arena-in parent block-size` is the constructor.
+    - The default blocks start at 8192 words and double to 256× that, or stay
+      at 8192 words where `usize` is 16 bits. A non-zero `block-size` is a
+      minimum.
+    - Memory is zero-filled, because `arena-alloc`'s callers (the compiler,
+      `new`) rely on it.
+    - `arena-reset` keeps the chain; allocation reuses later blocks before it
+      asks the parent for more.
+  - **"Most recent" means `p + size` equals the bump pointer**, for both `Arena`
+    and `FixedBuffer`, as in Zig, so there is no `last` field. Alignment padding
+    between two allocations stops the earlier one from popping after the later
+    one does.
+  - **"Checked" outstanding count.** The language has no checked or debug build
+    (only `-O`N). So `FixedBuffer.live` is kept in every build, at one add per
+    call, and `drop` prints `FixedBuffer: dropped with N live allocation(s)` to
+    stderr without aborting. If a checked mode is added later, the count moves
+    under it.
+  - **Collections still request align 8.** There is no `alignof`, and the
+    element type's alignment is AL-2's business. `Heap` serves 8 from
+    `malloc` directly.
+  - **`arena-allocator` moved to `arena.nuc`**, beside the `g-arena` it names.
+    `default-allocator` and `libc-allocator` stay in `allocator.nuc`, returning
+    `&Alloc`, for AL-4 to retire.
+  - **Two compiler fixes the library needed.**
+    - `nucleus.error` ct-imports `nucleus.node`, which now reaches `allocator`
+      through `arena`. A file reached only through `import-ct` now type-prescans
+      its imports (`emit-toplevel-forms`).
+    - The CUSTOM arm is the first indirect call in code that AVR compiles
+      (node.nuc). `emit-funcall-value` now `addrspacecast`s the callee into the
+      target's program address space.
+  - **Two pre-existing bugs found and filed** in deferred/overview.md, "Possible
+    bugs": a parameter shadowed by a user generic in head position, and REPL
+    import after `import-ct`.
 - **AL-2. `Init`, `InitFrom` and `TryInitFrom`,** plus conformances for the four
-  collections and the default-allocator generic.
+  collections and the default-allocator generic. **Built 2026-10-08.** As built:
+  - **The protocols, and `(init x)`, are in `allocator.nuc`.** `InitFrom` and
+    `TryInitFrom` extend `Init`. A `conforms?` must name a parametric protocol's
+    argument, so it cannot ask "InitFrom of anything". The inheritance makes
+    `(conforms? T Init)` the one gate `new`/`make` need.
+  - **One conformance per parametric protocol.** Stage 11 made a protocol's
+    arguments associated types (stage11/assoc-types.md, "Multi-conformance with
+    differing args ... stays forbidden"). So `String` cannot conform to both
+    `(InitFrom StrView)` and `(InitFrom &String)`, which §5 lists. As built,
+    `String` conforms to `(InitFrom StrView)` and `(TryInitFrom (Vector ui8))`.
+    The `&String` and `&(Vector ui8)` sources are `init` overloads, and `Vector`'s
+    `&(Vector T)` copy is one too. `new`/`make` reach overloads through
+    dispatch, so only `conforms?` sees the difference. **Deferred 2026-10-09**
+    with its risks and a safe shape: [deferred/overview.md](../deferred/overview.md),
+    "A type conforms to a parametric protocol at most once".
+  - **`(InitFrom StrView)` is lossy** (U+FFFD per undecodable byte), because §5
+    lists it as infallible and §6's `(make String buf "key")` binds in a `with`.
+    §7's row for `string-from-view`, which says "fallible through
+    `TryInitFrom`", contradicts §5. AL-4 should keep `string-from-view`
+    callers that rely on refusal on `string-from-view`, or move them to the
+    `(Vector ui8)` source.
+  - **The old functions wrap `init`:** `vector-init[-alloc]`,
+    `hashmap-init[-alloc]`, `hashset-init[-alloc]` and `string-new[-alloc]`.
+    Collections still request align 8. Using `alignof` in a library the
+    compiler imports waits for the boot refresh (below).
+  - **Compiler fix 1: qualified template-method reach.** A full name for a
+    protocol method, such as `nucleus.coll/conj`, filtered out every
+    conformer's *generic* method. `method-answers-protocol-here` skipped
+    `METHOD-GENERIC`. Hygiene writes that full name for every protocol call in
+    a library macro's template, so `(init p h)` inside `make` failed on a
+    `(Vector T)` instance that had not been stamped yet. A template method is
+    now reached when its namespace conforms one of its own types to the
+    protocol (`ns-conforms-own-type?`).
+  - **Compiler fix 2: REPL library globals.** A library's `defvar`s were never
+    declared to later REPL modules. `vector-init` reading `heap` broke the
+    `repl-stdlib`/`repl-generics` units, since the stamp is drained in a later
+    module. `repl-backfill-progglobal-decls` is the `defvar` half of
+    `repl-backfill-progdefn-decls`.
 - **AL-3. `new` and `make` (§6),** as library macros over `conforms?` (Q2).
   Union construction no longer uses the name. Tests cover a plain struct, each kind of `init`, a `!` from
   `TryInitFrom`, and `with` drop order with an allocator bound in the same form.
+  **Built 2026-10-08.** As built:
+  - **`lib/nucleus/create.nuc` (`nucleus.create`), not `allocator.nuc`.** A
+    library macro named `new` or `make` claims the bare name in every program
+    that loads it ("already names a function"). The compiler and many programs
+    load `allocator.nuc`, so the macros get a module that is imported only
+    deliberately.
+  - **Two new compiler forms.** `alignof` mirrors `sizeof` and reads
+    `abi-alignof`. `(__init-then CALL VALUE [UNDO])` exists because a macro
+    cannot see whether the selected `init` returns `!void`. It emits CALL once
+    and spills it. A Result makes the form `(ok VALUE)`, or runs UNDO and gives
+    back CALL's error; anything else makes it VALUE. `init-then-type`
+    (union-registry.nuc) is the shared rule for `node-type` and the emitter.
+  - **The allocator operand is anything `handle` accepts.** A binding or global
+    is passed by address implicitly, and a pointer passes as itself. It is
+    evaluated once into an `Alloc` local, and that handle goes to `init`. An
+    rvalue is refused, because the handle would point into a temporary.
+  - **`new` zero-fills** (an arena's blocks already are), exits on
+    out-of-memory, and deallocates on an `init` error. `make` uses an entry-block
+    `alloca`, so it is safe in a loop.
+  - **A collection literal is a source of elements:** `init` then `conj`/`assoc`
+    per element. Initializing from `[…]`'s temporary would leak its heap buffer.
+  - **Coexistence.** In a file that `import-use`s both `nucleus.arena` and
+    `nucleus.create`, whichever loads first holds the bare `new`, with no
+    diagnostic, so use a prefix for create (`(import nucleus.create c)`).
+  - **The boot cannot load `create.nuc`.** It still has `make` as a special
+    form, and it knows neither `alignof` nor `__init-then`. AL-4 starts with
+    `make update-bootstrap` from this tree. After that, `src/` can
+    `(import-use nucleus.create)`. Delete arena's `new` in the same step, or
+    import create with a prefix.
 - **AL-4. Sweep the codebase.** Remove the prefixed constructors from `lib/`,
   `src/`, `examples/` and `tests/` (§7), and the arena `new` macro. Boot shims
   stay until the boot is refreshed. Confirm that the compiler's globals such as
   `g-structs` still initialize the same way. Update the docs: `allocators.md`,
   `collections.md` (including the stale §2.4 line) and `strings.md`.
+
+  **Built 2026-10-08.** Every name §7 lists is gone, plus `g-arena-alloc`,
+  `strfmt-alloc`, `g-read-alloc` and `g-test-alloc`. Deviations from the plan:
+  - **Two boot refreshes, no shims.** The first taught the boot `create.nuc`.
+    The compiler lowered `[…]`/`{}`/`#{}` to `vector-init`/`hashmap-init`/
+    `hashset-init` and boxed through `default-allocator`; those now lower to the
+    one-argument `init` and to `heap-allocate`, and a second refresh carried that
+    into the boot before the functions were deleted.
+  - **`lib/` does not import `nucleus.create`.** A library macro claims its bare
+    name in every program that loads its file (deferred/overview.md "Macros are
+    not namespaced by their library"), so a library using `make` would refuse a
+    user `defn make`. Library modules `init` a zero literal in place
+    (`(let (s:String (String)) (init &s) …)`) or build an arena table with a
+    small helper. `src/` does import it: 139 `*-new-in &g-arena-alloc` sites
+    became `(new T g-arena)`, 74 arena `(new X)` became `(new X g-arena)`, and
+    23 `(unsafe/cast &X (arena-alloc (sizeof X)))` sites became `(new X g-arena)`.
+    `g-structs` and the other registries are still built by `@__nucleus_init`
+    and `assert-compiler-arena-backed` still holds.
+  - **Library templates spell `nucleus.allocator/init`.** `user` is flattened
+    into every file, so a user `defn init` made a bare `init` in `str`,
+    `str-alloc` and `create-form` unresolvable by hygiene. The protocol's
+    namespace reaches every conformer and nothing else. This was a live AL-3 bug
+    for `make`/`new` too.
+  - **TC-3 materializes a macro result.** `(v:&(Vector i32) (make (Vector i32)))`
+    was refused because `node-type` cannot see through a macro;
+    `tc3-emit-binding-init` now materializes whenever the emitted value is the
+    by-value struct.
+  - **`string-from-cstr[-unchecked]` stay.** `String` has no `init` from a `CStr`,
+    and the pair parallels `string-from-view` as the strict/unchecked entry points.
+  - **Empty-literal refusals** name `(make (Vector T))` etc. from `nucleus.create`.
+  - **SE-2's test** pinned `vector-new-in`'s stamps; it now defines its own
+    return-only-tyvar constructor.
 - **AL-5 (gated on DP and a borrowing `dyn`).** Change `Alloc` to
   `(dyn &Allocator)` and retire the `CUSTOM` kind.
 - **AL-6 (optional).** The `Tracking` allocator. Q1 ruled out
   `FinalizingArena`.
+  **Built 2026-10-08.** Docs: `docs/allocators.md`. As built:
+  - **`Tracking` is `parent:Alloc live:usize bytes:usize`** in `allocator.nuc`.
+    It forwards to the parent and counts successful allocations and their
+    bytes; a `reallocate` moves `bytes` by the difference. A zero-filled
+    `Tracking` is over the heap, and it conforms to `Init`, so
+    `(make Tracking a)` is a tracker over `a`. The counts are read as fields.
+  - **A new kind, `ALLOC-TRACKING`, not `ALLOC-CUSTOM`.** CUSTOM would need a
+    `CustomAlloc` table inside the tracker, filled in by `handle` at run time,
+    plus three adapter functions. Every call would also be indirect, which AVR
+    compiles too. A kind is three `case` arms and direct calls. The kind is
+    appended, so no existing value moved. AL-5 retires it with the others.
+  - **`drop` reports, as `FixedBuffer`'s does.** It prints
+    `Tracking: dropped with L live allocation(s) of B byte(s)` to stderr and
+    does not abort. It does not drop the parent, which it borrows. There is no
+    checked build, so the count is always on.
+  - **Over-freeing is caught where it is cheap.** A `deallocate`, or a
+    `reallocate` of a non-null block, that would take more than `live`/`bytes`
+    holds is reported and not forwarded. That catches a double free once the
+    rest is freed, and an oversized `size`. Catching every double free, or a
+    size that is merely wrong, needs a record per allocation, which this does
+    not keep.
 
 ## 10. Questions for a ruling
 

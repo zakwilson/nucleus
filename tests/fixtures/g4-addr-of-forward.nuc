@@ -4,7 +4,7 @@
 ; when `g`'s `defvar` comes later. A global's address is a link-time constant
 ; that requires no initialization to have happened — G-1 folds it to a bare
 ; `@g` — and this compiler's own source depends on the property
-; (`(vector-new-in &g-arena-alloc)`). Reading the *value* is what gets
+; (`(new (Vector T) g-arena)` takes `&g-arena`). Reading the *value* is what gets
 ; a zero; taking the address does not.
 ;
 ; The forward `&g` in a CONSTANT initializer is already covered by

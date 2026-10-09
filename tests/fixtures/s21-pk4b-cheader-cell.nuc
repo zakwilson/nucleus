@@ -4,16 +4,16 @@
 ; `void* r_cell(...)` — a by-value tagged struct declared as a pointer — and the
 ; niche pointer `?&Pt` rendered `void*` outside a struct field while
 ; `(Maybe &Pt)` was refused as a template instance. One question, one answer.
-(import-use nucleus.vector)
+(import-use nucleus.vector) (import-use nucleus.create)
 (defstruct Pt x:i32 y:i32)
 (defstruct Diagnostic line:i32)
 
 (defn r-sym (n:i32):!(Vector Diagnostic)
-  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+  (let (v:(Vector Diagnostic) (make (Vector Diagnostic))) (return (ok v))))
 (defn r-cell (n:i32) (! (Vector Diagnostic))
-  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+  (let (v:(Vector Diagnostic) (make (Vector Diagnostic))) (return (ok v))))
 (defn r-list (n:i32) (Result (Vector Diagnostic) Err)
-  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+  (let (v:(Vector Diagnostic) (make (Vector Diagnostic))) (return (ok v))))
 
 (defn q-sym (q:?&Pt):?&Pt (return q))
 (defn q-cell ((q (? (ref Pt)))) (? (ref Pt)) (return q))

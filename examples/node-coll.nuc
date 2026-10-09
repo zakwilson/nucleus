@@ -10,6 +10,7 @@
 (import-use nucleus.coll)
 (import-use nucleus.iterator)
 (import-use nucleus.vector)
+(import-use nucleus.allocator)
 
 (defn show (label:CStr xs:&Node):void
   (printf "%s" label)
@@ -35,7 +36,7 @@
 
     ; `into`, both ways, through a Vector of nodes.
     (with (v:&(Vector &Node) (alloca (Vector &Node)))
-      (vector-init v)
+      (init v)
       (into v xs NodeIter)
       (printf "vector-count=%d\n" (unsafe/cast i32 (count v)))
       (let (ys:&Node (node-list-new 0))

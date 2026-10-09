@@ -1,0 +1,4 @@
+; `new` places the object in memory from an allocator, so it must name one.
+(import-use nucleus.create)
+(defstruct Pt x:i32 y:i32)
+(defn main ():i32 (let (p:&Pt (new Pt)) (return (p 'x))))

@@ -18,7 +18,7 @@
   ; 1. Basic CStr insert / contains? / set-remove
   ; ----------------------------------------------------------------
   (with (s:&(HashSet CStr) (alloca (HashSet CStr)))
-    (hashset-init s)
+    (init s)
 
     (insert s "dog")
     (insert s "cat")
@@ -45,7 +45,7 @@
   ;    all members are still reachable after rehashing.
   ; ----------------------------------------------------------------
   (with (r:&(HashSet i32) (alloca (HashSet i32)))
-    (hashset-init r)
+    (init r)
     (insert r 1) (insert r 2) (insert r 3) (insert r 4) (insert r 5)
     (insert r 6) (insert r 7) (insert r 8) (insert r 9)
     (printf "count after 9 inserts: %llu\n" (as ui64 (count r)))  ; 9
@@ -66,10 +66,10 @@
 
   ; --- union ---
   (with (a:&(HashSet i32) (alloca (HashSet i32)))
-    (hashset-init a)
+    (init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
     (with (b:&(HashSet i32) (alloca (HashSet i32)))
-      (hashset-init b)
+      (init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (union a b)
       (printf "union count: %llu\n" (as ui64 (count a)))       ; 6
@@ -79,10 +79,10 @@
 
   ; --- intersection ---
   (with (a:&(HashSet i32) (alloca (HashSet i32)))
-    (hashset-init a)
+    (init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
     (with (b:&(HashSet i32) (alloca (HashSet i32)))
-      (hashset-init b)
+      (init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (intersection a b)
       (printf "intersection count: %llu\n" (as ui64 (count a))) ; 2
@@ -92,10 +92,10 @@
 
   ; --- difference ---
   (with (a:&(HashSet i32) (alloca (HashSet i32)))
-    (hashset-init a)
+    (init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
     (with (b:&(HashSet i32) (alloca (HashSet i32)))
-      (hashset-init b)
+      (init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (difference a b)
       (printf "difference count: %llu\n" (as ui64 (count a)))  ; 2
@@ -108,7 +108,7 @@
   ;    Sum is order-independent so output is deterministic.
   ; ----------------------------------------------------------------
   (with (s:&(HashSet i32) (alloca (HashSet i32)))
-    (hashset-init s)
+    (init s)
     (insert s 10) (insert s 20) (insert s 30) (insert s 40) (insert s 50)
     ; doseq dispatches generically over the Coll: (iter s) yields a HashSetIter.
     (let (sum:i32 0

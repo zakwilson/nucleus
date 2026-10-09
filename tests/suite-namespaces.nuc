@@ -347,12 +347,12 @@
 (defstruct Pt x:i32 y:i32)
 (defprotocol Areal (area ((self (ref Self))) i32))
 "))
-  (let (m:String (try (test-write-file "b3a-use.nuc" "(import-use nucleus.vector)
+  (let (m:String (try (test-write-file "b3a-use.nuc" "(import-use nucleus.vector) (import-use nucleus.create)
 (import-prefixed b3a-lib bx)
 (defn area ((self (ref bx/Pt))):i32 (return (* (_get self 'x) (_get self 'y))))
 (extend bx/Pt bx/Areal)
 (defn main ():i32
-  (with (v:(ref (Vector (ref bx/Pt))) (vector-new))
+  (with (v:(ref (Vector (ref bx/Pt))) (make (Vector (ref bx/Pt))))
     (let (a:(ref bx/Pt) (bx/Pt 3 4) b:(ref bx/Pt) (bx/Pt 5 6) t:i32 0)
       (conj v a)
       (conj v b)
@@ -1343,10 +1343,10 @@
 (deftest an2-core-link-name-collision
   (let (c:String (try (test-write-file "an2-clash.nuc" "(import-use nucleus.arena)
 (defstruct StrView a:i32)
-(defvar g-arena-used:i64 7)
+(defvar g-arena:i64 7)
 (defn main ():i32
   (let (s:StrView (StrView 5))
-    (return (+ (s 'a) (unsafe/cast i32 g-arena-used)))))
+    (return (+ (s 'a) (unsafe/cast i32 g-arena)))))
 ")))
     (try (w1-exit (string-as-view &c) 12))
     (drop &c))
@@ -1561,13 +1561,15 @@
 " 2 "'counter' links as @counter, the symbol of 'counter' at "))
   (return (ok)))
 
-; A definition of a C-declared name must match the declaration; then it is the
-; program implementing it.
+; A definition with a C-declared name's signature is the program implementing it;
+; with another signature it is an overload beside the C function (Stage 24 AL-0b).
 (deftest cl3-c-declaration-signature
-  (try (an2-refused "cl3-puts.nuc" "(import-use \"stdio.h\")
+  (let (m:String (try (test-write-file "cl3-puts.nuc" "(import-use \"stdio.h\")
 (defn puts (s:i64):i64 (return s))
-(defn main ():i32 (return 0))
-" 2 " declares as i32 (ptr), not i64 (i64) — match that declaration, or rename it"))
+(defn main ():i32 (puts \"x\") (return (unsafe/cast i32 (puts 4))))
+")))
+    (try (w1-exit (string-as-view &m) 4))
+    (drop &m))
   (let (m:String (try (test-write-file "cl3-puts-ok.nuc" "(import-use \"stdio.h\")
 (defn puts (s:CStr):int (return 5))
 (defn main ():i32 (return (puts \"x\")))

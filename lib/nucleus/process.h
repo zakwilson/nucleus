@@ -33,7 +33,7 @@ typedef struct nuc_Vector_usize {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_usize;
 #endif
 
@@ -66,7 +66,7 @@ typedef struct nuc_Vector_ptr {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_ptr;
 #endif
 

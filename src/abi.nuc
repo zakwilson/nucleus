@@ -1,4 +1,5 @@
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
@@ -299,7 +300,7 @@
 ; the same shape from a flat param array for the `declare`-conflict message.
 (defn fn-type-spelling (ft:?&Type):StrView
   (let (f:ptr:Type ft
-        (acc String) (str-alloc (strfmt-alloc) "("))
+        (acc String) (str-alloc g-arena "("))
     (dotimes (j (f 'num-params))
       (when (!= j 0) (str-into acc ", "))
       (str-into acc (type-display ((field-at (f 'params) j) 'type))))
@@ -347,7 +348,7 @@
     (let (nv:StrView (symbol-as-view (s 'name))
           st?:bool (strview-has-prefix nv "__anon_struct_h"))
       (when (or st? (strview-has-prefix nv "__anon_union_h"))
-        (let ((acc String) (str-alloc (strfmt-alloc) (if st? "(struct" "(union")))
+        (let ((acc String) (str-alloc g-arena (if st? "(struct" "(union")))
           (dotimes (i (s 'num-fields))
             (let (f:&Field (field-at (s 'fields) i))
               (str-into acc " " (f 'name) ":" (type-display (f 'type)))))
@@ -376,7 +377,7 @@
     (when (and (= n 2) (core-named? name "Result")
                (= (-> (aref (unsafe/cast &ptr args) 1) (unsafe/cast &Type _) (_ 'kind)) TY-ERR))
       (return (fstr "!" (type-display a0))))
-    (let ((acc String) (str-alloc (strfmt-alloc) "(" (display-key name)))
+    (let ((acc String) (str-alloc g-arena "(" (display-key name)))
       (dotimes (i n)
         (str-into acc " " (type-display (unsafe/cast ptr:Type (aref (unsafe/cast &ptr args) i)))))
       (str-into acc ")")
@@ -399,9 +400,9 @@
 ; identity match); types are the raw Type* pointers. This is the single
 ; array→Vector conversion point for every StructDef builder.
 (defn struct-set-fields (sd:&StructDef fnames:ptr ftypes:ptr nfields:i32):void
-  (let (fields-vec:&(Vector &Field) (vector-new-in &g-arena-alloc))
+  (let (fields-vec:&(Vector &Field) (new (Vector &Field) g-arena))
     (dotimes (i:i32 nfields)
-      (let (rec:&Field (new Field))
+      (let (rec:&Field (new Field g-arena))
         (set! (rec 'name) (aref (unsafe/cast &Symbol fnames) i))
         (set! (rec 'type) (as ?&Type (aref (unsafe/cast &ptr ftypes) i)))
         (conj fields-vec rec)))
@@ -469,9 +470,9 @@
 ; was dead storage). Shared by `type-set-params` and the BoxedFn signature-token
 ; builder (union-registry.nuc), which must walk the same element shape.
 (defn make-param-vec (ptypes:ptr np:i32):&(Vector &Field)
-  (let (pv:&(Vector &Field) (vector-new-in &g-arena-alloc))
+  (let (pv:&(Vector &Field) (new (Vector &Field) g-arena))
     (dotimes (i:i32 np)
-      (let (rec:ref:Field (new Field))
+      (let (rec:ref:Field (new Field g-arena))
         (set! (rec 'name) (symbol-none))
         (set! (rec 'type) (as ?&Type (aref (unsafe/cast &ptr ptypes) i)))
         (conj pv rec)))
@@ -1025,7 +1026,7 @@
 ; `off1` carries the second member's own offset — 4 for `{i32,f32}` and
 ; `{float[2]}`, NOT the SysV second eightbyte.
 (defn abi-riscv-fp-classify (t:?&Type info:&AbiInfo gpr:i32 fpr:i32):i32
-  (let (f:&RvFlat (unsafe/cast &RvFlat (arena-alloc (sizeof RvFlat))))
+  (let (f:&RvFlat (new RvFlat g-arena))
     (set! (f 'cnt) 0)
     (rv-flatten-type t 0 f)
     (let (n:i32 (f 'cnt))
@@ -1074,7 +1075,7 @@
 ; same struct is `ptr byval align 16` going in and `x86_fp80` coming out
 ; (measured against clang). Every other rule here is position-independent.
 (defn abi-classify-avail (t:ptr:Type gpr:i32 fpr:i32 is-arg:i32):&AbiInfo
-  (let (info:&AbiInfo (unsafe/cast &AbiInfo (arena-alloc (sizeof AbiInfo))))
+  (let (info:&AbiInfo (new AbiInfo g-arena))
     (set! (info 'kind) ABI-DIRECT)
     (set! (info 'reg0) "")
     (set! (info 'reg1) "")
@@ -1872,7 +1873,7 @@
 (defn register-struct (name:Symbol):&StructDef
   (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)
     (eprint "nucleusc: too many structs\n") (exit 1))
-  (let (sd:&StructDef (new StructDef))
+  (let (sd:&StructDef (new StructDef g-arena))
     (set! (sd 'name) name)
     ; SM-4 + Stage 15 B3′: precompute the LLVM-safe type name once. `name` is
     ; the CANONICAL key, so the prefix is derived from the key's own namespace —

@@ -19,6 +19,7 @@
 (import-use nucleus.string-errors)
 (import-use nucleus.char)
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.fmt)
@@ -82,7 +83,7 @@
 ; module, including one that never prints.
 (defn io-buf-begin ():&String
   (when (= g-io-buf-ready 0)
-    (set! g-io-buf (string-new))
+    (init &g-io-buf)
     (set! g-io-buf-ready 1))
   (string-clear &g-io-buf)
   (return &g-io-buf))
@@ -146,8 +147,9 @@
 ; The next line from standard input, without its terminator, or `none` at end of
 ; input. A final line with no newline is still returned.
 (defn read-line ():?String
-  (let (out:String (string-new)
+  (let (out:String (String)
         any:i32 0)
+    (init &out)
     (while true
       (when (>= g-in-pos g-in-len)
         (when (= (io-in-fill) 0)

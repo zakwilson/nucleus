@@ -14,7 +14,7 @@ typedef struct nuc_Vector_u8 {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_AllocHandle alloc;
+    struct nuc_Alloc alloc;
 } nuc_Vector_u8;
 #endif
 
@@ -23,9 +23,6 @@ typedef struct nuc_String {
 } nuc_String;
 
 struct nuc_StrView nuc_string_as_view(struct nuc_String* self) asm("nuc_string-as-view");
-struct nuc_String nuc_string_new(void) asm("nuc_string-new");
-struct nuc_String nuc_string_new_alloc(struct nuc_AllocHandle* a) asm("nuc_string-new-alloc");
-struct nuc_String nuc_string_with_capacity(size_t n) asm("nuc_string-with-capacity");
 void nuc_string_push_bytes_raw(struct nuc_String* self, uint8_t* p, size_t n) asm("nuc_string-push-bytes-raw");
 void nuc_string_push_char(struct nuc_String* self, uint32_t c) asm("nuc_string-push-char");
 void nuc_string_push_str_unchecked(struct nuc_String* self, struct nuc_StrView* s) asm("nuc_string-push-str-unchecked");
@@ -40,6 +37,11 @@ void nuc_string_shrink_to_fit(struct nuc_String* self) asm("nuc_string-shrink-to
 /* string-from-view: uses an error-union or option type; not exported */
 struct nuc_String nuc_string_from_cstr_unchecked(const char* cs) asm("nuc_string-from-cstr-unchecked");
 /* string-from-cstr: uses an error-union or option type; not exported */
+void nuc_init_pnuc_String_nuc_Alloc(struct nuc_String* self, struct nuc_Alloc a) asm("nuc_init.pnuc_String.nuc_Alloc");
+void nuc_init_pnuc_String_nuc_Alloc_nuc_StrView(struct nuc_String* self, struct nuc_Alloc a, struct nuc_StrView v) asm("nuc_init.pnuc_String.nuc_Alloc.nuc_StrView");
+void nuc_init_pnuc_String_nuc_Alloc_pnuc_String(struct nuc_String* self, struct nuc_Alloc a, struct nuc_String* v) asm("nuc_init.pnuc_String.nuc_Alloc.pnuc_String");
+/* init: uses an error-union or option type; not exported */
+/* init: uses an error-union or option type; not exported */
 void nuc_drop_pnuc_String(struct nuc_String* self) asm("nuc_drop.pnuc_String");
 size_t nuc_byte_len_pnuc_String(struct nuc_String* self) asm("nuc_byte_len.pnuc_String");
 /* byte-at: uses an error-union or option type; not exported */

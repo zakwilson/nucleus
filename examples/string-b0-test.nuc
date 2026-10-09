@@ -10,6 +10,7 @@
 (import-use nucleus.strview)
 (import-use nucleus.string)
 (import-use nucleus.char)
+(import-use nucleus.create)
 
 (defn show-maybe (label:CStr m:?usize):void
   (match m
@@ -19,7 +20,7 @@
 (defn main ():i32
 
   ; ---- 6. Vector bulk append -------------------------------------------------
-  (with (v:&(Vector i32) (vector-new))
+  (with (v:&(Vector i32) (make (Vector i32)))
     (let (src:&i32 (as &i32 (alloca i32 3)))
       (set! (aref src 0) 10)
       (set! (aref src 1) 20)
@@ -27,7 +28,7 @@
       (vector-extend-raw v src 3))
     (printf "vec-count=%llu\n" (as ui64 (count v)))          ; 3
     (printf "vec=%d,%d,%d\n" (v 0) (v 1) (v 2))              ; 10,20,30
-    (with (w:&(Vector i32) (vector-new))
+    (with (w:&(Vector i32) (make (Vector i32)))
       (conj w 40)
       (vector-extend w v)
       (printf "w-count=%llu w0=%d w3=%d\n"
@@ -53,7 +54,7 @@
     (show-maybe "find-char-e-acute" (strview-find-char &acc \u{e9})))
 
   ; ---- 5, 9, 13. push / truncate / CStr bridge -------------------------------
-  (with (s:&String (string-new))
+  (with (s:&String (make String))
     (let (a:StrView (strview (unsafe/cast &ui8 (as ptr "hello")) 5)
           b:StrView (strview (unsafe/cast &ui8 (as ptr ", world")) 7))
       (string-push-str-unchecked s &a)

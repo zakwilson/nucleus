@@ -1,0 +1,4 @@
+; The allocator operand must have a `handle`.
+(import-use nucleus.create)
+(defstruct Pt x:i32 y:i32)
+(defn main ():i32 (let (p:&Pt (new Pt 5 1 2)) (return (p 'x))))

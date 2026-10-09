@@ -40,5 +40,5 @@
 (extend f32 ToStr)
 (defmethod "@nuc_to_str.f32.pnuc_String" to-str ((self f32) (out (ref String))) :!void)
 (defmacro str-into (out :rest parts) (quasiquote (macmap ((p) (quasiquote (to-str (unquote p) (unquote (quote (unquote out)))))) (unquote parts))))
-(defmacro str (:rest parts) (let (s:ptr (gensym)) (quasiquote (let (((unquote s) String) (string-new)) (str-into (unquote s) (unquote-splice parts)) (unquote s)))))
-(defmacro str-alloc (a :rest parts) (let (s:ptr (gensym)) (quasiquote (let (((unquote s) String) (string-new-alloc (unquote a))) (str-into (unquote s) (unquote-splice parts)) (unquote s)))))
+(defmacro str (:rest parts) (let (s:ptr (gensym)) (quasiquote (let (((unquote s) String) (String)) (nucleus.allocator/init (ref (unquote s))) (str-into (unquote s) (unquote-splice parts)) (unquote s)))))
+(defmacro str-alloc (a :rest parts) (let (s:ptr (gensym)) (quasiquote (let (((unquote s) String) (String)) (nucleus.allocator/init (ref (unquote s)) (handle (unquote a))) (str-into (unquote s) (unquote-splice parts)) (unquote s)))))

@@ -1,0 +1,5 @@
+; An Init type's init takes one value after the allocator.
+(import-use nucleus.string)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(defn main ():i32 (with (s (make String heap "a" "b")) (return 0)))

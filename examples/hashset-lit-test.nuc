@@ -1,7 +1,7 @@
 ; Stage 11 M5 — HashSet literal sugar `#{…}`.
 ;
 ; `#{"a" "b" "c"}` expands (in the reader) to a let that stack-allocates a
-; (HashSet CStr), runs hashset-init with the default allocator, conj-es (==
+; (HashSet CStr), runs `init` over the heap, conj-es (==
 ; insert) each element, and yields the (ref (HashSet CStr)). The outer `with`
 ; fires Drop at scope exit.
 

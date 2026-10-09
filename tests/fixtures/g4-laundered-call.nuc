@@ -6,7 +6,7 @@
 ; Detecting this needs callee effect summaries, which
 ; design/stage15-stress-test/nullability.md §9 declares a permanent non-goal,
 ; and design/global-init.md §4.2 and §6 adopt the same boundary. The compiler's
-; own shape, `(vector-new-in &g-arena-alloc)`, is this case.
+; own shape, `(new (Vector T) g-arena)`, is this case.
 ;
 ; So this compiles, and `g4-lc-dst` ends up **0**, not 99. `g4-laundered-gap` links
 ; and runs it and asserts the observed value: `main` returns `(+ 10 g4-lc-dst)`,

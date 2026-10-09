@@ -4,6 +4,7 @@
 (import-use nucleus.string-errors)
 (import-use nucleus.char)
 (import-use nucleus.strview)
+(import-use nucleus.allocator)
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.fmt)

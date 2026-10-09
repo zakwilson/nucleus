@@ -23,7 +23,7 @@
 
   ; ---- 2. iter yields Entry values; drive next manually ------------------
   (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))
-    (hashmap-init m)
+    (init m)
     (assoc m 1 10)
     (assoc m 2 20)
     (assoc m 3 30)
@@ -40,7 +40,7 @@
 
   ; ---- 3. conj a HashMap via an Entry (Coll conj == assoc) ---------------
   (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))
-    (hashmap-init m)
+    (init m)
     (let (e:&(Entry i32 i32) (alloca (Entry i32 i32)))
       (set! (e 'key) 5)
       (set! (e 'val) 500)

@@ -35,8 +35,8 @@
     ; ---------------------------------------------------------------
     (set! (r 'start) 1) (set! (r 'end) 6)
     (let (total:i32 0
-          h:&AllocHandle (default-allocator))
-      (reduce (cfn h (acc:i32 x:i32):i32
+          h:Alloc (handle heap))
+      (reduce (cfn &h (acc:i32 x:i32):i32
                 (set! total (+ total x))
                 (return acc))
               0 r)
@@ -74,8 +74,8 @@
     ; ---------------------------------------------------------------
     (set! (r 'start) 1) (set! (r 'end) 4)
     (let (countdown:i32 5
-          h2:&AllocHandle (default-allocator))
-      (reduce (cfn h2 (acc:i32 x:i32):i32
+          h2:Alloc (handle heap))
+      (reduce (cfn &h2 (acc:i32 x:i32):i32
                 (dec! countdown)
                 (return acc))
               0 r)

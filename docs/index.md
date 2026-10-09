@@ -97,7 +97,7 @@ they are ordinary address-of: `&rest` is `(ref rest)`.
 | [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
 | [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/nucleus/strview.nuc`); `Symbol` interned identity (`lib/nucleus/intern.nuc`); `Keyword` interned names (`lib/nucleus/keyword.nuc`) |
-| [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/nucleus/allocator.nuc`) |
+| [Allocators](allocators.md) | `Allocator` protocol, the `Alloc` handle, `Heap`/`Arena`/`FixedBuffer`/`Tracking` (`lib/nucleus/allocator.nuc`); `Init`/`InitFrom`/`TryInitFrom` and the `new`/`make` macros (`lib/nucleus/create.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/nucleus/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/nucleus/coll.nuc`, `lib/nucleus/hash.nuc`, `lib/nucleus/vector.nuc`, `lib/nucleus/hashmap.nuc`, `lib/nucleus/hashset.nuc`) |
 | [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/nucleus/char.nuc`, `lib/nucleus/strview.nuc`, `lib/nucleus/string.nuc`, `lib/nucleus/parse.nuc`, `lib/nucleus/string-split.nuc`, `lib/nucleus/fmt.nuc`) |
@@ -127,8 +127,9 @@ Additional libraries available via `import-use`:
 - `(import-use nucleus.numeric)` — `Eq`, `Ord`, `Num` protocols for operators
 - `(import-use nucleus.error)` — `try`, `with-handler`, `signal`, `err-find-handler`
 - `(import-use nucleus.node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
-- `(import-use nucleus.arena)` — arena allocator + `(new T)` convenience macro
-- `(import-use nucleus.allocator)` — `Allocator` protocol and `AllocHandle`
+- `(import-use nucleus.arena)` — the process arena `g-arena` and `arena-alloc`
+- `(import-use nucleus.create)` — the `new` and `make` macros: an object in one call, from any allocator
+- `(import-use nucleus.allocator)` — `Allocator` protocol, `Alloc`, `Heap`/`heap`, `Arena`, `FixedBuffer`, `Tracking`
 - `(import-use nucleus.iterator)` — `Iterator` protocol and concrete iterators
 - `(import-use nucleus.coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
 - `(import-use nucleus.strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)

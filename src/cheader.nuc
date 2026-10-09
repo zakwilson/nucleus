@@ -21,6 +21,7 @@
 (import-use nucleus.intern)
 (import-use nucleus.fmt)
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.node)
 (import-use nucleus.strview)
 (import-use nucleus.strview-str)
@@ -173,7 +174,7 @@
 ; the rendering is what the conflict warning shows, so the user sees the two
 ; signatures side by side rather than being told only that they differ.
 (defn c-fn-sig-render (ret:?&Type ptypes:ptr np:i32 variadic:i32):StrView
-  (let ((acc String) (str-alloc (strfmt-alloc) (type-to-ir (as ptr ret)) " ("))
+  (let ((acc String) (str-alloc g-arena (type-to-ir (as ptr ret)) " ("))
     (dotimes (i:i32 np)
       (when (!= i 0) (str-into acc ", "))
       (str-into acc (type-to-ir (aref (unsafe/cast &ptr ptypes) i))))
@@ -186,7 +187,7 @@
 
 (defn cdecl-site-push (list:?&CDeclSite fname:Symbol file:Symbol line:i32
                        sig:StrView form:?&Node):&CDeclSite
-  (let (e:&CDeclSite (new CDeclSite))
+  (let (e:&CDeclSite (new CDeclSite g-arena))
     (set! (e 'name) fname)
     (set! (e 'file) file)
     (set! (e 'line) line)
@@ -904,9 +905,9 @@
 (defn cheader-record-skip (fname:Symbol why:StrView dline:i32 loud:i32):void
   (match (cheader-skip-note fname) (none 0) ((some _seen) (return)))
   (when (= g-cheader-skipped null)
-    (set! g-cheader-skipped (vector-new-in &g-arena-alloc)))
+    (set! g-cheader-skipped (new (Vector &CheaderSkip) g-arena)))
   (let (tbl:&(Vector &CheaderSkip) (unsafe/cast &(Vector &CheaderSkip) g-cheader-skipped)
-        e:&CheaderSkip (new CheaderSkip))
+        e:&CheaderSkip (new CheaderSkip g-arena))
     (set! (e 'name) fname)
     (set! (e 'note) (symbol-intern (fstr g-cheader-file ":" dline ": " why)))
     (conj tbl e)
@@ -1123,6 +1124,10 @@
   (link-claim-c-decl (symbol-intern (fstr "@" fname)) fname
                      (fn-link-sig (as ?&Type ret-type) param-types num-params (!= is-variadic 0))
                      g-cheader-file (cheader-line-at buf decl-start))
+  ; A Nucleus method of this name becomes an overload beside the C function,
+  ; which then takes the key below (design/stage24-allocation/c-name-overloads.md).
+  (when (generic-adopt-c-fn fname (as ?&Type ret-type) param-types num-params is-variadic)
+    (finalize-generics))
   ; Only register if not already defined. B2b: a KEY question, paired
   ; with the `scope-define` it guards.
   (when (= (scope-lookup-key g-globals fname) null)
@@ -1498,8 +1503,8 @@
   (command-capture c true)
   (set! @out-len 0)
   (set! @out-status -1)
-  (let (out:String (string-new)
-        errs:String (string-new))
+  (let (out:String (make String)
+        errs:String (make String))
     (match (spawn c)
       ((ok p)
        (match (process-capture &p &out &errs)
@@ -1596,7 +1601,7 @@
       (set! buf null)
       (set! buf-len 0))
     (when (= buf null) (set! @out-len 0))
-    (let (n:&CHeaderCache (new CHeaderCache))
+    (let (n:&CHeaderCache (new CHeaderCache g-arena))
       (set! (n 'path) header-path)
       (set! (n 'dump-macros) dump-macros)
       (set! (n 'len) buf-len)
@@ -3046,21 +3051,21 @@
   ; The C type of the folded body (a `c-rank`), which an expression using it takes.
   rank:i32)
 
-(defvar g-cmacros:&(Vector &CMacro) (vector-new-in &g-arena-alloc))
+(defvar g-cmacros:&(Vector &CMacro) (new (Vector &CMacro) g-arena))
 (defvar g-cmacro-index:&(HashMap Symbol &CMacro)
-  (hashmap-new-in &g-arena-alloc))
+  (new (HashMap Symbol &CMacro) g-arena))
 ; clang's own predefines, subtracted before registration: `-include fcntl.h`
 ; dumps 739 names of which 398 are `linux`, `unix`, `__GNUC__` and friends.
 ; They stay in the fold table, since a header's macros are written in terms of
 ; them.
-(defvar g-cmacro-baseline:&(HashSet Symbol) (hashset-new-in &g-arena-alloc))
+(defvar g-cmacro-baseline:&(HashSet Symbol) (new (HashSet Symbol) g-arena))
 (defvar g-cmacro-baseline-ready:i32 0)
 (defvar g-cmacro-folding:i32 0)
 (defvar g-cmacro-buf:ptr null)
 
 (defn cheader-macro-reset ():void
-  (let (v:&(Vector &CMacro) (vector-new-in &g-arena-alloc)
-        m:&(HashMap Symbol &CMacro) (hashmap-new-in &g-arena-alloc))
+  (let (v:&(Vector &CMacro) (new (Vector &CMacro) g-arena)
+        m:&(HashMap Symbol &CMacro) (new (HashMap Symbol &CMacro) g-arena))
     (set! g-cmacros v)
     (set! g-cmacro-index m)))
 
@@ -3128,7 +3133,7 @@
 ; a later initializer or `#define` can be written in terms of one.
 ; ============================================================
 
-(defvar g-cenum-index:&(HashMap Symbol &CMacro) (hashmap-new-in &g-arena-alloc))
+(defvar g-cenum-index:&(HashMap Symbol &CMacro) (new (HashMap Symbol &CMacro) g-arena))
 (defvar g-cenum-folding:i32 0)
 ; The C type of the (sub)expression just evaluated, as a `c-rank`. Every value the
 ; evaluator returns is already converted to it (`c-norm`).
@@ -3264,7 +3269,7 @@
     (return v)))
 
 (defn c-enum-record (name:Symbol val:i64 known:i32):void
-  (let (m:ref:CMacro (new CMacro))
+  (let (m:ref:CMacro (new CMacro g-arena))
     (set! (m 'name) name)
     (set! (m 'val) val)
     (set! (m 'folded) known)
@@ -3316,7 +3321,7 @@
                                       (as &i64 &ne)))
         (when (= (symbol-len name) 0) (return))
         (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40)) (return))
-        (let (m:ref:CMacro (new CMacro))
+        (let (m:ref:CMacro (new CMacro g-arena))
           (set! (m 'name) name)
           (set! (m 'body-start) (c-skip-ws buf ne line-end))
           (set! (m 'body-end) line-end)
@@ -3781,7 +3786,7 @@
 (defvar g-hdr:?&String)
 
 (defn header-out-open ():void
-  (set! g-hdr-buf (string-new))
+  (set! g-hdr-buf (make String))
   (set! g-hdr &g-hdr-buf))
 
 (defn header-out-close ():void
@@ -3994,7 +3999,7 @@
                      (and (= ((unsafe/cast &Node head) 'kind) NODE-SYM)
                           (or (= ((unsafe/cast &Node head) 's) "union")
                               (= ((unsafe/cast &Node head) 's) "struct"))))
-            (let ((acc String) (str-alloc (strfmt-alloc) ((unsafe/cast &Node head) 's) " { ")
+            (let ((acc String) (str-alloc g-arena ((unsafe/cast &Node head) 's) " { ")
                   cur:ptr rest)
               (while (> (node-len cur) 0)
                 (let (member:ptr (node-first (unsafe/cast &Node cur))
@@ -4025,9 +4030,9 @@
   busy:bool
   emitted:bool)
 
-(defvar g-cheader-insts:&(Vector &CheaderInst) (vector-new-in &g-arena-alloc))
+(defvar g-cheader-insts:&(Vector &CheaderInst) (new (Vector &CheaderInst) g-arena))
 ; The instances the form being emitted names, defined just before it.
-(defvar g-cheader-inst-want:&(Vector &CheaderInst) (vector-new-in &g-arena-alloc))
+(defvar g-cheader-inst-want:&(Vector &CheaderInst) (new (Vector &CheaderInst) g-arena))
 ; The entry whose fields are being rendered, which collects them as deps.
 (defvar g-cheader-inst-cur:?&CheaderInst null)
 
@@ -4048,7 +4053,7 @@
 ; `busy` while its fields render, so a pointer back to it names only the tag.
 (defn cheader-inst-entry (sd:?&StructDef):&CheaderInst
   (if-some (hit (cheader-inst-find sd)) (return hit) 0)
-  (let (e:&CheaderInst (unsafe/cast &CheaderInst (arena-alloc (sizeof CheaderInst)))
+  (let (e:&CheaderInst (new CheaderInst g-arena)
         s:ptr:StructDef sd
         saved:?&CheaderInst g-cheader-inst-cur)
     (set! (e 'sd) sd)
@@ -4058,7 +4063,7 @@
                        (if (strview-has-prefix nv "__anon_")
                          (fstr "nuc" (strview-drop-bytes nv 1))
                          (cheader-c-ident-view (symbol-intern nv)))))
-    (set! (e 'deps) (vector-new-in &g-arena-alloc))
+    (set! (e 'deps) (new (Vector &CheaderInst) g-arena))
     (set! (e 'busy) true)
     (set! (e 'emitted) false)
     (conj g-cheader-insts e)
@@ -4067,7 +4072,7 @@
                             (e 'kw) " " (e 'cname) ";\n\n"))
       (set! (e 'busy) false)
       (return e))
-    (let ((acc String) (str-alloc (strfmt-alloc) "#ifndef NUC_INST_" (e 'cname)
+    (let ((acc String) (str-alloc g-arena "#ifndef NUC_INST_" (e 'cname)
                                   "\n#define NUC_INST_" (e 'cname)
                                   "\ntypedef " (e 'kw) " " (e 'cname) " {\n"))
       (set! g-cheader-inst-cur e)
@@ -4109,7 +4114,7 @@
         (when (!= (sd 'origin-template) null) (return (cheader-inst-c sd)))
         (let (nv:StrView (symbol-as-view (sd 'name)))
           (when (or (strview-has-prefix nv "__anon_struct_h") (strview-has-prefix nv "__anon_union_h"))
-            (let ((acc String) (str-alloc (strfmt-alloc) (if (= k TY-STRUCT) "struct { " "union { ")))
+            (let ((acc String) (str-alloc g-arena (if (= k TY-STRUCT) "struct { " "union { ")))
               (dotimes (i (sd 'num-fields))
                 (let (f:&Field (field-at (sd 'fields) i))
                   (str-into acc (cheader-type-c-decl (f 'type) (cheader-c-ident-view (f 'name))) "; ")))
@@ -4231,7 +4236,7 @@
     (return (fstr len))))
 
 ; The names this file `#define`s (emit-cheader-defconst's integer arm).
-(defvar g-cheader-own-consts:&(HashSet Symbol) (hashset-new-in &g-arena-alloc))
+(defvar g-cheader-own-consts:&(HashSet Symbol) (new (HashSet Symbol) g-arena))
 
 (defn cheader-note-own-consts (forms:ptr):void
   (let (fc:ptr forms)
@@ -4285,7 +4290,7 @@
     (when (!= fh null)
       (let (rnode:ptr null
             plist:ptr null
-            (acc String) (str-alloc (strfmt-alloc) ""))
+            (acc String) (str-alloc g-arena ""))
         (let (rn:ptr (node-rest (unsafe/cast &Node fh)))
           (when (!= rn null) (set! rnode (node-first (unsafe/cast &Node rn)))))
         ; `(fn RET)` alone carries no parameter list; `((fn RET) (P…))` holds it
@@ -4700,7 +4705,7 @@
       ; A function returning a function pointer wraps its own declarator —
       ; `int32_t (*getf(void))(int32_t, int32_t);` — so the name and its
       ; parameters have to be in hand before the return type can be spelled.
-      (let ((acc String) (str-alloc (strfmt-alloc) "")
+      (let ((acc String) (str-alloc g-arena "")
             params:ptr (node-at form 2)
             n:i32 (node-len params))
         (let (emitted:i32 0

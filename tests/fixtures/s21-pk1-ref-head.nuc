@@ -3,7 +3,7 @@
 ; `(ref T)`; a value-position `&x` / `(ref x)` is the address-of and `(ref p 'f)`
 ; the field address; the written-out `addr-of` is retired (PK-5b).
 (import-use "stdio.h")
-(import-use nucleus.vector)
+(import-use nucleus.vector) (import-use nucleus.create)
 
 (defstruct Pt x:i32 y:i32)
 
@@ -28,7 +28,7 @@
         h:Holder (Holder ap 7)
         n:i32 41
         cb:(fn void)(&i32) bump
-        v:(ref (Vector &Pt)) (vector-new))
+        v:(ref (Vector &Pt)) (make (Vector &Pt)))
     (conj v &a)
     (cb &n)
     (printf "%d %d %d %d\n" (hx &h) (via-alias ap) (unsafe/cast i32 (sizeof &Pt)) (area &a))

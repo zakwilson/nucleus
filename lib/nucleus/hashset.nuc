@@ -7,18 +7,17 @@
 ; Design: design/stage11/collections.md §"HashSet" + §"Memory model".
 ;
 ; ---------------------------------------------------------------------------
-; USAGE (the working construction pattern):
+; USAGE:
 ;
-;   (with ((s (ref (HashSet StrView))) (alloca (HashSet StrView)))
-;     (hashset-init s)                          ; empty, default allocator
-;     (insert s "dog") (insert s "cat")
-;     (printf "%d\n" (contains? s "dog"))       ; 1
-;     (set-remove s "dog")
-;     (printf "%d\n" (contains? s "dog"))       ; 0
+;   (with (s (make (HashSet StrView)))          ; nucleus.create; buffers from `heap`
+;     (insert &s "dog") (insert &s "cat")
+;     (printf "%d\n" (contains? &s "dog"))      ; 1
+;     (set-remove &s "dog")
+;     (printf "%d\n" (contains? &s "dog"))      ; 0
 ;     ...)                                      ; drop fires here
 ;
-; `hashset-init` takes a (ref (HashSet T)) so T is inferred from the binding's
-; declared type. `(alloca (HashSet T))` + init is the canonical idiom.
+; Construction is the `Init` protocol: `(init s a)` / `(init s)` on a
+; caller-owned `&(HashSet T)`, or nucleus.create's `make`/`new`.
 ; ---------------------------------------------------------------------------
 ;
 ; INTERNAL LAYOUT
@@ -28,7 +27,7 @@
 ;            0 = empty (never written), 1 = occupied, 2 = tombstone (deleted).
 ;   count  : number of live (occupied) members.
 ;   cap    : total allocated bucket slots; always a power of two.
-;   alloc  : the AllocHandle used for both buffers.
+;   alloc  : the Alloc used for both buffers.
 ;
 ; Capacity starts at 8 and doubles when load-factor exceeds 3/4 (count*4 >=
 ; cap*3). Tombstones are skipped during lookup and dropped during resize.
@@ -66,75 +65,30 @@
   (states ?&ui8)    ; state buffer: cap bytes (0=empty, 1=occupied, 2=tomb)
   count:usize
   cap:usize
-  alloc:AllocHandle)
+  alloc:Alloc)
 
 ; ---------------------------------------------------------------------------
-; hashset-init: initialise an empty HashSet with the default (libc) allocator.
-; Initial capacity is 8, which is a power of two and small enough to never
-; trigger a resize for the first 6 insertions.
+; Init: an empty HashSet whose buffers come from `a`. Initial capacity is 8, a
+; power of two that no resize touches for the first 6 insertions.
 ; ---------------------------------------------------------------------------
-(defn hashset-init (s:&(HashSet T)):void
-  (let (init-cap:usize 8
+(defn init (self:&(HashSet T) a:Alloc):void
+  (let (s:&(HashSet T) self
+        init-cap:usize 8
         elem-size:usize (as usize (sizeof T)))
-    (libc-allocator (ref s 'alloc))
+    (set! (s 'alloc) a)
     (let ((kbuf ?&ui8)
-          (alloc-handle-alloc (ref s 'alloc)
+          (allocate (ref s 'alloc)
                               (* init-cap elem-size)
-                              8))
+                              (as usize (alignof T))))
       (when (= (as ptr kbuf) null) (hashset-oom))
       (let ((sbuf ?&ui8)
-            (alloc-handle-alloc (ref s 'alloc) init-cap 1))
+            (allocate (ref s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
         (set! (s 'keys) kbuf)
         (set! (s 'states) sbuf)
         (set! (s 'count) 0)
         (set! (s 'cap) init-cap)))))
-
-; hashset-init-alloc: initialise an empty HashSet with an explicit allocator
-; handle (copied in), mirroring vector-init-alloc. The buffers are allocated
-; through the passed handle, so the set owns its storage through it (arena =
-; process-lifetime, no per-allocation free).
-(defn hashset-init-alloc (s:&(HashSet T) a:&AllocHandle):void
-  (let (init-cap:usize 8
-        elem-size:usize (as usize (sizeof T)))
-    (set! (s 'alloc) @a)
-    (let ((kbuf ?&ui8)
-          (alloc-handle-alloc (ref s 'alloc)
-                              (* init-cap elem-size)
-                              8))
-      (when (= (as ptr kbuf) null) (hashset-oom))
-      (let ((sbuf ?&ui8)
-            (alloc-handle-alloc (ref s 'alloc) init-cap 1))
-        (when (= (as ptr sbuf) null) (hashset-oom))
-        (memset (as ptr sbuf) 0 (as i64 init-cap))
-        (set! (s 'keys) kbuf)
-        (set! (s 'states) sbuf)
-        (set! (s 'count) 0)
-        (set! (s 'cap) init-cap)))))
-
-; ---------------------------------------------------------------------------
-; Value/heap constructors (target-typed — design/stage14/target-typed-
-; constructors.md). T binds from the declared type via the want channel. The
-; by-value family materializes into a `(ref (HashSet T))` binding (TC-3); the
-; `-in` family allocates the struct itself through the handle.
-; ---------------------------------------------------------------------------
-(defn hashset-new () (HashSet T)
-  (let (r (alloca (HashSet T)))
-    (hashset-init r)
-    (return @r)))
-(defn hashset-new-alloc (a:&AllocHandle) (HashSet T)
-  (let (r (alloca (HashSet T)))
-    (hashset-init-alloc r a)
-    (return @r)))
-(defn hashset-new-in (a:&AllocHandle):&(HashSet T)
-  ; `unsafe/cast`, as hashmap-new-in: `as` refuses to reinterpret the handle's
-  ; `ptr:ui8`, so this never instantiated.
-  (let (v (unsafe/cast &(HashSet T)
-             (alloc-handle-alloc a (sizeof (HashSet T)) 8)))
-    (hashset-init-alloc v a)
-    (return v)))
-
 
 ; ---------------------------------------------------------------------------
 ; hashset-resize: internal. Allocate new arrays of new-cap slots, rehash all
@@ -145,12 +99,12 @@
 (defn hashset-resize (s:&(HashSet T) new-cap:usize):void
   (let (elem-size:usize (as usize (sizeof T)))
     (let ((new-keys ?&ui8)
-          (alloc-handle-alloc (ref s 'alloc)
+          (allocate (ref s 'alloc)
                               (* new-cap elem-size)
-                              8))
+                              (as usize (alignof T))))
       (when (= (as ptr new-keys) null) (hashset-oom))
       (let ((new-states ?&ui8)
-            (alloc-handle-alloc (ref s 'alloc) new-cap 1))
+            (allocate (ref s 'alloc) new-cap 1))
         (when (= (as ptr new-states) null) (hashset-oom))
         (memset (as ptr new-states) 0 (as i64 new-cap))
         (let (new-mask:usize (- new-cap 1)
@@ -178,11 +132,11 @@
                       (set! idx (bit-and (+ idx 1) new-mask)))))))
             (set! i (+ i 1)))
           ; Free the old arrays and install the new ones.
-          (alloc-handle-free (ref s 'alloc)
+          (deallocate (ref s 'alloc)
                              (s 'keys)
                              (* old-cap elem-size)
-                             8)
-          (alloc-handle-free (ref s 'alloc)
+                             (as usize (alignof T)))
+          (deallocate (ref s 'alloc)
                              (s 'states)
                              old-cap
                              1)
@@ -257,7 +211,6 @@
 
 ; ---------------------------------------------------------------------------
 ; set-remove: remove elem from the set (tombstone it). No-op if not present.
-; Named `set-remove` rather than `remove` to avoid shadowing libc `remove`.
 ; ---------------------------------------------------------------------------
 (defn set-remove (self:&(HashSet T) elem:T):void
   (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
@@ -345,6 +298,7 @@
 ; ---------------------------------------------------------------------------
 (extend (HashSet T) (Set T))
 (extend (HashSet T) Drop)
+(extend (HashSet T) Init)
 
 ; ---------------------------------------------------------------------------
 ; Drop: free the keys and states buffers through the stored allocator, then
@@ -352,12 +306,12 @@
 ; ---------------------------------------------------------------------------
 (defn drop (self:&(HashSet T)):void
   (when (!= (as ptr (self 'keys)) null)
-    (alloc-handle-free (ref self 'alloc)
+    (deallocate (ref self 'alloc)
                        (self 'keys)
                        (* (self 'cap) (as usize (sizeof T)))
-                       8))
+                       (as usize (alignof T))))
   (when (!= (as ptr (self 'states)) null)
-    (alloc-handle-free (ref self 'alloc)
+    (deallocate (ref self 'alloc)
                        (self 'states)
                        (self 'cap)
                        1))

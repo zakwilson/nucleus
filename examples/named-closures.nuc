@@ -12,17 +12,17 @@
 
 (defn main ():i32
   (let (r:&IntRangeIter (alloca IntRangeIter)
-        h:&AllocHandle (default-allocator)
+        h:Alloc (handle heap)
         mult:i32 3)
 
     ; 1. let-bound cfn (env type inferred), captured `mult` by reference,
     ;    then called by name. f(1) = 1 + mult = 4.
-    (let (f (cfn h (x:i32):i32 (return (+ x mult))))
+    (let (f (cfn &h (x:i32):i32 (return (+ x mult))))
       (printf "let  cfn   f(1)    = %d   (expect 4)\n" (f 1)))
 
     ; 2. with-bound cfn — its owning (heap) env drops at with-scope exit via the
     ;    existing TY-PTR with-drop-method path. g(2) = 2 + mult*10 = 32.
-    (with (g (cfn h (x:i32):i32 (return (+ x (* mult 10)))))
+    (with (g (cfn &h (x:i32):i32 (return (+ x (* mult 10)))))
       (printf "with cfn   g(2)    = %d   (expect 32)\n" (g 2)))
 
     ; 3. let-bound closure passed to `reduce` as a NAMED operand — proves

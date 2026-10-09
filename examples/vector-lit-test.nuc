@@ -1,7 +1,7 @@
 ; Stage 11 M5 — Vector literal sugar `[…]`.
 ;
 ; `[1 2 3]` expands (in the reader) to a let that stack-allocates a
-; (Vector i32), runs vector-init with the default allocator, conj-es each
+; (Vector i32), runs `init` over the heap, conj-es each
 ; element, and yields the (ref (Vector i32)). As the RHS of a `with` binding,
 ; the outer `with` fires Drop at scope exit (the buffer is freed).
 

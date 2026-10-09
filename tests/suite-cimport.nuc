@@ -27,7 +27,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.test)
 (import-use nucleus.string-split)
-(import-use nucleus.strview)
+(import-use nucleus.strview) (import-use nucleus.create)
 (defn sizeof-probe (header:StrView name:StrView):String
   (return (str "(import-use \"stdio.h\")\n(import-use \"" header "\")\n"
                "(defn main ():i32 (printf \"%ld\\n\" (sizeof " name ")) (return 0))\n")))
@@ -502,7 +502,7 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 ; control strips one function attribute out of a module without touching
 ; anything else about it.
 (defn drop-suffix-on-lines (text:StrView suffix:StrView):String
-  (let (out:String (string-new)
+  (let (out:String (make String)
         nl:StrView "\n"
         it:SplitIter (strview-split &text &nl))
     (while (not (split-iter-done &it))
@@ -789,7 +789,7 @@ int main(void){
 ; This header registers 4,000 (2,000 each of the two shapes), which is above
 ; the old cap and below the guard, and the LAST of each must be usable.
 (deftest s21-thousands-of-c-structs
-  (let (h:String (string-new)
+  (let (h:String (make String)
         i:i64 0)
     (while (< i 2000)
       (str-into &h "typedef struct _Big" i " Big" i "; struct _Big" i

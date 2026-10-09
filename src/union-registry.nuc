@@ -1,4 +1,5 @@
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.vector)
 (import-use nucleus.intern)
 (import-use nucleus.strview)
@@ -623,7 +624,7 @@
 ; §14.5 batch 3: the parallel keys/types arrays collapsed into one
 ; `(Vector (ref BoxedFnEntry))`. Lazily constructed on first use (mirrors
 ; g-vtable-table) — never explicitly reset, so `&` not `?&`.
-(defvar g-boxedfn-table:&(Vector &BoxedFnEntry) (vector-new-in &g-arena-alloc))
+(defvar g-boxedfn-table:&(Vector &BoxedFnEntry) (new (Vector &BoxedFnEntry) g-arena))
 
 (defn boxedfn-memo-lookup (key:Symbol):?&Type
   (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
@@ -632,7 +633,7 @@
   (return null))
 
 (defn boxedfn-memo-put (key:Symbol ty:ptr):void
-  (let (rec:&BoxedFnEntry (new BoxedFnEntry))
+  (let (rec:&BoxedFnEntry (new BoxedFnEntry g-arena))
     (set! (rec 'key) key)
     (set! (rec 'ty) (as ?&Type ty))
     (conj g-boxedfn-table rec)))
@@ -713,7 +714,7 @@
 ; §14.5 batch 3: the parallel keys/types/protos arrays collapsed into one
 ; `(Vector (ref DynEntry))`. Lazily constructed on first use (mirrors
 ; g-vtable-table/g-boxedfn-table) — never explicitly reset, so `&` not `?&`.
-(defvar g-dyn-table:&(Vector &DynEntry) (vector-new-in &g-arena-alloc))
+(defvar g-dyn-table:&(Vector &DynEntry) (new (Vector &DynEntry) g-arena))
 
 (defn dyn-memo-lookup (key:Symbol):?&Type
   (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
@@ -722,7 +723,7 @@
   (return null))
 
 (defn dyn-memo-put (key:Symbol ty:ptr proto:Symbol):void
-  (let (rec:&DynEntry (new DynEntry))
+  (let (rec:&DynEntry (new DynEntry g-arena))
     (set! (rec 'key) key)
     (set! (rec 'ty) (as ?&Type ty))
     (set! (rec 'proto) proto)
@@ -949,6 +950,22 @@
     (when (< (union-arm-index (as ptr ud) (symbol-intern "err")) 0) (return null))
     (return ud)))
 
+; What `(__init-then CALL VALUE …)` yields (Stage 24 AL-3): VALUE's type `vt`, or
+; `(Result vt E)` when CALL's type `ct` is a Result whose error type is E.
+(defn init-then-type (ct:?&Type vt:?&Type line:i32):?&Type
+  (let (ud:?&UnionDef (result-union-of ct))
+    (when (or (= ud null) (= vt null)) (return vt))
+    (let (ei:i32 (union-arm-index (as ptr ud) (symbol-intern "err"))
+          et:?&Type ((invoke (ud 'arms) (as usize ei)) 'ptype)
+          ut:?&UnionTemplate (union-template-lookup-ref (symbol-intern "Result")))
+      (when (= et null) (return null))
+      (when (= ut null)
+        (die-at line (missing-template-message "new/make" (symbol-intern "Result"))))
+      (let (argts:ptr (arena-alloc (* 2 (ptr-bytes))))
+        (set! (aref (unsafe/cast &ptr argts) 0) vt)
+        (set! (aref (unsafe/cast &ptr argts) 1) et)
+        (return (union-template-stamp-types (as ptr ut) argts 2 line))))))
+
 ; The `ok` arm's payload type for a Result-shaped union type, or null.
 (defn result-ok-type (t:?&Type):?&Type
   (let (ud:?&UnionDef (result-union-of t))
@@ -1127,7 +1144,7 @@
       (die-at line "defunion: at least one arm required"))
     (when (> narms MAX-UNION-ARMS)
       (die-at line "defunion: too many arms"))
-    (let (arms-vec:&(Vector &Arm) (vector-new-in &g-arena-alloc))
+    (let (arms-vec:&(Vector &Arm) (new (Vector &Arm) g-arena))
       (set! cur arms)
       (while (> (node-len cur) 0)
         (let (arm:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur)))
@@ -1172,7 +1189,7 @@
             (die-at (node-line (as ptr arm) line) (fstr "defunion: duplicate arm '" aname "'")))
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
-          (let (rec:&Arm (new Arm)
+          (let (rec:&Arm (new Arm g-arena)
                 pty:?&Type (if (= nf 0)
                                null
                                (if (= nf 1)
@@ -1273,7 +1290,7 @@
                             ((unsafe/cast &StructDef union-sd) 'ir-name) " }\n\n")
                       (emit g-type-stream "%" (sd 'ir-name) " = type { i32 }\n\n")))
                   (sdef-note-emitted sd &g-type-stream))))
-            (let (ud:&UnionDef (new UnionDef))
+            (let (ud:&UnionDef (new UnionDef g-arena))
               (conj g-uniondefs ud)
               (set! (ud 'ctors-emitted) 0)
               (set! (ud 'name) name)
@@ -1365,7 +1382,7 @@
             (when (!= (node-kind (as ptr tv)) NODE-SYM)
               (die-at (node-line (as ptr tv) (ff 'line)) "defunion: type parameter must be a symbol"))
             (set! (aref (unsafe/cast &Symbol tyvars) i) (tv 's))))
-        (let (ut:&UnionTemplate (unsafe/cast &UnionTemplate (arena-alloc (sizeof UnionTemplate))))
+        (let (ut:&UnionTemplate (new UnionTemplate g-arena))
           (conj g-union-templates ut)
           (set! (ut 'name) key)
           (set! (ut 'tyvars) tyvars)
@@ -1430,7 +1447,7 @@
             (when (!= (node-kind (as ptr tv)) NODE-SYM)
               (die-at (node-line (as ptr tv) (ff 'line)) "defstruct: type parameter must be a symbol"))
             (set! (aref (unsafe/cast &Symbol tyvars) i) (tv 's))))
-        (let (st:&StructTemplate (unsafe/cast &StructTemplate (arena-alloc (sizeof StructTemplate))))
+        (let (st:&StructTemplate (new StructTemplate g-arena))
           (conj g-struct-templates st)
           (set! (st 'name) key)
           (set! (st 'tyvars) tyvars)
@@ -1653,7 +1670,7 @@
 
 ; The marker for type node `a`, read back in this file at `line`.
 (defn env-arg-sym (a:ptr line:i32):Symbol
-  (let (rec:&EnvArg (new EnvArg))
+  (let (rec:&EnvArg (new EnvArg g-arena))
     (set! (rec 'node) (as ?&Node a))
     (set! (rec 'env) (name-env-here))
     (set! (rec 'line) line)
@@ -1664,7 +1681,7 @@
 ; The marker for a type already resolved. A stamp substitutes one where the type's
 ; spelling would be refused in the template's file (`stamp-key-spelling`).
 (defn env-arg-of-type (t:&Type):Symbol
-  (let (rec:&EnvArg (new EnvArg))
+  (let (rec:&EnvArg (new EnvArg g-arena))
     (set! (rec 'node) null)
     (set! (rec 'env) (name-env-here))
     (set! (rec 'ctx) g-mono-context)
@@ -1777,7 +1794,7 @@
         (guard-name-kind name (ff 'line) NK-TYPE)
         (when (>= (unsafe/cast i32 (count g-type-aliases)) MAX-TYPE-ALIASES)
           (die-at (ff 'line) "too many type aliases"))
-        (let (ta:&TypeAlias (unsafe/cast &TypeAlias (arena-alloc (sizeof TypeAlias))))
+        (let (ta:&TypeAlias (new TypeAlias g-arena))
           (conj g-type-aliases ta)
           (set! (ta 'name) key)
           (set! (ta 'body) (as ?&Node body))
@@ -1836,7 +1853,7 @@
 (defn spelling-as-key (s:Symbol):Symbol
   (when (or (= g-ns-declared 0) (symbol-contains-byte s 40)) (return s))
   (let (sv:StrView (symbol-as-view s)
-        acc:String (string-new)
+        acc:String (make String)
         start:usize 0
         i:usize 0
         slen:usize (symbol-len s))

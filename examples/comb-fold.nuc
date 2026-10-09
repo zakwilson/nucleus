@@ -7,10 +7,11 @@
 (import-use nucleus.vector)
 (import-use nucleus.iterator)
 (import-use nucleus.combinators)
+(import-use nucleus.allocator)
 
 (defn main ():i32
   (with (v:&(Vector i32) (alloca (Vector i32)))
-    (vector-init v) (conj v 1) (conj v 2) (conj v 3) (conj v 4)
+    (init v) (conj v 1) (conj v 2) (conj v 3) (conj v 4)
     (let (base:i32 10)
 
       ; ---- foldr (right fold): g(acc,x) = acc*base + x, over reversed [4 3 2 1] ----

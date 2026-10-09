@@ -54,7 +54,7 @@
   ;     and drop each box element exactly once. The Vector's own Drop frees the
   ;     buffer at scope exit. No leak, no double-free.
   (with (v:&(Vector (BoxedFn (i32) i32)) (alloca (Vector (BoxedFn (i32) i32))))
-    (vector-init v)
+    (init v)
     (let (a:i32 10
           b:i32 100
           c0:(BoxedFn (i32) i32) (vfn (x:i32):i32 (+ x a))     ; +10  (captures a)

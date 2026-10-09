@@ -358,11 +358,33 @@ Two read-only protocol layers define the public string surface.
 
 ### Construction
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `string-new` | `() → String` | Empty `String` with the default (libc) allocator. |
-| `string-new-alloc` | `(a:(ref AllocHandle)) → String` | Empty `String` with an explicit allocator handle (copied in). |
-| `string-with-capacity` | `(n:usize) → String` | Empty `String` (libc allocator) pre-reserving `n` bytes. |
+An empty `String` is `(make String)`, or `(make String a)` over an allocator. In
+place, without `nucleus.create`, `init` a zero `String`; capacity is a
+`string-reserve` after it:
+
+```lisp
+(let (s:String (String))
+  (init &s)                  ; heap; (init &s (handle a)) for another allocator
+  (string-reserve &s 256)
+  …)
+```
+
+**`Init` and `make`.** `String` conforms to `Init`, `(InitFrom StrView)` and
+`(TryInitFrom (Vector ui8))`, and also has `init` overloads from `&String` and
+`&(Vector ui8)`. Through `make`/`new` (`(import-use nucleus.create)`, see
+[allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make)):
+
+| Form | Result | Notes |
+|---|---|---|
+| `(make String)` / `(make String a)` | `String` | empty; the buffer comes from `heap` / `a` |
+| `(make String a "text")`, `(make String a sv)` | `String` | **lossy**: each byte that does not decode becomes U+FFFD, so a literal never makes the result `!` |
+| `(make String a s)` with `s:String` | `String` | a copy |
+| `(make String a bytes)` with `bytes:(Vector ui8)` | `!String` | **strict**: `invalid-utf8` if the bytes do not decode; nothing is allocated on that path |
+| `(new String a …)` | `&String` / `!&String` | as above, with the `String` header also from `a` |
+
+The validating constructors below keep their `!String` result. `string-from-cstr`
+and `string-from-cstr-unchecked` stay as functions because `String` has no
+`init` from a `CStr`: a C string's length is a `strlen`, not a view's field.
 
 ### Validating constructors
 
@@ -413,9 +435,10 @@ Two read-only protocol layers define the public string surface.
 ```lisp
 (import-use nucleus.string)
 (import-use nucleus.vector)
+(import-use nucleus.create)
 
 (defn main ():i32
-  (with (s:String (string-new))
+  (with (s:String (make String))
     (string-push-char &s \H)
     (string-push-char &s \i)
     (let (sv:StrView (string-as-view &s))
@@ -660,8 +683,11 @@ algorithm and the interface is native either way.
 ```lisp
 (str-into out "expected " n " args, got " m)   ; append into an existing String
 (str      "expected " n " args, got " m)       ; build a new String
-(str-alloc h "expected " n " args, got " m)    ; …over an explicit AllocHandle
+(str-alloc g-arena "expected " n " args, got " m)  ; …over an explicit allocator
 ```
+
+`str-alloc`'s first operand is anything `handle` accepts, as for `make`: an
+allocator binding or global (`g-arena`, `heap`, an `Alloc`) or a pointer to one.
 
 Each argument is expanded to a `(to-str <arg> out)` call, so any `ToStr`
 conformer may appear in any position and the pieces are heterogeneous by
@@ -744,7 +770,7 @@ stripped) and `file-read-to-string` (`!String`, bytes, no UTF-8 validation).
 - **`string-as-cstr` writes into the String.** It appends a NUL *past* `len` (reserving if needed) without counting it, so the String is unchanged for every other operation and repeated calls are free — but the returned `CStr` is invalidated by any subsequent append.
 - **`sub-bytes` and `strview-from-cstr` return by value.** Both returned heap-allocated `ptr:StrView` wrappers before Stage 17 A2, when returning a struct payload through `!T` was believed impossible; it is not. Neither allocates now, and neither needs freeing. Their `data` still borrows the source buffer, which must outlive the view.
 - **`SplitIter`/`LineIter` yield segments by value.** They conform to `(Iterator StrView)` since Stage 17 A3, so `doseq-iter` binds each segment as a `StrView` value — pass `&seg` to anything taking `(ref StrView)`. The `*-iter-done`/`*-iter-next` pair is still available.
-- **`string-new-alloc` takes `(ref AllocHandle)`.** It copies the handle in; the caller retains ownership of the original.
+- **`init` copies the `Alloc` handle in.** The allocator it names must outlive the `String`.
 - **`CharIter` is lossless but substitutes U+FFFD.** Invalid UTF-8 bytes are never skipped silently — iteration always advances by at least one byte. Invalid bytes produce U+FFFD (the Unicode replacement character) as the yield value rather than an error, so iterating over a `CharIter` always terminates without an error path.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.
 - **A materialized `StrView` at a C variadic call site contributes only its `data` pointer.** Passing a `StrView` value (not a fixed parameter) to a variadic function such as `printf` (`%s`) passes just the `char*`, never the `{data,len}` pair as two variadic slots — otherwise the carried length would occupy an extra vararg slot and shift every later argument's conversion. A *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI. See `examples/strview-vararg-test.nuc`.

@@ -541,6 +541,15 @@
           ; declare always may be. And whether this unit DEFINES the name: only a
           ; `defn` carries a body, so the libc diamond (a C header and a `.nuch`
           ; both naming `strlen`) answers no, which is every occurrence in this repo.
+          ; A foreign function a `.nuc` declares beside a defn of another signature
+          ; joins it as an overload (design/stage24-allocation/c-name-overloads.md).
+          (when (and (!= m NUCH-AFTER) (= g-current-ns g-ns-user)
+                     (not (symbol-none? g-source-path))
+                     (= (str-ends-with g-source-path ".nuch") 0))
+            (let (anp:i32 0
+                  apt:ptr (declare-param-types params-node (ff 'line) (as &i32 &anp)))
+              (when (generic-adopt-c-fn fname ret apt anp 0)
+                (finalize-generics))))
           (when (and (!= m NUCH-AFTER)
                      (!= (scope-lookup-key g-globals fname) null))
             (when (and (not (symbol-none? g-source-path))
@@ -608,9 +617,10 @@
             ; "no method 'describe' is defined" for a method that is declared,
             ; defined and linkable). `ir-fixed` because the producing unit
             ; already chose this symbol — see finalize-generics.
-            (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
-              (set! ((unsafe/cast &Method dm) 'ir-name) link-ir)
-              (set! ((unsafe/cast &Method dm) 'ir-fixed) 1))
+            (when (not (generic-has-c-method? fname link-ir))
+              (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
+                (set! ((unsafe/cast &Method dm) 'ir-name) link-ir)
+                (set! ((unsafe/cast &Method dm) 'ir-fixed) 1)))
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered

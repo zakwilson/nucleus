@@ -29,7 +29,7 @@
 (declare rd-error ((code Err) (line i32) (msg StrView) (note StrView)) :ReadError)
 (declare rd-arena-str ((s (ref String))) :StrView)
 (defstruct RMacro (prefix StrView) (wrap Symbol))
-(extern (g-read-alloc AllocHandle))
+(declare rd-macro-table () (ref (Vector RMacro)))
 (declare rd-macro-add ((tbl (ref (Vector RMacro))) (prefix StrView) (wrap Symbol)) :void)
 (declare rd-macro-find ((tbl (ref (Vector RMacro))) (prefix StrView)) :i32)
 (declare read-macro-table-new () (ref (Vector RMacro)))

@@ -19,7 +19,7 @@
 
 (defn main ():i32
   (with (m:&(HashMap CStr i32) (alloca (HashMap CStr i32)))
-    (hashmap-init m)
+    (init m)
 
     ; --- Basic inserts ---
     (assoc m "one"   1)

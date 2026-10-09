@@ -36,7 +36,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.node)
 (import-use nucleus.read)
-(import-use nucleus.edn)
+(import-use nucleus.edn) (import-use nucleus.create)
 (deftest abi-interop
   (try (require-cc))
   (try (check-script-ok "./tests/run-abi-test.sh" ""))
@@ -178,7 +178,7 @@
           (none (set! more false)))))))
 
 (defn check-str-table-live (path:StrView ir:StrView):!void
-  (let ((marks (Vector i32)) (vector-new)
+  (let ((marks (Vector i32)) (make (Vector i32))
         dead:i64 0
         first:i64 -1)
     (str-table-marks ir &marks)

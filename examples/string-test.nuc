@@ -2,7 +2,7 @@
 ; conformances, Drop, Eq, Ord, Hash, and use as HashMap key.
 ;
 ; Tests:
-;   1. string-new + string-push-char: build "Hello", check byte-len / char-count
+;   1. (make String) + string-push-char: build "Hello", check byte-len / char-count
 ;   2. chars iteration: print each char's u32 value
 ;   3. string-push-str: append " World", check byte-len, as-view → cstr
 ;   4. string-pop-char: pop 'd' (u32=100)
@@ -33,7 +33,7 @@
 
   ; ---- 1. Build "Hello" with push-char ----------------------------------------
   (with (s:&String (alloca String))
-    (vector-init (ref s 'bytes))
+    (init (ref s 'bytes))
 
     (string-push-char s \H)
     (string-push-char s \e)
@@ -103,7 +103,7 @@
 
   ; ---- 6. Drop via with block --------------------------------------------------
   (with (s2:&String (alloca String))
-    (vector-init (ref s2 'bytes))
+    (init (ref s2 'bytes))
     (string-push-char s2 \X)
     (printf "in-with\n"))
   ; Drop fires at the closing paren above.
@@ -130,7 +130,7 @@
 
   ; ---- 9. HashMap<String,i32> -------------------------------------------------
   (with (m:&(HashMap String i32) (alloca (HashMap String i32)))
-    (hashmap-init m)
+    (init m)
 
     ; assoc String keys into the map (regular generic dispatch, no get-intrinsic issue).
     (let (k1:String (string-from-cstr-unchecked "alpha")

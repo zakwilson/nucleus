@@ -1,4 +1,5 @@
 (import-use nucleus.arena)
+(import-use nucleus.create)
 (import-use nucleus.vector)
 (import-use nucleus.intern)
 (import-use nucleus.node)
@@ -64,7 +65,7 @@
 ; overrides all three with the template's, which is the only case where the body
 ; came from somewhere else.
 (defn mono-job-here (form:?&Node context:StrView):&MonoJob
-  (let (job:&MonoJob (new MonoJob))
+  (let (job:&MonoJob (new MonoJob g-arena))
     (set! (job 'form) form)
     (set! (job 'context) context)
     (set! (job 'ns) g-current-ns)
@@ -136,22 +137,39 @@
 ; Does `m` answer method `name` of a protocol whose methods this spelling names —
 ; bare, or through namespace `ns` — for a type that conforms to it?
 (defn method-answers-protocol-here (m:&Method ns:Symbol name:Symbol):bool
-  (when (or (!= (m 'kind) METHOD-USER) (= (m 'param-types) null)) (return false))
-  (doseq (p g-protocols (VecIter &Protocol))
-    (when (and (proto-declares-method? p name)
-               (!= (binding-visible (p 'priv) (p 'src-ns)) 0)
-               (if (symbol-none? ns)
-                 (!= (ns-reachable-bare (p 'src-ns)) 0)
-                 (= (p 'src-ns) ns)))
-      (dotimes (i (m 'num-params))
-        (let (pt:?&Type (aref (unsafe/cast &ptr (m 'param-types)) i))
-          (when (conformance-exact? pt (p 'name)) (return true))
-          (when (and (!= pt null) (= (pt 'kind) TY-PTR)
-                     (conformance-exact? (pt 'elem) (p 'name)))
-            (return true))
-          ; A method on its own namespace's type implements the protocol for it,
-          ; even above the file's `extend` (ambient-namespaces.md, AN-2 as built).
-          (when (type-owned-by-ns? pt (m 'src-ns)) (return true))))))
+  (let (tmpl:bool (= (m 'kind) METHOD-GENERIC))
+    (when (and (not tmpl) (or (!= (m 'kind) METHOD-USER) (= (m 'param-types) null)))
+      (return false))
+    (doseq (p g-protocols (VecIter &Protocol))
+      (when (and (proto-declares-method? p name)
+                 (!= (binding-visible (p 'priv) (p 'src-ns)) 0)
+                 (if (symbol-none? ns)
+                   (!= (ns-reachable-bare (p 'src-ns)) 0)
+                   (= (p 'src-ns) ns)))
+        (when (and tmpl (ns-conforms-own-type? (m 'src-ns) (p 'name))) (return true))
+        (when (not tmpl)
+          (when (method-params-answer? m p) (return true))))))
+  (return false))
+
+; A template method has no parsed parameter types to test; its namespace
+; conforming one of its own types to the protocol is what reaches it.
+(defn ns-conforms-own-type? (ns:Symbol proto:Symbol):bool
+  (when (symbol-none? ns) (return false))
+  (doseq (c g-conformances (VecIter &Conformance))
+    (when (and (= (c 'proto-name) proto) (= (key-namespace (c 'type-name)) ns))
+      (return true)))
+  (return false))
+
+(defn method-params-answer? (m:&Method p:&Protocol):bool
+  (dotimes (i (m 'num-params))
+    (let (pt:?&Type (aref (unsafe/cast &ptr (m 'param-types)) i))
+      (when (conformance-exact? pt (p 'name)) (return true))
+      (when (and (!= pt null) (= (pt 'kind) TY-PTR)
+                 (conformance-exact? (pt 'elem) (p 'name)))
+        (return true))
+      ; A method on its own namespace's type implements the protocol for it,
+      ; even above the file's `extend` (ambient-namespaces.md, AN-2 as built).
+      (when (type-owned-by-ns? pt (m 'src-ns)) (return true))))
   (return false))
 
 (defn type-owned-by-ns? (t:?&Type ns:Symbol):bool
@@ -232,9 +250,9 @@
 (defn generic-alloc (name:Symbol):&Generic
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
   ; compilation).
-  (let (g:&Generic (new Generic))
+  (let (g:&Generic (new Generic g-arena))
     (set! (g 'name) name)
-    (set! (g 'methods) (unsafe/cast &(Vector &Method) (vector-new-in &g-arena-alloc)))
+    (set! (g 'methods) (new (Vector &Method) g-arena))
     (set! (g 'finalized) 0)
     (set! (g 'mangled) 0)
     ; Stage 12 N4: snapshot the defining namespace's ir-prefix now, so a finalize
@@ -301,10 +319,10 @@
 ; to be moved above them both, because `generic-alloc` reads it through
 ; `ns-ir-prefix`.
 (defn build-generics ():&(Vector &Generic)
-  (let (v:&(Vector &Generic) (vector-new-in &g-arena-alloc))
+  (let (v:&(Vector &Generic) (new (Vector &Generic) g-arena))
     (doseq (bop g-binops (VecIter &BinOp))
            (let (g:&Generic (generic-alloc (bop 'name))
-                 m:&Method (new Method))
+                 m:&Method (new Method g-arena))
       (set! (m 'param-types) null)
       (set! (m 'num-params) 2)
       (set! (m 'ret-type) null)
@@ -742,7 +760,7 @@
       (type-set-params ft param-types nparams)
       (set! (ft 'variadic) variadic)
       (set! (ft 'has-rest) has-rest)
-      (let (m:ref:Method (new Method))
+      (let (m:ref:Method (new Method g-arena))
         (set! (m 'param-types) param-types)
         (set! (m 'num-params) nparams)
         (set! (m 'ret-type) ret)
@@ -885,6 +903,7 @@
     (while (< gi (unsafe/cast i32 (count g-generics)))
       (let (gg:&Generic (as &Generic (invoke g-generics (as usize gi))))
         (when (and (= (gg 'finalized) 0) (> (unsafe/cast i32 (count (gg 'methods))) 0))
+          (generic-adopt-bound-c-fn gg)
           ; Tally the method kinds. An operator name carries an intrinsic seed
           ; method (§9.2); a user overload of that operator adds METHOD-USER
           ; methods alongside it (§10.3 operators-as-functions).
@@ -1006,6 +1025,143 @@
               (set! (gg 'finalized) 1)))))
       (inc! gi))))
 
+; ============================================================
+; A C function and a Nucleus generic of one name
+; (design/stage24-allocation/c-name-overloads.md)
+; ============================================================
+
+; Join the C function `@fname` to the generic `fname` as one more overload unless
+; a user method implements it. True when it joined; the caller re-finalizes.
+(defn generic-adopt-c-fn (fname:Symbol ret:?&Type ptypes:ptr nparams:i32 variadic:i32):bool
+  (let (g:?&Generic (generic-lookup-exact fname))
+    (when (= g null) (return false))
+    (let (gg:&Generic (unsafe/cast &Generic g)
+          irn:Symbol (symbol-intern (fstr "@" fname))
+          cpfx:Symbol (ns-ir-prefix g-ns-user)
+          joins:bool false)
+      ; A Nucleus definition already emitted under the symbol keeps it.
+      (when-some (c (link-claim-find irn))
+        (when (not (c 'c-decl)) (return false)))
+      (doseq (m (gg 'methods) (VecIter &Method))
+        (when (or (m 'c-decl) (= (m 'kind) METHOD-INTRINSIC)) (return false))
+        (when (= (m 'ir-fixed) 0)
+          (when (and (= (method-ir-prefix g m) cpfx)
+                     (= (m 'kind) METHOD-USER) (= (m 'origin-template) null)
+                     (c-implements? m ret ptypes nparams variadic))
+            (return false))
+          (set! joins true)))
+      (when (not joins) (return false))
+      (when (and (!= (gg 'finalized) 0) (= (gg 'mangled) 0))
+        (generic-unbind-solitary gg))
+      (let (m:&Method (generic-register-method fname ret ptypes nparams 0 variadic null))
+        (set! (m 'ir-name) irn)
+        (set! (m 'ir-fixed) 1)
+        (set! (m 'c-decl) true)
+        (set! (m 'src-ns) g-ns-user)
+        (set! (m 'priv) 0))
+      (return true))))
+
+; Does `m` implement the C declaration? Its slots must be the C ones as a Nucleus
+; program writes them, and only a bare `ptr` writes `void *`: `free (self:&Box)` is
+; a method of `Box`, though it links as `void (ptr)` too.
+(defn c-implements? (m:&Method ret:?&Type ptypes:ptr nparams:i32 variadic:i32):bool
+  (when (or (!= (m 'num-params) nparams) (!= (m 'variadic) variadic)) (return false))
+  (when (not (c-impl-slot? (m 'ret-type) ret)) (return false))
+  (dotimes (i nparams)
+    (when (not (c-impl-slot? (aref (unsafe/cast &ptr (m 'param-types)) i)
+                             (aref (unsafe/cast &ptr ptypes) i)))
+      (return false)))
+  (return true))
+
+(defn c-impl-slot? (u:?&Type c:?&Type):bool
+  (if-some (cc c)
+    (when (and (= (cc 'kind) TY-PTR) (= (cc 'elem) null))
+      (if-some (uu u)
+        (return (and (= (uu 'kind) TY-PTR) (= (uu 'elem) null)))
+        (return false)))
+    0)
+  (return (!= (slot-type-compat u c) 0)))
+
+; The late order — a macro-made `defn` meeting a C function the unit already bound:
+; adopt it from its binding before the generic takes the key. A REPL `defn` of a
+; bound name is a redefinition, which has no overloads.
+(defn generic-adopt-bound-c-fn (gg:&Generic):void
+  (when (!= g-interactive 0) (return))
+  (when-some (s (scope-frame-find g-globals (gg 'name)))
+    (let (irn:Symbol (symbol-intern (fstr "@" (gg 'name)))
+          ft:?&Type (s 'type))
+      (when (or (!= (s 'is-local) 0) (= ft null) (!= (ft 'kind) TY-FN)
+                (!= (s 'ir-name) (symbol-as-view irn)))
+        (return))
+      (when-some (c (link-claim-find irn))
+        (when (not (c 'c-decl)) (return))
+        (let (np:i32 (ft 'num-params)
+              ptypes:ptr (arena-alloc (* (+ np 1) (ptr-bytes))))
+          (dotimes (i np)
+            (set! (aref (unsafe/cast &ptr ptypes) i) ((field-at (ft 'params) i) 'type)))
+          (generic-adopt-c-fn (gg 'name) (ft 'ret) ptypes np (ft 'variadic)))))))
+
+; Is the key `fname` bound to a Nucleus `defn` rather than to a declaration?
+(defn defn-holds-key? (fname:Symbol):bool
+  (when-some (s (scope-lookup-key g-globals fname))
+    (when-some (g (generic-lookup-exact fname))
+      (doseq (m (g 'methods) (VecIter &Method))
+        (when (and (= (m 'kind) METHOD-USER) (= (m 'ir-fixed) 0)
+                   (= (symbol-as-view (m 'ir-name)) (s 'ir-name)))
+          (return true)))))
+  (return false))
+
+(defn generic-has-c-method? (fname:Symbol irn:Symbol):bool
+  (when-some (g (generic-lookup-exact fname))
+    (when-some (cm (generic-c-method g))
+      (return (= (cm 'ir-name) irn))))
+  (return false))
+
+(defn generic-c-method (g:&Generic):?&Method
+  (doseq (m (g 'methods) (VecIter &Method))
+    (when (m 'c-decl) (return m)))
+  (return null))
+
+(defn method-may-take (m:&Method nargs:i32):bool
+  (when (or (!= (m 'has-rest) 0) (!= (m 'variadic) 0)) (return true))
+  (when (and (!= (m 'fn-type) null) (!= (-> (m 'fn-type) (_ 'nopt)) 0)) (return true))
+  (return (= (m 'num-params) nargs)))
+
+; With a C function in `g`, the one concrete method that takes `nargs` arguments: it
+; is called as a solitary function is, so joining makes neither side's calls stricter.
+(defn generic-c-sole-at-arity (g:&Generic nargs:i32):?&Method
+  (when (= (generic-c-method g) null) (return null))
+  (let (sole:?&Method null)
+    (doseq (m (g 'methods) (VecIter &Method))
+      (when (method-may-take m nargs)
+        (when (!= sole null) (return null))
+        (set! sole m)))
+    (when (= sole null) (return null))
+    (when (!= ((unsafe/cast &Method sole) 'kind) METHOD-USER) (return null))
+    (return sole)))
+
+; `generic-resolve`'s last resort: the C function takes what no overload claimed,
+; with its own argument conversions.
+(defn generic-c-fallback (g:&Generic nargs:i32):?&Method
+  (when-some (cm (generic-c-method g))
+    (when (or (= (cm 'num-params) nargs)
+              (and (!= (cm 'variadic) 0) (> nargs (cm 'num-params))))
+      (return cm)))
+  (return null))
+
+; The callee binding for method `m` of `gname`; a C function's own carries its
+; `noreturn`/`returns_twice` flags.
+(defn method-call-sym (gname:Symbol m:&Method):&Sym
+  (when (m 'c-decl)
+    (when-some (s (scope-frame-find g-globals gname))
+      (when (= (s 'ir-name) (symbol-as-view (m 'ir-name))) (return s))))
+  (let (ss:&Sym (new Sym g-arena))
+    (set! (ss 'name) gname)
+    (set! (ss 'type) (m 'fn-type))
+    (set! (ss 'ir-name) (symbol-as-view (m 'ir-name)))
+    (set! (ss 'is-local) 0)
+    (return ss)))
+
 ; Can an argument of type `at` (an untyped int literal when is-lit≠0, an untyped
 ; float literal when is-flit≠0) be passed to a parameter of type `pt` by exact
 ; match or a safe widen / literal adaptation (§10.3 resolution tiers)? Widening
@@ -1060,7 +1216,7 @@
 ; Build a comma-separated string of type spellings for a diagnostic, e.g.
 ; "StrView, ptr". argtypes is the parallel array of Type* used by generic-resolve.
 (defn arg-type-spellings (argtypes:ptr nargs:i32):StrView
-  (let ((acc String) (str-alloc (strfmt-alloc) ""))
+  (let ((acc String) (str-alloc g-arena ""))
     (dotimes (i nargs)
       (when (!= i 0) (str-into acc ", "))
       ; FP-3: a *message*, so type-display — a fn-pointer argument printed as
@@ -1092,6 +1248,8 @@
       (when (!= lt null)
         (when-some (m (generic-resolve-tiers g lt arg-nodes nargs line want &i2 &c2))
           (return m))))
+    (when-some (cm (generic-c-fallback (unsafe/cast &Generic g) nargs))
+      (return cm))
     (let (bsaved:BindCall (bind-call-arm (gg 'name) line))
       (refuse-unknown-where gg nargs)
       (set! g-bind-call bsaved))
@@ -1199,7 +1357,7 @@
 (defn user-method-reasons (m:&Method argtypes:ptr arg-nodes:ptr nargs:i32):StrView
   (let (ar:StrView (arity-reason m nargs))
     (when (not (str-empty? &ar)) (return ar)))
-  (let ((acc String) (str-alloc (strfmt-alloc) "")
+  (let ((acc String) (str-alloc g-arena "")
         addr:i32 -1
         widened:ptr (arena-alloc (* (+ nargs 1) 4)))
     (dotimes (i nargs)
@@ -1240,7 +1398,7 @@
                                          bound:ptr line:i32):StrView
   (let (ar:StrView (arity-reason m nargs))
     (when (not (str-empty? &ar)) (return ar)))
-  (let ((acc String) (str-alloc (strfmt-alloc) "")
+  (let ((acc String) (str-alloc g-arena "")
         params-node:?&Node (node-at (m 'body) 2)
         ntv:i32 (m 'num-tyvars)
         tl:i32 (method-text-line m line)
@@ -1287,7 +1445,7 @@
 ; `(name T …):R` for a concrete method; a template's `(name p:T …):R`, with the
 ; types `bound` fixes when it fixes every type variable, else as written.
 (defn method-signature-display (gname:Symbol m:&Method bound:ptr line:i32):StrView
-  (let ((acc String) (str-alloc (strfmt-alloc) "(" gname))
+  (let ((acc String) (str-alloc g-arena "(" gname))
     (if (= (m 'kind) METHOD-USER)
       (do
         (dotimes (i (m 'num-params))
@@ -1323,7 +1481,7 @@
 ; and why the rest do not fit; failing any, one that takes it only by address.
 (defn candidate-notes (g:ptr:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32):StrView
   (when (= nargs 0) (return ""))
-  (let ((acc String) (str-alloc (strfmt-alloc) "")
+  (let ((acc String) (str-alloc g-arena "")
         shown:i32 0
         more:i32 0
         by-ref:?&Method null
@@ -2374,7 +2532,7 @@
       ; variable symbol, in tail position, as in `(Ord T)`.
       (let (c0:&Node (unsafe/cast &Node (node-at cnode 0))
             vn:&Node (unsafe/cast &Node (node-at cnode 1))
-            rec:ref:Constraint (new Constraint))
+            rec:ref:Constraint (new Constraint g-arena))
         (set! (rec 'args) null)
         (set! (rec 'nargs) 0)
         (set! (rec 'settled) false)
@@ -2476,7 +2634,7 @@
                                 (count-pattern-nodes
                                   (node-at (node-at params-node (+ (+ wi 1) sb-c)) 0)))))
         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-              constraints:ref:ConstraintVec (vector-new-in &g-arena-alloc)
+              constraints:ref:ConstraintVec (new ConstraintVec g-arena)
               tyvars:ptr     (arena-alloc (* cap (ptr-bytes)))
               ntv:i32 0)
           ; Parse the :where constraint list into the `constraints` Vector and
@@ -2507,7 +2665,7 @@
           ; Keyed and marked as generic-register-method does a `defn-`.
           (let (key:Symbol (priv-key-define fname)
                 g:&Generic (generic-find-or-new key))
-            (let (m:&Method (new Method))
+            (let (m:&Method (new Method g-arena))
               (set! (m 'priv) g-defining-private)
               (set! (m 'param-types) null)
               (set! (m 'num-params) nparams)
@@ -3523,7 +3681,7 @@
            (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
                         'ast-first 'ast-rest 'ast-at 'ast-len
                         'not '_and '_or 'cast 'ref 'deref 'ptr+ '_get
-                        'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
+                        'sizeof 'alignof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
                         'struct-fields 'type-name 'conforms?
                         'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
@@ -3531,7 +3689,7 @@
                         'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
                         'unsafe/funcall-ptr-ptr 'some 'as-ref 'unwrap
                         'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
-                        'match '__make 'err! 'try 'type-token 'signal}
+                        'match '__make '__init-then 'err! 'try 'type-token 'signal}
                        head)
            false))
 
@@ -4272,7 +4430,7 @@
     (return (protocol-lookup-ns name))))
 
 (defn protocol-new (name:Symbol sigs:ptr num-sigs:i32):&Protocol
-  (let (p:&Protocol (new Protocol))
+  (let (p:&Protocol (new Protocol g-arena))
     ; The registry key is the namespace-qualified identity of the *defining*
     ; namespace (identity under `user`). Everything downstream — the conformance
     ; registry, the super-protocol edges, `(dyn P)`'s box type — keys off this
@@ -4324,7 +4482,7 @@
 
 ; Queue `crec`, written at `line` by a `who`, for `drain-where-checks`.
 (defn where-check-later (crec:ref:Constraint line:i32 who:StrView):void
-  (let (w:&WhereCheck (new WhereCheck))
+  (let (w:&WhereCheck (new WhereCheck g-arena))
     (set! (w 'crec) crec)
     (set! (w 'line) line)
     (set! (w 'who) who)
@@ -4466,7 +4624,7 @@
                      (= (node-kind s) NODE-SYM)
                      (not (symbol-contains-byte ((unsafe/cast &Node s) 's) 58))
                      (or (= (node-kind p) NODE-SYM) (= (node-kind p) NODE-LIST)))
-            (let (pr:&ConformancePromise (new ConformancePromise))
+            (let (pr:&ConformancePromise (new ConformancePromise g-arena))
               (set! (pr 'subject) ((unsafe/cast &Node s) 's))
               (set! (pr 'proto) p)
               (set! (pr 'ns) g-current-ns)
@@ -4543,7 +4701,7 @@
                       (display-key pkey))))))))
 
 (defn conformance-note-no (tkey:Symbol pkey:Symbol asked:Symbol line:i32):void
-  (let (q:&ConformanceNo (new ConformanceNo))
+  (let (q:&ConformanceNo (new ConformanceNo g-arena))
     (set! (q 'tkey) tkey)
     (set! (q 'pkey) pkey)
     (set! (q 'asked) asked)
@@ -4613,7 +4771,7 @@
   ; — so the retained representation is value-comparable (§14.4).
   (let (av:?&(Vector Symbol) null)
     (when (> nargs 0)
-      (let (v:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+      (let (v:&(Vector Symbol) (new (Vector Symbol) g-arena))
         (dotimes (i nargs) (conj v (aref (unsafe/cast &Symbol args) i)))
         (set! av v)))
     (dotimes (i (unsafe/cast i32 (count g-conformances)))
@@ -4632,7 +4790,7 @@
                     "' with different associated arguments")))
           (return))))
     (conformance-refuse-after-no type-name proto-name line)
-    (let (c:&Conformance (unsafe/cast &Conformance (arena-alloc (sizeof Conformance))))
+    (let (c:&Conformance (new Conformance g-arena))
       (set! (c 'type-name) type-name)
       (set! (c 'proto-name) proto-name)
       (set! (c 'args) av)
@@ -4729,7 +4887,7 @@
               (set! (aref (unsafe/cast &ptr ptypes) 0) (as ptr self-ty))
               (dotimes (fpi fn-np)
                 (set! (aref (unsafe/cast &ptr ptypes) (+ fpi 1)) (as ptr ((field-at (cv 'params) fpi) 'type))))
-              (let (syn:ref:Method (new Method))
+              (let (syn:ref:Method (new Method g-arena))
                 (set! (syn 'param-types) ptypes)
                 (set! (syn 'num-params) total)
                 (set! (syn 'ret-type) (cv 'ret))
@@ -4890,7 +5048,7 @@
     (let (e:&Conformance (invoke g-proto-supers i:usize))
       (when (and (= (e 'type-name) sub) (= (e 'proto-name) super))
         (return))))
-  (let (e:&Conformance (unsafe/cast &Conformance (arena-alloc (sizeof Conformance))))
+  (let (e:&Conformance (new Conformance g-arena))
     (set! (e 'type-name) sub)
     (set! (e 'proto-name) super)
     (conj g-proto-supers e)))
@@ -4900,7 +5058,7 @@
 ; name, rejoining with ':'. "self:ptr:Self" with Circle → "self:ptr:Circle".
 (defn subst-self-sym (s:Symbol typename:Symbol line:i32):Symbol
   (let (segs:ptr (split-colon-segments s line)
-        acc:String (string-new)
+        acc:String (make String)
         n:i32 0)
     (dotimes (i (node-len segs))
       (let (seg:Symbol ((unsafe/cast &Node (node-at segs i)) 's))
@@ -5115,7 +5273,7 @@
       (set! (aref (unsafe/cast &Symbol tyvars) bi) (aref (unsafe/cast &Symbol base) bi)))
     (when (>= wi 0)
       (let (nc:i32 (- (node-len params) (+ wi 1))
-            constraints:ref:ConstraintVec (vector-new-in &g-arena-alloc))
+            constraints:ref:ConstraintVec (new ConstraintVec g-arena))
         (parse-where-constraints params (+ wi 1) nc constraints tyvars (as &i32 &ntv) line)
         (dotimes (ci nc)
           (where-check-later (constraints-at constraints ci) line "defprotocol"))))
@@ -5322,11 +5480,11 @@
         wi:i32 (params-where-index params)
         nc:i32 (- (node-len params) (+ wi 1))
         cap:i32 (+ (count-pattern-nodes params) 1)
-        constraints:ref:ConstraintVec (vector-new-in &g-arena-alloc)
+        constraints:ref:ConstraintVec (new ConstraintVec g-arena)
         tyvars:ptr (arena-alloc (* (as i64 cap) (ptr-bytes)))
         ntv:i32 0
         ptypes:ptr (arena-alloc (* (as i64 (+ wi 1)) (ptr-bytes)))
-        m:&Method (new Method))
+        m:&Method (new Method g-arena))
     (parse-where-constraints params (+ wi 1) nc constraints tyvars (as &i32 &ntv) line)
     ; An unknown protocol would otherwise constrain nothing, and anything conform.
     (dotimes (ci nc)
@@ -5607,7 +5765,7 @@
                                  num-constraints:i32 depth:i32):void
   (doseq (c g-tmpl-conformances (VecIter &TmplConformance))
     (when (and (= (c 'template) template) (= (c 'proto) proto) (= (c 'ptr-depth) depth)) (return)))
-  (let (c:&TmplConformance (new TmplConformance))
+  (let (c:&TmplConformance (new TmplConformance g-arena))
     (set! (c 'ptr-depth) depth)
     (set! (c 'template) template)
     (set! (c 'proto) proto)
@@ -5741,7 +5899,7 @@
   (return true))
 
 (defn tmpl-check-defer (c:?&TmplConformance st:ptr iname:Symbol args:ptr nargs:i32 line:i32):void
-  (let (p:&PendingTmplCheck (new PendingTmplCheck))
+  (let (p:&PendingTmplCheck (new PendingTmplCheck g-arena))
     (set! (p 'c) c)
     (set! (p 'st) st)
     (set! (p 'iname) iname)
@@ -5755,7 +5913,7 @@
 (defn tmpl-retry-pending ():void
   (when (= (count g-pending-tmpl-checks) 0) (return))
   (let (todo:&(Vector &PendingTmplCheck) g-pending-tmpl-checks
-        fresh:&(Vector &PendingTmplCheck) (vector-new-in &g-arena-alloc))
+        fresh:&(Vector &PendingTmplCheck) (new (Vector &PendingTmplCheck) g-arena))
     (set! g-pending-tmpl-checks fresh)
     (doseq (p todo (VecIter &PendingTmplCheck))
       (tmpl-conformance-check-one (p 'c) (p 'st) (p 'iname) (p 'args) (p 'nargs) (p 'line)))))
@@ -6074,7 +6232,7 @@
                                               (count-pattern-nodes
                                                 (aref (unsafe/cast &ptr proto-args) sb-p)))))
                         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-                              constraints:ref:ConstraintVec (vector-new-in &g-arena-alloc)
+                              constraints:ref:ConstraintVec (new ConstraintVec g-arena)
                               tyvars:ptr     (arena-alloc (* (as i64 cap) (ptr-bytes)))
                               ntv:i32 0)
                           ; Seed the tyvars array with the template's own tyvars; they
@@ -6733,6 +6891,9 @@
                                          (node-type b-node scope)
                                          a-node b-node scope)))))
         (when (!= (g 'mangled) 0)
+          ; Lockstep with emit-dispatch's routing of the same call.
+          (when-some (sm (generic-c-sole-at-arity g (- (node-len n) 1)))
+            (return (sm 'ret-type)))
           (let (untyped:bool false)
             (when-some (t (node-type-registry-call g h n scope want &untyped))
               (return t))
@@ -6907,6 +7068,7 @@
         ; so this is byte-identical; on a 16-bit target (AVR, Stage 14 AVR-2) it
         ; is i16, keeping the node-type<->emit-node lockstep intact.
         (when (= hp 'sizeof) (return (ptr-int-type)))
+        (when (= hp 'alignof) (return (ptr-int-type)))
         ; Lockstep with emit-source-file, which emits a plain string literal.
         (when (= hp 'source-file) (return (strview-type)))
         (when (= hp 'source-line) (return (int-literal-type (as i64 (n 'line)))))
@@ -6940,6 +7102,11 @@
               (when (!= okt null) (return okt)))
             (when (!= (as ptr (result-union-of (as ?&Type t))) null) (return ty-void))
             (return null)))
+        ; Lockstep partner of emit-init-then (src/union-emit.nuc).
+        (when (= hp '__init-then)
+          (when (< (node-len n) 3) (return null))
+          (return (init-then-type (node-type (node-at n 1) scope)
+                                  (node-type (node-at n 2) scope) (n 'line))))
         (when (or (= hp 'if-some) (= hp 'when-some)) (return null))
         (when (or (= hp 'err-name) (= hp 'err-message)) (return ty-cstr))
         (when (= hp 'type-token) (return ty-cstr))

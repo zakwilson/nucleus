@@ -1,61 +1,61 @@
-; Stage 11 collections M1 — Allocator protocol, default (libc) allocator, and
-; arena allocator, exercised through the runtime AllocHandle dispatch.
+; The Allocator protocol exercised through the runtime Alloc dispatch: the
+; heap's handle, the process arena's handle, and a handle stored in a struct.
 ;
-; lib/allocator provides the tagged AllocHandle a collection stores and calls
-; through, plus the libc and arena backends behind the alloc-handle-* helpers.
+; lib/allocator provides the tagged Alloc a collection stores and calls
+; through; lib/arena provides the process arena `g-arena`.
 ;
 ; NOTE (tokenizer): a binding whose type is parenthesised, e.g. (ptr ui8) or
-; (ref AllocHandle), uses the list binding form `(name (type))`; the colon sugar
+; (ref Alloc), uses the list binding form `(name (type))`; the colon sugar
 ; `name:(...)` does not tokenise for a parenthesised RHS.
 
 (import-use "stdio.h")
 (import-use nucleus.allocator)
+(import-use nucleus.arena)
 
-; A collection-shaped struct that stores an AllocHandle by value and allocates
-; its backing buffer through it — the M1 "struct stores an AllocHandle and calls
+; A collection-shaped struct that stores an Alloc by value and allocates
+; its backing buffer through it — the M1 "struct stores an Alloc and calls
 ; through it" requirement in miniature.
 (defstruct IntBuf
-  alloc:AllocHandle
+  alloc:Alloc
   data:ptr
   cap:usize)
 
 (defn main ():i32
-  ; ---- 1. Default (libc) allocator: alloc then free. ----
-  (let (d:&AllocHandle (default-allocator))
-    (let ((p ?&ui8) (alloc-handle-alloc d 32 8))
+  ; ---- 1. The heap's handle: alloc then free. ----
+  (let (d:Alloc (handle heap))
+    (let ((p ?&ui8) (allocate &d 32 8))
       (if (= (as ptr p) null)
         (printf "default: alloc failed\n")
         (printf "default: alloc ok (kind=%d)\n" (d 'kind)))
-      (alloc-handle-free d p 32 8)
+      (deallocate &d p 32 8)
       (printf "default: freed\n")))
 
-  ; ---- 2. Arena allocator (via a stack handle): alloc only (free is a no-op). ----
-  (let (ah:&AllocHandle (alloca AllocHandle))
-    (arena-allocator ah)
-    (let ((q ?&ui8) (alloc-handle-alloc ah 64 8))
+  ; ---- 2. The arena's handle: alloc only (free is a no-op). ----
+  (let (ah:Alloc (handle g-arena))
+    (let ((q ?&ui8) (allocate &ah 64 8))
       (if (= (as ptr q) null)
         (printf "arena: alloc failed\n")
         (printf "arena: alloc ok (kind=%d)\n" (ah 'kind)))
       ; free is a no-op for the arena; calling it is still well-defined.
-      (alloc-handle-free ah q 64 8)
+      (deallocate &ah q 64 8)
       (printf "arena: free is no-op\n")))
 
-  ; ---- 3. A struct stores an AllocHandle and allocates through it. ----
+  ; ---- 3. A struct stores an Alloc and allocates through it. ----
   (let (s:&IntBuf (alloca IntBuf))
     (set! (s 'cap) 4)
     ; Initialise the stored handle in place: take the address of the struct's
-    ; AllocHandle field with `(.& s alloc)` (a (ref AllocHandle) into the struct)
-    ; and configure it as a libc handle.
-    (let (sa:&AllocHandle (ref s 'alloc))
-      (libc-allocator sa)
+    ; Alloc field with `(.& s alloc)` (a (ref Alloc) into the struct)
+    ; and store the heap's handle there.
+    (let (sa:&Alloc (ref s 'alloc))
+      (set! (deref sa) (handle heap))
       ; Allocate 4 i32 (16 bytes) through the stored handle.
-      (let ((blk ?&ui8) (alloc-handle-alloc sa 16 4))
+      (let ((blk ?&ui8) (allocate sa 16 4))
         (set! (s 'data) (as ptr blk))
         (let (arr:&i32 (unsafe/cast &i32 (s 'data)))
           (set! (aref arr 0) 10) (set! (aref arr 1) 20) (set! (aref arr 2) 30) (set! (aref arr 3) 40)
           (printf "intbuf: cap=%llu v0=%d v3=%d\n"
             (as ui64 (s 'cap)) (aref arr 0) (aref arr 3)))
-        (alloc-handle-free sa blk 16 4)
+        (deallocate sa blk 16 4)
         (printf "intbuf: freed via stored handle\n"))))
 
   (return 0))

@@ -14,7 +14,7 @@
 
 (defn main ():i32
   (with (v:&(Vector (BoxedFn (i32) i32)) (alloca (Vector (BoxedFn (i32) i32))))
-    (vector-init v)
+    (init v)
     ; compose: x -> (x*2)+1
     (let (c0:(BoxedFn (i32) i32)
             (compose (fn (x:i32):i32 (+ x 1)) (fn (x:i32):i32 (* x 2))))
