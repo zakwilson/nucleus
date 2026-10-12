@@ -1,0 +1,14 @@
+; Stage 24 BD-1 — an owning box is viewed as borrowing only for its own protocol (§4.3).
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defprotocol Other (other (self:&Self):i32))
+(defn other (self:&Pt):i32 (return 2))
+(extend Pt Other)
+(defn f ():i32
+  (let (o:(dyn Other) (Pt 1)
+        b:(dyn &Show) o)
+    (return (show b))))

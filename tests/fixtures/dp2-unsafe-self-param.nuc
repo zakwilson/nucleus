@@ -1,0 +1,15 @@
+; Stage 24 DP-2 — a mixed protocol boxes, and only the call to its unsafe method
+; is refused, naming the rule. `show` is callable through the same box.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Same (show (self:&Self):i32) (same? (self:&Self o:&Self):bool))
+(defstruct A n:i32)
+(defn show (self:&A):i32 (return (self 'n)))
+(defn same? (self:&A o:&A):bool (return (= (self 'n) (o 'n))))
+(extend A Same)
+(defn main ():i32
+  (let (a:(dyn Same) (A 3)
+        b:(dyn Same) (A 3))
+    (println (show a))
+    (println (same? a b)))
+  (return 0))

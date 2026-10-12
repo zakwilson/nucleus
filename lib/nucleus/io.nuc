@@ -75,16 +75,12 @@
 ; Each expands to the `!void` of its write, so a caller may `try` it; discarding
 ; is the default, as with C's universally-ignored `printf` return.
 ; ---------------------------------------------------------------------------
-(defvar g-io-buf:String)
-(defvar g-io-buf-ready:i32 0)
+; An empty String over the heap, as a constant: a run-time initializer would run
+; in every program that links this module, including one that never prints.
+(defvar g-io-buf:String (String (bytes ((Vector ui8) (alloc &heap)))))
 
-; Clear and hand back the shared buffer. Lazily constructed: a `defvar` with a
-; runtime initializer would build a String in every program that links this
-; module, including one that never prints.
+; Clear and hand back the shared buffer.
 (defn io-buf-begin ():&String
-  (when (= g-io-buf-ready 0)
-    (init &g-io-buf)
-    (set! g-io-buf-ready 1))
   (string-clear &g-io-buf)
   (return &g-io-buf))
 
@@ -147,18 +143,18 @@
 ; The next line from standard input, without its terminator, or `none` at end of
 ; input. A final line with no newline is still returned.
 (defn read-line ():?String
-  (let (out:String (String)
+  (let (out:&String (alloca String)
         any:i32 0)
-    (init &out)
+    (init out)
     (while true
       (when (>= g-in-pos g-in-len)
         (when (= (io-in-fill) 0)
           (when (= any 0) (return (none)))
-          (return (some out))))
+          (return (some @out))))
       (let (c:Char (as Char (as ui32 (aref (unsafe/cast &ui8 g-in-buf)
                                            (as i64 g-in-pos)))))
         (set! g-in-pos (+ g-in-pos 1))
         (set! any 1)
-        (when (= c \newline) (return (some out)))
-        (string-push-char &out c)))
+        (when (= c \newline) (return (some @out)))
+        (string-push-char out c)))
     (return (none))))

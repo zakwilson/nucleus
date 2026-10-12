@@ -1,0 +1,12 @@
+; Stage 24 DP-2 — a `?&` box receiver must be narrowed first, as for any `?&`.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct A n:i32)
+(defn show (self:&A):i32 (return (self 'n)))
+(extend A Show)
+(defn via (p:?&(dyn Show)):i32 (return (show p)))
+(defn main ():i32
+  (let (a:(dyn Show) (A 3))
+    (println (via &a)))
+  (return 0))

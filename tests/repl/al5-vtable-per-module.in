@@ -1,0 +1,10 @@
+; AL-5: a vtable is `internal`, and each entry is its own module, so a second
+; entry boxing the same type must get its own copy, not the first entry's symbol.
+(import-use nucleus.allocator)
+(let (b:Alloc &heap) (as i32 (!= (as ptr (allocate b 8 8)) null)))
+(let (b:Alloc &heap) (as i32 (!= (as ptr (allocate b 8 8)) null)))
+; `g-arena`'s constant initializer boxes `&heap`, which `vector` already did.
+(import-use nucleus.vector)
+(import-use nucleus.arena)
+(let (v [10 20 30]) (v 1))
+(let (v [7 8]) (unsafe/cast i32 (count v)))

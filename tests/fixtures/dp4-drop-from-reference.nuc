@@ -1,0 +1,17 @@
+; Stage 24 DP-4 — probe 7. An owning box copies the value it boxes; boxing a
+; `with`-owned `Drop` value through its reference left two owners, and the value
+; was dropped twice. Refused, pointing at the borrowing box.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Res x:i32)
+(defn show (self:&Res):i32 (return (self 'x)))
+(defn drop (self:&Res):void (println "drop " (self 'x)))
+(extend Res Show)
+(extend Res Drop)
+(defn main ():i32
+  (with (p (Res 3))
+    (with (b:(dyn Show) p)
+      (println (show b))))
+  (return 0))

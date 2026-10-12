@@ -10,8 +10,8 @@
 
 (import-use nucleus.allocator)
 
-; Zero-filled: an empty arena over the heap. The first allocation makes a block.
-(defvar g-arena:Arena)
+; An empty arena over the heap, as a constant; the first allocation makes a block.
+(defvar g-arena:Arena (Arena null null 0 0 &heap))
 
 (defn arena-alloc (n:i64):ptr
   (let ((p ?&ui8) (arena-allocate &g-arena (unsafe/cast usize n) 8))

@@ -62,6 +62,11 @@
 (declare LLVMPointerType (elem:ptr addrspace:i32) :ptr)
 (declare LLVMTargetMachineEmitToFile (tm:ptr mod:ptr filename:ptr filetype:i32 msg:ptr) :i32)
 (declare LLVMDisposeMessage (msg:ptr) :void)
+; llvm-c/Core.h — a codegen error (e.g. a register-allocation failure) arrives
+; here, not as EmitToFile's result.
+(declare LLVMContextSetDiagnosticHandler (ctx:ptr handler:(fn void)(ptr ptr) hctx:ptr) :void)
+(declare LLVMGetDiagInfoDescription (di:ptr) :ptr)
+(declare LLVMGetDiagInfoSeverity (di:ptr) :i32)
 ; Host CPU detection for -march=native (return strdup'd strings owned by caller).
 (declare LLVMGetHostCPUName () :ptr)
 (declare LLVMGetHostCPUFeatures () :ptr)

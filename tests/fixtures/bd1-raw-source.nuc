@@ -1,0 +1,10 @@
+; Stage 24 BD-1 — an unchecked (ptr T) does not promise the non-null a borrowing box does (§4.3).
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defn f (p:(ptr Pt)):i32
+  (let (b:(dyn &Show) p)
+    (return (show b))))

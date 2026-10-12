@@ -2582,7 +2582,7 @@ A datalayout is a `-`-separated token list (e.g. `e-p:64:64-...-P1-...`). Extrac
 
 ## A "materialize as a first-class value" diagnostic needs a chokepoint audit, not just the obvious one
 
-When gating a language feature that's only unsafe when a *value* (as opposed to a direct call/access) is produced — the Stage 14 AVR-6 example is functions living in AVR's addrspace(1), which cannot be represented as a plain data pointer — there is rarely exactly one emission site. `emit-symbol-ref`'s `TY-FN` branch is the obvious chokepoint (a bare function name used where a value is expected), but AVR-6 found a second, independent path: a lambda-lifted closure boxed into `BoxedFn`/`dyn` reaches vtable construction (`ensure-vtable-for`, `ensure-fnfwd-vtable`) *without* going through `emit-symbol-ref` at all — the vtable itself, not a symbol reference, is what materializes the function as data. Both had to carry the same `avr-reject-fn-value` check. When adding a compile-time guard for "value production of X is unsafe here," grep every place X's *machine representation* is constructed (not just the most direct/obvious call site) before declaring the guard complete — boxing/vtable/closure-lifting machinery is a common second path that bypasses the primary one.
+When gating a language feature that's only unsafe when a *value* (as opposed to a direct call/access) is produced — the Stage 14 AVR-6 example is functions living in AVR's addrspace(1), which cannot be represented as a plain data pointer — there is rarely exactly one emission site. `emit-symbol-ref`'s `TY-FN` branch is the obvious chokepoint (a bare function name used where a value is expected), but AVR-6 found a second, independent path: a lambda-lifted closure boxed into `BoxedFn`/`dyn` reaches vtable construction (`ensure-vtable-for`, `ensure-fnfwd-vtable`) *without* going through `emit-symbol-ref` at all — the vtable itself, not a symbol reference, is what materializes the function as data. Both had to carry the same `avr-reject-fn-value` check. (Since Stage 24 DP-5 only `ensure-fnfwd-vtable` does: vtable slots are `ptr addrspace(1)`.) When adding a compile-time guard for "value production of X is unsafe here," grep every place X's *machine representation* is constructed (not just the most direct/obvious call site) before declaring the guard complete — boxing/vtable/closure-lifting machinery is a common second path that bypasses the primary one.
 
 ## `g-target-triple` is not swapped for JIT sub-compilation — any single-target compile-time check needs an explicit `in-jit-module` guard
 
@@ -4930,7 +4930,11 @@ The general form is worth more than the instance: **anything you attach to the
 overloaded-call path is invisible to a one-implementation name.** Adding a
 second conformer changes which emitter runs. When you add a rule to
 `emit-generic-call`, ask what the solitary path does with the same input — and
-vice versa, since the two now both forward and must keep agreeing.
+vice versa, since the two now both forward and must keep agreeing. Since Stage
+24 DP-2 there is a **third** entry, for a head that names nothing in the unit:
+`emit-dyn-call-unbound`, which `emit-dispatch` asks before the unknown-name
+diagnostic. All three test the receiver with `dyn-receiver-box`, which accepts a
+box or a pointer to one.
 
 - **A receiver-only method cannot witness a fat-pointer ABI bug.** SysV puts the
   box's `data` word in the first integer register, so a callee expecting
@@ -4947,6 +4951,43 @@ vice versa, since the two now both forward and must keep agreeing.
   compare the qualifier against the *protocol's* namespace first
   (`same-ns-qualifier`) and only then strip. A blanket strip would dispatch an
   unrelated namespace's same-named function through this vtable.
+
+## Multi-method `(dyn P)`: what DP-1/DP-2 rely on
+
+- **Syntactic `Self` tests must see through the reader.** `self:&Self` reads as
+  the one symbol `self:ref:Self`, and `?` is a sigil. Before matching a shape,
+  run `desugar-symbol` on the binding, then `sigil-split` and
+  `colon-spelling-node` on the type, as `dyn-self-ptr-node?` does. A test on
+  `(ref Self)` alone passes the list spelling and misses the common one.
+- **Slots are positional.** Method `i` lives at `(dyn-slot i)`, which is 0 for
+  i = 0 and i+1 otherwise. Index 1 is drop. `dyn-method-slot` answers the
+  *signature* index, so apply `dyn-slot` at the load. A one-method vtable's text
+  must stay `{ ptr, ptr }` for `@__boxedfn_drop` and the BoxedFn path.
+- **One indirect call.** `emit-erased-call` is the ABI-lowered call through a
+  slot, and `emit-vtable-slot-load` is the slot load. Both `emit-box-invoke` and
+  `emit-dyn-forward` use them. A hand-printed `call` to a slot passes structs
+  unlowered: a 24-byte argument arrives as garbage, even on a one-method
+  protocol.
+- **A `.nuch` import must register its protocols before its signatures.**
+  Otherwise a `(dyn P)` in a `declare` resolves before `P` exists and keys as a
+  bare `P`, a different box type from every caller's.
+
+## `(dyn P)` applications, owned sources, AVR slots (DP-3/DP-4/DP-5)
+
+- **Substitute a box's arguments as `env-arg-of-type` markers**
+  (`dyn-arg-markers`), never as spellings. A spelling re-resolves in the
+  protocol's file, where a third file's type may not be nameable.
+- **A box's identity is its arguments' `type-mangle-token`s**; admission compares
+  `type-spelling`s (`conformance-args-eq`). `DynEntry` keeps both.
+- **`Val.fresh` is the only "nothing else owns this" signal.** Set it where a
+  value's storage is new (struct literal, `move`). A new rvalue form that should
+  box a `Drop` type must set it, or `emit-box-value` refuses the source.
+- **A box-typed field in a `defvar` literal cannot be a constant** until BD-2.
+  `const-lit-boxes?` sends it to the run-time initializer.
+- **AVR: an indirect call fails register allocation at CodeGenOpt `None`.**
+  `codegen-level-for-triple` keeps AVR at `Less`; reloading the pointer from the
+  frame does not help. `llvm-diag-handler` makes LLVM codegen errors fail the
+  compile. Before it, they printed and the compile exited 0.
 
 ## A guard that compares LOWERED types asks a question the language never asked
 
@@ -7492,6 +7533,72 @@ fails ("names 'init', whose methods here come from namespaces 'user', …"). Wri
 the protocol's namespace in the template — `nucleus.allocator/init` (fmt's
 `str`, create's `create-form`) — which reaches every conformer and nothing else.
 Lib modules do not import `nucleus.create` (the bare-name claim above); they
-`init` a zero literal in place: `(let (s:String (String)) (init &s) …)`.
+`init` a slot in place: `(let (s:&String (alloca String)) (init s) …)`.
 A user template that BINDS a name an imported macro owns (`new` as a parameter)
 is refused once `nucleus.create` is imported; rename the binder.
+
+## A borrowing value stored by value keeps the taint of the COERCED value
+
+`(let (b:(dyn &P) p))` stores a struct by value, so FS-2 would discharge `p`'s
+taint. But the stored box holds `&p`. `emit-let`/`emit-with` therefore adopt from
+the result of `maybe-box-into-slot` (`box-taint-source`), and
+`frame-taint-survives` never discharges into a `(dyn &P)` destination. A new
+by-value type that holds an address needs both of these.
+
+## A streamed constant opens its line first — emit what it references before that
+
+`emit-defvar` writes `@g = global <ty> ` and then streams the aggregate into
+`g-out`. If an element emits a global of its own (a vtable from
+`ensure-vtable-for`), that global lands in the middle of the line. Emit such
+globals in a walk before the line (`defvar-const-vtables`). Keep the walk after
+`program-global-record`, so it stays inside the L6 span.
+
+## A header instance noted while a form is EMITTED is never flushed
+
+`emit-cheader-header` flushes `g-cheader-inst-want` from a mark taken at the
+start of each form, after `cheader-scan-form-types`. So a typedef (a template
+instance, a `dyn` box) must be noted by the scan. If the scan skips a type that
+the emitter then renders, the struct names a tag that nothing defines.
+
+## A value holding an `Alloc` has no zero value — give globals an initializer
+
+Since AL-5, a type that holds a borrowing box at any depth (every collection,
+`String`, `Arena`, `Tracking`) is refused zero-filled: a `defvar` with no
+initializer, an unset struct-literal field, an unset constant array element
+(`require-zero-value`). A global gets `(make String)` (run time), or a constant
+such as `(String (bytes ((Vector ui8) (alloc &heap))))` when it must exist
+before any initializer runs. A local is `(alloca T)` then `init`, never `(T)`.
+There is no lazy "ready" flag to add.
+
+## A box alias is expanded before its protocol is registered
+
+`(deftype Alloc (dyn &Allocator))` is re-parsed by another file's signature
+prescan, in the alias's namespace, while `Allocator` is still only in pass 1's
+table. `dyn-proto-key` must answer `proto-decl-key?` there, or the box gets a
+second StructDef and every conformance naming `Alloc` fails ("does not conform
+to Init"). A new box-identity path must consult the same table.
+
+## Dispatch through a constant box at the site, not in a helper
+
+An optimized build folds a vtable slot load only when the box's constant
+vtable and the load are in the same function. `create-form` therefore writes
+`(create-bytes (allocate-zeroed (ref h) …))`: the helper does only the null
+check. A helper that takes the box and dispatches inside it leaves the call
+indirect wherever the inliner keeps it out of line, which it does in large
+functions (overview.md §9 AL-5).
+
+## A memo of an `internal` symbol is per module
+
+The REPL assembles one module per entry, so "already emitted" must mean "in this
+module". Vtables record `g-module-epoch` (`VtableEntry.epoch`), and a hit from
+another epoch emits a fresh copy. `repl-cycle-type-buf` bumps the epoch inside
+a module that stays open, so it carries entries forward (`vtable-memo-carry`).
+A new memo of an `internal` global needs both.
+
+## `handle` takes a built-in allocator by value; a user allocator by address
+
+Only tier-0 (concrete) dispatch takes a by-value binding's address implicitly,
+so `handle` has concrete overloads for `Heap`, `Arena`, `FixedBuffer` and
+`Tracking` beside its `:where (Allocator T)` template. A user allocator is
+`(handle &x)`. Overload resolution does not apply the `&T` to `Alloc` coercion,
+so `(init v &ar)` is refused; write `(init v (handle ar))`.

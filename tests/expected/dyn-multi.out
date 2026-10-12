@@ -1,0 +1,5 @@
+rect: 3x4 area 12
+square: 5x5 area 25
+rect: 4x6 area 24
+square: 6x6 area 36
+same: true

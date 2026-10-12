@@ -6,7 +6,7 @@ Nucleus is a compiled systems programming language with Lisp-style syntax, a str
 
 - **Lisp syntax, systems semantics**: parenthesized S-expression syntax; semantics close to C with explicit memory management and no GC
 - **C interop first**: imports C headers directly (`import-use`, `import`), exports C-legible types and functions (`.nuch` headers, `--emit-cheader`)
-- **Zero-cost generics**: multimethods, protocols, and bounded generics resolved entirely at compile time — no vtables, no runtime dispatch objects
+- **Zero-cost generics**: multimethods, protocols, and bounded generics resolved entirely at compile time — no vtables, no runtime dispatch objects unless you opt in with `(dyn P)`
 - **Explicit nullability**: `&T` is non-null, `?&T` is nullable and must be narrowed before use, and `(ptr T)` is the explicit, unchecked escape — the kind is visible at each declaration
 
 ## Quick start
@@ -94,7 +94,7 @@ they are ordinary address-of: `&rest` is `(ref rest)`.
 | [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates, C header struct/array ingestion, opaque types, C typedefs as type names |
 | [Special forms](special-forms.md) | Control flow, memory ops, `with`/`move`/`defer`, binary operators, callable values (`get`/`invoke`) |
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
-| [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |
+| [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics, type erasure (`BoxedFn`, `(dyn P)`, the borrowing `(dyn &P)`) |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
 | [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/nucleus/strview.nuc`); `Symbol` interned identity (`lib/nucleus/intern.nuc`); `Keyword` interned names (`lib/nucleus/keyword.nuc`) |
 | [Allocators](allocators.md) | `Allocator` protocol, the `Alloc` handle, `Heap`/`Arena`/`FixedBuffer`/`Tracking` (`lib/nucleus/allocator.nuc`); `Init`/`InitFrom`/`TryInitFrom` and the `new`/`make` macros (`lib/nucleus/create.nuc`) |

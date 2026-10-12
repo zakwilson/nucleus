@@ -218,9 +218,9 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
   (conj v 10) (conj v 20) (conj v 30)
   ...)                     ; (drop v) fires here, freeing the buffer
 
-(let (w:(Vector i64) ((Vector i64)))   ; a zero Vector, not yet usable
-  (init &w (handle g-arena))           ; any Alloc
-  (reserve &w 64)                      ; capacity: initialize, then reserve
+(let (w:&(Vector i64) (alloca (Vector i64)))   ; a slot, not yet usable
+  (init w (handle g-arena))                    ; any Alloc
+  (reserve w 64)                               ; capacity: initialize, then reserve
   ...)
 ```
 
@@ -729,6 +729,8 @@ the refusals are covered by the `s16-kwlit-refused-*` and
 **`usize` literals.** There is no dedicated `usize` literal token; a bare integer literal widens automatically to `usize` wherever a target type is known (call arguments, assignment, comparisons — see above). Where no target type is available, force it explicitly with `(as usize N)`.
 
 **`(Maybe V)` element types.** `(Maybe ptr)` is niche-encoded as a nullable pointer and cannot be used with `match`. Use value types (`i32`, `i64`, `CStr`) as the value type `V` in `HashMap` and the element type in `(Maybe T)` returns.
+
+**No zero value.** A collection stores an `Alloc`, which cannot be null, so `(defvar g:(Vector i32))` and a struct literal that leaves a collection field unset are refused. Give a global an initializer (`(make (Vector i32))`, or a literal) and initialize a slot with `init`; see [allocators.md](allocators.md#the-zero-value).
 
 **Owning collections and scope.** Owning collections store their allocator handle by value and must not escape their `with` binding by return or store-out. `Drop` fires at scope exit; a double-drop is a no-op (the pointer is nulled). The `move` form (when available) transfers ownership.
 

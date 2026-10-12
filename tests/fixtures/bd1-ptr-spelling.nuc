@@ -1,0 +1,8 @@
+; Stage 24 BD-1 — (dyn (ptr P)) is not a box spelling (§4.1).
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defn f (b:(dyn (ptr Show))):i32 (return 0))

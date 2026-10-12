@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # AVR v1 acceptance test (Stage 14 AVR-8, design/stage14/avr-targets.md §5):
-# for each of the four AVR examples (already individually hand-verified in
+# for each AVR example (the first four individually hand-verified in
 # AVR-3/4/5) — compile+link via the real avr-gcc link driver, then assert
 # avr-size stays within a generous per-device flash/RAM budget. Also runs the
 # UART example under simavr as the behavioral smoke test: the only one of the
@@ -80,6 +80,8 @@ check_example blink-dx    examples/avr-blink-dx.nuc     avrxmega3  avr32dd20 >"$
 check_example uart-hello  examples/avr-uart-hello.nuc   atmega328p >"$TMP/uart-hello.elfpath"
 check_example isr         examples/avr-isr.nuc          atmega328p >"$TMP/isr.elfpath"
 check_example global-init examples/avr-global-init.nuc  attiny1634 >"$TMP/global-init.elfpath"
+check_example dyn         examples/avr-dyn.nuc          atmega328p >"$TMP/dyn.elfpath"
+check_example alloc       examples/avr-alloc.nuc        atmega328p >"$TMP/alloc.elfpath"
 
 # --- Stage 15 W8 G-3: global initializers on a `none`-mechanism target -------
 # design/global-init.md §4.6/§4.8. Two halves, and both matter:
@@ -149,6 +151,44 @@ else
   else
     echo "FAIL  avr-test-sim-uart-hello (no 'Hi!' bytes observed in simavr output)"
     sed 's/^/      /' "$SIM_OUT"
+    FAILED=1
+  fi
+fi
+
+# A two-method (dyn P) box and a boxed closure: every vtable slot is called
+# through the program address space (dyn-arbitrary-protocols.md §3.6).
+DYN_ELF="$(cat "$TMP/dyn.elfpath" 2>/dev/null)"
+if [ ! -s "$DYN_ELF" ]; then
+  echo "SKIP  avr-test-sim-dyn (dyn.elf was not built — see avr-test-dyn above)"
+elif ! command -v simavr >/dev/null 2>&1; then
+  echo "SKIP  avr-test-sim-dyn (simavr not installed)"
+else
+  SIM_OUT="$TMP/sim-dyn.out"
+  timeout 3 simavr -m atmega328p -f 8000000 "$DYN_ELF" >"$SIM_OUT" 2>&1
+  if grep -aq 'HI45A' "$SIM_OUT"; then
+    echo "PASS  avr-test-sim-dyn (observed 'HI45A' through both dyn slots and a BoxedFn under simavr)"
+  else
+    echo "FAIL  avr-test-sim-dyn (no 'HI45A' observed in simavr output)"
+    sed 's/^/      /' "$SIM_OUT" | head -20
+    FAILED=1
+  fi
+fi
+
+# A user allocator reached through an `Alloc` handle (a borrowing box), as a
+# collection reaches its allocator (overview.md §9 AL-5).
+ALLOC_ELF="$(cat "$TMP/alloc.elfpath" 2>/dev/null)"
+if [ ! -s "$ALLOC_ELF" ]; then
+  echo "SKIP  avr-test-sim-alloc (alloc.elf was not built — see avr-test-alloc above)"
+elif ! command -v simavr >/dev/null 2>&1; then
+  echo "SKIP  avr-test-sim-alloc (simavr not installed)"
+else
+  SIM_OUT="$TMP/sim-alloc.out"
+  timeout 3 simavr -m atmega328p -f 8000000 "$ALLOC_ELF" >"$SIM_OUT" 2>&1
+  if grep -aq 'AL5:8' "$SIM_OUT"; then
+    echo "PASS  avr-test-sim-alloc (observed 'AL5:8' through an allocator handle under simavr)"
+  else
+    echo "FAIL  avr-test-sim-alloc (no 'AL5:8' observed in simavr output)"
+    sed 's/^/      /' "$SIM_OUT" | head -20
     FAILED=1
   fi
 fi

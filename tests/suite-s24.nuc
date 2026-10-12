@@ -250,9 +250,10 @@ yes no yes
 ; ---------------------------------------------------------------------------
 
 ; Each built-in allocator's allocate/reallocate/deallocate and alignment, an
-; arena's block chain, reset and drop (counted through a CUSTOM parent), a full
-; and a popping FixedBuffer, a `frame-buffer` under a Vector, every kind stored
-; by a collection, and a user allocator in a unit that still calls libc `free`.
+; arena's block chain, reset and drop (counted through a user parent), a full
+; and a popping FixedBuffer, a `frame-buffer` under a Vector, every allocator
+; stored by a collection, `allocate-zeroed` on each, and a user allocator in a
+; unit that still calls libc `free`.
 (deftest s24-allocators
   (let (dir:String (try (test-scratch-sub "al1")))
     (let (m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
@@ -270,36 +271,32 @@ yes no yes
 (defn byte (p:?&ui8 i:usize):i32
   (return (as i32 (aref (unsafe/cast &ui8 p) i))))
 
-; A user allocator over libc that counts, reached by collections through CUSTOM.
+(defn zeroed? (p:?&ui8 n:usize):bool
+  (dotimes (i n) (when (!= (byte p i) 0) (return false)))
+  (return true))
+
+; A handle's first word is the allocator it borrows.
+(defn on? (h:Alloc a:ptr):bool
+  (let (c:Alloc h) (return (= (aref (unsafe/cast &ptr &c) 0) a))))
+
+; A user allocator over libc that counts, reached by collections through a handle.
 (defstruct Counting
   allocs:i32
-  frees:i32
-  vt:CustomAlloc)
-
-(defn counting-allocate (inst:ptr size:usize align:usize) ?&ui8
-  (let (c:&Counting (unsafe/cast &Counting inst))
-    (set! (c 'allocs) (+ (c 'allocs) 1))
-    (return (allocate &heap size align))))
-(defn counting-reallocate (inst:ptr p:?&ui8 old:usize new:usize align:usize) ?&ui8
-  (when (= (as ptr p) null) (return (counting-allocate inst new align)))
-  (return (reallocate &heap p old new align)))
-(defn counting-deallocate (inst:ptr p:?&ui8 size:usize align:usize):void
-  (let (c:&Counting (unsafe/cast &Counting inst))
-    (when (!= (as ptr p) null) (set! (c 'frees) (+ (c 'frees) 1)))
-    (deallocate &heap p size align)))
+  frees:i32)
 
 (extend Counting Allocator)
-(extend Counting Drop)
 (defn allocate (self:&Counting size:usize align:usize) ?&ui8
-  (return (counting-allocate self size align)))
+  (set! (self 'allocs) (+ (self 'allocs) 1))
+  (return (allocate &heap size align)))
+(defn allocate-zeroed (self:&Counting size:usize align:usize) ?&ui8
+  (set! (self 'allocs) (+ (self 'allocs) 1))
+  (return (allocate-zeroed &heap size align)))
 (defn reallocate (self:&Counting p:?&ui8 old:usize new:usize align:usize) ?&ui8
-  (return (counting-reallocate self p old new align)))
+  (when (= (as ptr p) null) (return (allocate self new align)))
+  (return (reallocate &heap p old new align)))
 (defn deallocate (self:&Counting p:?&ui8 size:usize align:usize):void
-  (counting-deallocate self p size align))
-(defn handle (self:&Counting):Alloc
-  (set! (self 'vt) (CustomAlloc self counting-allocate counting-reallocate counting-deallocate))
-  (return (custom-alloc (ref self 'vt))))
-(defn drop (self:&Counting):void (return))
+  (when (!= (as ptr p) null) (set! (self 'frees) (+ (self 'frees) 1)))
+  (deallocate &heap p size align))
 
 (defn blocks (a:&Arena):i32
   (let (n:i32 0 (b ?&ArenaBlock) (a 'first))
@@ -315,7 +312,7 @@ yes no yes
     (set! (aref (unsafe/cast &ui8 b) 99) 7)
     (set! b (reallocate &heap b 100 5000 64))
     (println \"heap \" (aligned? a 8) \" \" (aligned? b 64) \" \" (aligned? c 4096) \" \"
-             (byte b 99) \" \" (h 'kind))
+             (byte b 99) \" \" (on? h &heap))
     (deallocate &heap a 24 8)
     (deallocate &heap b 5000 64)
     (deallocate &heap c 10 4096))
@@ -356,8 +353,29 @@ yes no yes
          sh:Alloc (handle s)
          v:(Vector i32) (make (Vector i32) sh))
     (dotimes (i:i32 100) (conj &v i))
-    (println \"frame vector \" (count &v) \" \" (invoke &v (as usize 99)) \" \" (s 'live) \" \" (sh 'kind)))
-  ; Each kind stored by a collection.
+    (println \"frame vector \" (count &v) \" \" (invoke &v (as usize 99)) \" \" (s 'live) \" \" (on? sh &s)))
+  ; allocate-zeroed, direct and through a handle; the 8192-byte alignment takes
+  ; the heap's over-aligned path rather than calloc.
+  (let (ar:Arena (arena-in (handle &heap) 0)
+        cnt:Counting (Counting 0 0)
+        (store ?&ui8) (allocate &heap 256 16))
+    (memset (as ptr store) 171 256)
+    (let (fb:FixedBuffer (fixed-buffer (as ptr store) 256)
+          ha:Alloc (handle &ar)
+          hc:Alloc (handle &cnt)
+          (z1 ?&ui8) (allocate-zeroed &heap 100 8)
+          (z2 ?&ui8) (allocate-zeroed &heap 100 8192)
+          (z3 ?&ui8) (allocate-zeroed ha 100 8)
+          (z4 ?&ui8) (allocate-zeroed &fb 100 8)
+          (z5 ?&ui8) (allocate-zeroed hc 100 8))
+      (println \"zeroed \" (zeroed? z1 100) \" \" (zeroed? z2 100) \" \" (aligned? z2 8192) \" \"
+               (zeroed? z3 100) \" \" (zeroed? z4 100) \" \" (zeroed? z5 100) \" \" (cnt 'allocs))
+      (deallocate &heap z1 100 8)
+      (deallocate &heap z2 100 8192)
+      (deallocate hc z5 100 8))
+    (deallocate &heap store 256 16)
+    (drop &ar))
+  ; Each allocator stored by a collection.
   (let (cnt:Counting (Counting 0 0)
         ar:Arena (arena-in (handle &heap) 0)
         ch:Alloc (handle &cnt)
@@ -380,7 +398,7 @@ yes no yes
   (return 0))
 "))
           out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
-      (try (check-eq (string-as-view &out) "heap true true true 7 0
+      (try (check-eq (string-as-view &out) "heap true true true 7 true
 arena rewind true 0
 arena grow true true 2 2
 arena reset true 0 2
@@ -388,7 +406,8 @@ arena drop 2 2 true
 fixed full true true 2
 fixed pop true 2
 fixed empty 0 0
-frame vector 100 99 1 2
+frame vector 100 99 1 true
+zeroed true true true true true true 1
 custom map 14 50 20
 arena string hello, arena
 custom counts true true
@@ -450,6 +469,10 @@ g-arena 0 1 0
 (defstruct Pt x:i32 y:i32)
 (defstruct Wide a:i8 b:i64)
 
+; A handle's first word is the allocator it borrows.
+(defn on? (h:Alloc a:ptr):bool
+  (let (c:Alloc h) (return (= (aref (unsafe/cast &ptr &c) 0) a))))
+
 (defstruct Counter n:i32 a:Alloc)
 (extend Counter Init)
 (defn init (self:&Counter a:Alloc):void
@@ -492,8 +515,12 @@ g-arena 0 1 0
     (let (s:&String (new String ar \"in arena\")
           c:&Counter (new Counter ar)
           v:&(Vector i32) (new (Vector i32) ar [7 8 9]))
-      (println \"arena \" (string-as-view s) \" \" (c 'n) \" \" ((c 'a) 'kind) \" \" (count v) \" \" (v 2)))
+      (println \"arena \" (string-as-view s) \" \" (c 'n) \" \" (on? (c 'a) &ar) \" \" (count v) \" \" (v 2)))
     (drop &ar))
+  ; `(make Arena)` is an empty arena over the heap.
+  (with (ar (make Arena))
+    (let (p:&Pt (new Pt ar 8 9))
+      (println \"made arena \" (p 'y) \" \" (on? (ar 'parent) &heap) \" \" (> (ar 'off) 0))))
   (with (buf (frame-buffer 1024)
          k (make String buf \"key\"))
     (println \"frame \" (string-as-view &k) \" \" (buf 'live)))
@@ -531,7 +558,8 @@ strict hi
 strict refused
 new refused, live 0 off 0
 lossy 5 239
-arena in arena 42 1 3 9
+arena in arena 42 true 3 9
+made arena 9 true true
 frame key 1
 copy 3 3 4
 from string orig
@@ -596,6 +624,36 @@ loop
     (drop &dir))
   (return (ok)))
 
+; A `deftype` alias of a borrowing box, named in another file's signature: that
+; file's prescan expands the alias before the alias's own protocol is registered,
+; and the box once got a second identity there (`Alloc` is this shape).
+(deftest s24-box-alias-across-files
+  (let (dir:String (try (test-scratch-sub "al5-alias")))
+    (let (lib:String (try (write-into (string-as-view &dir) "s24alias.nuc" "(ns s24alias)
+(defprotocol Sh (sh (self:&Self):i32))
+(deftype H (dyn &Sh))
+(defprotocol In (inn (self:&Self a:H):i32))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use nucleus.io)
+(import-use s24alias)
+(defstruct Q n:i32)
+(extend Q Sh)
+(defn sh (self:&Q):i32 (return (self 'n)))
+(defstruct S k:i32)
+(extend S In)
+(defn inn (self:&S a:H):i32 (return (* (self 'k) (sh a))))
+(defn main ():i32
+  (let (q:Q (Q 6) s:S (S 7) h:H &q)
+    (println (inn &s h)))
+  (return 0))
+"))
+          out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "42
+"))
+      (drop &out) (drop &m) (drop &lib))
+    (drop &dir))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; AL-6: the `Tracking` allocator (overview.md §8.3 option C)
 ; ---------------------------------------------------------------------------
@@ -614,13 +672,17 @@ loop
 (import-use nucleus.create)
 (import-use \"stdio.h\")
 
+; A handle's first word is the allocator it borrows.
+(defn on? (h:Alloc a:ptr):bool
+  (let (c:Alloc h) (return (= (aref (unsafe/cast &ptr &c) 0) a))))
+
 (defn main ():i32
   ; Over the heap: counts follow allocate/reallocate/deallocate; null is not counted.
   (let (t:Tracking (make Tracking))
     (let ((a ?&ui8) (allocate &t 24 8)
           (b ?&ui8) (allocate &t 100 64)
           (z ?&ui8) null)
-      (println \"heap \" (t 'live) \" \" (t 'bytes) \" \" ((handle &t) 'kind) \" \" ((t 'parent) 'kind))
+      (println \"heap \" (t 'live) \" \" (t 'bytes) \" \" (on? (handle &t) &t) \" \" (on? (t 'parent) &heap))
       (set! b (reallocate &t b 100 300 64))
       (println \"grow \" (t 'live) \" \" (t 'bytes) \" \" (= (% (unsafe/cast usize b) 64) 0))
       (deallocate &t a 24 8)
@@ -633,7 +695,7 @@ loop
   (let (ar:Arena (arena-in (handle &heap) 256))
     (with (t (make Tracking ar))
       (let ((p ?&ui8) (allocate &t 40 8))
-        (println \"arena \" (t 'live) \" \" (t 'bytes) \" \" ((t 'parent) 'kind))
+        (println \"arena \" (t 'live) \" \" (t 'bytes) \" \" (on? (t 'parent) &ar))
         (deallocate &t p 40 8)
         (println \"arena pop \" (t 'live) \" \" (ar 'off))))
     (drop &ar))
@@ -645,14 +707,14 @@ loop
       (println \"under arena \" (t 'live))
       (drop &ar)
       (println \"arena returned \" (t 'live) \" \" (t 'bytes))))
-  ; Collections store the ALLOC-TRACKING handle; `with` drops them, then the tracker.
+  ; Collections store a handle on the tracker; `with` drops them, then the tracker.
   (with (t (make Tracking)
          v (make (Vector i32) t [1 2 3])
          s (make String t \"tracked\")
          mp (make (HashMap i32 i32) t {1 10 2 20}))
     (dotimes (i:i32 100) (conj &v i))
     (println \"collections \" (count &v) \" \" (string-as-view &s) \" \" (count &mp) \" \"
-             (> (t 'live) 2) \" \" ((v 'alloc) 'kind)))
+             (> (t 'live) 2) \" \" (on? (v 'alloc) &t)))
   (let (t:Tracking (make Tracking))
     (let (s:&String (new String t \"placed\"))
       (println \"new \" (t 'live) \" \" (string-as-view s))
@@ -673,15 +735,15 @@ loop
   (return 0))
 "))
           out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
-      (try (check-eq (string-as-view &out) "heap 2 124 4 0
+      (try (check-eq (string-as-view &out) "heap 2 124 true true
 grow 2 324 true
 free 1 300 true 1
 clean 0 0
-arena 1 40 1
+arena 1 40 true
 arena pop 0 16
 under arena 2
 arena returned 0 0
-collections 103 tracked 2 true 4
+collections 103 tracked 2 true true
 new 2 placed
 new freed 0 0
 Tracking: deallocate of 64 byte(s) with 1 live allocation(s) of 32 byte(s)

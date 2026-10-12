@@ -920,6 +920,144 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Build: the boot binary follows `boot/nucleusc.ll` (2026-10-11)
+
+`make clean && make` failed on a host after the AL-5 boot refresh: `allocator.nuc:24: (dyn P): protocol must be a bare symbol`. The host's gitignored `bin/nucleusc` predated the refresh, and `make clean` kept it. `ensure-boot` relinked it only when it could not execute. `bin/nucleusc` is now a file target that depends on `boot/nucleusc.ll`, so a refresh or a merge relinks it. Checked in the scratch tree: a binary older than the IR is relinked, and a second `make` does nothing. `context/build.md` is updated.
+
+---
+
+## Stage 24 — AL-5: `Alloc` is `(dyn &Allocator)`; Stage 24 complete (2026-10-10)
+
+[stage24-allocation/overview.md](stage24-allocation/overview.md) §9 AL-5 is built, with its as-built notes there, so every Stage 24 phase is built. Uncommitted.
+
+- **Library.**
+  - `(deftype Alloc (dyn &Allocator))`. `AllocKind`, `CustomAlloc`, `custom-alloc` and `Alloc`'s methods are gone.
+  - `handle` is a function: a `:where (Allocator T)` template plus concrete overloads for the four built-in allocators.
+  - Every allocator has `allocate-zeroed`, which `new` calls.
+  - `Arena` conforms to `Init`, so `(make Arena)` is an empty arena over the heap.
+  - `g-arena` is the constant `(Arena null null 0 0 &heap)`.
+- **No zero value.** A `defvar` with no initializer, an unset struct-literal field, or an unset constant array element of a type that holds a borrowing box is refused, with a note naming `make`/`init`.
+  - The census found 10 `src/` String globals and 3 `lib/` globals that relied on the zero handle, plus 20 zero literals followed by `init`. All are fixed, and `ensure-emit-buffers` is deleted.
+- **Measurement gate.** It first failed: 6 of 227 `(new T g-arena)` sites kept an indirect call where `create-bytes` was not inlined. The fix moves the dispatch into the `new` template.
+  - Now every site reaches the allocator directly.
+  - Self-compile at -O2 is 7.083 s before and 7.107 s after (ranges overlap); at -O0, 13.718 s against 13.724 s.
+  - `new` through an Arena is 8–11% faster. `conj` through a stored handle is unchanged, or 23% faster on the heap at -O2.
+- **Bugs fixed.**
+  - `dyn-proto-key` gave an aliased box a second identity in another file's prescan (`s24-box-alias-across-files`).
+  - REPL vtables were memoized across modules though `internal`. This predates AL-5 (`repl-al5-vtable-per-module`).
+  - `const-struct-lit?` now accepts a struct-template head.
+- **Boot.** It was refreshed twice: before the switch, and after it for the two compiler fixes the library now needs. A clean copy builds from the committed boot.
+- **Tests.**
+  - Five `al5-*` manifest rows, the alias test and the REPL test are new.
+  - `examples/avr-alloc.nuc` puts a user allocator behind an `Alloc` under simavr.
+  - suite-s24, `allocator-test` and `g5-arena-backed` were rewritten without kinds.
+- **Gates.**
+  - `make test`: 1423 tests, 1418 pass; the 5 failures are the known suite-target ones.
+  - `bootstrap` reaches its fixed point.
+  - `avr-test` passes 12 of 12.
+  - `check-headers` (91; 18 regenerated) and `abi-test` pass.
+- **Filed** in [deferred/overview.md](deferred/overview.md):
+  - `bit-not` on narrow unsigned types;
+  - FixedBuffer's drop needing `stderr` on AVR;
+  - a no-arg `make`/`new` zero-filling a struct that holds a handle;
+  - overloaded methods not applying the borrowing coercion.
+
+## Stage 24 — DP-6: `dyn` close-out (2026-10-10)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) §5 DP-6 is built, which completes the document: DP-1 … DP-6, BD-1 and BD-2. AL-5 is next. Uncommitted.
+
+- **Messages spell a box as written.** `type-display` prints `(dyn P)`, `(dyn &P)` and `(dyn (Iterator i32))`, not `__dyn.P` or `__dynref.P` (`sdef-display` asks `dyn-sdef-spelling`, which reuses `box-spelling`). The arity refusals keep the `&` of a borrowing box (`DynAnnot.borrowed`).
+- **Found by the new display.** The `=` refusal's note suggested `(extend (dyn &Show) Eq)`, which `extend` refuses. For a box it now suggests only the method.
+- **Docs.** The type-erasure section of `docs/generics.md` is rewritten: the slot model, the four dyn-callable rules, the coercion positions, parametric boxes, the borrowing box with its lifetime, drop and constant rules, one Limits list and one C-header section. Both worked examples are in current syntax and were compiled and run. Stale "`dyn` is deferred" lines are fixed in `docs/builtins.md`, `docs/strings.md` and `docs/index.md`.
+- **Examples.** `examples/dyn-multi.nuc` (a four-method protocol, one method not callable through the box, struct arguments and returns), `examples/dyn-parametric.nuc` (a `(Vector (dyn (Iterator i32)))` over three conformers) and `examples/dyn-borrow.nuc` (a by-value local, a `Drop` value, a view of an owning box, a constant over a global). Each has a golden in `tests/expected/`.
+- **Tests.** Four `dp6-*` fixtures and the suite test `dp6-box-eq-note`; all five fail on the BD-2 compiler. `make test`: 1416 tests, 1411 pass; the 5 failures are the known suite-target ones. `bootstrap`, `check-headers` (91, unchanged), `abi-test` and `avr-test` pass.
+- **Byte-identity.** The new compiler's IR equals the BD-2 compiler's for both the pre-change and the new source.
+
+## Stage 24 — BD-1/BD-2: the borrowing box `(dyn &P)` (2026-10-10)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) §5 BD-1 and BD-2 are built, as described there. Uncommitted.
+
+- **BD-1, the borrowing box.**
+  - `(dyn &P)` and `(dyn &(P a…))` parse. It is a `{data, vtable}` pair that shares the owning box's vtable and never drops.
+  - It is formed from a `&T`, from a binding of type `T` (borrowed in place), from a struct literal, or from an owning box of the same application (a view).
+  - A `&(dyn &P)` passes through, never wrapping a box in a box.
+  - A borrowing box into an owning slot is refused. So are a call result, `?&T`, `(ptr T)`, `(dyn ?&P)` and `(dyn (ptr P))`.
+  - It carries its source's frame or `with` taint, so returning one over a local or a `with` value is refused.
+- **BD-2, constants, headers and `.nuch`.**
+  - A borrowing box of a global is a link-time constant: `{ ptr @g, ptr @__vt.T.P }`. This holds in a `defvar`, a `defconst`, a struct-literal field, an array and a `ptr:T` table.
+  - A struct literal as a `defvar` field's borrowing source is refused.
+  - C headers write both kinds of box as a guarded two-pointer typedef, `nuc_dyn_<P>` / `nuc_dynref_<P>`, which fixes probe 12's `void*` field.
+  - Borrowing-box signatures and globals are exported. Owning ones stay excluded.
+  - The `.nuch` round trip writes `(dyn (ref P))`.
+- **Tests.**
+  - BD-1 added 3 suite tests and 9 fixtures. All fail on the DP-5 compiler.
+  - BD-2 added 3 suite tests (one is a C consumer: `sizeof` 40 = 40, and calls through an exported borrowing signature) and 2 fixtures. Two of these pass on the BD-1 compiler by design (the `.nuch` round trip and the conformance refusal), and they fail on DP-5.
+  - `make test`: 1408 tests, 1403 pass; the 5 failures are the known suite-target ones. `check-headers` (91, unchanged), `abi-test` and `avr-test` pass.
+- **Byte-identity.** After each phase, the new compiler's IR for the pre-change source equals the old compiler's, and `make bootstrap` converges.
+- **Filed.** Struct-literal fields do not carry their taint. A `BoxedFn` field is still `void*` in C headers.
+
+## Stage 24 — DP-3/DP-4/DP-5: parametric boxes, more coercion positions, AVR vtables (2026-10-10)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) §5 DP-3, DP-4 and DP-5 are built, as described there. Uncommitted.
+
+- **DP-3, parametric applications.**
+  - `(dyn (Iterator i32))` parses, and its arity is checked at the annotation.
+  - The arguments are substituted into the vtable synthesis and the forward.
+  - They key the box type and the vtable, by canonical spelling, so a box over a third file's type is one type from two files.
+  - A conformer of another application is refused, naming both.
+- **DP-4, coercion positions.**
+  - Struct-literal fields box, and so does `set!` of a local, a global, a field, a `deref` or an `aref`.
+  - A `defvar` whose literal boxes a field initializes at run time.
+  - A `Drop` value boxed from a reference (probe 7, a double drop) is refused, pointing at `(dyn &P)`.
+- **DP-5, AVR vtables.**
+  - Slots are `ptr addrspace(1)`, and `dyn` and capturing-closure boxes work on AVR. `examples/avr-dyn.nuc` runs under simavr.
+  - Bug found: LLVM's AVR fast register allocator cannot make these indirect calls at `-O0`. AVR codegen now runs at `Less` at least, and the existing examples shrank 7–14%.
+  - LLVM codegen errors used to print while nucleusc exited 0 with a broken ELF. A diagnostic handler now fails the compile.
+- **Tests.**
+  - `tests/suite-dyn.nuc` has 15 tests. There are 12 `dp*` diagnostic fixtures and two DP-5 units in `suite-target.nuc`.
+  - With the DP-2 binary swapped in, every new test fails except `dp4-drop-owned-sources`, which guards against over-refusal.
+  - `make test`: 1391 tests, 1386 pass; the 5 failures are the known suite-target ones.
+  - `avr-test` passes; `dyn` uses 2396 bytes of flash and 26 of RAM. `check-headers` is clean.
+- **Byte-identity.** After each phase, the new compiler's IR for the pre-change source equals the old compiler's, and `make bootstrap` converges.
+
+## Stage 24 — DP-1/DP-2: multi-method boxes and an ABI-lowered forward (2026-10-10)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) §5 DP-1 and DP-2 are built, as described there. Uncommitted.
+
+- **Boxing.** A protocol of any number of methods boxes. The vtable is `{ m0, drop, m1, … }`. A method that fails §3.3 rules 1–3 gets a `ptr null` slot, and a call to it is refused at the call, naming the rule. A box built above its `extend` is admitted.
+- **Calls through a box.** These are lowered like direct calls (`emit-erased-call`, shared with `emit-box-invoke`). The forward accepts a `&box`/`(ptr box)` receiver, and a box call needs no conformer in the unit.
+- **Silent wrong answers fixed.**
+  - A by-value `Self` receiver was called with a pointer. It is now refused.
+  - A struct argument or return through the forward arrived as garbage, on one-method protocols too.
+- **Also fixed:** a `(dyn P)` in an imported `.nuch` `declare` was keyed as a bare `P`.
+- **Tests.** `tests/suite-dyn.nuc` has 10 tests, and there are 7 diagnostic fixtures. With the old binary swapped in, every one fails except the one-method vtable-text guard. `make test`: 1379, of which 1374 pass and the 5 failures are the known suite-target ones. `check-headers` clean, `avr-test` passes.
+- **Byte-identity.** The new compiler's IR for the pre-change source equals the old compiler's, and `make bootstrap` converges.
+
+## Stage 24 — `dyn` rulings (2026-10-10)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) §7: Q1–Q9 are all ruled as recommended:
+- the borrowing box is spelled `(dyn &P)`;
+- `handle` leaves `Allocator`;
+- `Alloc` has no zero value;
+- `allocate-zeroed` is added;
+- boxing a `Drop` value from a reference is refused;
+- the vtable layout is kept;
+- C headers get an opaque two-pointer struct;
+- a box satisfying `:where` on its own protocol is deferred;
+- boxes have no equality.
+
+Implementation starts with DP-1.
+
+## Stage 24 — `dyn` design reviewed and brought into the stage (2026-10-09)
+
+[stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md), moved from `design/future/`. Design only; no code changed. The document was checked against `ce2084a`, function by function, and with fifteen probe programs (§1.2 there).
+
+- **Stale or wrong.** Super-protocol edges (`g-proto-supers`) existed when it was written, and nothing enforced its object-safety rule. Since then the vtable memo became `g-vtable-table`, the gates moved into `dyn-vtable-method-irname-in` (with a third, for a generic method), box identity became the canonical-name key with annotation-site admission (Stage 15 B6), boxing gained a second site in `emit-call-with-args`, dispatch a second hook, and AVR refuses every box.
+- **Silent wrong answers in shipped code, now fixed by the phases that own them.** A by-value `Self` receiver is called with a pointer; the forward is not ABI-lowered, so a 24-byte argument arrives as garbage; a `Drop` value boxed from `&p` drops twice; a `(dyn P)` struct field is written `void*` in C headers. Also refused but should work: a box above its `extend` (admission ignores promises), a struct-literal field or `set!` into a box, a call on `&box`, and a box call in a unit with no conformer.
+- **The borrowing `(dyn &P)` is designed** (§4 there): the owning box's vtable, never dropped, carries its source's taint through Stage 21's sinks, folds to a constant over a global, and emits to C as an opaque two-pointer struct. Under it `handle` can leave `Allocator`, and `allocate-zeroed` replaces `create.nuc`'s check of the handle's kind.
+- **Order.** DP-1, DP-2, then DP-3/DP-4/DP-5, BD-1, BD-2, DP-6, and AL-5 last. AL-5 gained a census of zero-filled `Alloc`s and a measurement gate: self-compile time and an allocation microbenchmark at `-O0` and `-O2`, and direct calls at the compiler's `(new T g-arena)` sites in optimized IR.
+- **Open.** Q1–Q9 in §7 of the document.
+
 ## Stage 24 — multi-conformance deferred (2026-10-09)
 
 The rule that a type conforms to a parametric protocol at most once stays. Its risks and the safe shape for lifting it are in [deferred/overview.md](deferred/overview.md), "A type conforms to a parametric protocol at most once". String's `&String` source stays an `init` overload.
@@ -3247,7 +3385,7 @@ go-ahead.
 | Gensym reader macro | `design/future/overview.md` |
 | Collection constructor ergonomics (target-typed `vector-new` / `*-new-in`; retires `mkvec`/`mkhash`) | Designed — [stage14/target-typed-constructors.md](stage14/target-typed-constructors.md) (TC-1..5) |
 | Native IO: retiring C stdio (and compiler `CStr`) — `Writer`/`ToStr` protocols, `str` macro, terminal + `Drop`-managed file IO | Designed — [future/native-io.md](future/native-io.md); post-Stage-14; hard prereq: struct payloads through `!T`; `Writer` has with/without-`dyn`-expansion options (A/B) |
-| `(dyn P)` for arbitrary protocols — multi-method vtables, per-method dyn-safety, parametric applications `(dyn (Iterator i32))` | Designed — [future/dyn-arbitrary-protocols.md](future/dyn-arbitrary-protocols.md) (DP-0..DP-4); lifts the TE-6 v1 single-method/non-parametric gates; byte-identical bootstrap throughout |
+| `(dyn P)` for arbitrary protocols — multi-method vtables, per-method dyn-safety, parametric applications `(dyn (Iterator i32))` — and the borrowing `(dyn &P)` | Designed, Stage 24 — [stage24-allocation/dyn-arbitrary-protocols.md](stage24-allocation/dyn-arbitrary-protocols.md) (DP-1..DP-6, BD-1/BD-2, then AL-5); lifts the TE-6 v1 single-method/non-parametric gates; byte-identical bootstrap through DP-6, boot refresh at AL-5 |
 
 ---
 

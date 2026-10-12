@@ -273,8 +273,8 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   supplied via `:where`. See [Parametric struct templates](structs-unions.md#parametric-struct-templates-defstruct-name-t-).
 - **Abstract return (B1).** The return type may be a type variable bound by a
   parameter (`maxv:T` above); the concrete return is known per instantiation.
-  A return variable bound by *no* parameter (Haskell `read`) is rejected — it
-  needs the deferred `(dyn …)` form.
+  A return variable bound by *no* parameter (Haskell `read`) is rejected; return
+  a [`(dyn P)` box](#dyn-protocol--type-erased-protocol-value) instead.
 - **Resolution: concrete beats generic.** An exact concrete method always wins
   over a generic template for the same name (tier 0 ≫ tier 1).
 - **Def-time checking (A2).** A template body is type-checked **once at its
@@ -688,22 +688,23 @@ or partially applied type parameters.
 
 When the **concrete closure or value type is unknown at the storage site** —
 storing closures with different captures in a `Vector`, returning an
-implementation-chosen concrete type from a `defn`, or boxing any value under a
+implementation-chosen concrete type from a `defn`, or holding any value under a
 protocol interface — Nucleus provides a single opt-in type-erasure mechanism: a
 **two-word fat pointer** backed by a **static per-concrete-type vtable**. The
 fat pointer is a 16-byte by-value aggregate (`TY-STRUCT`):
 
 ```
-{ data:   ptr,    ; heap-allocated payload (the boxed env / boxed value)
+{ data:   ptr,    ; the payload: a heap copy (owning box) or a borrowed address
   vtable: ptr }   ; address of the per-concrete-type vtable global
 ```
 
-The vtable is a static immutable global synthesized once per `(concrete type,
-protocol)` pair:
+The vtable is a static immutable global, synthesized once per (concrete type,
+protocol) pair:
 
 ```
-{ invoke/method,  ; call/dispatch thunk
-  drop }          ; payload drop thunk (null for POD types)
+{ method 0,       ; a BoxedFn's invoke, or the protocol's first method
+  drop,           ; the payload's drop thunk (null for a POD type)
+  method 1, … }   ; the protocol's other methods, in declaration order
 ```
 
 The fat pointer rides the existing CE-3 by-value-struct ABI (16 bytes →
@@ -716,7 +717,8 @@ fat pointer, the vtable, the heap box, and the indirect call exist **only**
 when a value is explicitly boxed into an erased slot. The feature is opt-in:
 every hot path stays inline and direct-call.
 
-The machine has two concrete instantiations, described below.
+The machine has three forms, described below: `BoxedFn` for closures, the owning
+`(dyn P)` for protocol values, and the borrowing `(dyn &P)`.
 
 ### `BoxedFn` — owning, heap-boxed closure handle
 
@@ -757,66 +759,120 @@ env's `invoke` non-self signature must match the box's `(params…) ret`
 `fn` pointer's signature must match directly.
 
 ```lisp
-; bare fn box
-(let (b (BoxedFn (i32) i32)) (fn (x:i32):i32 (return (* x 3))))
-(b 5)    ; → 15 (indirect call through vtable)
+; a bare fn, boxed at the binding and freed at scope exit
+(with (b:(BoxedFn (i32) i32) (fn (x:i32):i32 (* x 3)))
+  (println (b 5)))                                  ; 15, through the vtable
 
-; heterogeneous collection
-(let (v (Vector (BoxedFn (i32) i32))) [])
-(vector-push v (vfn (x:i32):i32 (return (* x (get self 'factor)))))   ; captured factor
-(vector-push v (fn  (x:i32):i32 (return (+ x 1))))                  ; bare fn
+; closures with different captures in one Vector
+(with (v (make (Vector (BoxedFn (i32) i32)) heap))
+  (let (k:i32 10
+        f:(BoxedFn (i32) i32) (vfn (x:i32):i32 (+ x k))
+        g:(BoxedFn (i32) i32) (fn (x:i32):i32 (+ x 1)))
+    (conj &v f)
+    (conj &v g))
+  (doseq (h &v (VecIter (BoxedFn (i32) i32)))
+    (println (h 1))                                 ; 11, then 2
+    (drop &h)))                                     ; a Vector frees only its buffer
 
-; struct field
+; a struct field
 (defstruct Handler action:(BoxedFn (i32) void))
 
-; defn returning a boxed closure — closes the CE-4 env-naming gap
-(defn make-adder (n:i32) (BoxedFn (i32) i32)
-  (return (BoxedFn (i32) i32) (vfn (x:i32):i32 (return (+ x n)))))
+; a defn returning a boxed closure, whose env type has no name
+(defn make-adder (n:i32):(BoxedFn (i32) i32)
+  (return (vfn (x:i32):i32 (+ x n))))
 ```
 
 See `examples/boxedfn.nuc` for the full working example.
 
-**Known v1 limits.**
+**Limits.**
 
 - Boxes through the **process-default libc allocator** only; no per-box
   `Alloc`. A `cfn` env's vtable drop slot is forced null (avoiding a
   double-free: the `cfn` drop would also free the block the box owns); the
   original cfn env then leaks — a documented cfn-box ownership gap.
-- Boxes are **move-only**: no `clone` on a `BoxedFn` value (the vtable
-  `clone?` slot is reserved but not emitted).
+- Boxes are **move-only**: there is no `clone` on a `BoxedFn` value.
 - A `BoxedFn` conforming to a user function protocol (`UnaryFn`/`FoldFn`) via
   an already-boxed value must re-box; there is no transparent protocol cast.
 
 ### `(dyn Protocol)` — type-erased protocol value
 
-`(dyn P)` for an arbitrary user protocol `P` (declared with `defprotocol` and
-implemented via `extend`) is a fat-pointer type that erases the concrete
-implementation type. It enables:
+`(dyn P)` for a protocol `P` (declared with `defprotocol` and implemented via
+`extend`) is a fat-pointer type that erases the concrete implementation type.
+It enables:
 
-- **B2 — unbound-abstract returns:** a `defn` may declare its return type as
-  `(dyn P)`, returning any concrete type that `extend`s `P`. Without `(dyn P)`
-  the protocol name was not a spellable type; now it is a concrete 16-byte
-  struct.
+- **Abstract returns:** a `defn` may declare its return type as `(dyn P)` and
+  return any concrete type that `extend`s `P`, chosen at run time.
 - **Heterogeneous collections:** `(Vector (dyn P))` holds mixed concrete types
   in uniform slots.
 
-**Boxing.** Assigning a value of any concrete type `T` (that has `(extend T P)`)
-into a `(dyn P)` slot triggers the boxing coercion automatically: the value is
-moved by value to the heap; the per-`(T, P)` vtable global is synthesized with
-the `extend P` method's IR name in slot 0 and the type's drop thunk (if any)
-in slot 1; the result is `{data, vtable}`.
+`(dyn P)` **owns** its payload. The borrowing form `(dyn &P)`, which points at
+a value where it already lives, is [described below](#dyn-p--the-borrowing-box).
+
+**Boxing.** A value of a concrete type `T` that conforms to `P` is boxed
+automatically wherever it meets a `(dyn P)` slot: a binding, a `return`, a call
+argument, a struct-literal field, and a `set!` of a local, a global, a field, a
+`deref` or an `aref`. The value is copied to the heap and the box is
+`{data, vtable}`. A global whose struct literal boxes a field is initialized at
+run time. A generic call does **not** box during overload resolution: `(conj
+&v (Pt 1))` into a `(Vector (dyn P))` is refused. Bind the value to a typed
+name first, as in the example below.
+
+Boxing copies the value, so a type with a `drop` is boxed only from storage no
+binding owns: a struct literal or `(move x)`. Boxing it through a reference (a
+`with` binding, a `&T` parameter) is refused, because the reference's owner and
+the box would both drop it: `(dyn Show): boxing copies the value, and 'Res' has a
+drop, so this reference's owner and the box would both drop it -- borrow it as
+(dyn &Show), or box an owned value: a struct literal or (move x)`. Use the
+borrowing box `(dyn &Show)` to pass such a value by its protocol. A by-value
+local (`p:Pt`) is not boxed at all (`can only box a concrete struct value`):
+box `&p`, or borrow it.
 
 **Conformance admission.** The source type must have a **nominal** `(extend T P)`
-conformance in scope at the boxing site. Structural derivation (function-protocol
-inference) does not apply to `(dyn P)`; use `BoxedFn` for closure boxes.
+conformance. The `extend` may be written anywhere in the compilation unit,
+including below the box. Structural derivation (function-protocol inference)
+does not apply to `(dyn P)`; use `BoxedFn` for closure boxes.
+
+**Which methods a box can call.** A protocol of any number of methods can be
+boxed. A method is **dyn-callable** when all four of these hold:
+
+1. Its first parameter is a pointer to `Self`: `&Self`, `?&Self` or
+   `(ptr Self)`. The box passes `data`, which is a pointer, so a by-value
+   `self:Self` receiver cannot be called through it.
+2. `Self` appears nowhere else, in any parameter or the return, at any depth
+   (`o:&Self`, `?Self`, `(Vector Self)`). The concrete type is erased at the
+   call, so `Eq`'s binary methods and `Clone`'s `clone` are not callable.
+3. The signature has no `:where` of its own. A generic method has no single
+   implementation to put in a slot.
+4. Once a parametric box's arguments are substituted, every type in the
+   signature is concrete. (The box must name all of the protocol's arguments,
+   so this holds for every box you can write.)
+
+Struct arguments and returns by value are fine; the call through the vtable is
+lowered to the platform C ABI like a direct call. Calling a method that is not
+dyn-callable is a compile error at the call that names the rule, for example
+`(dyn Same): 'same?' is not dyn-callable: Self appears in a parameter`. The
+protocol's other methods stay callable, so one binary method does not stop a
+protocol from being boxed. A protocol with no callable method, or with no
+methods at all, cannot be boxed: `(dyn Mark): the protocol declares no
+methods, so a box has nothing to dispatch`.
+
+**The vtable.** Each method has a slot, in the layout shown at the top of this
+section: the first method in slot 0, the drop thunk in slot 1, and the other
+methods from slot 2 on, in declaration order. A method that is not dyn-callable
+keeps its slot, as a null pointer, so slots never move. There is one vtable per
+(concrete type, protocol application), and the borrowing box uses the same one.
+On AVR, where functions live in the program address space, the slots are
+`ptr addrspace(1)` (see [AVR](avr.md)).
 
 **Dispatch.** A method call `(method-name box args…)` where `box` has type
 `(dyn P)` lowers to an indirect vtable call: load the method's slot from the
 vtable, call `slot(data, args…)`. This holds **however many types conform** — a
 protocol with a single implementation dispatches through its vtable exactly like
 one with ten, and so does a call written with a qualifier (`(lib/describe box)`
-against `lib`'s protocol). Nothing about the box's representation or the call it
-emits depends on the conformer count.
+against `lib`'s protocol). The receiver may also be a pointer to a box,
+`&(dyn P)` or `(ptr (dyn P))`; a `?&(dyn P)` must be narrowed first. A file that
+only receives boxes can call `P`'s methods without defining or importing any
+conformer.
 
 Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 `(box args…)`; a `(dyn P)` is dispatched as a **named method call**
@@ -824,32 +880,61 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 
 ```lisp
 (defprotocol Describe
-  ((describe void) ((self (ref Self)))))
+  (describe (self:&Self):void))
 
-(defstruct Cat name:ptr)
-(defstruct Dog name:ptr)
-
-(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (get self 'name)))
-(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (get self 'name)))
-
+(defstruct Cat name:StrView)
+(defstruct Dog name:StrView)
+(defn describe (self:&Cat):void (println "Cat: " (self 'name)))
+(defn describe (self:&Dog):void (println "Dog: " (self 'name)))
 (extend Cat Describe)
 (extend Dog Describe)
 
-; B2 — return type is a protocol name
-(defn make-animal (kind:i32) (dyn Describe)
+; The return type is the protocol; which type comes back is decided at run time.
+(defn make-animal (kind:i32):(dyn Describe)
   (if (= kind 0)
-    (return (dyn Describe) (Cat "Whiskers"))
-    (return (dyn Describe) (Dog "Rex"))))
+    (return (Cat "Whiskers"))
+    (return (Dog "Rex"))))
 
-; heterogeneous Vector
-(let (v (Vector (dyn Describe))) [])
-(vector-push v (dyn Describe) (Cat "Felix"))
-(vector-push v (dyn Describe) (Dog "Buddy"))
-; iterate and dispatch:
-(doseq (a v) (describe &a))
+(defn main ():i32
+  (with (v (make (Vector (dyn Describe)) heap))
+    (let (a:(dyn Describe) (make-animal 0)
+          b:(dyn Describe) (Dog "Buddy"))
+      (conj &v a)
+      (conj &v b))
+    (doseq (x &v (VecIter (dyn Describe)))
+      (describe x)          ; Cat: Whiskers, then Dog: Buddy
+      (drop &x)))           ; a Vector frees only its buffer, so drop each box
+  (return 0))
 ```
 
-See `examples/dyn-protocol.nuc` for the full working example.
+See `examples/dyn-protocol.nuc` for a full program, and `examples/dyn-multi.nuc`
+for a protocol of several methods, one of them not dyn-callable, with struct
+arguments and returns through the box.
+
+**Parametric protocols.** A protocol with parameters is boxed as an
+application: `(dyn (Iterator i32))`. The arguments must be concrete types, and
+their number must match the protocol's (`(dyn Iterator)` is `'Iterator' takes 1
+type argument(s) -- write (dyn (Iterator ...))`). The arguments are substituted
+into each method's signature, so `(next it)` on a `(dyn (Iterator i32))` returns
+`?i32`. A conformer must conform to that application: an `IntRangeIter`
+boxed as `(dyn (Iterator i64))` is `type 'IntRangeIter' conforms to (Iterator
+i32), not (Iterator i64)`. The arguments are part of the box's identity, by
+canonical name, so `(dyn (Sink ct/Big))` written in two files is one type, and
+`(dyn (Sink i32))` and `(dyn (Sink i64))` are two.
+
+```lisp
+(extend Countdown (Iterator i32))     ; Countdown's next returns ?i32
+(with (v (make (Vector (dyn (Iterator i32))) heap))
+  (let (a:(dyn (Iterator i32)) (IntRangeIter 1 4)
+        b:(dyn (Iterator i32)) (Countdown 3))
+    (conj &v a)
+    (conj &v b))
+  (doseq (it &v (VecIter (dyn (Iterator i32))))
+    (match (next &it) …)
+    (drop &it)))
+```
+
+`examples/dyn-parametric.nuc` is the full program.
 
 **Across a namespace.** `P` is a protocol reference, so it follows the naming
 rules in [Protocols are namespaced](#protocols-are-namespaced): bare inside the
@@ -872,34 +957,102 @@ its file and line are the annotation's.
 two namespaces that each declare a protocol of the same bare name `Describe`, one
 type conforming to both, and each box dispatching its own protocol's method.
 
-**v1 scope limits.** The following are not yet supported and produce clear
-compile-time diagnostics:
+**In messages** a box is spelled as you write it: `(dyn Show)`, `(dyn &Show)`,
+`(dyn (Iterator i32))`.
 
-- **Multi-method protocols.** v1 vtable layout is `{method0, drop}` — the slot
-  index for a second method would collide with `drop`. Only single-method
-  protocols are supported.
-- **Parametric protocols.** `(dyn (Seq E))` is not parseable as a type; only
-  bare protocol names are accepted.
-- **Object-safety.** Protocol methods whose non-receiver parameters or return type
-  mention `Self` cannot be placed in a vtable (the concrete `Self` is erased). The
-  parser rejects them with a clear error.
-- **Generic methods.** A method whose signature has its own `:where` has no
-  single implementation to put in a slot: `(dyn M): method 'mapx' is generic
-  (its signature has a :where), so no vtable can hold it`.
-- **Multi-protocol boxes** (`(dyn (Show Eq))`). Not supported; v1 is
-  single-protocol.
-- **No `clone`.** Boxes are move-only.
+### `(dyn &P)` — the borrowing box
+
+`(dyn &P)` (read as `(dyn (ref P))`; parametric `(dyn &(Iterator i32))`) is a
+box that borrows a value where it lies instead of owning a heap copy. It is the
+same 16 bytes as `(dyn P)`, with the same vtable, the same dyn-callable rules
+and the same dispatch; only ownership differs. `(dyn P)` and `(dyn &P)` are
+different types. `&(dyn P)` is something else again: a reference to an owning
+box.
+
+Into a `(dyn &P)` slot (binding, `return`, argument, field, `set!`):
+
+| Source | Result |
+|---|---|
+| `&T`, or a binding of type `T` | borrows it; a later `set!` of the binding shows through |
+| struct literal `(T …)` | borrows the literal's frame slot |
+| a call's by-value result | refused: no address -- bind it to a name first |
+| `?&T` | refused: narrow it first |
+| `(ptr T)` | refused: convert it with `(as &T …)` first |
+| `(dyn &P)`, `&(dyn &P)` | copied / loaded, never wrapped in a second box |
+| `(dyn P)`, `&(dyn P)` of the same application | a view of the owning box's two words |
+
+A `(dyn &P)` into an owning `(dyn P)` slot is refused, because a borrow cannot
+become an owner. `(dyn ?&P)` and `(dyn (ptr P))` are refused at the annotation.
+A nullable borrow is `(Maybe (dyn &P))`.
+
+**Lifetime.** A borrowing box carries its source's lifetime the way `&x` does.
+Returning one over a local, a struct literal or a `with` value is refused at the
+`return`, with the message `(return &x)` would get. Initializing a global from a
+local is refused at the `defvar`. A box stored into heap memory is not followed,
+as for any pointer: keeping the value alive is the caller's job.
+
+**Drop.** A borrowing box is never dropped and does not conform to `Drop`.
+`with` arms nothing for it, and a struct field of that type has no field drop.
+The value's owner drops it, once, so a `(dyn &P)` is how a `Drop` type is
+passed by its protocol:
+
+```lisp
+(defn bump-twice (c:(dyn &Counter)):i32
+  (bump c)
+  (bump c)
+  (return (total c)))
+
+(with (m (Meter 1 0))           ; Meter has a drop
+  (println (bump-twice m)))     ; borrows m; m is dropped here, once
+(with (o:(dyn Counter) (Tally 5))
+  (println (bump-twice o)))     ; a view of the owning box
+```
+
+**Constants.** A borrowing box of a global's address is a link-time constant.
+`(defvar gc:(dyn &Counter) &g)`, `(defvar h:Holder (Holder &g 1))` with a
+`(dyn &Show)` field, a `defconst`, and arrays of these are initialized with no
+startup code. Inside a `defvar` struct literal, a borrowing field cannot borrow a
+struct literal, which would only live while the initializer ran.
+
+`examples/dyn-borrow.nuc` is the full program.
+
+### Limits
+
+- **One protocol per box.** There is no `(dyn (Show Eq))`. Declare one protocol
+  with the methods the box needs.
+- **No `clone`**: boxes are move-only.
+- **No built-in `=`** on either kind of box, since comparing data pointers says
+  little (a view and its owner share one). Define `=` over the protocol's
+  methods if you need it.
+- **A box does not conform to its own protocol.** A `(dyn P)` does not satisfy
+  `:where (P T)` or `conforms?`. Call `P`'s methods on the box directly.
+- **Super-protocol methods** are not reachable through a box of the
+  sub-protocol, and there is no upcast from `(dyn Sub)` to `(dyn Super)`.
+- **No downcasting** from a box back to its concrete type.
+- **Owning boxes use the libc heap**, as `BoxedFn` does; the fat pointer has
+  no word for an allocator.
 
 ### C-ABI and `--emit-cheader`
 
-A public `defn` whose parameter or return type mentions `BoxedFn` or `(dyn P)`
-is **excluded from `--emit-cheader`**: the fat pointer carries Nucleus-side
-`Drop`/vtable semantics with no faithful C spelling. An explanatory comment is
-emitted in place of the excluded declaration, and a warning is issued at the
-`defn` definition site. Plain `fn`-pointer signatures and all other types
-continue to emit normally. (This generalizes the L8 closure-env-type exclusion
-— see [lambda.md](../design/stage13/lambda.md).) The fixture
-`tests/fixtures/box-cheader.nuc` covers the exclusion and warning.
+A box has a C type, so a struct field of either kind has the right layout:
+`typedef struct nuc_dyn_<P> { void* data; const void* vtable; } nuc_dyn_<P>;`,
+and `nuc_dynref_<P>` for the borrowing kind (`<P>` is the protocol's link name
+plus any arguments, e.g. `nuc_dynref_Src_i64`). C can hold, pass and return
+one, but cannot build one or call through it.
 
-See `design/stage13/type-erasure.md` for the full design and implementation
-record (TE-0 … TE-7).
+Which declarations reach the header depends on ownership:
+
+- A public `defn` or global whose type mentions `BoxedFn` or an owning `(dyn P)`
+  is **excluded**, because the fat pointer carries `Drop` semantics C cannot
+  honor. A comment is emitted in its place, and a warning is issued at the
+  definition. (This generalizes the L8 closure-env-type exclusion — see
+  [lambda.md](../design/stage13/lambda.md).) The fixture
+  `tests/fixtures/box-cheader.nuc` covers the exclusion and warning.
+- A borrowing box owns nothing, so a function or global of type `(dyn &P)`
+  **is** exported, with its `nuc_dynref_<P>` type.
+
+Plain `fn`-pointer signatures and all other types emit normally.
+
+See `design/stage13/type-erasure.md` (TE-0 … TE-7) and
+`design/stage24-allocation/dyn-arbitrary-protocols.md` (multi-method,
+parametric and borrowing boxes) for the design and implementation records.

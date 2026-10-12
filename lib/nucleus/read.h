@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include "core.h"
 #include "string.h"
-#include "allocator.h"
 
 /* Generated from lib/nucleus/read.nuc by nucleusc --emit-cheader */
 
@@ -44,13 +43,21 @@ typedef struct nuc_RMacro {
     struct nuc_Symbol wrap;
 } nuc_RMacro;
 
+#ifndef NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+#define NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+typedef struct nuc_dynref_nucleus_allocator_Allocator {
+    void* data;
+    const void* vtable;
+} nuc_dynref_nucleus_allocator_Allocator;
+#endif
+
 #ifndef NUC_INST_nuc_Vector_nuc_RMacro
 #define NUC_INST_nuc_Vector_nuc_RMacro
 typedef struct nuc_Vector_nuc_RMacro {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_Alloc alloc;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
 } nuc_Vector_nuc_RMacro;
 #endif
 

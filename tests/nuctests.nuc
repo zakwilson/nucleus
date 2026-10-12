@@ -50,6 +50,7 @@
 (import-use suite-s21)
 (import-use suite-s22)
 (import-use suite-s24)
+(import-use suite-dyn)
 (import-use nucleus.intern)
 (import-use nucleus.coll) (import-use nucleus.create)
 

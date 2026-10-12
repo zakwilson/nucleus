@@ -1,0 +1,14 @@
+; Stage 24 DP-2 — a method with its own `:where` has no single implementation
+; for a slot, so its call through a box is refused; `n-of` stays callable.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol M (n-of (self:&Self):i32) (mapx (self:&Self v:T :where (Any T)):T))
+(defstruct A n:i32)
+(defn n-of (self:&A):i32 (return (self 'n)))
+(defn mapx (self:&A v:T :where (Any T)):T (return v))
+(extend A M)
+(defn main ():i32
+  (let (a:(dyn M) (A 3))
+    (println (n-of a))
+    (println (mapx a 5)))
+  (return 0))

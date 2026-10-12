@@ -1218,10 +1218,131 @@
  :messages ["new/make: an Init type takes one value after the allocator"]}
 {:name "s24-make-no-source" :expect :reject
  :file "tests/fixtures/s24-make-no-source.nuc" :line 5
- :messages ["no matching method for overloaded 'init' with argument types (&(Vector i32), Alloc, StrView)"]}
+ :messages ["no matching method for overloaded 'init' with argument types (&(Vector i32), (dyn &Allocator), StrView)"]}
 {:name "s24-new-not-allocator" :expect :reject
  :file "tests/fixtures/s24-new-not-allocator.nuc" :line 4
  :messages ["no matching method for overloaded 'handle' with argument types (i32)"]}
 {:name "s24-alignof-arity" :expect :reject
  :file "tests/fixtures/s24-alignof-arity.nuc" :line 2
  :messages ["alignof expects 1 arg"]}
+
+; Stage 24 DP-1/DP-2 — per-method dyn-safety
+; (design/stage24-allocation/dyn-arbitrary-protocols.md §3.3). A protocol boxes
+; when at least one method is dyn-callable; a call to a method that is not is
+; refused at the call, naming the rule. dp1-by-value-self is probe 4, which used
+; to compile and print garbage.
+{:name "dp1-by-value-self" :expect :reject
+ :file "tests/fixtures/dp1-by-value-self.nuc" :line 12
+ :messages ["(dyn Val): no method is dyn-callable ('val': its first parameter is not a pointer to Self)"]}
+{:name "dp1-no-methods" :expect :reject
+ :file "tests/fixtures/dp1-no-methods.nuc" :line 7
+ :messages ["(dyn Mark): the protocol declares no methods, so a box has nothing to dispatch"]}
+{:name "dp2-unsafe-receiver" :expect :reject
+ :file "tests/fixtures/dp2-unsafe-receiver.nuc" :line 13
+ :messages ["(dyn Val): 'val' is not dyn-callable: its first parameter is not a pointer to Self"]}
+{:name "dp2-unsafe-self-param" :expect :reject
+ :file "tests/fixtures/dp2-unsafe-self-param.nuc" :line 14
+ :messages ["(dyn Same): 'same?' is not dyn-callable: Self appears in a parameter"]}
+{:name "dp2-unsafe-self-ret" :expect :reject
+ :file "tests/fixtures/dp2-unsafe-self-ret.nuc" :line 13
+ :messages ["(dyn Dup): 'dup' is not dyn-callable: Self appears in the return type"]}
+{:name "dp2-unsafe-where" :expect :reject
+ :file "tests/fixtures/dp2-unsafe-where.nuc" :line 13
+ :messages ["(dyn M): 'mapx' is not dyn-callable: its signature has its own :where"]}
+{:name "dp2-maybe-box-receiver" :expect :reject
+ :file "tests/fixtures/dp2-maybe-box-receiver.nuc" :line 8
+ :messages ["(dyn Show) call: show: value may be null"]}
+
+; Stage 24 DP-3 — parametric applications `(dyn (P arg…))`
+; (design/stage24-allocation/dyn-arbitrary-protocols.md §3.4). The arguments are
+; part of the box's identity and must match the conformance's.
+{:name "dp3-wrong-application" :expect :reject
+ :file "tests/fixtures/dp3-wrong-application.nuc" :line 6
+ :messages ["(dyn (Iterator i64)): type 'IntRangeIter' conforms to (Iterator i32), not (Iterator i64)"]}
+{:name "dp3-missing-arguments" :expect :reject
+ :file "tests/fixtures/dp3-missing-arguments.nuc" :line 4
+ :messages ["(dyn Iterator): 'Iterator' takes 1 type argument(s) -- write (dyn (Iterator ...))"]}
+{:name "dp3-extra-arguments" :expect :reject
+ :file "tests/fixtures/dp3-extra-arguments.nuc" :line 3
+ :messages ["(dyn (Iterator ...)): 'Iterator' takes 1 type argument(s), not 2"]}
+
+; Stage 24 DP-4 — an owning box copies the value it boxes, so a `Drop` value is
+; boxed only from storage nothing else owns: a struct literal or a `move`
+; (dyn-arbitrary-protocols.md §3.5, §7 Q5). dp4-drop-from-reference is probe 7,
+; which used to compile and drop the value twice.
+{:name "dp4-drop-from-reference" :expect :reject
+ :file "tests/fixtures/dp4-drop-from-reference.nuc" :line 15
+ :messages ["(dyn Show): boxing copies the value, and 'Res' has a drop, so this reference's owner and the box would both drop it -- borrow it as (dyn &Show), or box an owned value: a struct literal or (move x)"]}
+{:name "dp4-drop-param-reference" :expect :reject
+ :file "tests/fixtures/dp4-drop-param-reference.nuc" :line 13
+ :messages ["(dyn Show): boxing copies the value, and 'Res' has a drop"]}
+
+; Stage 24 BD-1 — the borrowing box `(dyn &P)` (dyn-arbitrary-protocols.md §4).
+; It borrows only a non-null address it can see, carries that address's taint to
+; the `return` sink, never becomes an owner, and is spelled only `(dyn &P)`.
+{:name "bd1-return-local" :expect :reject
+ :file "tests/fixtures/bd1-return-local.nuc" :line 12
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "bd1-return-with" :expect :reject
+ :file "tests/fixtures/bd1-return-with.nuc" :line 16
+ :messages ["resource bound by `with` escapes via return"]}
+{:name "bd1-no-address" :expect :reject
+ :file "tests/fixtures/bd1-no-address.nuc" :line 10
+ :messages ["(dyn &Show): a value with no address cannot be borrowed -- bind it to a name first"]}
+{:name "bd1-maybe-source" :expect :reject
+ :file "tests/fixtures/bd1-maybe-source.nuc" :line 9
+ :messages ["(dyn &Show): ?&Pt may be null -- narrow it first"]}
+{:name "bd1-raw-source" :expect :reject
+ :file "tests/fixtures/bd1-raw-source.nuc" :line 9
+ :messages ["(dyn &Show): a borrowing box is never null, and (ptr Pt) is unchecked -- convert it with (as &T ...) first"]}
+{:name "bd1-borrow-to-owner" :expect :reject
+ :file "tests/fixtures/bd1-borrow-to-owner.nuc" :line 11
+ :messages ["(dyn Show): a (dyn &Show) is a borrow and cannot become an owning box -- declare the slot (dyn &Show), or box an owned value"]}
+{:name "bd1-nullable-spelling" :expect :reject
+ :file "tests/fixtures/bd1-nullable-spelling.nuc" :line 8
+ :messages ["(dyn ?&P): a box is never null -- a nullable borrow is (Maybe (dyn &P))"]}
+{:name "bd1-ptr-spelling" :expect :reject
+ :file "tests/fixtures/bd1-ptr-spelling.nuc" :line 8
+ :messages ["(dyn (ptr P)): a box borrows through a non-null reference -- write (dyn &P)"]}
+{:name "bd1-view-mismatch" :expect :reject
+ :file "tests/fixtures/bd1-view-mismatch.nuc" :line 12
+ :messages ["type mismatch: a (dyn Other) value cannot be used where (dyn &Show) is required"]}
+{:name "bd2-literal-field" :expect :reject
+ :file "tests/fixtures/bd2-literal-field.nuc" :line 10
+ :messages ["defvar: a (dyn &Show) field cannot borrow a struct literal, which lives only while the initializer runs -- borrow a global: &NAME"]}
+{:name "bd2-const-nonconforming" :expect :reject
+ :file "tests/fixtures/bd2-const-nonconforming.nuc" :line 10
+ :messages ["(dyn &Show): type 'Q' does not conform to the protocol"]}
+
+; Stage 24 DP-6 — a message names a box as the author writes it: `(dyn &P)`,
+; `(dyn (P a…))`, never the StructDef's IR name (`__dynref.P`, `__dyn.P.a`).
+{:name "dp6-display-borrow" :expect :reject
+ :file "tests/fixtures/dp6-display-borrow.nuc" :line 11
+ :messages ["no matching method for '=': (dyn &Show) does not conform to Eq"]}
+{:name "dp6-display-application" :expect :reject
+ :file "tests/fixtures/dp6-display-application.nuc" :line 7
+ :messages ["take: argument 1 has type (dyn (Iterator i32)), which does not match parameter type i32"]}
+{:name "dp6-borrow-missing-arguments" :expect :reject
+ :file "tests/fixtures/dp6-borrow-missing-arguments.nuc" :line 3
+ :messages ["(dyn &Iterator): 'Iterator' takes 1 type argument(s) -- write (dyn &(Iterator ...))"]}
+{:name "dp6-borrow-extra-arguments" :expect :reject
+ :file "tests/fixtures/dp6-borrow-extra-arguments.nuc" :line 3
+ :messages ["(dyn &(Iterator ...)): 'Iterator' takes 1 type argument(s), not 2"]}
+
+; Stage 24 AL-5 — a borrowing box has no zero value, nor does a value holding one
+{:name "al5-defvar-alloc" :expect :reject
+ :file "tests/fixtures/al5-defvar-alloc.nuc" :line 3
+ :messages ["defvar: 'g' has no initializer, and a (dyn &Allocator) has no zero value"]
+ :notes ["give it a value; a collection or allocator is built with (make T a)"]}
+{:name "al5-defvar-collection" :expect :reject
+ :file "tests/fixtures/al5-defvar-collection.nuc" :line 4
+ :messages ["defvar: 'g' has no initializer, and a (Vector i32) has no zero value: it holds a (dyn &Allocator)"]}
+{:name "al5-struct-lit-field" :expect :reject
+ :file "tests/fixtures/al5-struct-lit-field.nuc" :line 5
+ :messages ["struct literal: field 'a' of Pool is not set, and a (dyn &Allocator) has no zero value"]}
+{:name "al5-const-field" :expect :reject
+ :file "tests/fixtures/al5-const-field.nuc" :line 4
+ :messages ["struct literal: field 'a' of Pool is not set, and a (dyn &Allocator) has no zero value"]}
+{:name "al5-array-slot" :expect :reject
+ :file "tests/fixtures/al5-array-slot.nuc" :line 3
+ :messages ["defvar: array element 1 is not set, and a (dyn &Allocator) has no zero value"]}

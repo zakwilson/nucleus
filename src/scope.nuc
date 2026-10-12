@@ -244,11 +244,6 @@
     (inc! g-label)
     (return r)))
 
-; The emission buffers are process-wide and initialised once, lazily: the header
-; modes never open a module, so `open-module-streams` is not a point every path
-; passes through.
-(defvar g-emit-buffers-ready:i32 0)
-
 ; Park a `String` in the arena so a `FnState` can hold it — see the field
 ; comment in compiler-types.nuc for why the field cannot be the value itself.
 (defn string-box (v:&String):&String
@@ -262,16 +257,6 @@
   (string-clear g-type-stream)
   (string-clear g-decl-stream)
   (string-clear g-def-buf))
-
-(defn ensure-emit-buffers ():void
-  (when (= g-emit-buffers-ready 0)
-    (set! g-entry-stream (make String))
-    (set! g-body-stream (make String))
-    (set! g-type-stream (make String))
-    (set! g-decl-stream (make String))
-    (set! g-def-buf (make String))
-    (set! g-repl-preamble (make String))
-    (set! g-emit-buffers-ready 1)))
 
 (defn reset-function-state ():void
   (set! g-tmp 0)
@@ -287,7 +272,6 @@
   (set! g-nundo (new (Vector &NarrowUndo) g-arena))
   (inc! g-narrow-gen-next)
   (set! g-narrow-gen g-narrow-gen-next)
-  (ensure-emit-buffers)
   (string-clear g-entry-stream)
   (string-clear g-body-stream))
 

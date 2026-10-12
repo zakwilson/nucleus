@@ -1,0 +1,6 @@
+; Stage 24 DP-3 — a parametric protocol's box names its arguments: `(dyn Iterator)`
+; would leave `next`'s element type unbound.
+(import-use nucleus.iterator)
+(defn first (it:(dyn Iterator)):i32
+  (return 0))
+(defn main ():i32 (return 0))

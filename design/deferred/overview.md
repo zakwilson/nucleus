@@ -600,6 +600,8 @@ Risks of lifting the rule outright:
 
   A missed site answers wrongly rather than failing.
 - **Future `dyn`.** DP's vtable names would need the protocol arguments.
+  [stage24-allocation/dyn-arbitrary-protocols.md](../stage24-allocation/dyn-arbitrary-protocols.md)
+  §3.4 now puts them in the name anyway.
 
 **The safe shape**, if a second protocol needs this, is Rust's split between a
 trait's generic parameters and its associated types, inferred rather than
@@ -618,3 +620,80 @@ gate applies.
 **Not wanted until** a second protocol needs it. Today it only makes `String`'s
 `&String` source visible to `conforms?`, and `(InitFrom StrView)` over
 `(string-as-view &s)` already copies a `String` losslessly.
+
+## A struct literal does not carry its fields' escape taint
+
+Found in Stage 24 BD-1, 2026-10-10. This is the boundary in
+[stage21-cleanup/frame-storage-escape.md](../stage21-cleanup/frame-storage-escape.md)
+§7, and the borrowing box makes it easier to reach. A struct literal's `Val` is
+tainted with the literal's own slot. When it is stored by value, that taint is
+discharged (FS-2), and the taint of any address-holding field goes with it.
+
+So `(defn f ():Holder (let (p:Pt (Pt 1)) (return (Holder &p))))` is accepted. That
+holds for a `&Pt` field and a `(dyn &Show)` field alike. It returns a pointer
+into a dead frame.
+
+BD-2 refuses the one `defvar` shape: a struct literal borrowed by a borrowing
+field of a `defvar` struct literal.
+
+The fix: `emit-struct-lit` records a content taint, the join of its
+address-holding fields' surviving taints. The FS-2 discharge then hands it on
+rather than clearing it. `Val` and `Sym` need the field, and every place that
+adopts a taint needs to read it.
+
+## A `BoxedFn` field is `void*` in a generated C header
+
+Found in Stage 24 BD-2, 2026-10-10. BD-2 gave `(dyn P)` and `(dyn &P)` a
+two-pointer typedef (probe 12). A `BoxedFn` is the same 16-byte fat pointer,
+but `type-node-to-c` still spells a `(BoxedFn …)` field `void*`, eight bytes for
+sixteen. A C struct of `(defstruct BH f:(BoxedFn (i32) i32) n:i32)` disagrees
+with Nucleus's layout. The same `cheader-inst-entry` arm would fix it, with a
+`nuc_boxedfn_…` name taken from the fat-pointer StructDef.
+
+## `bit-not` on an unsigned type narrower than 64 bits is refused
+
+Found in Stage 24 AL-5, 2026-10-10. This predates AL-5. `bit-not` is the macro
+`(bit-xor x -1)` (`lib/nucleus/macros.nuc`), and the literal `-1` is
+range-checked against `x`'s type. So `(bit-not a)` at `a:ui32` is refused on the
+host with `integer literal -1 does not fit ui32`, and so is `a:usize` on AVR,
+where `usize` is 16 bits. That is how this was found, in an alignment mask.
+`ui64`/`usize` on a 64-bit host pass. The fix: emit `xor` with all ones of the
+operand's width, as a builtin rather than a macro, or adapt the literal to the
+operand's type the way a typed comparison does.
+
+## `FixedBuffer` cannot be boxed on AVR: its drop names `stderr`
+
+Found in Stage 24 AL-5, 2026-10-10. A borrowing box shares the owning box's
+vtable, whose slot 1 is the type's drop. `FixedBuffer`'s drop reports leaks with
+`fprintf(stderr, …)`, and avr-libc has no `stderr` symbol (it is a macro over
+`__iob`). So `(handle fb)` on AVR fails to link: `undefined reference to
+'stderr'`. A borrowing box never calls the drop slot. The fix is one of these:
+- `lib/` reports through a target-aware error stream;
+- a vtable built only for a borrowing box leaves the drop slot null.
+
+`examples/avr-alloc.nuc` uses a user allocator instead.
+
+## `make`/`new` with no arguments zero-fills a struct that holds a handle
+
+Found in Stage 24 AL-5, 2026-10-10. AL-5 refuses a zero value for a type that
+holds a borrowing box (a `defvar` with no initializer, an unset field in a
+struct literal, an unset constant array element). But `create-form` zero-fills a
+non-`Init` type given no arguments through `create-zero`, a `memset` the
+compiler cannot see as a struct literal. So `(make Pool heap)` for
+`(defstruct Pool n:i32 a:Alloc)` builds a null handle without complaint. The fix:
+have `create-form` build such a type as an empty struct literal `(T)`, which
+goes through the field check, rather than `memset`.
+
+## An overloaded method's argument does not apply the borrowing coercion
+
+Found in Stage 24 AL-5, 2026-10-10. `&T` converts to a borrowing box
+(`(dyn &P)`, and so `Alloc`) in a typed slot: a binding, a field, a global, or a
+plain function's parameter. Overload resolution does not try it. So
+`(init v &ar)` is refused (`argument 2: &Arena is not (dyn &Allocator)`) and must
+be written `(init v (handle ar))`. In the same family, tier-1 (template)
+dispatch does not take a by-value binding's address implicitly. That is why
+`handle` has concrete overloads for the four built-in allocators beside its
+`:where (Allocator T)` template, and why a user allocator is written
+`(handle &x)`. The fix: let the conversion rank as an implicit coercion in
+method matching, after exact and widening matches, and give the template tier
+the concrete tier's lvalue-address pass.

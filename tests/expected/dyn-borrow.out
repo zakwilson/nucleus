@@ -1,0 +1,5 @@
+tally 2 2
+meter 20
+drop meter 1
+view 7 7
+global 102 102

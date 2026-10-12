@@ -366,19 +366,19 @@
 (defn join (renderf:&RF sep:StrView it:&I
                    :where ((Iterator S) I)
                           ((UnaryFn S StrView) RF)):String
-  (let (out:String (String)
+  (let (out:&String (alloca String)
         first:i32 1
         done:i32 0)
-    (init &out)
+    (init out)
     (while (= done 0)
       (match (next it)
         ((some v)
-         (when (= first 0) (string-push-str-unchecked &out &sep))
+         (when (= first 0) (string-push-str-unchecked out &sep))
          (set! first 0)
          (let (r:StrView (apply renderf v))
-           (string-push-str-unchecked &out &r)))
+           (string-push-str-unchecked out &r)))
         (none (set! done 1))))
-    (return out)))
+    (return @out)))
 
 ; ===========================================================================
 ; Implicit-progn last value

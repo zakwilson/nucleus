@@ -1,0 +1,705 @@
+; Stage 24 — `(dyn P)` for arbitrary protocols
+; (design/stage24-allocation/dyn-arbitrary-protocols.md). The refusals are rows
+; of tests/manifest/diagnostics.edn (`dp1-*`, `dp2-*`).
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+
+; Write `src` as `main.nuc` in a fresh scratch subdirectory `sub`, build and run it.
+(defn dyn-run (sub:StrView src:StrView):!String
+  (let (dir:String (try (test-scratch-sub sub))
+        m:String (try (write-into (string-as-view &dir) "main.nuc" src))
+        out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+    (drop &m)
+    (drop &dir)
+    (return (ok out))))
+
+; The same program's IR.
+(defn dyn-ir (sub:StrView src:StrView):!Compiled
+  (let (dir:String (try (test-scratch-sub sub))
+        m:String (try (write-into (string-as-view &dir) "main.nuc" src))
+        c:Compiled (try (compile-path (string-as-view &m))))
+    (drop &m)
+    (drop &dir)
+    (return (ok c))))
+
+; ---------------------------------------------------------------------------
+; DP-1: the k+1 vtable, null slots, promise-aware admission
+; ---------------------------------------------------------------------------
+
+(defn dp-two-src ():StrView (return "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Two (one (self:&Self):i32) (two (self:&Self k:i32):i32))
+(defstruct A n:i32)
+(defstruct B n:i32)
+(defn one (self:&A):i32 (return (self 'n)))
+(defn two (self:&A k:i32):i32 (return (+ (self 'n) k)))
+(defn one (self:&B):i32 (return (* 2 (self 'n))))
+(defn two (self:&B k:i32):i32 (return (* (self 'n) k)))
+(extend A Two)
+(extend B Two)
+(defn main ():i32
+  (let (a:(dyn Two) (A 3)
+        b:(dyn Two) (B 4))
+    (println (one a) \" \" (two a 10) \" \" (one b) \" \" (two b 10)))
+  (return 0))
+"))
+
+; Was `only single-method protocols are boxable in v1`. The first method keeps
+; slot 0, the drop slot stays at 1, and the second method appends at 2.
+(deftest dp1-two-method-box
+  (let (out:String (try (dyn-run "dp1two" (dp-two-src)))
+        c:Compiled (try (dyn-ir "dp1twoir" (dp-two-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "3 13 8 40\n"))
+    (try (check-match iv "@__vt.A.Two = internal constant { ptr, ptr, ptr } { ptr @one*, ptr null, ptr @two*"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+(defn dp-null-slot-src ():StrView (return "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Val (val (self:Self):i32) (peek (self:&Self):i32))
+(defstruct A n:i32 m:i32)
+(defn val (self:A):i32 (return (+ (self 'n) (self 'm))))
+(defn peek (self:&A):i32 (return (self 'n)))
+(extend A Val)
+(defn main ():i32
+  (let (a:(dyn Val) (A 3 4))
+    (println (peek a)))
+  (return 0))
+"))
+
+; Probe 4's method beside a callable one: its slot is null, so no call through
+; the box can reach it with the wrong argument (dp2-unsafe-receiver refuses one).
+(deftest dp1-null-slot
+  (let (out:String (try (dyn-run "dp1null" (dp-null-slot-src)))
+        c:Compiled (try (dyn-ir "dp1nullir" (dp-null-slot-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "3\n"))
+    (try (check-match iv "@__vt.A.Val = internal constant { ptr, ptr, ptr } { ptr null, ptr null, ptr @peek }*"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+; Probe 8: the `extend` and the method are written below the box. Admission
+; redeems the conformance promise instead of asking the recorded registry.
+(deftest dp1-box-above-extend
+  (let (out:String (try (dyn-run "dp1above" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn main ():i32
+  (let (a:(dyn Show) (Pt 2))
+    (println (show a)))
+  (return 0))
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(extend Pt Show)
+")))
+    (try (check-eq (string-as-view &out) "20\n"))
+    (drop &out))
+  (return (ok)))
+
+; A one-method protocol's vtable keeps the v1 text exactly.
+(deftest dp1-one-method-vtable-text
+  (let (c:Compiled (try (dyn-ir "dp1one" "(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self 'x)))
+(extend Pt Show)
+(defn main ():i32
+  (let (a:(dyn Show) (Pt 2))
+    (return (show a))))
+"))
+        iv:StrView (compiled-ir &c))
+    (try (check-match iv "@__vt.Pt.Show = internal constant { ptr, ptr } { ptr @show, ptr null }*"))
+    (try (check-match iv "  %* = getelementptr inbounds { ptr, ptr }, ptr %*, i32 0, i32 0"))
+    (drop &c))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; DP-2: dispatch
+; ---------------------------------------------------------------------------
+
+; Both methods through one box on the SOLITARY path (one conformer, so neither
+; name is a Generic). `two`'s extra argument is the witness: a forward that read
+; the wrong slot, or passed the fat pointer, gives a different sum.
+(deftest dp2-both-methods-solitary
+  (let (out:String (try (dyn-run "dp2both" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Two (one (self:&Self):i32) (two (self:&Self k:i32):i32) (three (self:&Self a:i32 b:i32):i32))
+(defstruct C n:i32)
+(defn one (self:&C):i32 (return (self 'n)))
+(defn two (self:&C k:i32):i32 (return (+ (self 'n) k)))
+(defn three (self:&C a:i32 b:i32):i32 (return (+ (self 'n) (* a b))))
+(extend C Two)
+(defn main ():i32
+  (let (c:(dyn Two) (C 5))
+    (println (one c) \" \" (two c 10) \" \" (three c 2 3)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "5 15 11\n"))
+    (drop &out))
+  (return (ok)))
+
+(defn dp-abi-src ():StrView (return "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defstruct Big a:i64 b:i64 c:i64)
+(defstruct Two x:i64 y:i64)
+(defprotocol Mix (mix (self:&Self g:Big):Two) (grow (self:&Self k:i64):Big))
+(defstruct A n:i64)
+(defn mix (self:&A g:Big):Two (return (Two (+ (self 'n) (g 'a)) (+ (g 'b) (g 'c)))))
+(defn grow (self:&A k:i64):Big (return (Big (self 'n) k (+ (self 'n) k))))
+(extend A Mix)
+(defn main ():i32
+  (let (a:(dyn Mix) (A 100)
+        r:Two (mix a (Big 1 20 300))
+        g:Big (grow a 7))
+    (println (r 'x) \" \" (r 'y) \" \" (g 'a) \" \" (g 'b) \" \" (g 'c)))
+  (return 0))
+"))
+
+; Probe 5: a 24-byte argument (byval), a 16-byte return (two registers) and a
+; 24-byte return (sret) through the box. The forward printed raw aggregates, so
+; this printed garbage.
+(deftest dp2-abi-forward
+  (let (out:String (try (dyn-run "dp2abi" (dp-abi-src)))
+        c:Compiled (try (dyn-ir "dp2abiir" (dp-abi-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "101 320 100 7 107\n"))
+    (try (check-match iv "  %* = call { i64, i64 } %*(ptr %*, ptr byval(%Big) align 8 %*)"))
+    (try (check-match iv "  call void %*(ptr sret(%Big) align 8 %*, ptr %*, i64 %*)"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+; Probe 10's first half: a reference to a box is a receiver, on the generic path
+; (two conformers of `show`), the solitary path (one of `add-k`, whose argument
+; is the witness) and through a field address.
+(deftest dp2-ref-box-receiver
+  (let (out:String (try (dyn-run "dp2ref" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defstruct Qt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(defn show (self:&Qt):i32 (return (* 100 (self 'x))))
+(extend Pt Show)
+(extend Qt Show)
+(defprotocol Adder (add-k (self:&Self k:i32):i32))
+(defstruct Acc n:i32)
+(defn add-k (self:&Acc k:i32):i32 (return (+ (self 'n) k)))
+(extend Acc Adder)
+(defstruct Holder b:(dyn Show))
+(defn via-field (h:&Holder):i32 (return (show (ref h 'b))))
+(defn via-ptr (p:(ptr (dyn Adder))):i32 (return (add-k p 1)))
+(defn main ():i32
+  (let (a:(dyn Show) (Pt 2)
+        b:(dyn Show) (Qt 3)
+        k:(dyn Adder) (Acc 100)
+        h:Holder (Holder b))
+    (println (show &a) \" \" (show &b) \" \" (add-k &k 5) \" \" (via-field &h) \" \" (via-ptr &k)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "20 300 105 300 101\n"))
+    (drop &out))
+  (return (ok)))
+
+; Probe 11: a library that declares the protocol, takes a box and calls its
+; methods, compiled with no conformer in its unit, linked with a second unit
+; that boxes. Also pins the header's `(dyn Show)` keying as the library's
+; protocol, which a `.nuch` import used to read as a bare `Show`.
+(deftest dp2-no-conformer-unit
+  (let (dir:String (try (test-scratch-sub "dp2lib"))
+        dv:StrView (string-as-view &dir)
+        lib:String (try (write-into dv "dplib.nuc" "(exclude-prelude)
+(ns dplib)
+(defprotocol Show (show (self:&Self):i32) (bump (self:&Self k:i32):i32))
+(defn twice (b:(dyn Show)):i32 (return (bump b (show b))))
+(defstruct Holder b:(dyn Show))
+(defn via-ref (h:&Holder):i32 (return (show (ref h 'b))))
+"))
+        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view &lib) dv "dplib.nuch"))
+        lll:String (try (emit-into "" "--emit-llvm" (string-as-view &lib) dv "dplib.ll"))
+        usrc:String (str "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import \"" (string-as-view &nuch) "\" p)
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(defn bump (self:&Pt k:i32):i32 (return (+ k (self 'x))))
+(extend Pt p/Show)
+(defn main ():i32
+  (let (a:(dyn p/Show) (Pt 7)
+        b:(dyn p/Show) (Pt 4)
+        h:p/Holder (p/Holder b))
+    (println (p/twice a) \" \" (p/via-ref &h)))
+  (return 0))
+")
+        use:String (try (write-into dv "dpuse.nuc" (string-as-view &usrc)))
+        ull:String (try (emit-into "" "--emit-llvm" (string-as-view &use) dv "dpuse.ll"))
+        parts:String (str (string-as-view &lll) " " (string-as-view &ull))
+        out:String (try (cc-link-run "" (string-as-view &parts))))
+    (try (check-eq (string-as-view &out) "77 40\n"))
+    (drop &out) (drop &parts) (drop &ull) (drop &use) (drop &usrc) (drop &lll) (drop &nuch) (drop &lib)
+    (drop &dir))
+  (return (ok)))
+
+; Probe 5 exactly as it shipped: ONE method, so the old compiler boxed it and
+; printed garbage rather than refusing the protocol.
+(deftest dp2-abi-forward-one-method
+  (let (out:String (try (dyn-run "dp2abi1" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defstruct Big a:i64 b:i64 c:i64)
+(defstruct Two x:i64 y:i64)
+(defprotocol Mix (mix (self:&Self g:Big):Two))
+(defstruct A n:i64)
+(defn mix (self:&A g:Big):Two (return (Two (+ (self 'n) (g 'a)) (+ (g 'b) (g 'c)))))
+(extend A Mix)
+(defn main ():i32
+  (let (a:(dyn Mix) (A 100)
+        r:Two (mix a (Big 1 20 300)))
+    (println (r 'x) \" \" (r 'y)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "101 320\n"))
+    (drop &out))
+  (return (ok)))
+
+; A `(dyn P)` in a `.nuch` declaration is the library's `P`. The header prescan
+; read the signature before registering the header's protocols, so it keyed as a
+; bare `P` and refused the importer's own box of the same protocol.
+(deftest dp2-nuch-box-param-key
+  (let (dir:String (try (test-scratch-sub "dp2key"))
+        dv:StrView (string-as-view &dir)
+        lib:String (try (write-into dv "dpkey.nuc" "(exclude-prelude)
+(ns dpkey)
+(defprotocol Show (show (self:&Self):i32))
+(defn pass (b:(dyn Show)):(dyn Show) (return b))
+"))
+        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view &lib) dv "dpkey.nuch"))
+        lll:String (try (emit-into "" "--emit-llvm" (string-as-view &lib) dv "dpkey.ll"))
+        usrc:String (str "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import \"" (string-as-view &nuch) "\" q)
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(extend Pt q/Show)
+(defn main ():i32
+  (let (a:(dyn q/Show) (Pt 7)
+        c:(dyn q/Show) (q/pass a))
+    (println (show c)))
+  (return 0))
+")
+        use:String (try (write-into dv "dpkeyuse.nuc" (string-as-view &usrc)))
+        ull:String (try (emit-into "" "--emit-llvm" (string-as-view &use) dv "dpkeyuse.ll"))
+        parts:String (str (string-as-view &lll) " " (string-as-view &ull))
+        out:String (try (cc-link-run "" (string-as-view &parts))))
+    (try (check-eq (string-as-view &out) "70\n"))
+    (drop &out) (drop &parts) (drop &ull) (drop &use) (drop &usrc) (drop &lll) (drop &nuch) (drop &lib)
+    (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; DP-3: parametric applications
+; ---------------------------------------------------------------------------
+
+; Heterogeneous iteration: a library conformer and a user one behind one element
+; type, each called through its own vtable. The old parser refused the spelling.
+(deftest dp3-vector-of-iterators
+  (let (out:String (try (dyn-run "dp3vec" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(defstruct Count n:i32 lim:i32)
+(defn next (self:&Count):?i32
+  (when (>= (self 'n) (self 'lim)) (return none))
+  (let (v:i32 (self 'n))
+    (set! (self 'n) (+ v 1))
+    (return (some (* 10 v)))))
+(extend Count (Iterator i32))
+(defn main ():i32
+  (let (v:&(Vector (dyn (Iterator i32))) (new (Vector (dyn (Iterator i32))) heap)
+        a:(dyn (Iterator i32)) (IntRangeIter 1 4)
+        b:(dyn (Iterator i32)) (Count 1 3))
+    (conj v a)
+    (conj v b)
+    (dotimes (i (unsafe/cast i32 (count v)))
+      (let (it:&(dyn (Iterator i32)) (invoke v i:usize)
+            go:bool true)
+        (while go
+          (match (next it)
+            ((some x) (print x \" \"))
+            (none (set! go false))))))
+    (println \"\"))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "1 2 3 10 20 \n"))
+    (drop &out))
+  (return (ok)))
+
+(defn dp-sink-src ():StrView (return "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defstruct Big a:i64 b:i64 c:i64)
+(defprotocol (Sink E) (put (self:&Self x:E):i64) (cnt (self:&Self):i32))
+(defstruct S1 n:i32 tot:i64)
+(defn put (self:&S1 x:Big):i64
+  (set! (self 'n) (+ (self 'n) 1))
+  (set! (self 'tot) (+ (self 'tot) (+ (x 'a) (x 'c))))
+  (return (self 'tot)))
+(defn cnt (self:&S1):i32 (return (self 'n)))
+(extend S1 (Sink Big))
+(defstruct S2 n:i32)
+(defn put (self:&S2 x:i64):i64 (return (+ x (as i64 (self 'n)))))
+(defn cnt (self:&S2):i32 (return (self 'n)))
+(extend S2 (Sink i64))
+(defn main ():i32
+  (let (a:(dyn (Sink Big)) (S1 0 0)
+        b:(dyn (Sink i64)) (S2 5))
+    (put a (Big 1 2 300))
+    (println (put a (Big 10 20 30)) \" \" (cnt a) \" \" (put b 77) \" \" (cnt b)))
+  (return 0))
+"))
+
+; A user protocol over its parameter: `E` is substituted in the vtable's synthesis
+; and in the forward, where a 24-byte `Big` goes byval. Each application is its own
+; box type and vtable.
+(deftest dp3-user-parametric-protocol
+  (let (out:String (try (dyn-run "dp3sink" (dp-sink-src)))
+        c:Compiled (try (dyn-ir "dp3sinkir" (dp-sink-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "341 2 82 5\n"))
+    (try (check-match iv "%__dyn.Sink.Big = type { ptr, ptr }"))
+    (try (check-match iv "%__dyn.Sink.i64 = type { ptr, ptr }"))
+    (try (check-match iv "@__vt.S1.Sink.Big = internal constant { ptr, ptr, ptr } { ptr @put*, ptr null, ptr @cnt*"))
+    (try (check-match iv "  %* = call i64 %*(ptr %*, ptr byval(%Big) align 8 %*)"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+; The box's identity across files when its argument is a type from a third file's
+; namespace, spelled through a different prefix in each: the library's parameter
+; and the caller's box must be one StructDef (Stage 15 B6's failure mode).
+(deftest dp3-third-file-argument
+  (let (dir:String (try (test-scratch-sub "dp3third"))
+        dv:StrView (string-as-view &dir)
+        ct:String (try (write-into dv "ct.nuc" "(ns ct)
+(defstruct Tok v:i32)
+"))
+        lsrc:String (str "(ns lb)
+(import-use nucleus.iterator)
+(import-prefixed \"" (string-as-view &ct) "\" c)
+(defn total (it:(dyn (Iterator c/Tok))):i32
+  (let (s:i32 0 go:bool true)
+    (while go
+      (match (next &it)
+        ((some t) (set! s (+ s (t 'v))))
+        (none (set! go false))))
+    (return s)))
+")
+        lb:String (try (write-into dv "lb.nuc" (string-as-view &lsrc)))
+        msrc:String (str "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(import-prefixed \"" (string-as-view &ct) "\" k)
+(import-prefixed \"" (string-as-view &lb) "\" l)
+(defstruct Toks n:i32)
+(defn next (self:&Toks):?k/Tok
+  (when (= (self 'n) 0) (return none))
+  (set! (self 'n) (- (self 'n) 1))
+  (return (some (k/Tok (* 10 (self 'n))))))
+(extend Toks (Iterator k/Tok))
+(defn main ():i32
+  (let (b:(dyn (Iterator k/Tok)) (Toks 4))
+    (println (l/total b)))
+  (return 0))
+")
+        m:String (try (write-into dv "main.nuc" (string-as-view &msrc)))
+        out:String (try (build-run-file dv "" (string-as-view &m))))
+    (try (check-eq (string-as-view &out) "60\n"))
+    (drop &out) (drop &m) (drop &msrc) (drop &lb) (drop &lsrc) (drop &ct) (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; DP-4: coercion positions
+; ---------------------------------------------------------------------------
+
+; Probe 9 and the other assignment positions: a struct-literal field (positional
+; and designated, and in a `defvar`, which then initializes at startup), and
+; `set!` of a local, a global, a field through a pointer, `aref` and `deref`
+; places. Each was a type mismatch.
+(deftest dp4-box-positions
+  (let (out:String (try (dyn-run "dp4pos" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(extend Pt Show)
+(defstruct H s:(dyn Show) k:i32)
+(defvar g:(dyn Show) (Pt 2))
+(defvar h:H (H (Pt 3) 1))
+(defvar arr:(array (dyn Show) 2))
+(defn upd (hp:&H):void (set! (hp 's) (Pt 9)))
+(defn main ():i32
+  (let (a:H (H (Pt 1) 0)
+        d:H (H (s (Pt 4)) (k 2))
+        b:(dyn Show) (Pt 8))
+    (print (show g) \" \" (show (ref h 's)) \" \" (show (ref a 's)) \" \")
+    (set! b (Pt 5))
+    (upd &d)
+    (set! (aref arr 1) (Pt 6))
+    (set! (deref (unsafe/ptr+ arr 0)) (Pt 7))
+    (set! g (Pt 1))
+    (println (show g) \" \" (show b) \" \" (show (ref d 's)) \" \" (show (unsafe/ptr+ arr 0)) \" \"
+             (show (unsafe/ptr+ arr 1))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "20 30 10 10 50 90 70 60\n"))
+    (drop &out))
+  (return (ok)))
+
+; The two owned sources of a `Drop` value: a struct literal, and a `move` out of
+; the binding that owned it. Each value is dropped exactly once.
+(deftest dp4-drop-owned-sources
+  (let (out:String (try (dyn-run "dp4own" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Res x:i32)
+(defn show (self:&Res):i32 (return (self 'x)))
+(defn drop (self:&Res):void (println \"drop \" (self 'x)))
+(extend Res Show)
+(extend Res Drop)
+(defn main ():i32
+  (with (p (Res 3))
+    (with (b:(dyn Show) (Res 4))
+      (println (show b)))
+    (with (c:(dyn Show) (move p))
+      (println (show c))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "4\ndrop 4\n3\ndrop 3\n"))
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BD-1: the borrowing box `(dyn &P)`
+; ---------------------------------------------------------------------------
+
+; The gate: a `(dyn &Show)` over a `with`-bound `Drop` value calls both methods
+; through, from a `let` and from a `with`, and the value drops exactly once —
+; the box drops nothing. An owning box over the same `&r` is refused (probe 7).
+(deftest bd1-borrow-with-drop
+  (let (out:String (try (dyn-run "bd1drop" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(defprotocol Show (show (self:&Self):i32) (add (self:&Self k:i32):i32))
+(defstruct Res x:i32)
+(defn show (self:&Res):i32 (return (self 'x)))
+(defn add (self:&Res k:i32):i32 (return (+ (self 'x) k)))
+(defn drop (self:&Res):void (println \"drop \" (self 'x)))
+(extend Res Show)
+(extend Res Drop)
+(defn use (s:(dyn &Show)):i32 (return (add s 100)))
+(defn main ():i32
+  (with (r (Res 3))
+    (let (b:(dyn &Show) r)
+      (println (show b) \" \" (add b 4) \" \" (use b) \" \" (use r)))
+    (with (c:(dyn &Show) r)
+      (println (show c))))
+  (println \"end\")
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "3 7 103 103\n3\ndrop 3\nend\n"))
+    (drop &out))
+  (return (ok)))
+
+; Every source §4.3 admits: a binding of type `T` (borrowed in place, so a later
+; `set!` shows through), a `&T` parameter, an owning box viewed by value and by
+; `&box`, and `&(dyn &P)` passed through rather than wrapped in a second box —
+; a wrapped box would hand the method a box's address as `data`.
+(deftest bd1-borrow-sources
+  (let (out:String (try (dyn-run "bd1src" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32) (add (self:&Self k:i32):i32))
+(defstruct Pt x:i32 y:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(defn add (self:&Pt k:i32):i32 (return (+ (self 'y) k)))
+(extend Pt Show)
+(defn use (s:(dyn &Show)):i32 (return (add s 100)))
+(defn pass (a:&(dyn &Show)):(dyn &Show) (return a))
+(defn of-ref (p:&Pt):(dyn &Show) (return p))
+(defn main ():i32
+  (let (q:Pt (Pt 7 1)
+        bq:(dyn &Show) q
+        o:(dyn Show) (Pt 5 2)
+        v:(dyn &Show) o
+        w:(dyn &Show) &o)
+    (set! q (Pt 8 3))
+    (println (show bq) \" \" (use q) \" \" (show (of-ref &q)) \" \" (show v) \" \" (add w 1)
+             \" \" (use o) \" \" (use &o) \" \" (show (pass &bq)) \" \" (use &bq)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "80 103 80 50 3 102 102 80 103\n"))
+    (drop &out))
+  (return (ok)))
+
+; A borrowing box of a parametric application, over an iterator that lives in the
+; caller's frame: `next` advances the caller's own value.
+(deftest bd1-borrow-parametric
+  (let (out:String (try (dyn-run "bd1par" "(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(defn total (it:(dyn &(Iterator i32))):i32
+  (let (s:i32 0 go:bool true)
+    (while go
+      (match (next it)
+        ((some x) (set! s (+ s x)))
+        (none (set! go false))))
+    (return s)))
+(defn main ():i32
+  (let (r:IntRangeIter (IntRangeIter 1 5))
+    (println (total r) \" \" (total r)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "10 0\n"))
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BD-2: constants, headers and `.nuch`
+; ---------------------------------------------------------------------------
+
+(defn bd2-const-src ():StrView (return "(import-use nucleus.io)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(extend Pt Show)
+(defstruct Holder s:(dyn &Show) n:i32)
+(defvar g:Pt (Pt 4))
+(defvar g2:Pt (Pt 6))
+(defvar h:Holder (Holder &g 1))
+(defvar hb:Holder (Holder g2 2))
+(defvar b:(dyn &Show) &g2)
+(defconst hc:Holder (Holder &g 3))
+(defvar arr:(array Holder 2) (array Holder (Holder &g 3) (1 (Holder &g2 5))))
+(defvar tbl:ptr:Holder (array Holder (Holder &g 7)))
+(defn main ():i32
+  (set! g (Pt 9))
+  (println (show (h 's)) \" \" (show (hb 's)) \" \" (show b) \" \" (show (hc 's)) \" \"
+           (show ((aref arr 1) 's)) \" \" (show ((aref tbl 0) 's)))
+  (return 0))
+"))
+
+; The gate: a borrowing box of a global's address is a link-time constant, in a
+; `defvar`, a struct literal, a `defconst`, an array and a `ptr:T` table. Nothing
+; runs at startup, and each box reads the global as it is when called.
+(deftest bd2-const-global
+  (let (out:String (try (dyn-run "bd2const" (bd2-const-src)))
+        c:Compiled (try (dyn-ir "bd2constir" (bd2-const-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "90 60 60 90 60 90\n"))
+    (try (check-line iv "@h = global %Holder { %__dynref.Show { ptr @g, ptr @__vt.Pt.Show }, i32 1 }, section \".data.h\", align 8"))
+    (try (check-match iv "@b = global %__dynref.Show { ptr @g2, ptr @__vt.Pt.Show }*"))
+    (try (check-match iv "@hc = constant %Holder { %__dynref.Show { ptr @g, ptr @__vt.Pt.Show }, i32 3 }*"))
+    (try (check-match iv "@tbl.data = internal global [1 x %Holder] [%Holder { %__dynref.Show { ptr @g, ptr @__vt.Pt.Show }, i32 7 }]*"))
+    (try (check-not-contains iv "__nucleus_init"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+; Both kinds of box are a two-pointer struct in C, so a struct holding them has
+; Nucleus's layout. A borrowing-box signature is exported and callable from C;
+; an owning one stays omitted (L8: it carries ownership C cannot honor).
+(deftest bd2-cheader-box-typedefs
+  (let (l:CLib (try (c-lib "bd2cb" "(defprotocol Show (show (self:&Self):i32))
+(defstruct Bd2Pt x:i32)
+(defn show (self:&Bd2Pt):i32 (return (* 10 (self 'x))))
+(extend Bd2Pt Show)
+(defstruct Bd2H r:(dyn &Show) o:(dyn Show) n:i32)
+(defvar bd2-g:Bd2Pt (Bd2Pt 4))
+(defvar bd2-gb:(dyn &Show) &bd2-g)
+(defn bd2-size ():i64 (return (as i64 (sizeof Bd2H))))
+(defn bd2-show (s:(dyn &Show)):i32 (return (show s)))
+(defn bd2-own (s:(dyn Show)):i32 (return (show s)))
+(defn bd2-mk ():(dyn &Show) (return &bd2-g))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "typedef struct nuc_dynref_Show {"))
+    (try (check-line h "typedef struct nuc_dyn_Show {"))
+    (try (check-line h "    struct nuc_dyn_Show o;"))
+    (try (check-line h "int32_t bd2_show(struct nuc_dynref_Show s) asm(\"bd2-show\");"))
+    (try (check-line h "/* bd2-own: exposes a closure or type-erased box type; not C-callable, omitted */"))
+    (let (out:String (try (c-lib-run &l "#include <stdio.h>
+#include \"bd2cb.h\"
+int main(void) {
+    Bd2H h;
+    h.r = bd2_mk();
+    printf(\"%d %lld %d %d\\n\", (int)sizeof(Bd2H), (long long)bd2_size(), bd2_show(bd2_gb), bd2_show(h.r));
+    return 0;
+}
+")))
+      (try (check-eq (string-as-view &out) "40 40 40 40\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))
+
+; A `.nuch` writes the borrowing box as `(dyn (ref P))`, which reads back as the
+; same type, applications included.
+(deftest bd2-nuch-round-trip
+  (let (dir:String (try (test-scratch-sub "bd2nuch"))
+        dv:StrView (string-as-view &dir)
+        lib:String (try (write-into dv "bdlib.nuc" "(exclude-prelude)
+(ns bdlib)
+(defprotocol Show (show (self:&Self):i32) (bump (self:&Self k:i32):i32))
+(defprotocol (Src T) (next (self:&Self):T))
+(defn twice (b:(dyn &Show)):i32 (return (bump b (show b))))
+(defn pass (b:&(dyn &Show)):(dyn &Show) (return @b))
+(defstruct Holder b:(dyn &(Src i32)) c:(dyn &Show))
+(defn via (h:&Holder):i32 (return (next (ref h 'b))))
+"))
+        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view &lib) dv "bdlib.nuch"))
+        ntext:String (try (read-file (string-as-view &nuch)))
+        lll:String (try (emit-into "" "--emit-llvm" (string-as-view &lib) dv "bdlib.ll"))
+        usrc:String (str "(import-use nucleus.io)
+(import \"" (string-as-view &nuch) "\" p)
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (* 10 (self 'x))))
+(defn bump (self:&Pt k:i32):i32 (return (+ k (self 'x))))
+(defn next (self:&Pt):i32 (return (+ 1 (self 'x))))
+(extend Pt p/Show)
+(extend Pt (p/Src i32))
+(defn main ():i32
+  (let (a:Pt (Pt 7)
+        b:(dyn &p/Show) a
+        h:p/Holder (p/Holder &a b))
+    (println (p/twice a) \" \" (show (p/pass &b)) \" \" (p/via &h)))
+  (return 0))
+")
+        use:String (try (write-into dv "bduse.nuc" (string-as-view &usrc)))
+        ull:String (try (emit-into "" "--emit-llvm" (string-as-view &use) dv "bduse.ll"))
+        parts:String (str (string-as-view &lll) " " (string-as-view &ull))
+        out:String (try (cc-link-run "" (string-as-view &parts))))
+    (try (check-line (string-as-view &ntext) "(declare twice ((b (dyn (ref Show)))) :i32)"))
+    (try (check-line (string-as-view &ntext) "(defstruct Holder (b (dyn (ref (Src i32)))) (c (dyn (ref Show))))"))
+    (try (check-eq (string-as-view &out) "77 70 8\n"))
+    (drop &out) (drop &parts) (drop &ull) (drop &use) (drop &usrc) (drop &lll) (drop &ntext) (drop &nuch)
+    (drop &lib) (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; DP-6: messages spell a box as written
+; ---------------------------------------------------------------------------
+
+; The `=` refusal on a box names `(dyn &Show)` (a manifest row pins that) and
+; suggests only a method: a box cannot be an `extend` subject.
+(deftest dp6-box-eq-note
+  (let (fx:StrView "tests/fixtures/dp6-display-borrow.nuc"
+        c:Compiled (try (compile-path fx)))
+    (try (check-note-at (ref c 'diags) fx 11 "define (defn = (a:(dyn &Show) b:(dyn &Show)):bool"))
+    (try (check-no-diag-containing (ref c 'diags) "(extend (dyn"))
+    (try (check-no-diag-containing (ref c 'diags) "__dyn"))
+    (drop &c))
+  (return (ok)))

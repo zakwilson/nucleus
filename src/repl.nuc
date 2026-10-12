@@ -1671,7 +1671,8 @@
 (defn repl-cycle-type-buf ():void
   (repl-absorb-type-buf)
   (string-clear g-type-stream)
-  (inc! g-module-epoch))
+  (inc! g-module-epoch)
+  (vtable-memo-carry (- g-module-epoch 1) g-module-epoch))
 
 ; Copy the preamble into a module being assembled, minus any `declare` for a
 ; function that module defines itself — one name cannot be both in one module
@@ -2330,8 +2331,6 @@
   ; After `target-init` (the library suffix needs the host triple) and before
   ; any header is read.
   (repl-load-link-args)
-  ; Initialize preamble stream
-  (ensure-emit-buffers)
   ; Pre-include all libc functions (so they're available without explicit include)
   (repl-include-all-libc)
   ; Tolerates failure so a session still starts without lib/nucleus/core.nuc; the

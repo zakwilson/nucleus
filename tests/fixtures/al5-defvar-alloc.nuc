@@ -1,0 +1,4 @@
+; AL-5: a handle borrows an allocator, so like `&T` it has no zero value.
+(import-use nucleus.allocator)
+(defvar g:Alloc)
+(defn main ():i32 (return 0))

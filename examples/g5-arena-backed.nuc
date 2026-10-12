@@ -1,12 +1,11 @@
 ; Stage 15 W8 G-5 (design/global-init.md §4.4 item 5, §2.10): the migration's
 ; one SILENT failure mode, pinned at the language level.
 ;
-; `Alloc` zero-fills to `kind = ALLOC-HEAP (0)`, and every collection
-; copies the handle BY VALUE at construction. So a wrong or late handle
-; does not crash and does not fail a test — it quietly backs the compiler's
-; ~30 registry tables with libc `malloc` instead of the arena, and everything
-; still passes. That is why the constant handle needs a POSITIVE assertion
-; rather than a green test suite.
+; Every collection copies its `Alloc` handle BY VALUE at construction. So a
+; handle on the wrong allocator does not crash and does not fail a test — it
+; quietly backs the compiler's ~30 registry tables with libc `malloc` instead of
+; the arena, and everything still passes. That is why the constant handle needs a
+; POSITIVE assertion rather than a green test suite.
 ;
 ; The compiler asserts this on itself (`assert-compiler-arena-backed`, called
 ; from `main` and `repl-main`, so all 400+ suite compiles run it). This program
@@ -20,10 +19,14 @@
 (import-use nucleus.arena)
 (import-use nucleus.create)
 
-; The §2.10 shape: a two-field constant struct, applied by the LOADER before any
-; code runs — which is what removes the ordering hazard entirely rather than
-; scheduling around it.
-(defvar g5-alloc:Alloc (Alloc ALLOC-ARENA &g-arena))
+; The §2.10 shape: a constant borrow `{ &g-arena, vtable }`, applied by the LOADER
+; before any code runs — which removes the ordering hazard rather than scheduling
+; around it.
+(defvar g5-alloc:Alloc &g-arena)
+
+; A handle's first word is the allocator it borrows.
+(defn borrowed (h:&Alloc):ptr
+  (return (aref (unsafe/cast &ptr h) 0)))
 
 ; A runtime initializer that reads that handle THROUGH a pointer — the laundered
 ; case G-4's syntactic check cannot see by construction, and the one the
@@ -31,14 +34,11 @@
 (defvar g5-vec:&(Vector i32) (new (Vector i32) &g5-alloc))
 
 (defn main ():i32
-  (let (h:&Alloc (as &Alloc &g5-alloc))
-    (printf "global handle kind = %d (ALLOC-ARENA=%d)\n" (h 'kind) ALLOC-ARENA))
+  (printf "global handle on g-arena = %d\n" (= (borrowed &g5-alloc) (as ptr &g-arena)))
   ; The property that actually matters: not what the global reads NOW, but what
   ; the vector copied at construction. A vector built before the handle took
-  ; effect stays libc-backed for its whole lifetime even once the global reads
-  ; ALLOC-ARENA.
-  (let (a:&Alloc (as &Alloc (ref g5-vec 'alloc)))
-    (printf "vector handle kind = %d\n" (a 'kind)))
+  ; effect would keep the wrong allocator for its whole lifetime.
+  (printf "vector handle on g-arena = %d\n" (= (borrowed (ref g5-vec 'alloc)) (as ptr &g-arena)))
   (conj g5-vec 7)
   (conj g5-vec 35)
   (printf "vector count = %d sum = %d\n"

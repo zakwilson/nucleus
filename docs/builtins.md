@@ -1156,7 +1156,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](#nuch-header-format).
 
-*Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`, and the dynamic `(dyn Protocol)` form. Conformance currently requires a concrete (non-generic) implementation.
+*Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`. The dynamic `(dyn Protocol)` form is implemented — see [Type erasure](generics.md#type-erasure-boxedfn-and-dyn-protocol). Conformance currently requires a concrete (non-generic) implementation.
 
 ## Bounded generic `defn`
 
@@ -1194,8 +1194,8 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   supplied via `:where`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-).
 - **Abstract return (B1).** The return type may be a type variable bound by a
   parameter (`maxv:T` above); the concrete return is known per instantiation.
-  A return variable bound by *no* parameter (Haskell `read`) is rejected — it
-  needs the deferred `(dyn …)` form.
+  A return variable bound by *no* parameter (Haskell `read`) is rejected; return
+  a [`(dyn P)` box](generics.md#dyn-protocol--type-erased-protocol-value) instead.
 - **Resolution: concrete beats generic.** An exact concrete method always wins
   over a generic template for the same name (tier 0 ≫ tier 1).
 - **Def-time checking (A2).** A template body is type-checked **once at its

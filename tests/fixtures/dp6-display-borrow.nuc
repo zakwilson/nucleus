@@ -1,0 +1,11 @@
+; Stage 24 DP-6 — a message names a box type as written, not by its IR name.
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self 'x)))
+(extend Pt Show)
+(defn main ():i32
+  (let (p:Pt (Pt 1)
+        a:(dyn &Show) p
+        b:(dyn &Show) p)
+    (return (if (= a b) 1 0))))

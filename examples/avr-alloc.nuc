@@ -1,0 +1,78 @@
+; An allocator through its handle on AVR — ATmega328P, so it runs under simavr.
+;
+; A user allocator over static storage backs a growable buffer that reaches it
+; through an `Alloc` (a borrowing box), as a collection does: every allocate,
+; reallocate and deallocate is a vtable call through the program address space.
+; No heap is used. (`nucleus.vector` itself needs f64, which AVR lacks.)
+;
+; Build + link + run:
+;   nucleusc --target=avr --mcpu=atmega328p examples/avr-alloc.nuc -o a.elf
+;   simavr -m atmega328p -f 8000000 a.elf     # observe repeated "AL5:8\n"
+
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/atmega328p.nuc")
+(import-use nucleus.allocator)
+
+; USART0: 9600 baud @ 8 MHz, 8N1, transmitter enabled (as avr-uart-hello.nuc).
+(defn uart-init ():void
+  (reg16-write UBRR0 51)
+  (reg8-set-bit! UCSR0B TXEN0)
+  (reg8-write UCSR0C (bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
+
+(defn uart-tx (b:ui8):void
+  (let (ready:ui8 0)
+    (while (= ready 0)
+      (set! ready (reg8-test-bit UCSR0A UDRE0))))
+  (reg8-write UDR0 b))
+
+(defvar g-store:(array ui8 64))
+
+; A bump allocator: reallocate copies forward, deallocate is a no-op.
+(defstruct Bump base:&ui8 off:usize size:usize)
+(extend Bump Allocator)
+(defn allocate (self:&Bump size:usize align:usize) ?&ui8
+  (let (at:usize (* (/ (+ (self 'off) (- align 1)) align) align))
+    (when (> (+ at size) (self 'size)) (return null))
+    (set! (self 'off) (+ at size))
+    (return (unsafe/cast ?&ui8 (+ (unsafe/cast usize (self 'base)) at)))))
+(defn allocate-zeroed (self:&Bump size:usize align:usize) ?&ui8
+  (let ((p ?&ui8) (allocate self size align))
+    (when (!= p null) (memset (as ptr p) 0 size))
+    (return p)))
+(defn reallocate (self:&Bump (p ?&ui8) old:usize new:usize align:usize) ?&ui8
+  (let ((q ?&ui8) (allocate self new align))
+    (when (and (!= q null) (!= p null)) (memcpy (as ptr q) (as ptr p) old))
+    (return q)))
+(defn deallocate (self:&Bump (p ?&ui8) size:usize align:usize):void (return))
+
+(defstruct Bytes a:Alloc data:?&ui8 n:usize cap:usize)
+
+(defn push (b:&Bytes x:ui8):void
+  (when (= (b 'n) (b 'cap))
+    (let (cap:usize (if (= (b 'cap) 0) 2 (* (b 'cap) 2)))
+      (set! (b 'data) (reallocate (ref b 'a) (b 'data) (b 'cap) cap 1))
+      (set! (b 'cap) cap)))
+  (set! (aref (unsafe/cast &ui8 (b 'data)) (b 'n)) x)
+  (set! (b 'n) (+ (b 'n) 1)))
+
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  (uart-init)
+  (while true
+    (let (bump:Bump (Bump (as &ui8 g-store) 0 64)
+          b:Bytes (Bytes (handle &bump) null 0 0))
+      ; Eight pushes grow the buffer through the handle three times.
+      (push &b 65) (push &b 76) (push &b 53)
+      (dotimes (i:i32 5) (push &b 0))
+      (dotimes (i:i32 3) (uart-tx (aref (unsafe/cast &ui8 (b 'data)) i)))
+      (uart-tx 58)
+      ; '8' when all eight pushes landed, '!' otherwise.
+      (uart-tx (if (and (= (b 'n) 8) (= (b 'cap) 8)) 56 33))
+      (uart-tx 10)
+      (deallocate (ref b 'a) (b 'data) (b 'cap) 1))
+    (delay))
+  (return 0))

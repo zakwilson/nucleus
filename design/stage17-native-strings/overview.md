@@ -350,7 +350,7 @@ miscompile in the exact type the whole conversion depends on, before any
 compiler surface was converted.
 
 **A4 — `(dyn P)` multi-method (optional, no ordering edge).** If
-[future/dyn-arbitrary-protocols.md](../future/dyn-arbitrary-protocols.md) lands,
+[stage24-allocation/dyn-arbitrary-protocols.md](../stage24-allocation/dyn-arbitrary-protocols.md) lands,
 `Writer` starts at Option B (`flush` in the protocol). Otherwise Option A ships
 and widens additively later. Do **not** add `flush` to `Writer` before the
 expansion exists — that makes `Fmt`'s erased writer unconstructible.

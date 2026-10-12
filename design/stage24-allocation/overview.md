@@ -3,10 +3,13 @@
 **Status: designed 2026-10-07; Q1–Q6 ruled 2026-10-07 (§10), every one as
 recommended.** Built so far: `conforms?` (CQ-1…CQ-4,
 [conformance-query.md](conformance-query.md)) and keyword-free union
-construction, which freed `make`. AL-0 through AL-4 and AL-6 are built
-(AL-2/AL-3/AL-4/AL-6 2026-10-08); AL-5 remains gated on DP and a borrowing
-`dyn` (§9). Q5 and Q6 are to be revisited
-after use ([deferred/overview.md](../deferred/overview.md)).
+construction, which freed `make`. **Every phase is built: the stage is
+complete.** AL-0 through AL-4 and AL-6 were built 2026-10-08. On 2026-10-09 the `dyn` work AL-5 needs
+joined the stage: [dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md)
+(DP-1…DP-6 and the borrowing `(dyn &P)`, BD-1/BD-2; all built 2026-10-10)
+ran first. AL-5, `Alloc` as `(dyn &Allocator)`, was built last, on 2026-10-10 (§9). That document's questions Q1–Q9 were ruled 2026-10-10, all as
+recommended. Q5 and Q6 are to
+be revisited after use ([deferred/overview.md](../deferred/overview.md)).
 The brief's "stack" allocator is named `FixedBuffer` (ruled 2026-10-07): it is a
 bump allocator over any borrowed buffer, and only the `frame-buffer` macro puts
 that buffer in a frame (§4.2).
@@ -154,7 +157,9 @@ placement for free.
 - **`handle`** returns the type-erased value a collection stores (§4.3). This
   lets constructors take any concrete allocator (`&Arena`, `&FixedBuffer`, `heap`) and
   convert it themselves. The language has no implicit conversion that would do
-  this at the call site.
+  this at the call site. Under AL-5 the borrowing coercion is the conversion,
+  so `handle` can leave the protocol and stay a library function
+  ([dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md) §4.7, Q2).
 - **Every allocator also extends `Drop`** (§8).
 
 ### 4.2 The three built-in allocators
@@ -203,20 +208,22 @@ There are three ways to provide that:
   which §2.1 showed is callable now. `Alloc` itself extends `Allocator`, so a
   collection calls `(allocate (self 'alloc) n align)`. No compiler work is
   needed, and users can still write their own allocators through `CUSTOM`.
-- **(b) Use `(dyn Allocator)`.** This is the long-term answer, but it needs two
-  things the language does not have yet:
-  - multi-method `dyn`, designed in
-    [future/dyn-arbitrary-protocols.md](../future/dyn-arbitrary-protocols.md)
-    as DP-0…DP-4;
-  - a borrowing `dyn`. Today a `(dyn P)` box moves its value to the libc heap
-    and drops it along with the box. For an allocator, that would split an
-    `Arena`'s state into a copy, and dropping a `Vector` would then drop its
-    arena. A collection needs Rust's `&dyn` shape: `data` points at an existing
-    instance, there is no box, and there is no drop slot.
+- **(b) Use `(dyn &Allocator)`.** This is the long-term answer, built by AL-5.
+  It needs two things the language did not have when this was written, both
+  now designed in [dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md):
+  - multi-method `dyn` (§3 there, DP-1…DP-5);
+  - a borrowing `dyn` (§4 there, BD-1/BD-2). A `(dyn P)` box moves its value to
+    the libc heap and drops it along with the box. For an allocator, that would
+    split an `Arena`'s state into a copy, and dropping a `Vector` would then
+    drop its arena. A collection needs Rust's `&dyn` shape: `data` points at an
+    existing instance, nothing is allocated, and nothing is dropped.
+    `(dyn &P)` shares the owning box's vtable and never reads its drop slot.
 
-  Both pieces fit in 16 bytes, the same size as today's `AllocHandle`. If every
-  conversion goes through `handle` (§4.1), replacing (a) with (b) later changes
-  one type definition and no call sites.
+  The handle is 16 bytes either way on a 64-bit target. The switch is not quite
+  "one type definition and no call sites", as first written here. `handle`'s
+  place, the zero value, the arena's zero-fill check (`alloc-zeroes?` reads
+  the kind) and the C headers each need a decision; they are Q2, Q3, Q4 and Q7
+  of that document. Call sites that go through `handle` are unchanged.
 - **(c) Make the allocator a type parameter, as in `(Vector T A)`.** Stage 11
   rejected this because the parameter spreads into every signature that
   mentions a collection. Nothing has changed that.
@@ -573,8 +580,6 @@ would also give up the reason to choose an arena.
   - **Empty-literal refusals** name `(make (Vector T))` etc. from `nucleus.create`.
   - **SE-2's test** pinned `vector-new-in`'s stamps; it now defines its own
     return-only-tyvar constructor.
-- **AL-5 (gated on DP and a borrowing `dyn`).** Change `Alloc` to
-  `(dyn &Allocator)` and retire the `CUSTOM` kind.
 - **AL-6 (optional).** The `Tracking` allocator. Q1 ruled out
   `FinalizingArena`.
   **Built 2026-10-08.** Docs: `docs/allocators.md`. As built:
@@ -598,6 +603,160 @@ would also give up the reason to choose an arena.
     rest is freed, and an oversized `size`. Catching every double free, or a
     size that is merely wrong, needs a record per allocation, which this does
     not keep.
+- **DP and BD. `(dyn P)` for arbitrary protocols, and the borrowing
+  `(dyn &P)`** ([dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md) §5).
+  Added 2026-10-09. In order:
+  1. **DP-1**: vtable layout, per-method dyn-safety, synthesis. Built 2026-10-10.
+  2. **DP-2**: dispatch, with the forward ABI-lowered and `&box` receivers.
+     Built 2026-10-10.
+  3. **DP-3, DP-4, DP-5**, in any order: parametric applications; boxing in
+     struct-literal fields and `set!`; AVR vtables. Built 2026-10-10.
+  4. **BD-1**: the borrowing box. Built 2026-10-10.
+  5. **BD-2**: its constants, C headers and `.nuch`. Built 2026-10-10.
+  6. **DP-6**: docs and close-out. Built 2026-10-10: box types print as
+     written in messages, the docs and three examples. The DP and BD phases
+     are complete; AL-5 is next.
+
+  AL-5 needs all of them except DP-3. Each is inert under self-compilation, so
+  each should leave `make bootstrap` byte-identical without a boot refresh.
+- **AL-5. Change `Alloc` to `(dyn &Allocator)`; retire the kinds and
+  `CUSTOM`.** Last, after DP-6. The rulings on that document's Q2–Q4 and Q7
+  decide the details; with the recommendations:
+  - **Census first.** Before the switch, find every zero-filled `Alloc` that is
+    used without `init`: globals and struct fields of a collection type or of
+    `Alloc`, and zero literals of `Arena`/`Tracking`. Under Q3(a) each needs an
+    initializer.
+  - **Library.** `(deftype Alloc (dyn &Allocator))`. Delete `AllocKind`,
+    `CustomAlloc`, `custom-alloc` and `Alloc`'s `extend` and methods. Remove
+    `handle` from the protocol and keep it as a function (Q2). Add
+    `allocate-zeroed` to every allocator, and replace `create.nuc`'s
+    `alloc-zeroes?` with it (Q4). `Arena` conforms to `Init`. `g-arena` gets a
+    constant initializer over `&heap` (Q3). `alloc-allocate`,
+    `alloc-reallocate` and `alloc-deallocate` stay as one-line forwards,
+    because synthesized code names them.
+  - **Boot.** This is the first step at which the compiler mints boxes, so it
+    is not inert. Refresh the boot (`make update-bootstrap`) after DP-6 and
+    before the library changes, so the boot can compile `(dyn &P)` and
+    multi-method vtables; then switch the library and confirm
+    `make bootstrap` reaches its fixed point.
+  - **Measurement gate.** Before switching for good, build the tree both ways
+    and compare:
+    - the compiler's self-compile time, and a small-allocation microbenchmark
+      (many `new`s and `conj`s through an `Arena` and through `heap`), each at
+      `-O0` and at `-O2`;
+    - the optimized IR of the compiler: its `(new T g-arena)` sites must still
+      reach the arena with direct calls. `handle` makes a borrowing box whose
+      vtable is a constant global, so the slot load must fold away.
+
+    The expected costs:
+    - a handle loaded from a collection's `alloc` field cannot be inlined
+      through. That call is an indirect call where `alloc-allocate`'s `case`
+      was a predictable branch, and it happens only on growth, which is
+      geometric, so it is amortized;
+    - possibly one extra hop, the protocol method calling its `*-allocate`
+      function, if LLVM does not inline it into the vtable's target.
+
+    A user allocator gets cheaper: one indirection fewer than `CUSTOM`'s
+    `CustomAlloc` record, and no table to fill at run time. If the
+    microbenchmark regresses beyond noise at `-O2`, or a `(new T g-arena)`
+    site keeps an indirect call, stop and report before going on.
+  - **Gates.** `make test`, `make bootstrap`, `make avr-test` (the allocator
+    is compiled for AVR through `import-ct`, so it uses DP-5's vtables),
+    `make check-headers` (link names that spell `Alloc` change, §4.6 of the
+    dyn document), `make abi-test`. Docs: `allocators.md` (handles,
+    user allocators, the zero value), `collections.md`.
+
+  **Built 2026-10-10.** All gates pass, with 1423 tests; the 5 failures are
+  the known target ones. Docs: `docs/allocators.md`, `docs/collections.md`.
+  As built:
+  - **Census.** These zero-filled handles were in use without `init`. Each now has an
+    initializer:
+    - **`src/`, String globals.** Run-time initializer `(make String)`:
+      - `g-entry-stream`, `g-body-stream`, `g-type-stream`, `g-decl-stream`,
+        `g-def-buf` and `g-repl-preamble`, which `ensure-emit-buffers` built
+        lazily. It and its ready flag are deleted.
+      - `g-emit-buf` (built lazily) and `g-hdr-buf` (set when the header opens).
+      - `g-fault-text` and `g-fault-msg`, which were actually used zero.
+    - **`lib/` globals.**
+      - `g-arena` gets the constant `(Arena null null 0 0 &heap)`.
+      - `g-io-buf` and `g-fail-buf` get the constant
+        `(String (bytes ((Vector ui8) (alloc &heap))))`, and their lazy-ready
+        flags are deleted.
+    - **Zero literals.** 20 `x:T (T)` sites followed by `init`, in combinators,
+      process, file, read, test, io and edn, plus fmt's `str`/`str-alloc`
+      templates. They are now `x:&T (alloca T)` then `(init x …)`, because the
+      zero literal itself is refused.
+    - **Struct fields.** No `src/` struct holds a collection by value. The lib
+      structs that do (BufWriter, DirEntries, Command, Output) are filled by
+      their constructors.
+    - **Examples and tests.** `allocator-test.nuc`, `g5-arena-backed.nuc` and
+      suite-s24 printed `'kind`. They now check a handle's data word.
+  - **The zero-value rule is wider than `&T`'s** (Q3). A type that holds a
+    borrowing box at any depth of fields and array elements has no zero value
+    (`require-zero-value`, over `type-dynref-in`). It is checked at:
+    - a `defvar` with no initializer;
+    - an unset field in a struct literal, at run time and in a constant;
+    - an unset element of a constant array.
+
+    A plain `&T` field may still be left unset, as before. The note names
+    `make` and `init`. **Hole:** `make`/`new` with no args on a non-`Init` struct
+    still zero-fills through `create-zero` (deferred).
+  - **`handle` has concrete overloads** for `Heap`, `Arena`, `FixedBuffer` and
+    `Tracking`, beside the `:where (Allocator T)` template. Only tier-0
+    dispatch takes a by-value binding's address implicitly, and `new`/`make`
+    write `(handle heap)`. A user allocator is written `&x`. An overloaded
+    method's argument does not apply the borrowing coercion, so `(init v &ar)`
+    is refused and is written `(init v (handle ar))` (deferred).
+  - **`allocate-zeroed`** uses `calloc` on the heap when the alignment is within
+    `malloc`'s guarantee, is `arena-allocate` on an Arena, and is `allocate` plus
+    `memset` on a FixedBuffer. A Tracking forwards it and counts it.
+  - **The measurement gate failed once and then passed.** At first,
+    `create-bytes` took the handle and dispatched inside. 6 of the compiler's
+    227 `new` sites stayed indirect at -O2, because the inliner kept that call
+    out of line: 1 in `qq-resolvable`, 5 in `repl-handle-builtin`. Now the
+    `new` template calls `allocate-zeroed` beside the handle it builds.
+    `create-bytes` is only the null check, so the vtable load folds whether
+    or not the helper is inlined. All 227 sites now reach the allocator
+    directly: the 6 out-of-line `create-bytes` calls take the result of
+    `@nuc_arena-allocate(@nuc_g-arena, …)`. The only call that loads slot 4
+    (`allocate-zeroed`) from a vtable is Tracking forwarding to its parent.
+
+    The final numbers, as the median of 5 interleaved runs with ranges:
+
+    | | before | after |
+    |---|---|---|
+    | self-compile, compiler at -O0 | 13.718 s (13.518–13.837) | 13.724 s (13.665–13.798) |
+    | self-compile, compiler at -O2 | 7.083 s (7.074–7.110) | 7.107 s (7.092–7.193) |
+    | 20M `new` through an Arena, -O0 / -O2 | 0.378 / 0.103 s | 0.337 / 0.095 s |
+    | 20M `new`+free through heap, -O0 / -O2 | 0.488 / 0.151 s | 0.380 / 0.002 s |
+    | 20M `conj`, Arena Vector, -O0 / -O2 | 0.100 / 0.064 s | 0.100 / 0.064 s |
+    | 20M `conj`, heap Vector, -O0 / -O2 | 0.058 / 0.024 s | 0.058 / 0.019 s |
+
+    The heap `new`+free row at -O2 measures deletion, not dispatch: with
+    direct calls, LLVM removes the malloc/free pair entirely. The
+    collections' stored-handle calls (`reallocate`, `deallocate`) are now
+    indirect, as §9 expected; they are amortized and do not show. The box
+    table's linear lookup holds one entry during self-compile: 73,924 lookups,
+    one comparison each. It was left linear.
+  - **Bugs fixed on the way.**
+    - **`dyn-proto-key` gave an aliased box two identities.** An alias of a box,
+      like `Alloc`, is expanded by another file's signature prescan before the
+      alias's own protocol is registered. That made two StructDefs, and every
+      `init` conformance failed. It now consults pass 1's `proto-decl-key?`
+      table (`s24-box-alias-across-files`).
+    - **A vtable is `internal`, but its memo was process-wide.** So a later
+      REPL entry named a vtable that an earlier module had defined. This
+      predates AL-5. The memo is now keyed on `g-module-epoch` and carried
+      across `repl-cycle-type-buf` (`repl-al5-vtable-per-module`).
+    - **`const-struct-lit?` did not recognize a struct-template head** such as
+      `((Vector ui8) …)`. The constant String initializers need it.
+  - **Boot.** It was refreshed twice. The first refresh was before the library
+    switch, as planned. The second came after, because the library uses the two
+    compiler fixes above, and the boot needs them to build the tree.
+  - **AVR.** `examples/avr-alloc.nuc` is a user bump allocator over static
+    storage, reached through an `Alloc`. It is checked under simavr. It does not
+    use `nucleus.vector`, which needs f64. It does not use `FixedBuffer`, whose
+    vtable's drop slot needs `stderr`, which avr-libc lacks (deferred).
 
 ## 10. Questions for a ruling
 
@@ -612,6 +771,10 @@ would also give up the reason to choose an arena.
 | Q5 | A full `FixedBuffer` returns null. Revisit after some use (deferred). |
 | Q6 | The fixed global `heap` for now. Revisit after some use (deferred). |
 | Name | The brief's "stack" allocator is `FixedBuffer`, with `fixed-buffer` and the `frame-buffer` macro (§4.2). |
+
+**Ruled 2026-10-10, all as recommended:** the questions behind AL-5 (the `(dyn &P)` spelling,
+`handle`, the zero `Alloc`, `allocate-zeroed`, C headers, and four more) are
+Q1–Q9 in [dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md) §7.
 
 The questions as they were put:
 

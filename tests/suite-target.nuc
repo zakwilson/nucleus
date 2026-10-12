@@ -1239,6 +1239,25 @@ int main(void) {
     (drop &c))
   (return (ok)))
 
+; DP-5: a vtable's slots are program-address-space pointers, loaded and called as
+; such, so a box needs no function materialized as a data pointer.
+(deftest dp5-avr-vtable-ir
+  (let (s:String (try (avr-ir "atmega328p" "examples/avr-dyn.nuc"))
+        ir:StrView (string-as-view &s))
+    (try (check-line ir "@__vt.Upper.Glyph = internal constant { ptr addrspace(1), ptr addrspace(1), ptr addrspace(1) } { ptr addrspace(1) @glyph.pUpper, ptr addrspace(1) null, ptr addrspace(1) @shift.pUpper.u8 }, section \".rodata.__vt.Upper.Glyph\""))
+    (try (check-line ir "  %dropfn = load ptr addrspace(1), ptr %dslotp, align 2"))
+    (try (check-match ir "*= load ptr addrspace(1), ptr %t*, align 2*"))
+    (drop &s))
+  (return (ok)))
+
+; At -O0 LLVM's AVR fast register allocator cannot make these indirect calls;
+; the link fails unless AVR codegen runs at Less and its errors fail the compile.
+(deftest dp5-avr-dyn-link
+  (try (avr-require-device "atmega328p"))
+  (let (elf:String (try (avr-link "dp5-avr-dyn" "atmega328p" "" "examples/avr-dyn.nuc")))
+    (drop &elf))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; AVR-7: numerics and the aggregate ABI
 ; ---------------------------------------------------------------------------

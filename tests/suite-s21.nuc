@@ -3189,7 +3189,7 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
     (try (s21-type-refused (string-as-view &conc) 3 "type 'Box' does not conform to protocol 'M'"))
     (try (s21-type-refused (string-as-view &narrow) 3 "type 'Box' does not conform to protocol 'M'"))
     (try (s21-type-refused (string-as-view &boxed) 3
-                           "(dyn M): method 'mapx' is generic (its signature has a :where), so no vtable can hold it"))
+                           "(dyn M): no method is dyn-callable ('mapx': its signature has its own :where)"))
     (drop &boxed)
     (drop &narrow)
     (drop &conc))

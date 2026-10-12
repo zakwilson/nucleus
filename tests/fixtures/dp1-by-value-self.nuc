@@ -1,0 +1,14 @@
+; Stage 24 DP-1 — probe 4: a by-value `Self` receiver is not dyn-callable. The
+; forward passes `data`, a pointer, so this protocol's only method used to be
+; called with the box's data word where it expected the struct, and printed
+; garbage. With no dyn-callable method the protocol is not boxable.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Val (val (self:Self):i32))
+(defstruct A n:i32 m:i32)
+(defn val (self:A):i32 (return (+ (self 'n) (self 'm))))
+(extend A Val)
+(defn main ():i32
+  (let (a:(dyn Val) (A 3 4))
+    (println (val a)))
+  (return 0))

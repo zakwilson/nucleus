@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "string.h"
-#include "allocator.h"
 #include "core.h"
 
 /* Generated from lib/nucleus/process.nuc by nucleusc --emit-cheader */
@@ -27,13 +26,21 @@ enum nuc_ExitStatus_tag {
 struct nuc_ExitStatus nuc_wait_status_decode(int32_t wstatus) asm("nuc_wait-status-decode");
 bool nuc_success_QMARK(struct nuc_ExitStatus* self);
 int32_t nuc_exit_code(struct nuc_ExitStatus* self) asm("nuc_exit-code");
+#ifndef NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+#define NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+typedef struct nuc_dynref_nucleus_allocator_Allocator {
+    void* data;
+    const void* vtable;
+} nuc_dynref_nucleus_allocator_Allocator;
+#endif
+
 #ifndef NUC_INST_nuc_Vector_usize
 #define NUC_INST_nuc_Vector_usize
 typedef struct nuc_Vector_usize {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_Alloc alloc;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
 } nuc_Vector_usize;
 #endif
 
@@ -66,7 +73,7 @@ typedef struct nuc_Vector_ptr {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_Alloc alloc;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
 } nuc_Vector_ptr;
 #endif
 

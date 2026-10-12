@@ -206,16 +206,16 @@
 ; The note names the first column-0 form opened while this one was still open;
 ; with no such candidate it says only how many forms EOF left open.
 (defn rd-unterminated (self:&Reader open-line:i32 msg:StrView closer:StrView):ReadError
-  (let (note:String (String)
+  (let (note:&String (alloca String)
         c0:i32 (self 'col0-open-line))
-    (init &note)
+    (init note)
     (if (and (!= c0 0) (!= c0 open-line))
-      (str-into &note "line " c0 " starts a new form in column 0 while "
+      (str-into note "line " c0 " starts a new form in column 0 while "
                 (self 'col0-open-depth) " form(s) are still open -- a '" closer
                 "' is probably missing before line " c0)
-      (str-into &note "end of file reached with " (self 'paren-depth)
+      (str-into note "end of file reached with " (self 'paren-depth)
                 " form(s) still open"))
-    (return (rd-error read-unterminated-list open-line msg (rd-arena-str &note)))))
+    (return (rd-error read-unterminated-list open-line msg (rd-arena-str note)))))
 
 ; The C locale's `isspace` set. The reader skips commas too; callers test that.
 (defn rd-space? (c:i32):bool
@@ -405,21 +405,21 @@
       (set! i (+ i 1)))
     (when (= count 0) (return (symbol-intern tv)))
     (when (rd-legacy-marker? tv) (return (symbol-intern tv)))
-    (let (out:String (String)
+    (let (out:&String (alloca String)
           j:usize 0
           seg2:i32 1
           ref-colon:StrView "ref:")
-      (init &out)
+      (init out)
       (while (< j n)
         (let (c:i32 (rd-tv-at tp j))
           (if (and (= c 38) (!= seg2 0))
-            (string-push-str-unchecked &out &ref-colon)
+            (string-push-str-unchecked out &ref-colon)
             (let (one:StrView (strview (unsafe/ptr+ (tp 'data) (as i64 j)) 1))
-              (string-push-str-unchecked &out &one)))
+              (string-push-str-unchecked out &one)))
           (set! seg2 (rd-seg-next c seg2)))
         (set! j (+ j 1)))
-      (let (s:Symbol (symbol-intern (string-as-view &out)))
-        (drop &out)
+      (let (s:Symbol (symbol-intern (string-as-view out)))
+        (drop out)
         (return s)))))
 
 ; The `&` reader macro must not swallow a retired marker.
@@ -464,21 +464,21 @@
 
 ; No length ceiling: the buffer grows.
 (defn rd-string (self:&Reader open-line:i32 is-cstr:bool):ReadResult
-  (let (buf:String (String)
+  (let (buf:&String (alloca String)
         one:&ui8 (as &ui8 (alloca ui8 1)))
-    (init &buf)
+    (init buf)
     (while true
       (let (c:i32 (rd-next self))
         (cond
           (= c 0)
-            (do (drop &buf)
+            (do (drop buf)
                 (return (err (rd-error read-unterminated-string open-line
                                        "unterminated string literal" ""))))
           (= c 34)
             (let (n:&Node (rd-node NODE-STR open-line))
-              (set! (n 's) (symbol-intern (string-as-view &buf)))
+              (set! (n 's) (symbol-intern (string-as-view buf)))
               (set! (n 'i) (if is-cstr 1 0))
-              (drop &buf)
+              (drop buf)
               (return (ok n)))
           (= c 92)
             (let (e:i32 (rd-next self)
@@ -493,7 +493,7 @@
                     (= e 120)
                       (let (h1:i32 (rd-hex-val (rd-peek self)))
                         (when (< h1 0)
-                          (drop &buf)
+                          (drop buf)
                           (return (err (rd-error read-bad-escape (self 'line)
                                                  "\\x escape needs at least one hex digit" ""))))
                         (rd-next self)
@@ -506,23 +506,23 @@
                     (= e 117)
                       (let (cp:i32 (rd-hex4 self))
                         (when (< cp 0)
-                          (drop &buf)
+                          (drop buf)
                           (return (err (rd-error read-bad-escape (self 'line)
                                                  "\\u escape needs exactly four hex digits" ""))))
                         (when (rd-surrogate? cp)
-                          (drop &buf)
+                          (drop buf)
                           (return (err (rd-error read-bad-escape (self 'line)
                                                  "\\u escape names a surrogate, which is not a character" ""))))
-                        (string-push-char &buf (as Char (as ui32 cp)))
+                        (string-push-char buf (as Char (as ui32 cp)))
                         (set! c -1))
                     true (set! handled false))
               (when (not handled)
-                (drop &buf)
+                (drop buf)
                 (let (m:String (str "unknown escape \\" (as Char (as ui32 e))))
                   (return (err (rd-error read-bad-escape (self 'line) (rd-arena-str &m) "")))))))
         (when (>= c 0)
           (set! (aref one 0) (unsafe/cast ui8 c))
-          (string-push-bytes-raw &buf one 1))))
+          (string-push-bytes-raw buf one 1))))
     (return (err (rd-error read-unterminated-string open-line
                            "unterminated string literal" "")))))
 
@@ -793,10 +793,10 @@
       ; Split the body on ':'. The first segment is the binding name for a
       ; symbol (empty for a keyword, whose colon the lexer already stripped);
       ; the rest wrap the paren form right-to-left as unary constructors.
-      (let (segs:(Vector Symbol) ((Vector Symbol))
+      (let (segs:&(Vector Symbol) (alloca (Vector Symbol))
             cur:StrView body
             done:bool false)
-        (init &segs)
+        (init segs)
         (while (not done)
           (let (seg-len:usize (cur 'len)
                 more:bool false)
@@ -804,20 +804,20 @@
               ((some at) (do (set! seg-len at) (set! more true)))
               (none (do)))
             (when (= seg-len 0)
-              (drop &segs)
+              (drop segs)
               (let (m:String (str "empty segment in colon-chain '" sv
                                   "' -- write name:k1:(Type) with no '::'"))
                 (return (err (rd-error read-empty-segment line (rd-arena-str &m) "")))))
-            (conj &segs (symbol-intern (strview-take-bytes cur seg-len)))
+            (conj segs (symbol-intern (strview-take-bytes cur seg-len)))
             (if more
               (set! cur (strview-drop-bytes cur (+ seg-len 1)))
               (set! done true))))
-        (let (n:usize (count &segs)
+        (let (n:usize (count segs)
               start:usize 0
               name:Symbol (symbol-none)
               have-name:bool false)
           (when (= (child 'kind) NODE-SYM)
-            (set! name (invoke &segs 0))
+            (set! name (invoke segs 0))
             (set! have-name true)
             (set! start 1))
           (let (result:?&Node paren-form
@@ -825,13 +825,13 @@
             (while (> i start)
               (set! i (- i 1))
               (set! result (as &Node
-                             (node-list2 (as &Node (intern-node (invoke &segs i)))
+                             (node-list2 (as &Node (intern-node (invoke segs i)))
                                result line))))
             (when have-name
               (set! result (as &Node
                              (node-list2 (as &Node (intern-node name))
                                result line))))
-            (drop &segs)
+            (drop segs)
             (return (ok result))))))))
 
 ; Whitespace, comments and `#_`-discarded forms. A discard can fail, which is
@@ -1144,10 +1144,10 @@
           true (do))))
 
 (defn node-str (n:?&Node):String
-  (let (s:String (String))
-    (init &s)
-    (node-write &s n)
-    (return s)))
+  (let (s:&String (alloca String))
+    (init s)
+    (node-write s n)
+    (return @s)))
 
 ; Structural equality: same shape, same kinds, same values. Symbols compare by
 ; interned identity, which is what makes two reads of one spelling equal.

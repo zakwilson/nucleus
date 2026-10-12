@@ -1,0 +1,11 @@
+; Stage 24 BD-1 — a call's by-value result has no address to borrow (§4.3).
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defn mk ():Pt (return (Pt 1)))
+(defn f ():i32
+  (let (b:(dyn &Show) (mk))
+    (return (show b))))

@@ -1,0 +1,10 @@
+; Stage 24 BD-2 — a constant borrowing box asks the same conformance question a
+; run-time one does (§4.6).
+(import-use nucleus.io)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defstruct Q y:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defvar q:Q (Q 1))
+(defvar b:(dyn &Show) &q)

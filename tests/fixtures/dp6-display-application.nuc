@@ -1,0 +1,7 @@
+; Stage 24 DP-6 — a message names a parametric box with its arguments.
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(defn take (x:i32):i32 (return x))
+(defn main ():i32
+  (let (a:(dyn (Iterator i32)) (IntRangeIter 1 3))
+    (return (take a))))

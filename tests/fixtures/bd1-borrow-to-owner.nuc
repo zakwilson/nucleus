@@ -1,0 +1,11 @@
+; Stage 24 BD-1 — a borrow cannot become an owning box (§4.3), at a binding and at an argument.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defn own (o:(dyn Show)):i32 (return (show o)))
+(defn f (p:&Pt):i32
+  (let (b:(dyn &Show) p)
+    (return (own b))))

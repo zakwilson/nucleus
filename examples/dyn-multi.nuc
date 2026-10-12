@@ -1,0 +1,51 @@
+; A `(dyn P)` over a protocol with several methods. Each method has its own
+; vtable slot, struct arguments and returns go by value through the box, and a
+; method that mentions `Self` beyond its receiver stays out of the box while the
+; others remain callable (docs/generics.md, "Which methods a box can call").
+
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+
+(defstruct Size w:i32 h:i32)
+
+(defprotocol Shape
+  (area (self:&Self):i32)
+  (bounds (self:&Self):Size)
+  (grow (self:&Self by:Size):void)
+  (same? (self:&Self o:&Self):bool))   ; not dyn-callable: Self in a parameter
+
+(defstruct Rect w:i32 h:i32)
+(defn area (self:&Rect):i32 (return (* (self 'w) (self 'h))))
+(defn bounds (self:&Rect):Size (return (Size (self 'w) (self 'h))))
+(defn grow (self:&Rect by:Size):void
+  (set! (self 'w) (+ (self 'w) (by 'w)))
+  (set! (self 'h) (+ (self 'h) (by 'h))))
+(defn same? (self:&Rect o:&Rect):bool (return (= (area self) (area o))))
+(extend Rect Shape)
+
+(defstruct Square side:i32)
+(defn area (self:&Square):i32 (return (* (self 'side) (self 'side))))
+(defn bounds (self:&Square):Size (return (Size (self 'side) (self 'side))))
+(defn grow (self:&Square by:Size):void
+  (set! (self 'side) (+ (self 'side) (by 'w))))
+(defn same? (self:&Square o:&Square):bool (return (= (self 'side) (o 'side))))
+(extend Square Shape)
+
+; Every call here goes through the box's vtable; `s` is a pointer to the box.
+(defn- report (label:StrView s:&(dyn Shape)):void
+  (let (b:Size (bounds s))
+    (println label ": " (b 'w) "x" (b 'h) " area " (area s))))
+
+(defn main ():i32
+  (with (a:(dyn Shape) (Rect 3 4)
+         b:(dyn Shape) (Square 5))
+    (report "rect" &a)
+    (report "square" &b)
+    ; The box owns its own copy, so growing it changes what the box sees.
+    (grow a (Size 1 2))
+    (grow b (Size 1 1))
+    (report "rect" &a)
+    (report "square" &b))
+  ; `same?` is still an ordinary method on the concrete types.
+  (println "same: " (same? (Square 2) (Square 2)))
+  (return 0))

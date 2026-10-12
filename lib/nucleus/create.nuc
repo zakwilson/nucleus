@@ -20,21 +20,13 @@
 
 (extern stderr:ptr)
 
-; An arena's blocks are zero already, including one behind a Tracking handle.
-(defn alloc-zeroes? (a:&Alloc):bool
-  (when (= (a 'kind) ALLOC-ARENA) (return true))
-  (when (= (a 'kind) ALLOC-TRACKING)
-    (return (alloc-zeroes? (ref (unsafe/cast &Tracking (a 'data)) 'parent))))
-  (return false))
-
-(defn create-bytes (a:&Alloc size:usize align:usize):&ui8
-  (let ((p ?&ui8) (alloc-allocate a size align))
-    (when (= (as ptr p) null)
-      (fprintf stderr "new: out of memory\n")
-      (exit 1))
-    (when (not (alloc-zeroes? a))
-      (memset (as ptr p) 0 size))
-    (return (unsafe/cast &ui8 (as ptr p)))))
+; The templates dispatch beside the handle they build, so -O2 folds the vtable
+; load even where this helper is not inlined (overview.md §9 AL-5).
+(defn create-bytes (p:?&ui8):&ui8
+  (when (= (as ptr p) null)
+    (fprintf stderr "new: out of memory\n")
+    (exit 1))
+  (return (unsafe/cast &ui8 (as ptr p))))
 
 (defn create-zero (p:ptr size:usize):void
   (memset p 0 size))
@@ -67,8 +59,8 @@
                   (= s (as ptr (('hashmap-lit 's) 'p))) (set! lit 2))))))
     (let (slot (if (= is-new 1)
                  `((~p (ref ~t)) (unsafe/cast (ref ~t)
-                                   (create-bytes (ref ~h) (as usize (sizeof ~t))
-                                                 (as usize (alignof ~t)))))
+                                   (create-bytes (allocate-zeroed (ref ~h) (as usize (sizeof ~t))
+                                                                (as usize (alignof ~t))))))
                  `((~p (ref ~t)) (alloca ~t)))
           result (if (= is-new 1) p `(deref ~p)))
       (when (and (> n 1) (conforms? t Init))
@@ -109,8 +101,8 @@
         (= is-new 1)
           `(let ((~h Alloc) (handle ~a) ~@slot)
              (__init-then (nucleus.allocator/init ~p ~h ~v) ~p
-               (alloc-deallocate (ref ~h) (unsafe/cast ?&ui8 ~p) (as usize (sizeof ~t))
-                                 (as usize (alignof ~t)))))
+               (deallocate (ref ~h) (unsafe/cast ?&ui8 ~p) (as usize (sizeof ~t))
+                           (as usize (alignof ~t)))))
         true
           `(let ((~h Alloc) (handle ~a) ~@slot)
              (__init-then (nucleus.allocator/init ~p ~h ~v) (deref ~p)))))))

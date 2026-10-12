@@ -16,7 +16,6 @@
 (extend FdOut Writer)
 (defmethod "@nuc_write_str.pnuc_FdOut.nuc_StrView" write-str ((self (ref FdOut)) (s StrView)) :!void)
 (extern (g-io-buf String))
-(extern (g-io-buf-ready i32))
 (declare io-buf-begin () :ref:String)
 (declare io-buf-end ((fd i32)) :!void)
 (defmacro print (:rest parts) (let (b:ptr (gensym)) (quasiquote (let (((unquote b) (ref String)) (io-buf-begin)) (str-into (unquote b) (unquote-splice parts)) (io-buf-end 1)))))

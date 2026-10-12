@@ -50,7 +50,7 @@ string/IO library could do.
 The protocol's method count is pinned by a dependency: `Fmt` (below) holds a
 type-erased `(dyn Writer)`, and Stage 13's `(dyn P)` v1 supports
 **single-method protocols only**. Expanding `(dyn P)` to arbitrary protocols
-is designed separately ([dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md));
+is designed separately ([dyn-arbitrary-protocols.md](../stage24-allocation/dyn-arbitrary-protocols.md));
 this doc works in either world, with one shape decision hanging on it:
 
 - **Option A — today's `dyn` (single-method).** `Writer` is exactly the one
@@ -331,7 +331,7 @@ shapes:
    desired `read-line → (Maybe String)` shape; a working v1 signature exists
    (§1.4), so this is an upgrade, not a blocker.
 4. **`(dyn P)` arbitrary-protocol expansion**
-   ([dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md)) — not a
+   ([dyn-arbitrary-protocols.md](../stage24-allocation/dyn-arbitrary-protocols.md)) — not a
    blocker either way: §1.1's Option A works on today's single-method
    `dyn`, and Option B (flushable `Writer`) is a small additive widening if
    the expansion lands. Recorded so nobody "improves" `Writer` with `flush`
@@ -378,7 +378,7 @@ source loading, REPL), each surface gated on emitted-output identity + tests
 + throughput parity (§3). NS-5-style selective `StrView` adoption inside the
 compiler continues independently and only helps — every `ptr`→`StrView`
 seam it converts is one fewer `CStr` crossing when the IO flip arrives. The
-`(dyn P)` expansion ([dyn-arbitrary-protocols.md](dyn-arbitrary-protocols.md))
+`(dyn P)` expansion ([dyn-arbitrary-protocols.md](../stage24-allocation/dyn-arbitrary-protocols.md))
 is likewise an independent track with no ordering edge: land it first and
 `fmt` starts at §1.1 Option B; land it later and `Writer` widens A→B in one
 additive pass.

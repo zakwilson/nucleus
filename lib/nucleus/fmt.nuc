@@ -208,16 +208,16 @@
   (let (s:ptr (gensym))
     ; Init's namespace reaches every conformer and nothing else, so a caller's
     ; own `init` cannot make the name ambiguous.
-    `(let ((~s String) (String))
-       (nucleus.allocator/init &~s)
+    `(let ((~s (ref String)) (alloca String))
+       (nucleus.allocator/init ~s)
        (str-into ~s ~@parts)
-       ~s)))
+       (deref ~s))))
 
 ; Same, over an explicit allocator — anything `handle` takes. An arena's String
 ; costs no free.
 (defmacro str-alloc (a :rest parts)
   (let (s:ptr (gensym))
-    `(let ((~s String) (String))
-       (nucleus.allocator/init &~s (handle ~a))
+    `(let ((~s (ref String)) (alloca String))
+       (nucleus.allocator/init ~s (handle ~a))
        (str-into ~s ~@parts)
-       ~s)))
+       (deref ~s))))

@@ -1,0 +1,10 @@
+; Stage 24 BD-2 — a `defvar` struct literal's borrowing field over a struct
+; literal would borrow the startup function's frame (§4.4, §4.6).
+(import-use nucleus.io)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defstruct Holder s:(dyn &Show) n:i32)
+(defvar h:Holder (Holder
+                   (Pt 1) 2))

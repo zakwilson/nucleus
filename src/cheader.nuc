@@ -3782,7 +3782,7 @@
 
 ; A header mode's output, written to stdout only once the header is complete, so a
 ; refusal part-way through leaves no partial header behind.
-(defvar g-hdr-buf:String)
+(defvar g-hdr-buf:String (make String))
 (defvar g-hdr:?&String)
 
 (defn header-out-open ():void
@@ -3972,7 +3972,8 @@
             (when (and (!= op null) (!= (cheader-ref-ptr-cell op) 0))
               (return (fstr (type-node-to-c (as ptr op)) (niche-c-note (cheader-err-niche? (as ?&Node tn)))))))
           (when (and (!= head null) (= (node-kind head) NODE-SYM)
-                     (!= (struct-template-lookup-ref ((as ptr:Node head) 's)) null))
+                     (or (= head 'dyn)
+                         (!= (struct-template-lookup-ref ((as ptr:Node head) 's)) null)))
             (return (cheader-type-c (parse-type-from-node tn (n 'line)))))
           ; `ref` is `ptr`'s synonym (types.md §Pointer kinds), so both spell
           ; the same `T*`; without this the element type was lost to `void*`.
@@ -4067,6 +4068,18 @@
     (set! (e 'busy) true)
     (set! (e 'emitted) false)
     (conj g-cheader-insts e)
+    ; A box's fields are compiler pointers: C may hold or pass one, never build it (§4.6).
+    (when (!= (dyn-canonical (as ptr (type-for-sdef (as ptr sd)))) null)
+      ; `__dyn.P…` / `__dynref.P…`
+      (let (borrowed:bool (dyn-borrowed? (as ptr (type-for-sdef (as ptr sd))))
+            rest:StrView (strview-drop-bytes (symbol-as-view (s 'name)) (as usize (if borrowed 9 6))))
+        (set! (e 'cname) (fstr (if borrowed "nuc_dynref_" "nuc_dyn_")
+                               (cheader-c-ident-view (symbol-intern rest)))))
+      (set! (e 'text) (fstr "#ifndef NUC_INST_" (e 'cname) "\n#define NUC_INST_" (e 'cname)
+                            "\ntypedef struct " (e 'cname) " {\n    void* data;\n    const void* vtable;\n} "
+                            (e 'cname) ";\n#endif\n\n"))
+      (set! (e 'busy) false)
+      (return e))
     (when (cheader-sdef-no-c? sd)
       (set! (e 'text) (fstr "/* " (sdef-display sd) ": holds a type C has no layout for; only its tag is declared */\n"
                             (e 'kw) " " (e 'cname) ";\n\n"))
@@ -4111,7 +4124,8 @@
         (return (fstr (cheader-type-c e) "*"))))
     (when (or (= k TY-STRUCT) (= k TY-UNION))
       (let (sd:ptr:StructDef (tt 'sdef))
-        (when (!= (sd 'origin-template) null) (return (cheader-inst-c sd)))
+        (when (or (!= (sd 'origin-template) null) (!= (dyn-canonical (as ptr t)) null))
+          (return (cheader-inst-c sd)))
         (let (nv:StrView (symbol-as-view (sd 'name)))
           (when (or (strview-has-prefix nv "__anon_struct_h") (strview-has-prefix nv "__anon_union_h"))
             (let ((acc String) (str-alloc g-arena (if (= k TY-STRUCT) "struct { " "union { ")))
@@ -4433,7 +4447,7 @@
 
 ; L8: detect a capturing-closure environment type OR a type-erased box type in a
 ; signature's type AST. Closure env structs are compiler-generated __vfn_env_N
-; (fn-make-env-struct). Type-erased box types are (BoxedFn …) and (dyn P) — fat
+; (fn-make-env-struct). Type-erased box types are (BoxedFn …) and the owning (dyn P) — fat
 ; pointers carrying Nucleus-side Drop/vtable semantics with no faithful C spelling.
 ; None of these is C-callable, so a public defn exposing one — by value, or via a
 ; (ref ...)/(ptr ...) indirection — is excluded from --emit-cheader and warned at
@@ -4441,6 +4455,13 @@
 ; is C-ABI). Returns 1 if `tn` mentions such a type, else 0. Unwraps arbitrary
 ; (ref T)/(ptr T) nesting down to the base type symbol.
 (defn cheader-mentions-closure (tn:?&Node):i32
+  (let (k:i32 (cheader-erased-class tn))
+    (if (or (= k 1) (= k 2)) (return 1) (return 0))))
+
+; What `tn` holds through any `(ref T)`/`(ptr T)` nesting: 0 nothing erased,
+; 1 a closure env or `BoxedFn`, 2 an owning `(dyn P)`, 3 a borrowing `(dyn &P)`.
+; A borrowing box owns nothing, so a signature may export it (§4.6).
+(defn cheader-erased-class (tn:?&Node):i32
   (let (cur:ptr tn)
     (while (!= cur null)
       (let (n:&Node (unsafe/cast &Node cur))
@@ -4453,9 +4474,13 @@
             (let (head:&Node (unsafe/cast &Node (node-first n)))
               (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
               (let (hs:Symbol (head 's))
-                ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
-                ; Nucleus semantics with no faithful C spelling.
-                (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
+                (when (= hs "BoxedFn") (return 1))
+                (when (= hs "dyn")
+                  (let (op:?&Node (node-at (as ptr n) 1))
+                    (when (and (!= op null) (= (op 'kind) NODE-LIST)
+                               (= (node-at (as ptr op) 0) 'ref))
+                      (return 3)))
+                  (return 2))
                 (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
                 (let (rest:ptr (node-rest n))
                   (when (= rest null) (return 0))
@@ -4761,6 +4786,7 @@
         (when (= h "ptr") (return 0))
         (when (= h "ref") (return 0))
         (when (= h "union") (return 0))
+        (when (= h "dyn") (return 0))
         (return 1)))))
 
 ; Item 3 needed a BY-VALUE spelling here (`cheader-by-value-c`, which stripped the
@@ -5063,7 +5089,8 @@
   (set! tn (cheader-unalias tn))
   (when (= tn null) (return))
   (when (!= (cheader-template-instance (as ?&Node tn)) 0) (return))
-  (when (!= (cheader-mentions-closure (as ?&Node tn)) 0) (return))
+  ; An owning box still reaches here as a field, whose typedef must precede the struct.
+  (when (= (cheader-erased-class (as ?&Node tn)) 1) (return))
   (when (!= (cheader-niche-no-c (as ?&Node tn)) 0) (return))
   (let (an:ptr (cheader-array-field-node (as ?&Node tn))
         rendered:StrView "")
@@ -5135,9 +5162,11 @@
         ; `parse-decl-attrs`, which can die, before the preamble is printed.
         (when (= h "defvar")
           (dotimes (i (- (node-len form) 1))
-            (let (op:&Node (unsafe/cast &Node (node-at form (+ i 1))))
-              (cheader-scan-type-node
-                (extract-type-node (as &Node op) (node-line (as ptr op) (f 'line)))))))))))
+            (let (op:&Node (unsafe/cast &Node (node-at form (+ i 1)))
+                  tn:ptr (extract-type-node (as &Node op) (node-line (as ptr op) (f 'line))))
+              ; `emit-cheader-defvar` omits an owning box's global.
+              (when (= (cheader-mentions-closure (as ?&Node (cheader-unalias tn))) 0)
+                (cheader-scan-type-node tn)))))))))
 
 ; Run after the compile, whose registries it reads; its `(ns …)` was applied there.
 (defn emit-cheader-header (forms:ptr source-file:Symbol):void

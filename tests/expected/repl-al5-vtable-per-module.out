@@ -1,0 +1,9 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc>   imported nucleus.allocator
+nuc>   1
+nuc>   1
+nuc> nuc>   imported nucleus.vector
+nuc>   imported nucleus.arena
+nuc>   20
+nuc>   2
+nuc> 

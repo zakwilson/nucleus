@@ -1,0 +1,8 @@
+; Stage 24 DP-1 — a protocol with no methods has nothing to dispatch.
+(import-use nucleus.allocator)
+(defprotocol Mark)
+(defstruct A n:i32)
+(extend A Mark)
+(defn main ():i32
+  (let (a:(dyn Mark) (A 3))
+    (return 0)))

@@ -88,9 +88,13 @@ FORCE:
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
 
+# bin/nucleusc is gitignored, so `make clean` keeps it; a boot refresh or merge must relink it.
+$(BOOT): boot/nucleusc.ll
+	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
+
 # Auto-rebuild boot binary if it can't run (wrong LLVM shared lib, etc.)
 # Check exec/loader failure only (exit 126/127), not arbitrary compiler errors.
-ensure-boot: | $(BUILD)
+ensure-boot: $(BOOT) | $(BUILD)
 	@$(BOOT) --help >/dev/null 2>&1; ec=$$?; \
 	if [ $$ec -eq 126 ] || [ $$ec -eq 127 ]; then \
 		echo "bin/nucleusc: cannot execute (exit $$ec), rebuilding from boot/nucleusc.ll ..."; \

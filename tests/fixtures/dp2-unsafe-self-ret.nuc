@@ -1,0 +1,14 @@
+; Stage 24 DP-2 — `Self` in the return type: the concrete type is erased at the
+; call, so the forward has no type to give the result.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Dup (n-of (self:&Self):i32) (dup (self:&Self):Self))
+(defstruct A n:i32)
+(defn n-of (self:&A):i32 (return (self 'n)))
+(defn dup (self:&A):A (return (A (self 'n))))
+(extend A Dup)
+(defn main ():i32
+  (let (a:(dyn Dup) (A 3))
+    (println (n-of a))
+    (dup a))
+  (return 0))

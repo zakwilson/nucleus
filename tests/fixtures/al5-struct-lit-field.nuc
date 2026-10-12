@@ -1,0 +1,6 @@
+; AL-5: a struct literal cannot leave a handle field to the zero fill.
+(import-use nucleus.allocator)
+(defstruct Pool n:i32 a:Alloc)
+(defn main ():i32
+  (let (p:Pool (Pool 3))
+    (return (p 'n))))

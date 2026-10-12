@@ -644,7 +644,8 @@ mismatch is a compile error rather than a runtime misread.
   (write-str ((self (ref Self)) s:StrView):!void))
 ```
 
-Single-method, so it can be erased as `(dyn Writer)` and stored in a global.
+Its method takes `&Self` and mentions `Self` nowhere else, so it can be erased
+as `(dyn Writer)`, or borrowed as `(dyn &Writer)`, and stored in a global.
 `s` is by value — it is not `Self`, so the `(ref StrView)` convention of
 [§4](#4--bytestr-and-str-protocols) does not reach it, and a literal or a
 producer's result can be the argument directly.

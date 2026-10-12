@@ -24,7 +24,6 @@
 (declare test-cases-new () (ref (Vector TestCase)))
 (extern (g-tests (ref (Vector TestCase))))
 (extern (g-fail-buf String))
-(extern (g-fail-ready i32))
 (declare test-add ((name StrView) (file StrView) (line i32) (f (fn !void) (ptr)) (data ptr)) :void)
 (declare test-register ((name (ref Node)) (file StrView) (line i32) (f (fn !void) (ptr))) :i32)
 (defmacro deftest (name :rest body) (let (g:ptr (gensym) a:ptr (gensym)) (quasiquote (defvar ((unquote g) i32) (test-register (quote (unquote name)) (source-file) (source-line) (fn (((unquote a) ptr)) :!void (unquote-splice body) (return (ok))))))))

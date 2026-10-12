@@ -203,8 +203,8 @@
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
 (defvar g-label:i32 0)
-(defvar g-entry-stream:String)
-(defvar g-body-stream:String)
+(defvar g-entry-stream:String (make String))
+(defvar g-body-stream:String (make String))
 (defvar g-block-term:i32 0)
 
 ; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
@@ -259,12 +259,12 @@
 (defvar g-node-ctor-used:i32 0)
 
 ; Main module streams (global so emit-compile-time can access them mid-compilation)
-(defvar g-type-stream:String)
-(defvar g-decl-stream:String)
+(defvar g-type-stream:String (make String))
+(defvar g-decl-stream:String (make String))
 ; The definition buffer proper, and the alias every emission site writes
 ; through. Two names because `import-ct` stands a discard sink in front of the
 ; buffer (`emit-import-forms`), which a value cannot express.
-(defvar g-def-buf:String)
+(defvar g-def-buf:String (make String))
 (defvar g-def-stream:?&String)
 ; The module's own definition stream, which `g-def-stream` may be standing in
 ; front of while an `import-ct` discards a library's definitions. A template
@@ -676,7 +676,7 @@
 
 ; REPL declarations preamble — accumulated declarations and type defs
 ; that get prepended to each JIT module.
-(defvar g-repl-preamble:String)
+(defvar g-repl-preamble:String (make String))
 ; Stage 16 R3 (D8): the @symbols the preamble already `declare`s. Every REPL
 ; module is assembled as preamble + its own buffers, so a latch scoped to the
 ; fresh buffers is a claim about only half of it — repl-libraries.md §3.2.
@@ -1047,14 +1047,13 @@
 (defn nuch-reg-key (path:Symbol name:Symbol):Symbol
   (return (symbol-intern (fstr path "\n" name))))
 
-; A zero-filled `Alloc` is the heap handle, so a wrong constant would silently
-; make every registry malloc-backed. Checked on the copy a registry took, which
-; is what matters (design/global-init.md §4.4 item 5).
+; A registry built through the wrong handle would silently malloc, so check the
+; copy it took: a handle's first word is the allocator it borrows
+; (design/global-init.md §4.4 item 5).
 (defn assert-compiler-arena-backed ():void
-  (let (h:&Alloc (ref g-structs 'alloc))
-    (when (or (!= (h 'kind) ALLOC-ARENA) (!= (h 'data) (as ptr &g-arena)))
-      (eprint "internal error: g-structs is not backed by g-arena (kind=" (h 'kind) ")\n")
-      (exit 1))))
+  (when (!= (aref (unsafe/cast &ptr (ref g-structs 'alloc)) 0) (as ptr &g-arena))
+    (eprint "internal error: g-structs is not backed by g-arena\n")
+    (exit 1)))
 
 ; ============================================================
 ; Allocation helpers
@@ -3090,8 +3089,9 @@
 ; the pointer, so it discharges the taint (frame-storage-escape.md §3).
 (defn frame-taint-survives (v:&Val dst:?&Type):i32
   (when (or (= (v 'taint) null) (= (v 'taint-frame) 0)) (return 0))
+  ; A borrowing box is the pointer plus a vtable, so nothing is loaded through (§4.4).
   (when (and (!= dst null) (= (dst 'kind) TY-STRUCT)
-             (= ((v 'type) 'kind) TY-PTR))
+             (= ((v 'type) 'kind) TY-PTR) (not (dyn-borrowed? (as ptr dst))))
     (return 0))
   (return 1))
 
@@ -3103,6 +3103,11 @@
         (set! (sym 'taint-frame) 0))
     (do (set! (sym 'taint) (v 'taint))
         (set! (sym 'taint-frame) (v 'taint-frame)))))
+
+; What a binding of `ty` adopts taint from: a borrowing box carries the address it
+; took, which a by-value source (`(let (b:(dyn &P) p))`) does not.
+(defn box-taint-source (v:&Val boxed:&Val ty:?&Type):&Val
+  (return (if (dyn-borrowed? (as ptr ty)) boxed v)))
 
 ; A join's frame flag after folding `v` in (call BEFORE taint-merge moves
 ; `acc`): frame only if every tainted contributor is — one with-taint wins.
@@ -4626,7 +4631,8 @@
       (let (bd:StrView (type-display bad)
             rt:StrView (if (!= (op 'is-cmp) 0) "bool" bd))
         (str-into msg "\n  note: define (defn " name " (a:" bd " b:" bd "):" rt " …) to give " bd " '" name "'")
-        (when (not (str-empty? &proto))
+        ; A box cannot be an `extend` subject, so suggest only the method.
+        (when (and (not (str-empty? &proto)) (symbol-none? (dyn-proto-of bad)))
           (str-into msg "; to conform to " proto ", define its methods and assert (extend " bd " " proto
                     ") after (import-use nucleus.numeric)"))))
     (when-some (g (generic-lookup name))
@@ -5920,6 +5926,9 @@
     (when (= (r 'status) NR-QUALIFIED) (return (r 'canonical)))
     (when (!= (protocol-lookup-exact (r 'canonical)) null)
       (return (r 'canonical)))
+    ; The same tier on pass 1's table: a file's own protocol is unregistered while
+    ; its prescan reads a signature (an alias body) that names it.
+    (when (proto-decl-key? (r 'canonical)) (return (r 'canonical)))
     ; `protocol-lookup`'s flattened tier, on pass 1's table rather than the
     ; registry, which imported files fill only after this prescan.
     (when (and (!= g-ns-declared 0) (not (proto-decl-key? (r 'bare))))
@@ -7491,7 +7500,7 @@
           (die-at (cc 'line) "set!: (aref a i) place: index must be integer"))
         (let (idxp:StrView (gep-index-ir idx))
           (let (elem:?&Type ((p 'type) 'elem)
-                v:&Val (emit-node (node-at cc 3) scope)
+                v:&Val (maybe-box-into-slot (emit-node (node-at cc 3) scope) elem scope (cc 'line))
                 coerced:ptr (coerce-int-val v elem (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line) "set!: (aref a i) place: value type mismatch"))
@@ -7860,7 +7869,7 @@
         (die-at (cc 'line) "set!: (deref p) place: operand must be typed pointer"))
       (require-derefable (p 'type) (cc 'line) "set!")
       (let (elem:?&Type ((p 'type) 'elem)
-            v:&Val (emit-node (node-at cc 2) scope)
+            v:&Val (maybe-box-into-slot (emit-node (node-at cc 2) scope) elem scope (cc 'line))
             coerced:ptr (coerce-int-val v elem (cc 'line)))
         (when (= coerced null)
           (die-at (cc 'line) "set!: (deref p) place: value type mismatch"))
@@ -7934,11 +7943,13 @@
                 ; TC-5 part 2: also rewrite a bare union-construction shorthand
                 ; (`(some 5)`/`(err e)`) against the field's type, same as
                 ; let/with/return/if/cond/match value tails.
-                v:&Val (let (save-want:ptr g-want-type)
-                            (set! g-want-type ftype)
-                            (let (vv:&Val (emit-node (union-target-rewrite (node-at cc 3) ftype) scope))
-                              (set! g-want-type save-want)
-                              vv))
+                v:&Val (maybe-box-into-slot
+                         (let (save-want:ptr g-want-type)
+                           (set! g-want-type ftype)
+                           (let (vv:&Val (emit-node (union-target-rewrite (node-at cc 3) ftype) scope))
+                             (set! g-want-type save-want)
+                             vv))
+                         ftype scope (cc 'line))
                 coerced:ptr (coerce-int-val v ftype (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line)
@@ -8091,7 +8102,10 @@
     ; `(dyn P)`-typed parameter — box it (the nominal value box) before the
     ; CE-3 normalization. Inert when ptype is not a dyn box.
     (let (dcanon:ptr (dyn-canonical ptype))
-      (when (!= dcanon null)
+      (when (dyn-borrowed? dcanon)
+        (let (b:&Val (emit-borrow-into slot dcanon scope line))
+          (when (!= (as ptr b) (as ptr slot)) (memcpy slot (as ptr b) (sizeof Val)))))
+      (when (and (!= dcanon null) (not (dyn-borrowed? dcanon)))
         (let (vcanon:ptr (dyn-canonical (slot 'type)))
           (if (!= vcanon null)
             (box-require-same-kind vcanon dcanon line)
@@ -8186,12 +8200,12 @@
       ; `(dyn P)` parameter wants the box itself and is left alone.
       (when (and (= (ft0 'kind) TY-FN) (> nargs 0) (> (ft0 'num-params) 0))
         (let (a0:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) 0))
-              dbox:ptr (dyn-canonical (a0 'type)))
+              dbox:ptr (dyn-receiver-box (a0 'type)))
           (when (and (!= dbox null)
-                     (= (dyn-canonical ((field-at (ft0 'params) 0) 'type)) null))
-            (let (slot:i32 (dyn-method-slot dbox (ss 'name)))
-              (when (>= slot 0)
-                (return (emit-dyn-forward dbox args nargs slot (cc 'line))))))))
+                     (= (dyn-receiver-box ((field-at (ft0 'params) 0) 'type)) null))
+            (let (sidx:i32 (dyn-method-slot dbox (ss 'name)))
+              (when (>= sidx 0)
+                (return (emit-dyn-forward dbox args nargs sidx scope (cc 'line))))))))
       (when (and (= (ft0 'kind) TY-FN) (!= (ft0 'has-rest) 0))
         (let (fixed:i32 (- (ft0 'num-params) 1))
           (when (< nargs fixed)
@@ -9280,19 +9294,31 @@
 ; permits a constant to reference function globals defined later in the module.
 (defvar g-vtable-table:&(Vector &VtableEntry) (new (Vector &VtableEntry) g-arena))
 
-; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
+; The vtable symbol for `key` if THIS module already defines it. A vtable is
+; `internal`, so each REPL module that boxes the type emits its own copy.
 (defn vtable-memo-lookup (key:Symbol):Symbol
   (dotimes (i (unsafe/cast i32 (count g-vtable-table)))
     (let (e:&VtableEntry (invoke g-vtable-table i:usize))
-      (when (= (e 'key) key) (return (e 'name)))))
+      (when (and (= (e 'key) key) (= (e 'epoch) g-module-epoch)) (return (e 'name)))))
   (return (symbol-none)))
 
-; Record (key → vtable-symbol) (mirrors fnty-intern).
 (defn vtable-memo-put (key:Symbol name:Symbol):void
+  (dotimes (i (unsafe/cast i32 (count g-vtable-table)))
+    (let (e:&VtableEntry (invoke g-vtable-table i:usize))
+      (when (= (e 'key) key)
+        (set! (e 'epoch) g-module-epoch)
+        (return))))
   (let (rec:&VtableEntry (new VtableEntry g-arena))
     (set! (rec 'key) key)
     (set! (rec 'name) name)
+    (set! (rec 'epoch) g-module-epoch)
     (conj g-vtable-table rec)))
+
+; The module stays open across an epoch bump, so its vtables are still defined in it.
+(defn vtable-memo-carry (from:i32 to:i32):void
+  (dotimes (i (unsafe/cast i32 (count g-vtable-table)))
+    (let (e:&VtableEntry (invoke g-vtable-table i:usize))
+      (when (= (e 'epoch) from) (set! (e 'epoch) to)))))
 
 ; The emitted `@invoke.p<Env>.<argtoks>` symbol for a concrete env type: scan the
 ; `invoke` generic for the METHOD-USER whose self param (param-types[0]) is
@@ -9423,16 +9449,29 @@
 
 ; Ask the admission question for one annotation, in the caller's current
 ; environment. Split out so the immediate and deferred paths cannot drift.
-(defn dyn-annot-check (spelling:Symbol line:i32):void
-  (dyn-require-protocol spelling line))
+(defn dyn-annot-check (spelling:Symbol nargs:i32 borrowed:bool line:i32):void
+  (dyn-require-arity (dyn-require-protocol spelling line) spelling nargs borrowed line))
 
-(defn dyn-annot-record (spelling:Symbol line:i32):void
+; An application gives the protocol exactly its parameters; `(dyn Iterator)` binds
+; none of `next`'s `E`.
+(defn dyn-require-arity (pp:&Protocol spelling:Symbol nargs:i32 borrowed:bool line:i32):void
+  (when (= (pp 'num-params) nargs) (return))
+  (let (amp:StrView (if borrowed "&" ""))
+    (when (= nargs 0)
+      (die-at line (fstr "(dyn " amp spelling "): '" spelling "' takes " (pp 'num-params)
+                         " type argument(s) -- write (dyn " amp "(" spelling " ...))")))
+    (die-at line (fstr "(dyn " amp "(" spelling " ...)): '" spelling "' takes " (pp 'num-params)
+                       " type argument(s), not " nargs))))
+
+(defn dyn-annot-record (spelling:Symbol nargs:i32 borrowed:bool line:i32):void
   (when (!= g-type-key-ok 0) (return))
   (when (and (!= g-interactive 0) (= g-toplevel-depth 0))
-    (dyn-annot-check spelling line)
+    (dyn-annot-check spelling nargs borrowed line)
     (return))
   (let (j:&DynAnnot (new DynAnnot g-arena))
     (set! (j 'spelling) spelling)
+    (set! (j 'nargs) nargs)
+    (set! (j 'borrowed) borrowed)
     (set! (j 'path) g-source-path)
     (set! (j 'line) line)
     (set! (j 'ns) g-current-ns)
@@ -9453,67 +9492,215 @@
         (set! g-source-path (j 'path))
         (set! g-current-ns (j 'ns))
         (set! g-file-imports (j 'imports))
-        (dyn-annot-check (j 'spelling) (j 'line))))
+        (dyn-annot-check (j 'spelling) (j 'nargs) (j 'borrowed) (j 'line))))
     (set! g-source-path save-path)
     (set! g-current-ns save-ns)
     (set! g-file-imports save-imports)))
 
-; TE-6: the emitted concrete-impl symbol for the SOLE method of single-method
-; protocol `proto` on concrete type `concrete-ty` — the `(dyn P)` analogue of
-; vtable-invoke-irname (which resolves the env's structural `invoke`). Mirrors
-; proto-sigs-resolve / method-satisfies-sig: substitute Self→concrete-ty in the
-; protocol's single signature, then find the exact concrete method on the
-; method-name generic. v1 restricts `(dyn P)` to a single-method, non-parametric
-; protocol so the vtable is the 2-slot `{ method0, drop }` layout (drop at index 1)
-; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
-; a multi/parametric protocol (deferred), or a missing concrete impl.
-(defn dyn-vtable-method-irname (concrete-ty:?&Type proto:Symbol line:i32):Symbol
+; ------------------------------------------------------------
+; Stage 24 DP-1 — per-method dyn-safety and the k+1 vtable
+; (design/stage24-allocation/dyn-arbitrary-protocols.md §3.1–§3.3).
+; ------------------------------------------------------------
+
+; The type node a parameter declares, unparsed: `self:ref:Self` and
+; `(self (ref Self))` both answer `(ref Self)`.
+(defn dyn-param-type-node (p:?&Node line:i32):?&Node
+  (when (and (= (node-kind (as ptr p)) NODE-SYM)
+             (symbol-contains-byte ((unsafe/cast &Node p) 's) 58))
+    (return (binding-type-node (as ?&Node (desugar-symbol p line)))))
+  (return (binding-type-node p)))
+
+; Is type node `t` a pointer to `Self` — `&Self`, `?&Self`, `(ptr Self)`, in any
+; spelling the reader leaves (`ref:Self`, `?ref:Self`, `(? (ref Self))`)?
+(defn dyn-self-ptr-node? (t:?&Node line:i32):bool
+  (when (= t null) (return false))
+  (let (run:StrView "" op:?&Node (sigil-split t line &run))
+    (when (!= op null)
+      (return (and (= run "?") (dyn-self-ptr-node? op line)))))
+  (let (split:?&Node (colon-spelling-node t line))
+    (when (!= split null) (return (dyn-self-ptr-node? split line))))
+  (when (or (!= (node-kind (as ptr t)) NODE-LIST) (!= (node-len t) 2)) (return false))
+  (let (h:?&Node (node-at t 0)
+        x:?&Node (node-at t 1))
+    (return (and (= (node-kind (as ptr h)) NODE-SYM)
+                 (or (= ((unsafe/cast &Node h) 's) "ref") (= ((unsafe/cast &Node h) 's) "ptr"))
+                 (= (node-kind (as ptr x)) NODE-SYM)
+                 (= ((unsafe/cast &Node x) 's) "Self")))))
+
+; §3.3 as one predicate, asked by synthesis (a null slot) and by the forward (the
+; diagnostic). `nargs` is how many of the protocol's parameters the box binds.
+(defn dyn-sig-safety (pp:&Protocol i:i32 nargs:i32):i32
+  (let (sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) i)
+        line:i32 (node-line sig 0)
+        mname:Symbol (symbol-none)
+        ret-node:ptr null
+        params-node:ptr null)
+    (proto-sig-parse sig (as &Symbol &mname) (as &ptr &ret-node) (as &ptr &params-node))
+    (when (>= (params-where-index params-node) 0) (return DYN-WHERE))
+    (when (or (< (node-len params-node) 1)
+              (not (dyn-self-ptr-node? (dyn-param-type-node (node-at params-node 0) line) line)))
+      (return DYN-RECEIVER))
+    (dotimes (j (- (node-len params-node) 1))
+      (when (!= (node-mentions-tyvar-named (node-at params-node (+ j 1)) (symbol-intern "Self")) 0)
+        (return DYN-SELF-PARAM)))
+    (when (!= (node-mentions-tyvar-named ret-node (symbol-intern "Self")) 0)
+      (return DYN-SELF-RET))
+    ; Rule 4: the application's arguments are concrete by construction, so what
+    ; can stay abstract is a parameter the box does not bind at all.
+    (let (j:i32 nargs)
+      (while (< j (pp 'num-params))
+        (when (!= (node-mentions-tyvar-named sig (aref (unsafe/cast &Symbol (pp 'params)) j)) 0)
+          (return DYN-UNBOUND))
+        (inc! j)))
+    (return DYN-CALLABLE)))
+
+(defn dyn-safety-reason (r:i32):StrView
+  (case r
+    DYN-RECEIVER (return "its first parameter is not a pointer to Self")
+    DYN-SELF-PARAM (return "Self appears in a parameter")
+    DYN-SELF-RET (return "Self appears in the return type")
+    DYN-WHERE (return "its signature has its own :where")
+    DYN-UNBOUND (return "it mentions a protocol parameter the box does not bind")
+    0)
+  (return ""))
+
+(defn dyn-sig-name (pp:&Protocol i:i32):Symbol
+  (return (defn-name-only (node-at (aref (unsafe/cast &ptr (pp 'sigs)) i) 0))))
+
+; Asked before admission, so the message names the protocol's shape rather than
+; the conformer.
+(defn dyn-require-boxable (pp:&Protocol nargs:i32 borrowed:bool subj:StrView line:i32):void
+  (dyn-require-arity pp (symbol-intern (display-key (pp 'name))) nargs borrowed line)
+  (when (= (pp 'num-sigs) 0)
+    (die-at line (fstr subj ": the protocol declares no methods, so a box has nothing to dispatch")))
+  (dotimes (i (pp 'num-sigs))
+    (when (= (dyn-sig-safety pp i nargs) DYN-CALLABLE) (return)))
+  (let (why:String (str-alloc g-arena ""))
+    (dotimes (i (pp 'num-sigs))
+      (str-into why (if (= i 0) "" "; ") "'" (dyn-sig-name pp i) "': "
+                (dyn-safety-reason (dyn-sig-safety pp i nargs))))
+    (die-at line (fstr subj ": no method is dyn-callable (" (string-as-view &why) ")"))))
+
+; The forward's half of the same rule: a call to an unsafe method is refused at
+; the call, naming the rule, while the protocol's other methods stay callable.
+(defn dyn-require-callable (pp:&Protocol i:i32 nargs:i32 subj:StrView line:i32):void
+  (let (r:i32 (dyn-sig-safety pp i nargs))
+    (when (!= r DYN-CALLABLE)
+      (die-at line (fstr subj ": '" (dyn-sig-name pp i) "' is not dyn-callable: "
+                         (dyn-safety-reason r))))))
+
+; §3.1: method i's vtable index. Slots 0 and 1 keep the v1 `{ m0, drop }` layout
+; that `@__boxedfn_drop` and the BoxedFn path read; further methods append.
+(defn dyn-slot (i:i32):i32
+  (return (if (= i 0) 0 (+ i 1))))
+
+; A vtable slot's IR type: a function pointer, which lives in the program address
+; space where functions do (AVR's `P1`, §3.6), so a slot is callable as loaded.
+(defn vtable-slot-ir ():StrView
+  (let (pas:i32 ((unsafe/cast &Target g-target) 'prog-as))
+    (when (= pas 0) (return "ptr"))
+    (return (fstr "ptr addrspace(" pas ")"))))
+
+; The IR struct type of an n-slot vtable: `{ ptr, ptr, … }`.
+(defn vtable-ir-type (nslots:i32):StrView
+  (let (sl:StrView (vtable-slot-ir)
+        s:String (str-alloc g-arena "{ " sl))
+    (dotimes (i (- nslots 1)) (str-into s ", " sl))
+    (str-into s " }")
+    (return (string-as-view &s))))
+
+(defn vtable-slot-text (s:Symbol):StrView
+  (when (symbol-none? s) (return "null"))
+  (return (symbol-as-view s)))
+
+; Load slot `idx` of an n-slot vtable `vt`, returning the function pointer.
+(defn emit-vtable-slot-load (vt:StrView nslots:i32 idx:i32):StrView
+  (let (slotp:StrView (new-tmp)
+        fnp:StrView (new-tmp))
+    (emit g-body-stream "  " slotp " = getelementptr inbounds " (vtable-ir-type nslots) ", ptr " vt
+          ", i32 0, i32 " idx "\n")
+    (emit g-body-stream "  " fnp " = load " (vtable-slot-ir) ", ptr " slotp ", align "
+          (type-size ty-ptr) "\n")
+    (return fnp)))
+
+; A box's application arguments as markers that read back as their Types in any
+; file, for substituting into the protocol's signatures; null for none.
+(defn dyn-arg-markers (box-ty:ptr):ptr
+  (let (n:i32 (dyn-nargs-of box-ty))
+    (when (= n 0) (return null))
+    (let (de:&DynEntry (unsafe/cast &DynEntry (dyn-entry-of box-ty))
+          out:ptr (arena-alloc (* n (ptr-bytes))))
+      (dotimes (i n)
+        (set! (aref (unsafe/cast &Symbol out) i)
+              (env-arg-of-type (aref (unsafe/cast &&Type (de 'arg-types)) i))))
+      (return out))))
+
+; The borrowing box of the same protocol, `(dyn &P)`, as a message names it.
+(defn dyn-borrow-subject (box-ty:ptr):StrView
+  (return (dyn-spelling box-ty "&")))
+
+; `(dyn P)` / `(dyn (P a…))` with `amp` before the protocol.
+(defn dyn-spelling (box-ty:ptr amp:StrView):StrView
+  (let (p:Symbol (dyn-proto-of box-ty))
+    (when (= (dyn-nargs-of box-ty) 0) (return (fstr "(dyn " amp (display-key p) ")")))
+    (return (fstr "(dyn " amp (dyn-app-display p (-> (dyn-entry-of box-ty) (unsafe/cast &DynEntry _) (_ 'args)) 0)
+                  ")"))))
+
+; The box as its author would write it, for a message: `(dyn P)`, `(dyn (P arg…))`.
+(defn dyn-subject (box-ty:ptr):StrView
+  (return (symbol-as-view (box-spelling (as ?&Type box-ty)))))
+
+; The concrete-impl symbol for every method of the box's protocol on
+; `concrete-ty`, in declaration order, with the none Symbol for a method §3.3
+; leaves out (a null slot). Dies when a dyn-callable method has no implementation.
+(defn dyn-vtable-method-irnames (concrete-ty:?&Type box-ty:?&Type line:i32):ptr
   ; Stage 15 B3′: a synthesis region. It substitutes `Self` in the protocol's
   ; signature with `(type-spelling concrete-ty)`, which since B3′ is the type's
   ; CANONICAL name (`dp/Fox`) — a key, not a spelling this file can necessarily
   ; write. `examples/w9-dyn-ns.nuc` boxes exactly that case.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
-    (let (r:Symbol (dyn-vtable-method-irname-in concrete-ty proto line))
+    (let (proto:Symbol (dyn-proto-of box-ty)
+          nargs:i32 (dyn-nargs-of box-ty)
+          markers:ptr (dyn-arg-markers box-ty)
+          subj:StrView (dyn-subject box-ty)
+          pp:&Protocol (dyn-resolve-protocol proto line)
+          out:ptr (arena-alloc (* (+ (pp 'num-sigs) 1) (ptr-bytes))))
+      (dotimes (i (pp 'num-sigs))
+        (set! (aref (unsafe/cast &Symbol out) i)
+              (if (= (dyn-sig-safety pp i nargs) DYN-CALLABLE)
+                (dyn-vtable-method-irname-in concrete-ty pp i markers nargs subj line)
+                (symbol-none))))
       (set! g-type-key-ok saved)
-      (return r))))
+      (return out))))
 
-(defn dyn-vtable-method-irname-in (concrete-ty:?&Type proto:Symbol line:i32):Symbol
-  (let (pp:&Protocol (dyn-resolve-protocol proto line))
-    (let (ppp:&Protocol pp)
-      (when (!= (ppp 'num-sigs) 1)
-        (die-at line (fstr "(dyn " proto "): only single-method protocols are boxable in v1")))
-      (when (> (ppp 'num-params) 0)
-        (die-at line (fstr "(dyn " proto "): parametric protocols are not boxable in v1")))
-      (let (s0:?&Node (aref (unsafe/cast &ptr (ppp 'sigs)) 0))
-        (when (>= (params-where-index (node-at s0 1)) 0)
-          (die-at line (fstr "(dyn " proto "): method '" (node-head-sym s0)
-                             "' is generic (its signature has a :where), so no vtable can hold it"))))
-      (let (foreign:bool (protocol-foreign? ppp)
-            typename:Symbol (type-spelling concrete-ty)
-            sig:ptr (aref (unsafe/cast &ptr (ppp 'sigs)) 0)
-            csig:ptr (subst-proto-sig-node sig (if foreign (env-arg-sym (as ptr (intern-node typename)) line)
-                                                 typename)
-                                           (ppp 'params) null 0)
-            name-node:ptr (node-at csig 0)
-            params-node:ptr (node-at csig 1)
-            mname:Symbol (symbol-none))
-        (extract-name-and-type name-node (as &Symbol &mname) line)
-        (let (nparams:i32 (defn-params-count params-node)
-              ctx:StrView (foreign-read-context (ppp 'src-file) "protocol" (ppp 'name) line)
-              here:NameEnv (protocol-env-enter ppp)
-              ptypes:ptr (if foreign (defn-params-to-types-at params-node (node-line sig line))
-                           (defn-params-to-types params-node)))
-         (name-env-set here)
-         (set! g-mono-context ctx)
-         (let (g:ptr (generic-lookup mname))
-          (when (= g null)
-            (die-at line (fstr "(dyn " proto "): no method '" mname "' is defined")))
-          (let (m:?&Method (generic-find-method-exact g ptypes nparams))
-            (when (= m null)
-              (die-at line (fstr "(dyn " proto "): type '" (type-display concrete-ty) "' does not implement "
-                                 mname)))
-            (return (-> m (as &Method _) (_ 'ir-name))))))))))
+(defn dyn-vtable-method-irname-in (concrete-ty:?&Type ppp:&Protocol i:i32 markers:ptr nargs:i32
+                                  subj:StrView line:i32):Symbol
+  (let (foreign:bool (protocol-foreign? ppp)
+        typename:Symbol (type-spelling concrete-ty)
+        sig:ptr (aref (unsafe/cast &ptr (ppp 'sigs)) i)
+        csig:ptr (subst-proto-sig-node sig (if foreign (env-arg-sym (as ptr (intern-node typename)) line)
+                                             typename)
+                                       (ppp 'params) markers nargs)
+        name-node:ptr (node-at csig 0)
+        params-node:ptr (node-at csig 1)
+        mname:Symbol (symbol-none))
+    (extract-name-and-type name-node (as &Symbol &mname) line)
+    (let (nparams:i32 (defn-params-count params-node)
+          ctx:StrView (foreign-read-context (ppp 'src-file) "protocol" (ppp 'name) line)
+          here:NameEnv (protocol-env-enter ppp)
+          ptypes:ptr (if foreign (defn-params-to-types-at params-node (node-line sig line))
+                       (defn-params-to-types params-node)))
+      (name-env-set here)
+      (set! g-mono-context ctx)
+      (let (g:ptr (generic-lookup mname))
+        (when (= g null)
+          (die-at line (fstr subj ": no method '" mname "' is defined")))
+        (let (m:?&Method (generic-find-method-exact g ptypes nparams))
+          (when (= m null)
+            (die-at line (fstr subj ": type '" (type-display concrete-ty) "' does not implement "
+                               mname)))
+          (return (-> m (as &Method _) (_ 'ir-name))))))))
 
 ; Emit (once) and return the vtable global symbol for (concrete-ty, proto). On a
 ; memo hit returns the existing symbol without re-emitting; on a miss it ensures
@@ -9524,52 +9711,58 @@
 ; for a BoxedFn (proto "Fn") or the concrete `extend P` impl for a `(dyn P)` box;
 ; slot 1 (drop) is the type's drop thunk (null for a POD/non-owning type). Dies if
 ; the boxed type has no method0 thunk (an invoke/impl is mandatory; drop optional).
-; AVR-6 Harvard hazard (second path). A type-erasure box (BoxedFn, `dyn`, a
-; boxed closure) stores function pointers as DATA — the vtable is an
-; `internal constant { ptr @forwarder, ... }` and the boxed body `store`s the
-; lifted fn pointer into a heap cell. On a target whose functions live in a
-; distinct program address space (prog-as != 0 — AVR's `P1`), every such fn
-; pointer is `ptr addrspace(1)` where a plain `ptr` is required — an LLVM
-; verifier error (confirmed: boxedfn on AVR fails `llc` at the vtable/indirect
-; call). Unlike a bare-fn value (caught in emit-symbol-ref), a boxed `(fn …)`
-; closure is lambda-lifted and never passes through emit-symbol-ref, so the box
-; construction is diagnosed here instead. Boxed closures / `dyn` / function
-; values are out of scope for AVR v1 (design/stage14/avr-targets.md §3, §5 AVR-6);
-; the full addrspace(1)-carrying fix is deferred. Inert on hosted targets
-; (prog-as == 0), so the compiler's own dyn/BoxedFn self-compile is byte-identical.
+; A bare `fn` boxed into a BoxedFn is stored in a heap cell as data, which AVR's
+; program address space cannot be; vtable slots are typed in it (`vtable-slot-ir`).
 (defn avr-reject-fn-value (line:i32 what:StrView):void
   (when (!= ((unsafe/cast &Target g-target) 'prog-as) 0)
     (die-at line
       (fstr what
             " materializes a function as a data pointer, which is unsupported on this target: functions live in program memory (address space "
             ((unsafe/cast &Target g-target) 'prog-as)
-            ") -- boxed closures, `dyn`, and function values are not available on AVR in v1"))))
+            ") -- box a capturing closure, or a struct through a (dyn P), instead"))))
 
-(defn ensure-vtable-for (concrete-ty:?&Type proto:Symbol line:i32):Symbol
-  (avr-reject-fn-value line "type-erasure (BoxedFn / dyn) construction")
-  (let (key:Symbol (symbol-intern (fstr (type-spelling concrete-ty) "/" proto))
+(defn ensure-vtable-for (concrete-ty:?&Type proto:Symbol box-ty:?&Type line:i32):Symbol
+  ; An application's arguments are part of the identity (§3.4): redundant while a
+  ; type conforms to a parametric protocol at most once, correct if that relaxes.
+  (let (akey:String (str-alloc g-arena "")
+        atok:String (str-alloc g-arena ""))
+    (when (!= (dyn-nargs-of box-ty) 0)
+      (let (de:&DynEntry (unsafe/cast &DynEntry (dyn-entry-of box-ty)))
+        (dotimes (i (dyn-nargs-of box-ty))
+          (str-into akey "/" (invoke (unsafe/cast &(Vector Symbol) (de 'args)) i:usize))
+          (str-into atok "." (type-mangle-token (aref (unsafe/cast &&Type (de 'arg-types)) i))))))
+  (let (key:Symbol (symbol-intern (fstr (type-spelling concrete-ty) "/" proto (string-as-view &akey)))
         hit:Symbol (vtable-memo-lookup key))
     (when (not (symbol-none? hit)) (return hit))
     ; The box that will reference this vtable is a fat pointer of the TE-1 type.
     (ensure-fatptr-sdef)
-    (let (inv:Symbol (if (= proto "Fn")
-                    (vtable-invoke-irname concrete-ty)
-                    (dyn-vtable-method-irname concrete-ty proto line))
-          drp:Symbol (vtable-drop-irname concrete-ty))
-      (when (symbol-none? inv)
-        (die-at line (fstr "type-erasure: no invoke thunk for boxed type "
-                           (type-display concrete-ty))))
-      (let (vbare:StrView (sanitize-for-ir (fstr "__vt." (type-mangle-token concrete-ty) "." proto))
-            vname:Symbol (symbol-intern (fstr "@" vbare)))
-        (if (symbol-none? drp)
-          (emit g-out vname " = internal constant { ptr, ptr } { ptr " inv ", ptr null }")
-          (emit g-out vname " = internal constant { ptr, ptr } { ptr " inv ", ptr " drp " }"))
+    (let (k:i32 1
+          ms:ptr (arena-alloc (* 2 (ptr-bytes))))
+      (if (= proto "Fn")
+        (do
+          (set! (aref (unsafe/cast &Symbol ms) 0) (vtable-invoke-irname concrete-ty))
+          (when (symbol-none? (aref (unsafe/cast &Symbol ms) 0))
+            (die-at line (fstr "type-erasure: no invoke thunk for boxed type "
+                               (type-display concrete-ty)))))
+        (do
+          (set! k (-> (dyn-resolve-protocol proto line) (_ 'num-sigs)))
+          (set! ms (dyn-vtable-method-irnames concrete-ty box-ty line))))
+      (let (drp:Symbol (vtable-drop-irname concrete-ty)
+            vbare:StrView (sanitize-for-ir (fstr "__vt." (type-mangle-token concrete-ty) "." proto
+                                                 (string-as-view &atok)))
+            vname:Symbol (symbol-intern (fstr "@" vbare))
+            sl:StrView (vtable-slot-ir)
+            init:String (str-alloc g-arena "{ " sl " " (vtable-slot-text (aref (unsafe/cast &Symbol ms) 0))
+                                   ", " sl " " (vtable-slot-text drp)))
+        (dotimes (i (- k 1))
+          (str-into init ", " sl " " (vtable-slot-text (aref (unsafe/cast &Symbol ms) (+ i 1)))))
+        (emit g-out vname " = internal constant " (vtable-ir-type (+ k 1)) " " (string-as-view &init) " }")
         (when (!= (ir-sections-on) 0)
           (emit g-out ",")
           (write-ir-section g-out ".rodata" (symbol-as-view vname)))
         (emit g-out "\n\n")
         (vtable-memo-put key vname)
-        (return vname)))))
+        (return vname))))))
 
 ; ============================================================
 ; Stage 13 type-erasure TE-3 — the boxing coercion at assignment into an
@@ -9652,7 +9845,8 @@
     (when (not (symbol-none? proto-name))
       (when (!= (derive-closure-conformance concrete-ty proto-name line) 0)
         (return 1))
-      (when (!= (conformance-lookup (type-spelling concrete-ty) proto-name) 0)
+      ; Promise-aware, so a box built above its `extend` is admitted (§3.2).
+      (when (conformance-known (type-spelling concrete-ty) proto-name)
         (return 1)))
     (return 0)))
 
@@ -9789,7 +9983,7 @@
         (die-at line (fstr "BoxedFn: type '" (type-display env-ty)
                            "' has no invoke method (not a closure)")))
       ; (2) The static per-type vtable (TE-2): one @__vt.<env>.Fn global.
-      (let (vname:Symbol (ensure-vtable-for env-ty (symbol-intern "Fn") line))
+      (let (vname:Symbol (ensure-vtable-for env-ty (symbol-intern "Fn") null line))
         ; (TE-4) Ensure the box is Drop-conforming: record the (box, Drop)
         ; conformance and emit the shared @__boxedfn_drop thunk (lazy, once per
         ; module) so a with/scope-exit drop of this box runs vtable.drop + frees.
@@ -9848,29 +10042,157 @@
 (defn emit-box-value (v:?&Val box-ty:?&Type scope:&Scope line:i32):&Val
   (let (vv:(ptr Val) v
         vt:&Type (unsafe/cast &Type (vv 'type))
-        proto:Symbol (dyn-proto-of box-ty))
+        proto:Symbol (dyn-proto-of box-ty)
+        subj:StrView (dyn-subject box-ty))
+    (when (dyn-borrowed? (dyn-receiver-box (as ptr vt)))
+      (dyn-refuse-borrow-to-owner (dyn-receiver-box (as ptr vt)) box-ty line))
     (when (or (!= (vt 'kind) TY-PTR) (= (vt 'elem) null)
               (!= (-> (vt 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
-      (die-at line "(dyn P): can only box a concrete struct value (a (ref Struct))"))
+      (die-at line (fstr subj ": can only box a concrete struct value (a (ref Struct))")))
     (let (struct-ty:ptr (vt 'elem))
-      ; (0) The protocol must exist before "does this type conform to it?" is a
-      ;     meaningful question — otherwise an undeclared `P` is reported as a
-      ;     conformance failure. Shared with dyn-vtable-method-irname's backstop.
-      ;     B6: a KEY lookup — `proto` is the box's canonical name, and the scope
-      ;     question was already asked at the annotation site.
-      (dyn-resolve-protocol proto line)
-      ; (1) Nominal conformance admission (the dormant path in admit-erased-
-      ;     conformance fires now that a protocol name is supplied).
-      (when (= (admit-erased-conformance struct-ty box-ty proto line) 0)
-        (die-at line (fstr "(dyn " proto "): type '" (type-display struct-ty)
-                           "' does not conform to the protocol")))
+      (dyn-admit struct-ty box-ty line)
+      ; §3.5 (Q5): the box drops its copy, so a reference's referent would be
+      ; dropped by its owner too.
+      (when (and (not (vv 'fresh)) (not (symbol-none? (vtable-drop-irname struct-ty))))
+        (die-at line
+          (fstr subj ": boxing copies the value, and '" (type-display struct-ty)
+                "' has a drop, so this reference's owner and the box would both drop it -- borrow it as "
+                (dyn-borrow-subject box-ty) ", or box an owned value: a struct literal or (move x)")))
       ; (2) The static per-(type,P) vtable (TE-2): one @__vt.<type>.<P> global.
-      (let (vname:Symbol (ensure-vtable-for struct-ty proto line))
+      (let (vname:Symbol (ensure-vtable-for struct-ty proto box-ty line))
         ; (TE-4) Register the box's Drop (shared @__boxedfn_drop thunk).
         (ensure-box-drop-fn box-ty line)
         ; (3+4) Heap-move the value by value and build the fat pointer.
         (return (emit-box-struct-move v (unsafe/cast (ptr StructDef) (-> struct-ty (unsafe/cast &Type _) (_ 'sdef)))
                                       box-ty vname scope line))))))
+
+; May `struct-ty` go in a box of `box-ty`? Asked by both kinds of box.
+(defn dyn-admit (struct-ty:?&Type box-ty:?&Type line:i32):void
+  (let (proto:Symbol (dyn-proto-of box-ty)
+        subj:StrView (dyn-subject box-ty))
+    ; (0) The protocol must exist before "does this type conform to it?" is a
+    ;     meaningful question — otherwise an undeclared `P` is reported as a
+    ;     conformance failure. Shared with dyn-vtable-method-irname's backstop.
+    ;     B6: a KEY lookup — `proto` is the box's canonical name, and the scope
+    ;     question was already asked at the annotation site.
+    (dyn-require-boxable (dyn-resolve-protocol proto line) (dyn-nargs-of box-ty) (dyn-borrowed? box-ty)
+                         subj line)
+    ; (1) Nominal conformance admission (the dormant path in admit-erased-
+    ;     conformance fires now that a protocol name is supplied).
+    (when (= (admit-erased-conformance struct-ty box-ty proto line) 0)
+      (die-at line (fstr subj ": type '" (type-display struct-ty)
+                         "' does not conform to the protocol")))
+    (dyn-require-app-args struct-ty box-ty line)))
+
+; `{data, vt}` as a value of box type `box-ty`.
+(defn emit-box-pair (data:StrView vt:StrView box-ty:?&Type):&Val
+  (let (bir:StrView (type-to-ir box-ty)
+        a:StrView (new-tmp)
+        b:StrView (new-tmp))
+    (emit g-body-stream "  " a " = insertvalue " bir " undef, ptr " data ", 0\n")
+    (emit g-body-stream "  " b " = insertvalue " bir " " a ", ptr " vt ", 1\n")
+    (return (alloc-val box-ty b))))
+
+; §4.3: `v` into a `(dyn &P)` slot. A box of the same application passes through
+; (an owning one as a view of its two words); a struct is borrowed where it lies,
+; and the box keeps the address's taint (§4.4).
+(defn emit-borrow-into (v:&Val box-ty:?&Type scope:&Scope line:i32):&Val
+  (let (subj:StrView (dyn-subject box-ty)
+        src:&Val v
+        vt:(ptr Type) (v 'type)
+        through:bool false)
+    ; Through a pointer to a box: load it, so `&Alloc` never wraps a box in a box.
+    (when (and (= (vt 'kind) TY-PTR) (!= (dyn-canonical (vt 'elem)) null))
+      (require-derefable (as ?&Type vt) line subj)
+      (let (lv:StrView (new-tmp)
+            bt:&Type (unsafe/cast &Type (vt 'elem)))
+        (emit-load lv (type-to-ir bt) (v 'val) bt)
+        (set! src (alloc-val bt lv))
+        (set! through true)
+        (set! vt bt)))
+    (let (have:ptr (dyn-canonical vt))
+      (when (!= have null)
+        (when (dyn-borrowed? have)
+          (box-require-same-kind have box-ty line)
+          (return src))
+        (dyn-require-view have box-ty line)
+        (let (data:StrView (new-tmp)
+              vtp:StrView (new-tmp)
+              bir:StrView (type-to-ir have))
+          (emit g-body-stream "  " data " = extractvalue " bir " " (src 'val) ", 0\n")
+          (emit g-body-stream "  " vtp " = extractvalue " bir " " (src 'val) ", 1\n")
+          (let (b:&Val (emit-box-pair data vtp box-ty))
+            ; A view lives as long as the box, so it takes `&box`'s taint.
+            (cond
+              through (val-copy-taint b v)
+              (!= (v 'lvalue-sym) null)
+                (val-copy-taint b (binding-address-val (unsafe/cast &Sym (v 'lvalue-sym))))
+              true (val-copy-taint b v))
+            (return b)))))
+    (when (= (vt 'kind) TY-STRUCT)
+      (when (= (v 'lvalue-sym) null)
+        (die-at line (fstr subj ": a value with no address cannot be borrowed -- bind it to a name first")))
+      (set! src (binding-address-val (unsafe/cast &Sym (v 'lvalue-sym))))
+      (set! vt (src 'type)))
+    (when (= (vt 'kind) TY-PTR)
+      (when (= (vt 'pkind) PTR-MAYBE)
+        (die-at line (fstr subj ": " (type-display (as ?&Type vt)) " may be null -- narrow it first")))
+      (when (!= (vt 'pkind) PTR-REF)
+        (die-at line (fstr subj ": a borrowing box is never null, and " (type-display (as ?&Type vt))
+                           " is unchecked -- convert it with (as &T ...) first"))))
+    (when (or (!= (vt 'kind) TY-PTR) (= (vt 'elem) null)
+              (!= (-> (vt 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
+      (die-at line (fstr subj ": can only borrow a struct (a &T, or a binding of type T), not "
+                         (value-type-display v))))
+    (let (struct-ty:ptr (vt 'elem))
+      (dyn-admit struct-ty box-ty line)
+      (let (b:&Val (emit-box-pair (src 'val)
+                                  (symbol-as-view (ensure-vtable-for struct-ty (dyn-proto-of box-ty) box-ty line))
+                                  box-ty))
+        (val-copy-taint b src)
+        (return b)))))
+
+; An owning box is viewed as borrowing only for its own application.
+(defn dyn-require-view (have:ptr want:?&Type line:i32):void
+  (let (a:&DynEntry (unsafe/cast &DynEntry (dyn-entry-of have))
+        b:&DynEntry (unsafe/cast &DynEntry (dyn-entry-of (as ptr want)))
+        same:bool (and (= (a 'proto) (b 'proto)) (= (dyn-nargs-of have) (dyn-nargs-of (as ptr want)))))
+    (when same
+      (dotimes (i (dyn-nargs-of have))
+        (when (= (type-eq (aref (unsafe/cast &ptr (a 'arg-types)) i) (aref (unsafe/cast &ptr (b 'arg-types)) i)) 0)
+          (set! same false))))
+    (when (not same)
+      (die-at line
+        (fstr "type mismatch: a " (box-spelling (as ?&Type have)) " value cannot be used where "
+              (box-spelling want) " is required")))))
+
+(defn dyn-refuse-borrow-to-owner (have:ptr want:?&Type line:i32):void
+  (die-at line
+    (fstr (box-spelling want) ": a " (box-spelling (as ?&Type have))
+          " is a borrow and cannot become an owning box -- declare the slot "
+          (box-spelling (as ?&Type have)) ", or box an owned value")))
+
+; A conformance to a parametric protocol carries its arguments, and they must be
+; the box's: `(extend Foo (Iterator i32))` admits `(dyn (Iterator i32))` only.
+(defn dyn-require-app-args (struct-ty:?&Type box-ty:?&Type line:i32):void
+  (when (= (dyn-nargs-of box-ty) 0) (return))
+  (let (de:&DynEntry (unsafe/cast &DynEntry (dyn-entry-of box-ty))
+        n:i32 0
+        have:?&(Vector Symbol) (conformance-args (type-spelling struct-ty) (de 'proto) (as ptr &n)))
+    (when (= (conformance-args-eq have (de 'args)) 0)
+      (die-at line
+        (fstr (dyn-subject box-ty) ": type '" (type-display struct-ty) "' conforms to "
+              (dyn-app-display (de 'proto) have line) ", not "
+              (dyn-app-display (de 'proto) (de 'args) line))))))
+
+; `(P arg…)` for a protocol key and its argument spellings, as a message names it.
+(defn dyn-app-display (proto:Symbol args:?&(Vector Symbol) line:i32):StrView
+  (let (s:String (str-alloc g-arena "(" (display-key proto)))
+    (when (!= args null)
+      (doseq (a (unsafe/cast &(Vector Symbol) args) (VecIter Symbol))
+        (str-into s " " (key-display a line))))
+    (str-into s ")")
+    (return (string-as-view &s))))
 
 ; Coercion chokepoint: if `target` is an erased slot — a `(BoxedFn …)` (structural
 ; closure box) or a `(dyn P)` (nominal value box) — and `v` is not already a box of
@@ -9882,9 +10204,16 @@
 ; StructDef is named `__dyn.<P>`, which is an IR spelling, not a source one),
 ; the ordinary type spelling otherwise.
 (defn box-spelling (canon:?&Type):Symbol
-  (let (p:Symbol (dyn-proto-of (as ptr canon)))
-    (when (not (symbol-none? p)) (return (symbol-intern (fstr "(dyn " p ")"))))
-    (return (type-spelling canon))))
+  (when (not (symbol-none? (dyn-proto-of (as ptr canon))))
+    (return (symbol-intern (dyn-spelling (as ptr canon) (if (dyn-borrowed? (as ptr canon)) "&" "")))))
+  (return (type-spelling canon)))
+
+; `sdef-display`'s answer for a box StructDef, or none: `__dyn.P` is an IR name.
+(defn dyn-sdef-spelling (sd:ptr):Symbol
+  (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
+    (let (e:&DynEntry (invoke g-dyn-table i:usize))
+      (when (= ((e 'ty) 'sdef) sd) (return (box-spelling (e 'ty))))))
+  (return (symbol-none)))
 
 ; Stage 15 B6: the erased-slot coercion's missing type check. TE-3 returned an
 ; existing box untouched whenever the target was *a* box of the same flavour,
@@ -9896,6 +10225,9 @@
 ; the same memo, so `type-eq` here is the box-identity question exactly.
 (defn box-require-same-kind (have:?&Type want:?&Type line:i32):void
   (when (!= (type-eq have want) 0) (return))
+  (when (and (dyn-borrowed? (as ptr have)) (not (dyn-borrowed? (as ptr want)))
+             (not (symbol-none? (dyn-proto-of (as ptr want)))))
+    (dyn-refuse-borrow-to-owner (as ptr have) want line))
   (die-at line
     (fstr "type mismatch: a " (box-spelling have) " value cannot be used where "
           (box-spelling want) " is required")))
@@ -9910,6 +10242,8 @@
           (return (unsafe/cast &Val v)))
         (return (emit-box-closure v bcanon scope line))))
     (let (dcanon:ptr (dyn-canonical target))
+      (when (dyn-borrowed? dcanon)
+        (return (emit-borrow-into v dcanon scope line)))
       (when (!= dcanon null)
         (let (vcanon:ptr (dyn-canonical (v 'type)))
           ; Already a (dyn P) box — pass through, but only if it is a box of the
@@ -9940,7 +10274,7 @@
   ; @__boxedfn_drop thunk verbatim (drop slot at vtable index 1, free `data`).
   (let (canon:ptr (boxedfn-canonical box-ty))
     (when (= canon null) (set! canon (dyn-canonical box-ty)))
-    (when (= canon null) (return))
+    (when (or (= canon null) (dyn-borrowed? canon)) (return))
     ; Register the box's drop on the `drop` generic ONCE per box-sdef (gated on the
     ; conformance memo), so an explicit `(drop box-addr)` in user/library code — a
     ; struct's field-drop, a collection element-drop — dispatches to the shared
@@ -9969,15 +10303,15 @@
         (emit g-out " section \".text.__boxedfn_drop\""))
       (emit g-out " {\n")
       (emit g-out "entry:\n")
-      (emit g-out "  %data = load ptr, ptr %self, align 8\n")
+      (emit g-out "  %data = load ptr, ptr %self, align " (type-size ty-ptr) "\n")
       (emit g-out "  %dnull = icmp eq ptr %data, null\n")
       (emit g-out "  br i1 %dnull, label %bd_done, label %bd_live\n")
       (emit g-out "bd_live:\n")
       (emit g-out "  %vtp = getelementptr inbounds { ptr, ptr }, ptr %self, i32 0, i32 1\n")
-      (emit g-out "  %vt = load ptr, ptr %vtp, align 8\n")
-      (emit g-out "  %dslotp = getelementptr inbounds { ptr, ptr }, ptr %vt, i32 0, i32 1\n")
-      (emit g-out "  %dropfn = load ptr, ptr %dslotp, align 8\n")
-      (emit g-out "  %fnull = icmp eq ptr %dropfn, null\n")
+      (emit g-out "  %vt = load ptr, ptr %vtp, align " (type-size ty-ptr) "\n")
+      (emit g-out "  %dslotp = getelementptr inbounds " (vtable-ir-type 2) ", ptr %vt, i32 0, i32 1\n")
+      (emit g-out "  %dropfn = load " (vtable-slot-ir) ", ptr %dslotp, align " (type-size ty-ptr) "\n")
+      (emit g-out "  %fnull = icmp eq " (vtable-slot-ir) " %dropfn, null\n")
       (emit g-out "  br i1 %fnull, label %bd_free, label %bd_calldrop\n")
       (emit g-out "bd_calldrop:\n")
       (emit g-out "  call void %dropfn(ptr %data)\n")
@@ -9997,13 +10331,13 @@
   (let (c:ptr (boxedfn-canonical ty))
     (when (!= c null) (return c))
     (let (dc:ptr (dyn-canonical ty))
-      (when (!= dc null) (return dc)))
+      (when (!= dc null) (return (if (dyn-borrowed? dc) null dc))))
     (let (tt:&Type (unsafe/cast &Type ty))
       (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))
         (let (ce:ptr (boxedfn-canonical (tt 'elem)))
           (when (!= ce null) (return ce)))
         (let (de:ptr (dyn-canonical (tt 'elem)))
-          (when (!= de null) (return de)))))
+          (when (!= de null) (return (if (dyn-borrowed? de) null de))))))
     (return null)))
 
 ; Forwarding-through-vtable (§(e)): lower `(invoke box args…)` / `(box args…)` to an
@@ -10025,11 +10359,7 @@
           vt:StrView (new-tmp))
       (emit g-body-stream "  " data " = extractvalue " box-ir " " (cv 'val) ", 0\n")
       (emit g-body-stream "  " vt " = extractvalue " box-ir " " (cv 'val) ", 1\n")
-      (let (invslotp:StrView (new-tmp)
-            invfn:StrView (new-tmp))
-        (emit g-body-stream "  " invslotp " = getelementptr inbounds { ptr, ptr }, ptr " vt
-              ", i32 0, i32 0\n")
-        (emit g-body-stream "  " invfn " = load ptr, ptr " invslotp ", align 8\n")
+      (let (invfn:StrView (emit-vtable-slot-load vt 2 0))
         ; Stage 16 FP-2: the second indirect-call emitter. It coerced its
         ; arguments (unlike emit-funcall-value, which did not) but still printed
         ; each as a raw `type-to-ir`, so it carried the ABI half of the same
@@ -10044,36 +10374,32 @@
               (coerce-call-argument slot ((field-at (bt 'params) i) 'type)
                                     scope "BoxedFn call" (+ i 1) line))
             (inc! i))
-          (let ((argbuf String) (str-alloc g-arena "")
-                ret-info:&AbiInfo (abi-classify ret-ty)
-                envv:&Val (alloc-val ty-ptr data))
-            (abi-args-begin ret-info)
-            ; The environment pointer is argument zero and spends a GPR, so it
-            ; goes through abi-arg-frag like any other — printing it by hand
-            ; would leave the register budget one short for everything after it.
-            (str-into argbuf (abi-arg-frag (as ptr envv)))
-            (set! i 0)
-            (while (< i nargs)
-              (let (av:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) i)))
-                (str-into argbuf ", " (abi-arg-frag (as ptr av))))
-              (inc! i))
-            (let (arglist:StrView (string-as-view argbuf))
-              (when (!= (ret-info 'kind) ABI-DIRECT)
-                (return (abi-emit-struct-call ret-info ret-ty invfn
-                                              arglist (+ nargs 1))))
-              (when (= (-> ret-ty (unsafe/cast &Type _) (_ 'kind)) TY-VOID)
-                (emit g-body-stream "  call void " invfn "(" arglist ")\n")
-                (return (alloc-val ty-void "")))
-              (let (tmp:StrView (new-tmp))
-                (emit g-body-stream "  " tmp " = call " (type-to-ir ret-ty) " " invfn "(" arglist
-                      ")\n")
-                (return (alloc-val ret-ty tmp))))))))))
+          (return (emit-erased-call invfn data args nargs ret-ty)))))))
 
-; TE-6: the vtable slot index of protocol method `gname` on the `(dyn P)` box
+; The indirect call through a vtable slot, lowered like a direct call. `data` is
+; argument zero and spends a register, so it goes through abi-arg-frag too.
+(defn emit-erased-call (fnp:StrView data:StrView args:ptr nargs:i32 ret-ty:?&Type):&Val
+  (let ((argbuf String) (str-alloc g-arena "")
+        ret-info:&AbiInfo (abi-classify ret-ty)
+        envv:&Val (alloc-val ty-ptr data))
+    (abi-args-begin ret-info)
+    (str-into argbuf (abi-arg-frag (as ptr envv)))
+    (dotimes (i nargs)
+      (str-into argbuf ", " (abi-arg-frag (as ptr (unsafe/ptr+ (unsafe/cast &Val args) i)))))
+    (let (arglist:StrView (string-as-view argbuf))
+      (when (!= (ret-info 'kind) ABI-DIRECT)
+        (return (abi-emit-struct-call ret-info ret-ty fnp arglist (+ nargs 1))))
+      (when (= (-> ret-ty (unsafe/cast &Type _) (_ 'kind)) TY-VOID)
+        (emit g-body-stream "  call void " fnp "(" arglist ")\n")
+        (return (alloc-val ty-void "")))
+      (let (tmp:StrView (new-tmp))
+        (emit g-body-stream "  " tmp " = call " (type-to-ir ret-ty) " " fnp "(" arglist ")\n")
+        (return (alloc-val ret-ty tmp))))))
+
+; TE-6: the SIGNATURE index of protocol method `gname` on the `(dyn P)` box
 ; `box-ty`, or -1 if P declares no such method (so a generic call whose first
 ; argument is a dyn box but whose name is NOT one of P's methods falls through to
-; ordinary resolution). v1 single-method protocols always answer 0 (method0 at
-; vtable index 0; the drop slot is index 1, read verbatim by @__boxedfn_drop).
+; ordinary resolution). Its vtable index is `(dyn-slot i)`.
 (defn dyn-method-slot (box-ty:?&Type gname:Symbol):i32
   (let (proto:Symbol (dyn-proto-of box-ty))
     (when (symbol-none? proto) (return -1))
@@ -10099,39 +10425,48 @@
             (when (and (not (symbol-none? mname)) (= mname mkey)) (return i))))
         (return -1))))))
 
+; A box, or a reference to one, as a call's receiver: the box's canonical Type,
+; else null. `&box` dispatch is what a struct holding a box calls through (§3.2).
+(defn dyn-receiver-box (ty:ptr):ptr
+  (let (d:ptr (dyn-canonical ty))
+    (when (!= d null) (return d)))
+  (when (= ty null) (return null))
+  (let (tt:&Type (unsafe/cast &Type ty))
+    (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))
+      (return (dyn-canonical (tt 'elem)))))
+  (return null))
+
 ; TE-6: forward a `(dyn P)` method call `(method box args…)` through the box's
-; vtable (§(e)). `args` holds the PRE-EMITTED argument Vals (args[0] = the box,
-; args[1…] = the call args, already lowered by emit-generic-call); `slot` is the
-; method's vtable index. Extract {data,vtable} from the first-class box, load the
-; method thunk from vtable[slot], coerce each call arg to P's method signature, and
-; emit the indirect call `method(data, args…)` — `data` is the boxed value passed
-; as the method's `(ref Self)` receiver. Type-checked by the protocol method's sig;
-; its non-self params and return must be concrete (v1 object-safety: no `Self` in a
-; non-receiver position — such a method makes the protocol non-boxable).
-(defn emit-dyn-forward (box-ty:?&Type args:ptr nargs:i32 slot:i32 line:i32):&Val
+; vtable. `args` holds the PRE-EMITTED argument Vals: args[0] is the box or a
+; pointer to one, args[1…] the call's own. `sidx` is the method's signature index.
+; The receiver is `data`, which is why §3.3 admits only a pointer-to-Self receiver.
+(defn emit-dyn-forward (box-ty:?&Type args:ptr nargs:i32 sidx:i32 scope:&Scope line:i32):&Val
   (let (proto:Symbol (dyn-proto-of box-ty)
+        subj:StrView (dyn-subject box-ty)
         ; B2a: downstream of the box-construction gate (`protocol-resolve-any`).
         pp:&Protocol (unsafe/cast &Protocol (protocol-resolve-any proto))
-        sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) slot)
-        name-node:ptr (node-at sig 0)
-        params-node:ptr (node-at sig 1)
-        mname:Symbol (symbol-none)
+        sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) sidx)
+        bargs:i32 (dyn-nargs-of box-ty)
+        ; The application's arguments go in as Type markers; `Self` stays itself.
+        csig:ptr (if (= bargs 0) sig
+                   (subst-proto-sig-node sig (symbol-intern "Self") (pp 'params)
+                                         (dyn-arg-markers box-ty) bargs))
+        params-node:ptr (node-at csig 1)
+        mname:Symbol (dyn-sig-name pp sidx)
         ret-ty:ptr null
         np:i32 (- (node-len params-node) 1)
         ptys:ptr (arena-alloc (* (+ np 1) (ptr-bytes)))
         box-val:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) 0))
         box-ir:StrView (type-to-ir box-ty))
-    ; S1: a new-style protocol sig `(m (params) :ret)` carries the return at index
-    ; 2; legacy `(m:ret (params))` keeps the exact extract-name-and-type parse
-    ; (byte-identical). Object-safe (v1) methods have no `Self` in the return, so
-    ; the raw sig's return parses concretely without Self substitution.
+    (dyn-require-callable pp sidx bargs subj line)
+    (when (!= (- nargs 1) np)
+      (die-at line (fstr subj " call: " mname
+                         " expects a different number of arguments")))
+    ; A callable sig mentions Self only in the receiver, which is not parsed.
     (let (sline:i32 (if (protocol-foreign? pp) (node-line sig line) line)
           ctx:StrView (foreign-read-context (pp 'src-file) "protocol" (pp 'name) line)
           here:NameEnv (protocol-env-enter pp))
-      (if (!= (sig-name-is-bare name-node) 0)
-        (do (set! mname (-> name-node (unsafe/cast &Node _) (_ 's)))
-            (set! ret-ty (fn-parse-ret-type (node-at sig 2) sline)))
-        (set! ret-ty (extract-name-and-type name-node (as &Symbol &mname) sline)))
+      (set! ret-ty (fn-parse-ret-type (node-at csig 2) sline))
       (dotimes (i np)
         (let (pname:Symbol (symbol-none))
           (set! (aref (unsafe/cast &ptr ptys) i)
@@ -10139,51 +10474,36 @@
       (name-env-set here)
       (set! g-mono-context ctx))
     (when (= ret-ty null) (set! ret-ty ty-void))
-    (when (!= (- nargs 1) np)
-      (die-at line (fstr "(dyn " proto ") call: " mname
-                         " expects a different number of arguments")))
+    (when (= ((box-val 'type) 'kind) TY-PTR)
+      (require-derefable (box-val 'type) line (fstr subj " call: " mname))
+      (let (lv:StrView (new-tmp))
+        (emit-load lv box-ir (box-val 'val) box-ty)
+        (set! box-val (alloc-val box-ty lv))))
     (let (data:StrView (new-tmp)
           vt:StrView (new-tmp))
       (emit g-body-stream "  " data " = extractvalue " box-ir " " (box-val 'val) ", 0\n")
       (emit g-body-stream "  " vt " = extractvalue " box-ir " " (box-val 'val) ", 1\n")
-      (let (slotp:StrView (new-tmp)
-            mfn:StrView (new-tmp))
-        (emit g-body-stream "  " slotp " = getelementptr inbounds { ptr, ptr }, ptr " vt
-              ", i32 0, i32 " slot "\n")
-        (emit g-body-stream "  " mfn " = load ptr, ptr " slotp ", align 8\n")
-        ; Coerce each (already-emitted) call arg to the protocol method's non-self
-        ; param type.
-        (let (arg-vals:ptr (arena-alloc (* (+ np 1) (ptr-bytes)))
-              i:i32 0)
-          (while (< i np)
-            (let (pty:ptr (aref (unsafe/cast &ptr ptys) i)
-                  av:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) (+ i 1)))
-                  coerced:ptr (coerce-int-val (as ptr av) pty line))
-              (when (= coerced null)
-                (die-at line (fstr "(dyn " proto ") call: argument type does not match " mname
-                                   "'s signature")))
-              (set! (aref (unsafe/cast &ptr arg-vals) i) coerced))
-            (inc! i))
-          (let (ret-ir:StrView (type-to-ir ret-ty))
-            (if (= (-> ret-ty (unsafe/cast &Type _) (_ 'kind)) TY-VOID)
-              (do
-                (emit g-body-stream "  call void " mfn "(ptr " data)
-                (set! i 0)
-                (while (< i np)
-                  (let (av:&Val (unsafe/cast &Val (aref (unsafe/cast &ptr arg-vals) i)))
-                    (emit g-body-stream ", " (type-to-ir (av 'type)) " " (av 'val)))
-                  (inc! i))
-                (emit g-body-stream ")\n")
-                (return (alloc-val ty-void "")))
-              (let (tmp:StrView (new-tmp))
-                (emit g-body-stream "  " tmp " = call " ret-ir " " mfn "(ptr " data)
-                (set! i 0)
-                (while (< i np)
-                  (let (av:&Val (unsafe/cast &Val (aref (unsafe/cast &ptr arg-vals) i)))
-                    (emit g-body-stream ", " (type-to-ir (av 'type)) " " (av 'val)))
-                  (inc! i))
-                (emit g-body-stream ")\n")
-                (return (alloc-val ret-ty tmp))))))))))
+      (let (mfn:StrView (emit-vtable-slot-load vt (+ (pp 'num-sigs) 1) (dyn-slot sidx))
+            subject:StrView (fstr subj " call: " mname))
+        (dotimes (i np)
+          (coerce-call-argument (as &Val (unsafe/ptr+ (unsafe/cast &Val args) (+ i 1)))
+                                (aref (unsafe/cast &ptr ptys) i) scope subject (+ i 1) line))
+        (return (emit-erased-call mfn data (unsafe/ptr+ (unsafe/cast &Val args) 1) np ret-ty))))))
+
+; Stage 24 DP-2: a box call needs no conformer in the unit (§3.2), so a head no
+; table binds may still name a method of its first argument's box. Null if not.
+(defn emit-dyn-call-unbound (n:?&Node scope:&Scope h:Symbol):?&Val
+  (when (< (node-len n) 2) (return null))
+  (let (dbox:ptr (dyn-receiver-box (node-type (node-at n 1) scope)))
+    (when (= dbox null) (return null))
+    (let (sidx:i32 (dyn-method-slot dbox h))
+      (when (< sidx 0) (return null))
+      (let (nargs:i32 (- (node-len n) 1)
+            args:ptr (arena-alloc (* (+ nargs 1) (sizeof Val))))
+        (dotimes (i nargs)
+          (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) (emit-node (node-at n (+ i 1)) scope)
+                  (sizeof Val)))
+        (return (emit-dyn-forward dbox args nargs sidx scope ((unsafe/cast &Node n) 'line)))))))
 
 ; Stage 13 L4: emit a clone-capture closure `(vfn (params):ret body…)`.
 ;
@@ -10632,7 +10952,9 @@
             (emit-load tmp (type-to-ir (sym 'type)) (sym 'ir-name) (sym 'type))
             (emit g-body-stream "  store ptr null, ptr " (sym 'cslot) ", align 8\n")
             (set! (sym 'moved) 1)
-            (return (alloc-val (sym-effective-type sym) tmp))))
+            (let (rv:&Val (alloc-val (sym-effective-type sym) tmp))
+              (set! (rv 'fresh) true)
+              (return rv))))
         (die-at (cc 'line) (fstr "move: undefined '" tname "'"))))))
 
 ; Emit a Drop-protocol cleanup: load the resource pointer from its slot and,
@@ -10986,9 +11308,8 @@
                                   (unsafe/cast &Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
-                      coerced:ptr (coerce-int-val
-                                    (maybe-box-into-slot v ty inner (node-line bval-node (cc 'line)))
-                                    ty (node-line bval-node (cc 'line))))
+                      bv:&Val (maybe-box-into-slot v ty inner (node-line bval-node (cc 'line)))
+                      coerced:ptr (coerce-int-val bv ty (node-line bval-node (cc 'line))))
                   (when (= coerced null)
                     (note-cast-rule-near-miss (v 'type) ty)
                     (die-at (node-line bval-node (cc 'line))
@@ -11004,7 +11325,7 @@
                       ; Stage 10 escape analysis: a binding initialized from a
                       ; tainted value aliases the same resource (§2.2). Stage 13
                       ; L1: also inherit the frame-region flag.
-                      (sym-adopt-taint sym v ty)
+                      (sym-adopt-taint sym (box-taint-source v bv ty) ty)
                       ; Narrowing: a ?T binding initialized with a known
                       ; non-null value starts narrowed (parity with set!).
                       (when (and (= (ptr-pkind ty) PTR-MAYBE)
@@ -11084,9 +11405,8 @@
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
                       ; (TE-4 wires the box's Drop; for now an unboxed with-binding
                       ; of a BoxedFn is non-owning — with-drop-method box-ty = null.)
-                    coerced:ptr (coerce-int-val
-                                 (maybe-box-into-slot v ty inner (node-line bval-node (cc 'line)))
-                                 ty (node-line bval-node (cc 'line))))
+                    bv:&Val (maybe-box-into-slot v ty inner (node-line bval-node (cc 'line)))
+                    coerced:ptr (coerce-int-val bv ty (node-line bval-node (cc 'line))))
                 (when (= coerced null)
                   (note-cast-rule-near-miss (v 'type) ty)
                   (die-at (node-line bval-node (cc 'line))
@@ -11157,7 +11477,7 @@
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
                         true
-                          (sym-adopt-taint sym v ty)))
+                          (sym-adopt-taint sym (box-taint-source v bv ty) ty)))
                     (when (and (= (ptr-pkind ty) PTR-MAYBE)
                                (= (ptr-pkind (v 'type)) PTR-REF))
                       (narrow-apply inner name)))))))
@@ -11554,11 +11874,13 @@
                    ; TC-2: arm the want channel with the slot's declared type so a
                    ; generic constructor on the RHS infers a return-only tyvar.
                    ; TC-5: target-type the RHS (union construction w/o explicit make).
-                   (let (save-want:ptr g-want-type)
-                     (set! g-want-type (sym 'type))
-                     (let (vv:&Val (emit-node (union-target-rewrite (node-at cc 2) (sym 'type)) scope))
-                       (set! g-want-type save-want)
-                       vv))
+                   (maybe-box-into-slot
+                     (let (save-want:ptr g-want-type)
+                       (set! g-want-type (sym 'type))
+                       (let (vv:&Val (emit-node (union-target-rewrite (node-at cc 2) (sym 'type)) scope))
+                         (set! g-want-type save-want)
+                         vv))
+                     (sym 'type) scope (cc 'line))
                  coerced:?&Val (coerce-int-val v (sym 'type) (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line)
@@ -12036,7 +12358,8 @@
                         slot ", i64 " k "\n")
                   (let (vp:ptr (aref (unsafe/cast &ptr vals) k))
                     (if (= vp null)
-                        (emit-zero-store etype gep null)
+                        (do (require-zero-value etype (fstr "array: element " k " is not set") (cc 'line))
+                            (emit-zero-store etype gep null))
                         (let (cv:&Val (unsafe/cast &Val vp))
                           (emit g-body-stream "  store " etype-ir " " (cv 'val) ", ptr " gep
                                 "\n"))))))
@@ -12096,7 +12419,8 @@
                   (fstr "struct literal: field '" (fname-node 's) "' specified twice")))
               (set! (aref (unsafe/cast &i32 seen) fidx) 1)
               (let (ftype:ptr ((field-at (sdef 'fields) fidx) 'type)
-                    v:&Val (emit-node (arg-target-rewrite vexpr ftype) scope)
+                    v:&Val (maybe-box-into-slot (emit-node (arg-target-rewrite vexpr ftype) scope)
+                                                ftype scope (cc 'line))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line)
@@ -12109,7 +12433,8 @@
               (when (>= pos-idx nfields)
                 (die-at (node-line (as ptr arg) (cc 'line)) "struct literal: too many positional initializers"))
               (let (ftype:ptr ((field-at (sdef 'fields) pos-idx) 'type)
-                    v:&Val (emit-node (arg-target-rewrite arg ftype) scope)
+                    v:&Val (maybe-box-into-slot (emit-node (arg-target-rewrite arg ftype) scope)
+                                                ftype scope (cc 'line))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line) "struct literal: type mismatch for positional initializer"))
@@ -12144,7 +12469,10 @@
                 (emit g-body-stream "  " gep " = getelementptr inbounds %" sname ", ptr " slot
                       ", i32 0, i32 " (field-ir-index sdef k) "\n")
                 (if (= vp null)
-                    (emit-zero-store ftype gep sdef)
+                    (do (require-zero-value ftype
+                          (fstr "struct literal: field '" (f 'name) "' of " (sdef-display sdef) " is not set")
+                          (cc 'line))
+                        (emit-zero-store ftype gep sdef))
                     (let (cv:&Val (unsafe/cast &Val vp))
                       (emit g-body-stream "  store " ftype-ir " " (cv 'val) ", ptr " gep
                             (packed-align-suffix sdef) "\n")))))))
@@ -12156,6 +12484,7 @@
           (set! (pt 'pkind) PTR-REF)
           (let (rv:&Val (alloc-val (as ptr pt) slot))
             (val-taint-frame rv scope)
+            (set! (rv 'fresh) true)
             (return rv)))))))
 
 ; ============================================================
@@ -12523,11 +12852,11 @@
       ; (an indirect call `method(data, args…)`). Inert otherwise (the compiler boxes
       ; nothing; dyn-canonical is null at every call site during self-compilation).
       (when (> nargs 0)
-        (let (dbox:ptr (dyn-canonical (aref (unsafe/cast &ptr argtypes) 0)))
+        (let (dbox:ptr (dyn-receiver-box (aref (unsafe/cast &ptr argtypes) 0)))
           (when (!= dbox null)
-            (let (slot:i32 (dyn-method-slot dbox (g 'name)))
-              (when (>= slot 0)
-                (return (emit-dyn-forward dbox args nargs slot (nn 'line))))))))
+            (let (sidx:i32 (dyn-method-slot dbox (g 'name)))
+              (when (>= sidx 0)
+                (return (emit-dyn-forward dbox args nargs sidx scope (nn 'line))))))))
       (let (m:&Method (generic-resolve g argtypes arg-nodes nargs (nn 'line) want scope))
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line)))))))
@@ -13407,6 +13736,7 @@
         (if-some (ut (union-lit-type head ((unsafe/cast &Node n) 'line)))
           (return (emit-union-lit n scope ut 1))
           0))
+      (when-some (dv (emit-dyn-call-unbound n scope h)) (return dv))
       (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h)))))
 
 ; Emit the head-position meaning of one table row's hit. Split out of
@@ -14433,7 +14763,16 @@
     (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (< (node-len (as ptr nn)) 1) (return 0))
     (let (hd:?&Node (node-at (as ptr nn) 0))
-      (when (or (= hd null) (!= (hd 'kind) NODE-SYM)) (return 0))
+      (when (= hd null) (return 0))
+      ; `((Vector ui8) …)` names its stamp; a head that is not a template stays an expression.
+      (when (= (hd 'kind) NODE-LIST)
+        (let (hcar:ptr:Node (node-first (as ptr hd)))
+          (when (or (!= (node-kind hcar) NODE-SYM)
+                    (= (as ptr (struct-template-lookup-ref (hcar 's))) null))
+            (return 0))
+          (let (t:&Type (parse-type-from-node (as ptr hd) (node-line (as ptr nn) 0)))
+            (return (if (and (= (t 'kind) TY-STRUCT) (= (t 'sdef) (as ptr sd))) 1 0)))))
+      (when (!= (hd 'kind) NODE-SYM) (return 0))
       (when (= (struct-lookup-ref (hd 's)) (as ptr sd)) (return 1))
       (return 0))))
 
@@ -14513,6 +14852,161 @@
         (set! @out-len n))
       (return ety))))
 
+; Designated `(field value)` initializers first, so positional fills skip them, as
+; emit-struct-lit orders them in value position.
+(defn const-struct-place (init:?&Node sd:(ptr StructDef) encl:i32):ptr
+  (let (nfields:i32 (sd 'num-fields)
+        nargs:i32 (- (node-len (as ptr init)) 1)
+        slots:ptr (arena-alloc (* (+ nfields 1) (ptr-bytes)))
+        pos-idx:i32 0)
+    (when (> nargs nfields)
+      (die-at (node-line init encl)
+        (fstr "defvar: too many initializers for struct '" (sd 'name) "'")))
+    (dotimes (i nfields) (set! (aref (unsafe/cast &ptr slots) i) null))
+    ; Designated `(field value)` first, so positional fills skip them —
+    ; the same order emit-struct-lit uses in value position.
+    (dotimes (i nargs)
+      (let (arg:?&Node (node-at (as ptr init) (+ 1 i))
+            aline:i32 (node-line (as ptr arg) encl))
+        (when (!= (struct-lit-designated sd arg null) 0)
+          (let (fnn:&Node (unsafe/cast &Node (node-at (as ptr arg) 0))
+                fidx:i32 (struct-field-idx (as ptr sd) (fnn 's)))
+            (when (< fidx 0)
+              (die-at aline (fstr "defvar: no field '" (fnn 's) "' on struct '" (sdef-display sd)
+                                  "'")))
+            (when (!= (aref (unsafe/cast &ptr slots) fidx) null)
+              (die-at aline (fstr "defvar: field '" (fnn 's) "' specified twice")))
+            (set! (aref (unsafe/cast &ptr slots) fidx) (node-at (as ptr arg) 1))))))
+    (dotimes (i nargs)
+      (let (arg:?&Node (node-at (as ptr init) (+ 1 i))
+            aline:i32 (node-line (as ptr arg) encl))
+        (when (= (struct-lit-designated sd arg null) 0)
+          (while (and (< pos-idx nfields)
+                      (!= (aref (unsafe/cast &ptr slots) pos-idx) null))
+            (inc! pos-idx))
+          (when (>= pos-idx nfields)
+            (die-at aline
+              (fstr "defvar: too many positional initializers for struct '" (sdef-display sd) "'")))
+          (set! (aref (unsafe/cast &ptr slots) pos-idx) (as ptr arg))
+          (inc! pos-idx))))
+    (return slots)))
+
+; §4.6: the global a `(dyn &P)` initializer borrows, written `&g` or `g`, when that
+; is a link-time constant; null sends the initializer to startup.
+(defn dyn-borrow-const-target (init:?&Node):?&Sym
+  (when (= init null) (return null))
+  (let (n:&Node (unsafe/cast &Node init)
+        tn:?&Node (if (= (n 'kind) NODE-SYM) init null))
+    (when (and (= (n 'kind) NODE-LIST) (= (node-len (as ptr n)) 2) (= (node-at (as ptr n) 0) 'ref))
+      (set! tn (node-at (as ptr n) 1)))
+    (when (or (= tn null) (!= (tn 'kind) NODE-SYM)) (return null))
+    (let (sym:?&Sym (scope-lookup g-globals (tn 's)))
+      (when (= sym null) (return null))
+      (when (or (!= (sym 'is-const) 0) (symbol-none? (symbol-intern (sym 'ir-name)))) (return null))
+      (let (st:?&Type (sym 'type))
+        (when (or (= st null) (!= (st 'kind) TY-STRUCT)
+                  (!= (dyn-canonical (as ptr st)) null) (!= (boxedfn-canonical (as ptr st)) null))
+          (return null))
+        (return sym)))))
+
+; `{ ptr @g, ptr @__vt.T.P }`. Emits the vtable to `g-out`, so it runs before the
+; global's own line opens (`defvar-const-vtables`).
+(defn dyn-borrow-const-ir (init:?&Node box-ty:?&Type encl:i32):StrView
+  (let (line:i32 (node-line init encl)
+        sym:?&Sym (dyn-borrow-const-target init))
+    (when (= sym null)
+      (die-at line (fstr "defvar: a constant " (box-spelling box-ty)
+                         " borrows a global struct -- write &NAME")))
+    (dyn-admit (sym 'type) box-ty line)
+    (return (fstr "{ ptr " (sym 'ir-name) ", ptr "
+                  (ensure-vtable-for (sym 'type) (dyn-proto-of (as ptr box-ty)) box-ty line) " }"))))
+
+; The borrowing box a value of `ty` holds, at any depth of fields and elements.
+(defn type-dynref-in (ty:?&Type):?&Type
+  (when (= ty null) (return null))
+  (when (dyn-borrowed? (as ptr ty)) (return ty))
+  (let (tt:&Type (unsafe/cast &Type ty))
+    (when (= (tt 'kind) TY-ARRAY) (return (type-dynref-in (tt 'elem))))
+    (when (and (= (tt 'kind) TY-STRUCT) (!= (tt 'sdef) null))
+      (let (sd:(ptr StructDef) (tt 'sdef))
+        (when (or (!= (sd 'is-union) 0) (!= (dyn-canonical (as ptr ty)) null)) (return null))
+        (dotimes (i (sd 'num-fields))
+          (let (b:?&Type (type-dynref-in ((field-at (sd 'fields) i) 'type)))
+            (when (!= b null) (return b)))))))
+  (return null))
+
+(defn type-embeds-dynref? (ty:?&Type):bool
+  (return (!= (type-dynref-in ty) null)))
+
+; A borrowing box is non-null like `&T`, so neither it nor a value holding one
+; has a zero value (dyn-arbitrary-protocols.md §7 Q3; overview.md §9 AL-5).
+(defn require-zero-value (ty:?&Type what:StrView line:i32):void
+  (let (box:?&Type (type-dynref-in ty))
+    (when (= box null) (return))
+    (die-at line
+      (fstr (fstr what ", and "
+                  (if (= (as ptr box) (as ptr ty))
+                    (fstr "a " (type-display box) " has no zero value")
+                    (fstr "a " (type-display ty) " has no zero value: it holds a " (type-display box))))
+            "\n"
+            "  note: give it a value; a collection or allocator is built with (make T a) from nucleus.create, or by `init` in place"))))
+
+; A constant aggregate is streamed in one line, so each borrowing box's vtable is
+; emitted ahead of it by this walk over the same shapes `defvar-write-const` takes.
+(defn defvar-const-vtables (init:?&Node ty:?&Type encl:i32):void
+  (when (or (= init null) (not (type-embeds-dynref? ty))) (return))
+  (when (dyn-borrowed? (as ptr ty))
+    (dyn-borrow-const-ir init ty encl)
+    (return))
+  (let (tt:(ptr Type) ty)
+    (when (and (= (tt 'kind) TY-ARRAY) (!= (const-array-lit? init) 0))
+      (let (n:i32 (tt 'arr-len)
+            slots:ptr (arena-alloc (* (+ n 1) (ptr-bytes))))
+        (dotimes (i n) (set! (aref (unsafe/cast &ptr slots) i) null))
+        (const-array-place init slots n encl)
+        (dotimes (i n)
+          (let (slot:?&Node (as ?&Node (aref (unsafe/cast &ptr slots) i)))
+            (when (!= slot null)
+              (if (and (= (slot 'kind) NODE-LIST) (= (node-len (as ptr slot)) 2)
+                       (!= (node-at (as ptr slot) 0) null)
+                       (= (-> (node-at (as ptr slot) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-INT))
+                (defvar-const-vtables (as ?&Node (node-at (as ptr slot) 1)) (tt 'elem) encl)
+                (defvar-const-vtables slot (tt 'elem) encl)))))))
+    (when (and (= (tt 'kind) TY-STRUCT) (!= (const-struct-lit? init (tt 'sdef)) 0))
+      (let (sd:(ptr StructDef) (tt 'sdef)
+            slots:ptr (const-struct-place init sd encl))
+        (dotimes (i (sd 'num-fields))
+          (defvar-const-vtables (as ?&Node (aref (unsafe/cast &ptr slots) i))
+                                ((field-at (sd 'fields) i) 'type) encl))))))
+
+; Does a constant struct literal give a box field a value, at any depth? A box is
+; built at run time (it allocates), so such a `defvar` initializes at startup.
+; A borrowing box of a global's address is the exception: it is a constant (§4.6).
+(defn const-lit-boxes? (init:?&Node ty:?&Type encl:i32):bool
+  (let (tt:(ptr Type) ty)
+    (when (or (!= (tt 'kind) TY-STRUCT) (= (const-struct-lit? init (tt 'sdef)) 0)) (return false))
+    (let (sd:(ptr StructDef) (tt 'sdef)
+          slots:ptr (const-struct-place init sd encl))
+      (dotimes (i (sd 'num-fields))
+        (let (slot:?&Node (as ?&Node (aref (unsafe/cast &ptr slots) i))
+              ft:?&Type ((field-at (sd 'fields) i) 'type))
+          (when (!= slot null)
+            (if (dyn-borrowed? (as ptr ft))
+              (when (= (dyn-borrow-const-target slot) null)
+                ; The startup path would borrow the literal's slot, and a struct
+                ; literal does not carry its fields' taint to the `defvar` sink.
+                (when (and (= (slot 'kind) NODE-LIST) (= (node-kind (node-at (as ptr slot) 0)) NODE-SYM)
+                           (!= (struct-lookup-ref (-> (node-at (as ptr slot) 0) (unsafe/cast &Node _) (_ 's)))
+                               null))
+                  (die-at (node-line slot encl)
+                    (fstr "defvar: a " (box-spelling ft)
+                          " field cannot borrow a struct literal, which lives only while the initializer runs -- borrow a global: &NAME")))
+                (return true))
+              (when (or (!= (dyn-canonical ft) null) (!= (boxedfn-canonical ft) null)
+                        (const-lit-boxes? slot ft encl))
+                (return true))))))
+      (return false))))
+
 ; Write the LLVM constant for a value of type `ty` initialized by `init`.
 ; Aggregates stream their bracketed/braced element list; everything else defers
 ; to defvar-init-ir, so every scalar rule (integer folding, range checks, float
@@ -14544,7 +15038,9 @@
             (emit g-out ety-ir " ")
             (let (slot:?&Node (as ?&Node (aref (unsafe/cast &ptr slots) i)))
               (if (= slot null)
-                (emit g-out (type-zero-const-ir ety))
+                (do (require-zero-value ety (fstr "defvar: array element " i " is not set")
+                                        (node-line init encl))
+                    (emit g-out (type-zero-const-ir ety)))
                 ; A designated element is the cell `(index value)`; a positional
                 ; one is the value itself.
                 (if (and (= (slot 'kind) NODE-LIST) (= (node-len (as ptr slot)) 2)
@@ -14559,6 +15055,9 @@
       (let (id:i32 (intern-string (symbol-as-view ((unsafe/cast &Node init) 's))))
         (emit g-out "{ ptr @.str." id ", " (ptr-int-ir) " " ((invoke g-strs (as usize id)) 'len) " }")
         (return)))
+    (when (dyn-borrowed? (as ptr ty))
+      (emit g-out (dyn-borrow-const-ir init ty encl))
+      (return))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION))
       (let (sd:(ptr StructDef) (tt 'sdef))
         (when (= (const-struct-lit? init sd) 0)
@@ -14571,39 +15070,7 @@
                   "' is a union -- a constant union initializer has no unambiguous member; leave it zero-initialized and assign a member at run time")))
         (reject-cycle-pending-sdef sd (node-line init encl) "struct literal")
         (let (nfields:i32 (sd 'num-fields)
-              nargs:i32 (- (node-len (as ptr init)) 1)
-              slots:ptr (arena-alloc (* (+ nfields 1) (ptr-bytes)))
-              pos-idx:i32 0)
-          (when (> nargs nfields)
-            (die-at (node-line init encl)
-              (fstr "defvar: too many initializers for struct '" (sd 'name) "'")))
-          (dotimes (i nfields) (set! (aref (unsafe/cast &ptr slots) i) null))
-          ; Designated `(field value)` first, so positional fills skip them —
-          ; the same order emit-struct-lit uses in value position.
-          (dotimes (i nargs)
-            (let (arg:?&Node (node-at (as ptr init) (+ 1 i))
-                  aline:i32 (node-line (as ptr arg) encl))
-              (when (!= (struct-lit-designated sd arg null) 0)
-                (let (fnn:&Node (unsafe/cast &Node (node-at (as ptr arg) 0))
-                      fidx:i32 (struct-field-idx (as ptr sd) (fnn 's)))
-                  (when (< fidx 0)
-                    (die-at aline (fstr "defvar: no field '" (fnn 's) "' on struct '" (sdef-display sd)
-                                        "'")))
-                  (when (!= (aref (unsafe/cast &ptr slots) fidx) null)
-                    (die-at aline (fstr "defvar: field '" (fnn 's) "' specified twice")))
-                  (set! (aref (unsafe/cast &ptr slots) fidx) (node-at (as ptr arg) 1))))))
-          (dotimes (i nargs)
-            (let (arg:?&Node (node-at (as ptr init) (+ 1 i))
-                  aline:i32 (node-line (as ptr arg) encl))
-              (when (= (struct-lit-designated sd arg null) 0)
-                (while (and (< pos-idx nfields)
-                            (!= (aref (unsafe/cast &ptr slots) pos-idx) null))
-                  (inc! pos-idx))
-                (when (>= pos-idx nfields)
-                  (die-at aline
-                    (fstr "defvar: too many positional initializers for struct '" (sdef-display sd) "'")))
-                (set! (aref (unsafe/cast &ptr slots) pos-idx) (as ptr arg))
-                (inc! pos-idx))))
+              slots:ptr (const-struct-place init sd encl))
           (emit g-out "{")
           (dotimes (i nfields)
             (when (!= i 0) (emit g-out ","))
@@ -14611,7 +15078,11 @@
               (emit g-out " " (type-to-ir ftype) " ")
               (let (slot:?&Node (as ?&Node (aref (unsafe/cast &ptr slots) i)))
                 (if (= slot null)
-                  (emit g-out (type-zero-const-ir ftype))
+                  (do (require-zero-value ftype
+                        (fstr "struct literal: field '" ((field-at (sd 'fields) i) 'name) "' of "
+                              (sdef-display sd) " is not set")
+                        (node-line init encl))
+                      (emit g-out (type-zero-const-ir ftype)))
                   (defvar-write-const slot ftype encl)))))
           (emit g-out " }"))
         (return)))
@@ -14639,6 +15110,7 @@
                 " does not match the declared pointer element type " (type-display dst-elem)))))
     (let (at:&Type (as &Type (array-type ety n))
           data-name:StrView (fstr ir-name ".data"))
+      (defvar-const-vtables init at encl)
       (emit g-out data-name " = internal global " (type-to-ir at) " ")
       (defvar-write-const init at encl)
       ; `.data`, never `.bss`: the elements are streamed, so nothing here has
@@ -14951,12 +15423,21 @@
   (set! (aref (unsafe/cast &StrView out-ir) 0) "")
   (let (tt:(ptr Type) ty
         tk:i32 (tt 'kind))
-    (when (= tk TY-ARRAY) (return 1))
+    (when (dyn-borrowed? (as ptr ty))
+      (when (= (dyn-borrow-const-target init) null) (return 0))
+      (set! (aref (unsafe/cast &StrView out-ir) 0) (dyn-borrow-const-ir init ty encl))
+      (return 1))
+    (when (= tk TY-ARRAY)
+      (defvar-const-vtables init ty encl)
+      (return 1))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION))
       ; The constant grammar at an aggregate slot is a compound literal, and
       ; `const-struct-lit?` is the same gate `defvar-write-const` applies, so
       ; the two cannot disagree about what is constant.
-      (when (!= (const-struct-lit? init (tt 'sdef)) 0) (return 1))
+      (when (!= (const-struct-lit? init (tt 'sdef)) 0)
+        (when (const-lit-boxes? init ty encl) (return 0))
+        (defvar-const-vtables init ty encl)
+        (return 1))
       ; Not this struct's literal. A LEAF node — an integer/float/string
       ; literal, `null`, a bare name — cannot be a compound literal at all, so
       ; it is a type error, and `defvar-write-const`'s diagnostic (which names
@@ -15137,6 +15618,7 @@
 ; pointee, so neither carries a non-null contract. `(ptr T)`/`?T` are
 ; unaffected: a nullable global with no initializer is honest and stays legal.
 (defn defvar-require-init (name:Symbol ty:(ptr Type) line:i32):void
+  (require-zero-value (as ?&Type ty) (fstr "defvar: '" name "' has no initializer") line)
   (when (!= (ptr-pkind ty) PTR-REF) (return))
   (when (= (ty 'elem) null) (return))
   (die-at line
@@ -19093,6 +19575,9 @@
                             ; carries (emit-nuch-import-env), which load nothing.
                             (do
                               (prescan-file-imports ifs)
+                              ; Before the signatures, as below: a `(dyn P)` in a
+                              ; `declare` keys on P only once P is registered.
+                              (prescan-protocols ifs)
                               (prescan-nuch-signatures ifs))
                             (do
                               ; Stage 15 B3′: the imported file's own environment,
@@ -20716,6 +21201,25 @@
 (defn reloc-for-triple (triple:Symbol):i32
   (if (strview-has-prefix (symbol-as-view triple) "avr") 0 2))
 
+; LLVM's AVR fast register allocator (the only one at CodeGenOpt None) runs out
+; of pointer registers on an indirect call, so AVR codegen is never below Less.
+(defn codegen-level-for-triple (triple:Symbol level:i32):i32
+  (when (and (strview-has-prefix (symbol-as-view triple) "avr") (< level 1)) (return 1))
+  (return level))
+
+; Set by `llvm-diag-handler` when LLVM reports an error during code generation.
+(defvar g-llvm-codegen-errors:i32 0)
+
+(defn llvm-diag-handler (di:ptr hctx:ptr):void
+  (let (sev:i32 (LLVMGetDiagInfoSeverity di))
+    ; Remarks print only when asked for, as under LLVM's default handler.
+    (when (= sev 2) (return))
+    (let (msg:ptr (LLVMGetDiagInfoDescription di)
+          kind:StrView (cond (= sev 0) "error" (= sev 1) "warning" true "note"))
+      (eprint "nucleusc: " kind ": " (as CStr msg) "\n")
+      (LLVMDisposeMessage msg))
+    (when (= sev 0) (set! g-llvm-codegen-errors (+ g-llvm-codegen-errors 1)))))
+
 ; Object format for a triple, as a yes/no on ELF — every backend this compiler
 ; registers is ELF everywhere except Apple (Mach-O) and Windows (COFF). Only ELF
 ; accepts the bare `section ".text.foo"` spelling `write-ir-section` emits: a
@@ -20977,7 +21481,6 @@
 (defn open-module-streams ():void
   (inc! g-module-epoch)
   (set! g-module-open 1)
-  (ensure-emit-buffers)
   (clear-module-buffers)
   (set! g-def-stream &g-def-buf)
   (set! g-def-stream-program g-def-stream)
@@ -21084,6 +21587,7 @@
               (as CStr parse-err) "\n")
       (LLVMDisposeMessage parse-err)
       (exit 1))
+    (LLVMContextSetDiagnosticHandler ctx llvm-diag-handler null)
 
     (let (target:ptr null
           terr:ptr null
@@ -21093,7 +21597,7 @@
         (eprint "nucleusc: target lookup failed: " (as CStr terr) "\n")
         (LLVMDisposeMessage terr)
         (exit 1))
-      ; CodeGenLevel = g-opt-level, Reloc keyed on triple (Static(0) for AVR,
+      ; CodeGenLevel = g-opt-level (raised for AVR), Reloc keyed on triple (Static(0) for AVR,
       ; PIC(2) otherwise), CodeModel = Default(0). CPU and features from the Target
       ; descriptor (empty "" for host targets; the effective --mcpu / triple-keyed
       ; features for a cross-target, e.g. generic-rv64 / +m,+a,+f,+d,+c for riscv64).
@@ -21103,7 +21607,7 @@
           (set! cpu (LLVMGetHostCPUName))
           (set! features (LLVMGetHostCPUFeatures)))
       (let (tm:ptr (LLVMCreateTargetMachine target (symbol-as-cstr g-target-triple)
-                     cpu features g-opt-level
+                     cpu features (codegen-level-for-triple g-target-triple g-opt-level)
                      (reloc-for-triple g-target-triple) 0))
         (when (!= g-march-native 0)
           (LLVMDisposeMessage cpu)
@@ -21125,6 +21629,9 @@
             (when (!= eres 0)
               (eprint "nucleusc: failed to emit object file '" obj-path "': " (as CStr emit-err) "\n")
               (LLVMDisposeMessage emit-err)
+              (exit 1))
+            (when (!= g-llvm-codegen-errors 0)
+              (unlink (symbol-as-cstr obj-path))
               (exit 1)))
           (LLVMDisposeTargetMachine tm)
           (when (= keep-obj 0)

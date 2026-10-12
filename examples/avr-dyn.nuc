@@ -1,0 +1,68 @@
+; A two-method `(dyn P)` and a boxed closure on AVR — ATmega328P, so it runs
+; under simavr.
+;
+; Functions live in AVR's program address space, so a vtable's slots are
+; `ptr addrspace(1)` (design/stage24-allocation/dyn-arbitrary-protocols.md §3.6).
+; A box's data lives on the heap (avr-libc's malloc), so this example keeps the
+; prelude and imports the allocator.
+;
+; Build + link + run:
+;   nucleusc --target=avr --mcpu=atmega328p examples/avr-dyn.nuc -o d.elf
+;   simavr -m atmega328p -f 8000000 d.elf     # observe repeated "HI45A\n"
+
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/atmega328p.nuc")
+(import-use nucleus.allocator)
+
+; USART0: 9600 baud @ 8 MHz, 8N1, transmitter enabled (as avr-uart-hello.nuc).
+(defn uart-init ():void
+  (reg16-write UBRR0 51)
+  (reg8-set-bit! UCSR0B TXEN0)
+  (reg8-write UCSR0C (bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
+
+(defn uart-tx (b:ui8):void
+  (let (ready:ui8 0)
+    (while (= ready 0)
+      (set! ready (reg8-test-bit UCSR0A UDRE0))))
+  (reg8-write UDR0 b))
+
+(defprotocol Glyph
+  (glyph (self:&Self):ui8)
+  (shift (self:&Self k:ui8):ui8))
+
+(defstruct Upper c:ui8)
+(defn glyph (self:&Upper):ui8 (return (self 'c)))
+(defn shift (self:&Upper k:ui8):ui8 (return (+ (self 'c) k)))
+(extend Upper Glyph)
+
+(defstruct Digit n:ui8)
+(defn glyph (self:&Digit):ui8 (return (+ 48 (self 'n))))
+(defn shift (self:&Digit k:ui8):ui8 (return (+ (+ 48 (self 'n)) k)))
+(extend Digit Glyph)
+
+; Both methods through one box: "HI" from Upper 72, "45" from Digit 4.
+(defn- send (g:&(dyn Glyph)):void
+  (uart-tx (glyph g))
+  (uart-tx (shift g 1)))
+
+; A capturing closure in a BoxedFn: the same vtable machinery as a dyn box.
+(defn- make-adder (k:ui8):(BoxedFn (ui8) ui8)
+  (return (vfn (x:ui8):ui8 (return (+ x k)))))
+
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  (uart-init)
+  (let (a:(dyn Glyph) (Upper 72)
+        b:(dyn Glyph) (Digit 4)
+        f:(BoxedFn (ui8) ui8) (make-adder 1))
+    (while true
+      (send &a)
+      (send &b)
+      (uart-tx (f 64))
+      (uart-tx 10)
+      (delay)))
+  (return 0))

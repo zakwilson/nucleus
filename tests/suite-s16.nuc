@@ -3417,10 +3417,10 @@ map=2
 "))
         iv:StrView (compiled-ir &c))
     (try (check-eq-int
-           (count-matching-lines iv "define*@vec_in.pnuc_Alloc.$r.pnuc_Vector.i32(*")
+           (count-matching-lines iv "define*@vec_in.p__dynref.nucleus.allocator_Allocator.$r.pnuc_Vector.i32(*")
            1 "one stamp for the i32 instance"))
     (try (check-eq-int
-           (count-matching-lines iv "define*@vec_in.pnuc_Alloc.$r.pnuc_Vector.i64(*")
+           (count-matching-lines iv "define*@vec_in.p__dynref.nucleus.allocator_Allocator.$r.pnuc_Vector.i64(*")
            1 "one stamp for the i64 instance"))
     (drop &c))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")

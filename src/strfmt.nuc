@@ -55,7 +55,7 @@
 ; globals to `(dyn Writer)` are separate steps, and this way the flip is a change
 ; to `emit-flush` alone rather than to every site a second time.
 
-(defvar g-emit-buf:String)
+(defvar g-emit-buf:String (make String))
 (defvar g-emit-buf-ready:i32 0)
 
 (defn emit-buf ():&String

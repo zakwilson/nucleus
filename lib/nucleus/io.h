@@ -16,7 +16,6 @@ struct nuc_FdOut nuc_std_err(void) asm("nuc_std-err");
 /* fd-write-all: uses an error-union or option type; not exported */
 /* write-str: uses an error-union or option type; not exported */
 extern struct nuc_String nuc_g_io_buf asm("nuc_g-io-buf");
-extern int32_t nuc_g_io_buf_ready asm("nuc_g-io-buf-ready");
 struct nuc_String* nuc_io_buf_begin(void) asm("nuc_io-buf-begin");
 /* io-buf-end: uses an error-union or option type; not exported */
 #define IO_IN_CAP 8192

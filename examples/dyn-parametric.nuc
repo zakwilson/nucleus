@@ -1,0 +1,49 @@
+; `(dyn (P arg…))`: a box of a parametric protocol names its arguments, which
+; are substituted into every method. Here `next` on a `(dyn (Iterator i32))`
+; returns `?i32`, so iterators of different types share one `Vector`.
+
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+
+; Counts down from `n` to 1.
+(defstruct Countdown n:i32)
+(defn next (self:&Countdown):?i32
+  (when (<= (self 'n) 0) (return none))
+  (let (v:i32 (self 'n))
+    (set! (self 'n) (- v 1))
+    (return (some v))))
+(extend Countdown (Iterator i32))
+
+; Powers of two below `lim`.
+(defstruct Doubling cur:i32 lim:i32)
+(defn next (self:&Doubling):?i32
+  (when (>= (self 'cur) (self 'lim)) (return none))
+  (let (v:i32 (self 'cur))
+    (set! (self 'cur) (* v 2))
+    (return (some v))))
+(extend Doubling (Iterator i32))
+
+(defn- drain (it:&(dyn (Iterator i32))):void
+  (let (go:bool true)
+    (while go
+      (match (next it)
+        ((some x) (print x " "))
+        (none (set! go false)))))
+  (println ""))
+
+(defn main ():i32
+  (with (v (make (Vector (dyn (Iterator i32))) heap))
+    (let (a:(dyn (Iterator i32)) (IntRangeIter 1 4)
+          b:(dyn (Iterator i32)) (Countdown 3)
+          c:(dyn (Iterator i32)) (Doubling 1 20))
+      (conj &v a)
+      (conj &v b)
+      (conj &v c))
+    ; The Vector frees its buffer, not its elements, so each box is dropped here.
+    (doseq (it &v (VecIter (dyn (Iterator i32))))
+      (drain &it)
+      (drop &it)))
+  (return 0))

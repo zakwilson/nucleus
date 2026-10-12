@@ -2,11 +2,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "allocator.h"
 #include "core.h"
 #include "strview.h"
 
 /* Generated from lib/nucleus/string.nuc by nucleusc --emit-cheader */
+
+#ifndef NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+#define NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+typedef struct nuc_dynref_nucleus_allocator_Allocator {
+    void* data;
+    const void* vtable;
+} nuc_dynref_nucleus_allocator_Allocator;
+#endif
 
 #ifndef NUC_INST_nuc_Vector_u8
 #define NUC_INST_nuc_Vector_u8
@@ -14,7 +21,7 @@ typedef struct nuc_Vector_u8 {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_Alloc alloc;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
 } nuc_Vector_u8;
 #endif
 
@@ -37,9 +44,9 @@ void nuc_string_shrink_to_fit(struct nuc_String* self) asm("nuc_string-shrink-to
 /* string-from-view: uses an error-union or option type; not exported */
 struct nuc_String nuc_string_from_cstr_unchecked(const char* cs) asm("nuc_string-from-cstr-unchecked");
 /* string-from-cstr: uses an error-union or option type; not exported */
-void nuc_init_pnuc_String_nuc_Alloc(struct nuc_String* self, struct nuc_Alloc a) asm("nuc_init.pnuc_String.nuc_Alloc");
-void nuc_init_pnuc_String_nuc_Alloc_nuc_StrView(struct nuc_String* self, struct nuc_Alloc a, struct nuc_StrView v) asm("nuc_init.pnuc_String.nuc_Alloc.nuc_StrView");
-void nuc_init_pnuc_String_nuc_Alloc_pnuc_String(struct nuc_String* self, struct nuc_Alloc a, struct nuc_String* v) asm("nuc_init.pnuc_String.nuc_Alloc.pnuc_String");
+void nuc_init_pnuc_String___dynref_nucleus_allocator_Allocator(struct nuc_String* self, struct nuc_dynref_nucleus_allocator_Allocator a) asm("nuc_init.pnuc_String.__dynref.nucleus.allocator_Allocator");
+void nuc_init_pnuc_String___dynref_nucleus_allocator_Allocator_nuc_StrView(struct nuc_String* self, struct nuc_dynref_nucleus_allocator_Allocator a, struct nuc_StrView v) asm("nuc_init.pnuc_String.__dynref.nucleus.allocator_Allocator.nuc_StrView");
+void nuc_init_pnuc_String___dynref_nucleus_allocator_Allocator_pnuc_String(struct nuc_String* self, struct nuc_dynref_nucleus_allocator_Allocator a, struct nuc_String* v) asm("nuc_init.pnuc_String.__dynref.nucleus.allocator_Allocator.pnuc_String");
 /* init: uses an error-union or option type; not exported */
 /* init: uses an error-union or option type; not exported */
 void nuc_drop_pnuc_String(struct nuc_String* self) asm("nuc_drop.pnuc_String");

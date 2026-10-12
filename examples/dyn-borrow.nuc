@@ -1,0 +1,45 @@
+; The borrowing box `(dyn &P)`: the same two words and vtable as `(dyn P)`, but
+; `data` points at a value where it already lives. Nothing is copied and nothing
+; is dropped through the box, so it works for a type with a `drop`.
+
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+
+(defprotocol Counter
+  (bump (self:&Self):void)
+  (total (self:&Self):i32))
+
+(defstruct Tally n:i32)
+(defn bump (self:&Tally):void (set! (self 'n) (+ (self 'n) 1)))
+(defn total (self:&Tally):i32 (return (self 'n)))
+(extend Tally Counter)
+
+; A resource: dropped exactly once, by its owner.
+(defstruct Meter id:i32 n:i32)
+(defn bump (self:&Meter):void (set! (self 'n) (+ (self 'n) 10)))
+(defn total (self:&Meter):i32 (return (self 'n)))
+(defn drop (self:&Meter):void (println "drop meter " (self 'id)))
+(extend Meter Counter)
+(extend Meter Drop)
+
+; Works on any counter the caller owns, without taking it over.
+(defn bump-twice (c:(dyn &Counter)):i32
+  (bump c)
+  (bump c)
+  (return (total c)))
+
+; A borrow of a global's address is a link-time constant.
+(defvar g:Tally (Tally 100))
+(defvar gc:(dyn &Counter) &g)
+
+(defn main ():i32
+  (let (t:Tally (Tally 0))
+    (println "tally " (bump-twice t) " " (t 'n)))   ; t itself was bumped
+  (with (m (Meter 1 0))
+    (println "meter " (bump-twice m)))
+  ; An owning box can be viewed as a borrowing one: the same two words.
+  (with (o:(dyn Counter) (Tally 5))
+    (println "view " (bump-twice o) " " (total o)))
+  (println "global " (bump-twice gc) " " (g 'n))
+  (return 0))

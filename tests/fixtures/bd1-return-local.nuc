@@ -1,0 +1,12 @@
+; Stage 24 BD-1 — a borrowing box carries its source's frame taint, so
+; returning one over a local is refused at the return (dyn-arbitrary-protocols.md §4.4).
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Pt x:i32)
+(defn show (self:&Pt):i32 (return (self (quote x))))
+(extend Pt Show)
+(defn leak ():(dyn &Show)
+  (let (p:Pt (Pt 1)
+        b:(dyn &Show) p)
+    (return b)))

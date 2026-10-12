@@ -1,0 +1,5 @@
+; AL-5: a collection holds a handle, so a global one needs an initializer.
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(defvar g:(Vector i32))
+(defn main ():i32 (return 0))

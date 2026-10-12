@@ -11,10 +11,10 @@ and always frees through the allocator that built it.
 
 ```lisp
 (defprotocol Allocator
-  (allocate   (self:&Self size:usize align:usize) ?&ui8)
-  (reallocate (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
-  (deallocate (self:&Self (p ?&ui8) size:usize align:usize):void)
-  (handle     (self:&Self):Alloc))
+  (allocate        (self:&Self size:usize align:usize) ?&ui8)
+  (reallocate      (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
+  (deallocate      (self:&Self (p ?&ui8) size:usize align:usize):void)
+  (allocate-zeroed (self:&Self size:usize align:usize) ?&ui8))
 ```
 
 The contract:
@@ -29,8 +29,12 @@ The contract:
   most recent allocation.
 - **`deallocate` of null is a no-op**, as `free` is in C. `reallocate` of null
   is an `allocate`.
-- **`handle` converts the allocator to an `Alloc`** (below), which is what a
-  collection stores.
+- **`allocate-zeroed` is `allocate` with the bytes zeroed.** `new` uses it. Each
+  allocator implements it in its cheapest way: `calloc` for the heap, and plain
+  `allocate` for an `Arena`, whose memory is already zero.
+
+Any type that conforms is an allocator, and a collection reaches it through an
+`Alloc` handle (below).
 
 Every built-in allocator also conforms to `Drop`.
 
@@ -65,9 +69,10 @@ allocator**, and frees them all at once.
 (arena-in (parent Alloc) (block-size usize)) -> Arena
 ```
 
-- **A zero-filled `Arena` is an empty arena over the heap**, so
-  `(defvar a:Arena)` needs no initializer. `(arena-in (handle &heap) 0)` is the
-  same value written out.
+- **`(make Arena)` is an empty arena over the heap.** `Arena` conforms to `Init`,
+  so `(make Arena a)` is one over allocator `a`. The parent is a handle, so an
+  `Arena` has no zero value (see [The zero value](#the-zero-value)).
+  `(arena-in (handle heap) 0)` is the same value written out.
 - **Memory is zero-filled**, including the tail a `reallocate` adds.
 - **Blocks.** The first allocation makes the first block. With `block-size` 0,
   blocks start at 8192 words (64 KiB on 64-bit) and double up to 256 times
@@ -127,7 +132,7 @@ what is outstanding, so a leak shows up when it is dropped (like Zig's
 
 ```lisp
 (defstruct Tracking parent:Alloc live:usize bytes:usize)
-(make Tracking)       ; over the heap; a zero-filled Tracking is the same
+(make Tracking)       ; over the heap
 (make Tracking a)     ; over allocator a (Tracking conforms to Init)
 ```
 
@@ -144,7 +149,7 @@ what is outstanding, so a leak shows up when it is dropped (like Zig's
 - **`drop` does not drop the parent**, which it only borrows. It prints
   `Tracking: dropped with L live allocation(s) of B byte(s)` when `live` is not
   zero. The count is kept in every build, as for `FixedBuffer`.
-- **`(handle t)` is an `ALLOC-TRACKING` handle**, so any collection can store it.
+- **`(handle t)` borrows the tracker**, so any collection can store it.
 
 Bind the tracker first, as with any allocator. Placed under an `Arena`, it checks
 that the arena's `drop` returns every block:
@@ -164,73 +169,85 @@ that the arena's `drop` returns every block:
 ## The stored handle: `Alloc`
 
 A collection stores one allocator value without knowing its type. That value is
-an `Alloc`, a tagged handle:
+an `Alloc`, a borrowing box over the `Allocator` protocol
+([generics.md](generics.md)):
 
 ```lisp
-(defenum AllocKind ALLOC-HEAP ALLOC-ARENA ALLOC-FIXED ALLOC-CUSTOM ALLOC-TRACKING)
-(defstruct Alloc kind:i32 data:ptr)
+(deftype Alloc (dyn &Allocator))
 ```
 
-| Kind | `data` points at | Made by |
-|---|---|---|
-| `ALLOC-HEAP` | nothing (null) | `(handle &heap)`; also a zero-filled `Alloc` |
-| `ALLOC-ARENA` | the `Arena` | `(handle a)` |
-| `ALLOC-FIXED` | the `FixedBuffer` | `(handle f)` |
-| `ALLOC-TRACKING` | the `Tracking` | `(handle t)` |
-| `ALLOC-CUSTOM` | a `CustomAlloc` table | `(custom-alloc &table)` |
+It is two words: the address of the allocator, and the vtable of its type's
+`Allocator` methods. A collection calls `(allocate (ref self 'alloc) n 8)` and
+the call goes through the vtable. Where the handle is a constant, as in
+`(new T g-arena)`, an optimized build folds the vtable away and calls the arena
+directly.
 
-`Alloc` conforms to `Allocator` itself, so a collection calls
-`(allocate (ref self 'alloc) n 8)` and the handle dispatches on its kind.
-`(handle h)` of an `Alloc` is a copy. `Alloc` does not conform to `Drop`: it
-borrows the allocator and never releases it.
+**Making one.** Any `&T` whose `T` conforms to `Allocator` converts to `Alloc`
+in a typed slot: a binding, a field, a global, or a plain function's parameter,
+as in `(arena-in &heap 0)` or `(defvar h:Alloc &g-arena)`. An overloaded method's
+argument does not convert, so `(init v &ar)` is refused. `handle` spells the
+conversion there, `(init v (handle ar))`, and `new` and `make` call it for you.
+It takes `heap`, `g-arena`, or an `Arena`, `FixedBuffer` or `Tracking` binding
+by address implicitly, and a user allocator as `&x`. `(handle h)` of an `Alloc`
+is a copy.
 
-**A handle borrows.** The allocator must outlive every object that stores its
-handle (design/stage24-allocation/overview.md §8). The heap handle is the one
-that can never dangle.
+`Alloc` does not conform to `Drop`: it borrows the allocator and never releases
+it. **A handle borrows.** The allocator must outlive every object that stores
+its handle (design/stage24-allocation/overview.md §8). The heap handle is the
+one that can never dangle.
 
-### A user allocator: `ALLOC-CUSTOM`
+### A user allocator
 
-Any type can conform to `Allocator`. To be stored in a collection, it returns
-an `ALLOC-CUSTOM` handle over a table of plain functions:
-
-```lisp
-(defstruct CustomAlloc
-  instance:ptr
-  allocate-fn:(fn ?&ui8)(ptr usize usize)
-  reallocate-fn:(fn ?&ui8)(ptr ?&ui8 usize usize usize)
-  deallocate-fn:(fn void)(ptr ?&ui8 usize usize))
-```
-
-Each function receives `instance` first. The table must outlive the handles
-made from it; keeping it in the allocator itself does that:
+Any type that conforms to `Allocator` can be stored in a collection. It needs no
+table or handle of its own:
 
 ```lisp
-(defstruct Counting allocs:i32 vt:CustomAlloc)
-
-(defn counting-allocate (inst:ptr size:usize align:usize) ?&ui8
-  (let (c:&Counting (unsafe/cast &Counting inst))
-    (set! (c 'allocs) (+ (c 'allocs) 1))
-    (return (allocate &heap size align))))
-; … counting-reallocate, counting-deallocate likewise
+(defstruct Counting allocs:i32 frees:i32)
 
 (extend Counting Allocator)
 (defn allocate (self:&Counting size:usize align:usize) ?&ui8
-  (return (counting-allocate self size align)))
-; … reallocate, deallocate
-(defn handle (self:&Counting):Alloc
-  (set! (self 'vt) (CustomAlloc self counting-allocate counting-reallocate
-                                counting-deallocate))
-  (return (custom-alloc (ref self 'vt))))
+  (set! (self 'allocs) (+ (self 'allocs) 1))
+  (return (allocate &heap size align)))
+(defn allocate-zeroed (self:&Counting size:usize align:usize) ?&ui8
+  (set! (self 'allocs) (+ (self 'allocs) 1))
+  (return (allocate-zeroed &heap size align)))
+; … reallocate (a collection's first growth is a reallocate of null), deallocate
+
+(let (c:Counting (Counting 0 0))
+  (with (v (make (Vector i32) &c [1 2 3]))   ; v stores a handle on c
+    …))
 ```
 
 The method names do not collide with libc: a unit that defines them still calls
-`malloc` and `free` as usual.
+`malloc` and `free` as usual. `examples/avr-alloc.nuc` is a user allocator over
+static storage on a microcontroller.
+
+### The zero value
+
+Like `&T`, an `Alloc` cannot be null, so it has no zero value. Neither does a
+value that holds one: a collection, a `String`, an `Arena`, a `Tracking`, or
+your own struct with an `Alloc` field. The compiler refuses to zero-fill one:
+
+| Form | Diagnostic |
+|---|---|
+| `(defvar g:(Vector i32))` | `defvar: 'g' has no initializer, and a (Vector i32) has no zero value: it holds a (dyn &Allocator)` |
+| `(Pool 3)`, leaving the `Alloc` field `a` unset | `struct literal: field 'a' of Pool is not set, and a (dyn &Allocator) has no zero value` |
+| `(array Alloc &heap)` for an `(array Alloc 2)` | `defvar: array element 1 is not set, …` |
+
+Give the value one instead:
+
+- **A global** takes an initializer. `(defvar g:String (make String))` runs at
+  startup. A constant over a global allocator needs no startup code at all:
+  `(defvar h:Alloc &g-arena)`, or `(defvar b:String (String (bytes ((Vector ui8)
+  (alloc &heap)))))`.
+- **A local** comes from `make`, or is initialized in place:
+  `(let (s (alloca String)) (init s) …)`.
 
 ### Code the compiler generates
 
 A `cfn` closure environment allocates through `alloc-allocate`,
-`alloc-reallocate` and `alloc-deallocate`, the plain functions behind `Alloc`'s
-methods, because a generic has no single symbol to call. A boxed value (a
+`alloc-reallocate` and `alloc-deallocate`, plain functions that call through an
+`&Alloc`, because a generic has no single symbol to call. A boxed value (a
 `BoxedFn` or `(dyn P)` payload) always comes from the heap, through
 `heap-allocate`; either needs `(import-use nucleus.allocator)`.
 
@@ -280,12 +297,12 @@ also how a user type takes part:
   (set! (self 'a) a))
 ```
 
-A collection or `String` is set up by `init`. In place, initialize a zero
-literal or a slot; in one call, use `make` or `new` (below):
+A collection or `String` is set up by `init`. In place, initialize a slot; in
+one call, use `make` or `new` (below):
 
 ```lisp
-(let (s:String (String))      ; a zero String, not yet usable
-  (init &s)                   ; now empty, on the heap
+(let (s:&String (alloca String))   ; a slot, not yet usable
+  (init s)                         ; now empty, on the heap
   …)
 (with (v:&(Vector i32) (alloca (Vector i32)))
   (init v (handle g-arena))   ; any Alloc value
@@ -304,9 +321,8 @@ literal or a slot; in one call, use `make` or `new` (below):
 
 Both do the same steps:
 
-1. Get bytes of `T`'s size and alignment. `new` calls `allocate` on `a`,
-   zero-fills the bytes, and exits with `new: out of memory` on failure. `make`
-   uses a frame slot.
+1. Get bytes of `T`'s size and alignment. `new` calls `allocate-zeroed` on `a`
+   and exits with `new: out of memory` on failure. `make` uses a frame slot.
 2. If `T` conforms to `Init`, call `(init p (handle a) args…)`. With no args
    this is `Init`. With one, it is whichever `init` overload the value's type
    selects. A `[…]`, `#{…}` or `{…}` literal argument becomes `init` followed by
@@ -332,10 +348,10 @@ back to `a` before returning the error, so a refused `new` leaks nothing.
   ((err e) …))
 ```
 
-**The allocator operand** is any expression `handle` accepts: an allocator
-binding or global, which is passed by address implicitly (`heap`, `g-arena`, a
-`FixedBuffer` local, an `Alloc` value), or a pointer to one (`&ar`, a `&Arena`
-parameter). It is evaluated once. The object stores `(handle a)`, a handle that
+**The allocator operand** is any expression `handle` accepts: a built-in
+allocator binding or global, which is passed by address implicitly (`heap`,
+`g-arena`, a `FixedBuffer` local), an `Alloc` value, or a pointer to an
+allocator (`&ar`, a `&Arena` parameter, `&c` for a user allocator `c`). It is evaluated once. The object stores `(handle a)`, a handle that
 points back at the allocator, so the allocator must outlive the object. That is
 the reason `with` drops in reverse order. A call result such as
 `(new T (frame-buffer 64))` is refused, because a handle cannot point into a
@@ -367,14 +383,14 @@ nothing drops. The compiler and the node runtime allocate from it.
 
 | Name | Signature | Use |
 |---|---|---|
-| `g-arena` | `Arena` | zero-initialized; the first allocation makes a block |
+| `g-arena` | `Arena` | a constant empty arena over the heap; the first allocation makes a block |
 | `arena-alloc` | `(n:i64) -> ptr` | `n` zeroed, 8-byte-aligned bytes from `g-arena`; never null (exits on failure) |
 | `arena-bytes` | `(src:ptr n:i64) -> ptr` | `n` bytes copied into `g-arena` |
 
 `g-arena` is an ordinary allocator: `(handle g-arena)` is its handle, and
 `(new T g-arena)` places one `T` in it. A handle on `g-arena` can also be a
 constant, so it is valid before any initializer runs:
-`(defvar my-alloc:Alloc (Alloc ALLOC-ARENA &g-arena))`. A global built by
+`(defvar my-alloc:Alloc &g-arena)`. A global built by
 `new`, such as `(defvar g-names:&(Vector Symbol) (new (Vector Symbol) g-arena))`,
 is set up by the program's startup initializer like any other call.
 

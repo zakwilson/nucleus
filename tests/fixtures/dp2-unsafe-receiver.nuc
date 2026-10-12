@@ -1,0 +1,14 @@
+; Stage 24 DP-2 — probe 4's shape beside a callable method: the box builds (its
+; `val` slot is null) and the call to `val` is refused rather than handed `data`.
+(import-use nucleus.io)
+(import-use nucleus.allocator)
+(defprotocol Val (val (self:Self):i32) (peek (self:&Self):i32))
+(defstruct A n:i32 m:i32)
+(defn val (self:A):i32 (return (+ (self 'n) (self 'm))))
+(defn peek (self:&A):i32 (return (self 'n)))
+(extend A Val)
+(defn main ():i32
+  (let (a:(dyn Val) (A 3 4))
+    (println (peek a))
+    (println (val a)))
+  (return 0))

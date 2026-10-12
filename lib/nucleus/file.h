@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "string.h"
-#include "allocator.h"
 #include "core.h"
 
 /* Generated from lib/nucleus/file.nuc by nucleusc --emit-cheader */
@@ -37,13 +36,21 @@ struct nuc_BufWriter nuc_buf_writer(struct nuc_File f) asm("nuc_buf-writer");
 /* buf-writer-close: uses an error-union or option type; not exported */
 void nuc_drop_pnuc_BufWriter(struct nuc_BufWriter* self) asm("nuc_drop.pnuc_BufWriter");
 #define DIRENT_D_NAME_OFFSET 19
+#ifndef NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+#define NUC_INST_nuc_dynref_nucleus_allocator_Allocator
+typedef struct nuc_dynref_nucleus_allocator_Allocator {
+    void* data;
+    const void* vtable;
+} nuc_dynref_nucleus_allocator_Allocator;
+#endif
+
 #ifndef NUC_INST_nuc_Vector_usize
 #define NUC_INST_nuc_Vector_usize
 typedef struct nuc_Vector_usize {
     uint8_t* data;
     size_t len;
     size_t cap;
-    struct nuc_Alloc alloc;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
 } nuc_Vector_usize;
 #endif
 

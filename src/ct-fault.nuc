@@ -5,6 +5,7 @@
 (import-use nucleus.string)
 (import-use nucleus.fmt)
 (import-use nucleus.strview-str)
+(import-use nucleus.create)
 
 (defconst CT-FAULT-MAX 16)
 (defconst CT-FAULT-ALTSTACK 65536)
@@ -12,8 +13,8 @@
 ; Frame `i`'s diagnostic is bytes [lo[i], hi[i]) of one buffer, rendered at arm
 ; time because the handler may not allocate; an unwind is a truncation.
 (defvar g-fault-depth:i32 0)
-(defvar g-fault-text:String)
-(defvar g-fault-msg:String)
+(defvar g-fault-text:String (make String))
+(defvar g-fault-msg:String (make String))
 (defvar g-fault-data:?&ui8 null)
 (defvar g-fault-lo:(array usize CT-FAULT-MAX))
 (defvar g-fault-hi:(array usize CT-FAULT-MAX))

@@ -63,11 +63,11 @@
 ; open(2) wants a NUL-terminated path and a StrView is not one, so the path is
 ; copied. Unchecked: a path is bytes, not necessarily UTF-8.
 (defn file-open-flags (path:&StrView flags:i32 mode:i32):!File
-  (let (buf:String (String))
-    (init &buf)
+  (let (buf:&String (alloca String))
+    (init buf)
     (string-push-str-unchecked buf path)
     (let (fd:i32 (open (string-as-cstr buf) flags mode))
-      (drop &buf)
+      (drop buf)
       (when (< fd 0) (return (err! io-open-failed)))
       (return (ok (file fd))))))
 
@@ -105,18 +105,18 @@
 ; because the compiler reads source files whose encoding is the *program's*
 ; problem to diagnose, not the reader's to refuse.
 (defn file-read-to-string (self:&File):!String
-  (let (out:String (String)
+  (let (out:&String (alloca String)
         buf:&ui8 (as &ui8 (alloca ui8 FILE-CHUNK))
         go:bool true)
-    (init &out)
+    (init out)
     (while go
       (let (n:i64 (as i64 (read (self 'fd) (as ptr buf) FILE-CHUNK)))
         (when (< n 0)
-          (drop &out)
+          (drop out)
           (return (err! io-read-failed)))
         (when (= n 0) (set! go false))
         (when go (string-push-bytes-raw out buf (as usize n)))))
-    (return (ok out))))
+    (return (ok @out))))
 
 ; ---------------------------------------------------------------------------
 ; BufWriter — a File plus a staging buffer.

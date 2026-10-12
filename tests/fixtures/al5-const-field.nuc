@@ -1,0 +1,5 @@
+; AL-5: nor can a constant one.
+(import-use nucleus.allocator)
+(defstruct Pool n:i32 a:Alloc)
+(defvar g:Pool (Pool 3))
+(defn main ():i32 (return 0))

@@ -1,0 +1,7 @@
+; Stage 24 DP-3 — a conformance to a parametric protocol carries its arguments,
+; and a box of another application of the protocol refuses it, naming both.
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(defn main ():i32
+  (let (a:(dyn (Iterator i64)) (IntRangeIter 1 4))
+    (return 0)))

@@ -43,6 +43,11 @@ just orients them for AVR specifically.
   like `avrxmega3` still links without it (a generic family layout), so pass
   `--mmcu=` explicitly whenever you need the device-accurate linker script
   (e.g. `avr32dd20`).
+- `-O0` (the default) still runs AVR **code generation** at LLVM's `Less`
+  level: the only register allocator LLVM allows at `None` runs out of
+  pointer registers on an AVR indirect call (a vtable or `funcall`). The
+  middle-end pipeline still runs only at `-O1` and above. An error LLVM
+  reports during code generation fails the compile.
 - `--linker=`/`--link-arg=` are general flags, not AVR-specific, but two AVR
   uses are worth knowing: the link driver defaults to `avr-gcc` on any `avr`
   triple (vs. `clang` on hosted triples), and `--link-arg=` is how you apply
@@ -89,7 +94,7 @@ the exact device for both codegen and the link line:
 nucleusc --target=avr --mcpu=attiny1634 examples/avr-blink.nuc -o blink.elf
 avr-size blink.elf
 #    text    data     bss     dec     hex filename
-#     604       0       0     604     25c blink.elf
+#     550       0       0     550     226 blink.elf
 avr-objdump -d blink.elf | less   # sanity-check the disassembly
 avr-objcopy -O ihex blink.elf blink.hex   # optional: Intel-hex for a programmer
 ```
@@ -103,7 +108,7 @@ nucleusc --target=avr --mcpu=avrxmega3 --mmcu=avr32dd20 \
          examples/avr-blink-dx.nuc -o blink-dx.elf
 avr-size blink-dx.elf
 #    text    data     bss     dec     hex filename
-#     346       0       0     346     15a blink-dx.elf
+#     298       0       0     298     12a blink-dx.elf
 ```
 
 Both link to a genuine `ELF … Atmel AVR 8-bit` executable with **zero** data/
@@ -166,6 +171,12 @@ example — behaviorally verified under `simavr`.
   (AVR32DD20) this keeps a table out of RAM entirely; on classic AVR it still
   lands in flash as `.rodata` but is copied to RAM at startup by the crt (a
   cost, not a correctness issue — see the rodata-placement note below).
+- Boxed closures (`BoxedFn`) and `(dyn P)`, with `(import-use
+  nucleus.allocator)`. A vtable's slots are `ptr addrspace(1)`, loaded and
+  called in the program address space. The payload comes from avr-libc's
+  `malloc`. avr-ld places `.rodata` in RAM, so each vtable costs two bytes of
+  RAM per slot (a protocol's methods plus one for `drop`).
+  `examples/avr-dyn.nuc` runs under simavr.
 - `f32` arithmetic (`__addsf3`-class libcalls, confirmed working).
 - `i64` arithmetic (costly — links libgcc's `__muldi3`-class 64-bit software
   routines — but correct).
@@ -182,11 +193,11 @@ example — behaviorally verified under `simavr`.
 silent miscompilation or an opaque LLVM verifier crash — the "raw-first,
 diagnose-don't-miscompile" design decision):
 
-- **Function values, boxed closures, and `dyn`.** AVR functions live in
-  program memory — LLVM address space 1 — so materializing a function as a
-  plain data pointer (rather than calling it directly) is an LLVM verifier
-  error on this target. A direct call is unaffected. Using a function as a
-  value dies with:
+- **Function values.** AVR functions live in program memory (LLVM address
+  space 1), so a function used as a first-class data pointer — rather than
+  called directly — would be an LLVM verifier error. A direct call is
+  unaffected, and so is a capturing closure or a `(dyn P)` box, whose vtable
+  slots are program-memory pointers. Using a function as a value dies with:
 
   ```
   cannot use function '<name>' as a value on this target: functions live
@@ -194,16 +205,9 @@ diagnose-don't-miscompile" design decision):
   pointer -- call it directly instead
   ```
 
-  Constructing a `BoxedFn`/`dyn` value (type erasure) dies similarly:
-
-  ```
-  <what> materializes a function as a data pointer, which is unsupported
-  on this target: functions live in program memory (address space 1) --
-  boxed closures, dyn, and function values are not available on AVR in v1
-  ```
-
-  The full fix (emitting `ptr addrspace(1)` throughout the vtable/funcall/
-  BoxedFn machinery) is out of v1 scope.
+  A `BoxedFn` over a bare `fn` stores the function pointer in a heap cell, so
+  it is refused the same way: box a capturing closure, or a struct through a
+  `(dyn P)`, instead.
 - **`f64`.** AVR has no hardware double; both an explicit `f64`/`double`
   annotation and a bare float literal's default type are rejected at compile
   time:
@@ -336,12 +340,14 @@ comment in `lib/nucleus/avr.nuc` for the convention written out in full.
 
 ## Testing
 
-`make avr-test` (`tests/run-avr-test.sh`) compiles and links all four AVR
-examples through the real `avr-gcc` driver, asserts each stays under a
-generous per-example flash/RAM ceiling (a regression gate, not a byte-exact
-pin), and runs `avr-uart-hello.nuc` under `simavr -m atmega328p -f 8000000`
-as a genuine behavioral check — it asserts the captured output actually
-contains the transmitted `Hi!` bytes, not just that the link succeeded.
+`make avr-test` (`tests/run-avr-test.sh`) compiles and links every
+`examples/avr-*.nuc` through the real `avr-gcc` driver, asserts each stays
+under a generous per-example flash/RAM ceiling (a regression gate, not a
+byte-exact pin), and runs `avr-uart-hello.nuc` and `avr-dyn.nuc` under
+`simavr -m atmega328p -f 8000000` as genuine behavioral checks — each asserts
+the captured output actually contains the transmitted bytes (`Hi!`, and
+`HI45A` through both `dyn` slots and a boxed closure), not just that the link
+succeeded.
 
 It is separate from `make test`/`make bootstrap`, which stay host-only: the
 freestanding AVR examples have no expected-stdout harness to diff against on

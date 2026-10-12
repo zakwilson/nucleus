@@ -1,0 +1,14 @@
+; Stage 24 DP-4 — a `&T` parameter of a `Drop` type is a reference too: boxing it
+; at a call's argument would give the caller's value a second owner.
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(defprotocol Show (show (self:&Self):i32))
+(defstruct Res x:i32)
+(defn show (self:&Res):i32 (return (self 'x)))
+(defn drop (self:&Res):void (return))
+(extend Res Show)
+(extend Res Drop)
+(defn use (b:(dyn Show)):i32 (return (show b)))
+(defn pass (r:&Res):i32
+  (return (use r)))
+(defn main ():i32 (return 0))

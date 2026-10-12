@@ -772,7 +772,10 @@
   (lvalue-sym ?&Sym)
   ; Why a cond/if value collapsed to void (its branch types), for the consumer's
   ; error; empty otherwise. See value-type-display.
-  join-why:StrView)
+  join-why:StrView
+  ; A `(ref S)` to storage no binding owns — a struct literal's slot or a `move`d
+  ; value — so an owning box may take it without leaving a second owner.
+  fresh:bool)
 
 ; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
 ; How a struct-by-value parameter or return is lowered to the platform C ABI.
@@ -1241,7 +1244,8 @@
 ; not `CStr`.
 (defstruct VtableEntry
   key:Symbol    ; "(spelling)/(proto)" or "fnfwd.<sig>" memo key
-  name:Symbol)  ; emitted vtable symbol ("@__vt..."/"@__vtfn...")
+  name:Symbol   ; emitted vtable symbol ("@__vt..."/"@__vtfn...")
+  epoch:i32)    ; g-module-epoch of the module holding it: the vtable is `internal`
 
 ; Stage 14 §14.5 batch 2 — per-namespace ir-prefix table entry: replaces the
 ; parallel g-ns-prefix-keys/g-ns-prefix-vals arrays (nucleusc.nuc) with one
@@ -1438,9 +1442,18 @@
 ; (never strcmp'd — every key/value is already interned): `key`/`proto` stay
 ; `ptr`, `ty` is `(ptr Type)` matching BoxedFnEntry.
 (defstruct DynEntry
-  key:Symbol     ; the "dyn.<P>" memo key
+  key:Symbol     ; the "dyn.<P>[.<argtok>…]" memo key
   ty:(ptr Type)  ; the memoised box Type*
-  proto:Symbol)  ; the protocol name
+  proto:Symbol   ; the protocol name
+  ; Application arguments twice: spellings for conformance-args-eq, and their Types
+  ; (dyn-arbitrary-protocols.md §3.4). Null for none.
+  (args ?&(Vector Symbol))
+  arg-types:ptr
+  borrowed:bool) ; `(dyn &P)`: same layout and vtable, never owns or drops (§4)
+
+; Why a protocol method cannot be called through a `(dyn P)` box, or DYN-CALLABLE
+; (design/stage24-allocation/dyn-arbitrary-protocols.md §3.3).
+(defenum DynSafety DYN-CALLABLE DYN-RECEIVER DYN-SELF-PARAM DYN-SELF-RET DYN-WHERE DYN-UNBOUND)
 
 ; Stage 15 B6 (name-resolution.md §9.5) — one deferred `(dyn P)` ANNOTATION-site
 ; admission job. `dyn-type` mints the box's identity from the spelling but cannot
@@ -1451,6 +1464,8 @@
 ; name environment — and asked by `drain-dyn-annots` once the whole graph is in.
 (defstruct DynAnnot
   spelling:Symbol   ; the protocol name the author wrote
+  nargs:i32         ; how many type arguments the application gives it
+  borrowed:bool     ; `(dyn &P)`, so a message spells the `&` the author wrote
   path:Symbol       ; source file of the annotation
   line:i32
   ns:Symbol         ; g-current-ns at the annotation

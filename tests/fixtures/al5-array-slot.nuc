@@ -1,0 +1,4 @@
+; AL-5: an array element holding a handle has no zero value either.
+(import-use nucleus.allocator)
+(defvar g:(array Alloc 2) (array Alloc &heap))
+(defn main ():i32 (return 0))

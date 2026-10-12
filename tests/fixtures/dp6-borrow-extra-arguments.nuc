@@ -1,0 +1,5 @@
+; Stage 24 DP-6 — the arity refusal spells the borrowing box as written.
+(import-use nucleus.iterator)
+(defn first (it:(dyn &(Iterator i32 i64))):i32
+  (return 0))
+(defn main ():i32 (return 0))

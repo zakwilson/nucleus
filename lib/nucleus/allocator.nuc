@@ -1,6 +1,7 @@
 ; Allocators: the `Allocator` protocol, the stored handle `Alloc`, and the
 ; built-in allocators `Heap`, `Arena`, `FixedBuffer` and `Tracking`.
-; Design: design/stage24-allocation/overview.md §4, §8, and AL-1 and AL-6 in §9.
+; Design: design/stage24-allocation/overview.md §4, §8, and AL-1, AL-5 and AL-6
+; in §9.
 
 (ns nucleus.allocator)
 
@@ -12,29 +13,15 @@
 
 (extern stderr:ptr)
 
-; ---------------------------------------------------------------------------
-; The handle a collection stores. A zero-filled `Alloc` is the heap handle, so
-; a global holding one needs no initializer.
-; ---------------------------------------------------------------------------
-(defenum AllocKind ALLOC-HEAP ALLOC-ARENA ALLOC-FIXED ALLOC-CUSTOM ALLOC-TRACKING)
-
-(defstruct Alloc
-  kind:i32
-  data:ptr)
-
-; The table an `ALLOC-CUSTOM` handle's `data` points at. It must outlive every
-; handle made from it.
-(defstruct CustomAlloc
-  instance:ptr
-  allocate-fn:(fn ?&ui8)(ptr usize usize)
-  reallocate-fn:(fn ?&ui8)(ptr ?&ui8 usize usize usize)
-  deallocate-fn:(fn void)(ptr ?&ui8 usize usize))
-
 (defprotocol Allocator
-  (allocate   (self:&Self size:usize align:usize) ?&ui8)
-  (reallocate (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
-  (deallocate (self:&Self (p ?&ui8) size:usize align:usize):void)
-  (handle     (self:&Self):Alloc))
+  (allocate        (self:&Self size:usize align:usize) ?&ui8)
+  (reallocate      (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
+  (deallocate      (self:&Self (p ?&ui8) size:usize align:usize):void)
+  (allocate-zeroed (self:&Self size:usize align:usize) ?&ui8))
+
+; The handle a collection stores: a borrow of an allocator, with its vtable. Like
+; `&T` it has no zero value, so a global or field holding one needs an initializer.
+(deftype Alloc (dyn &Allocator))
 
 ; ---------------------------------------------------------------------------
 ; Alignment arithmetic. `align` must be a power of two; 0 reads as 1.
@@ -94,6 +81,14 @@
     (heap-deallocate p old align)
     (return q)))
 
+(defn heap-allocate-zeroed (size:usize align:usize) ?&ui8
+  (when (not (align-ok? align)) (return null))
+  (when (<= align (heap-malloc-align))
+    (return (as ?&ui8 (calloc 1 size))))
+  (let ((p ?&ui8) (heap-allocate size align))
+    (when (!= (as ptr p) null) (memset (as ptr p) 0 size))
+    (return p)))
+
 (extend Heap Allocator)
 (extend Heap Drop)
 
@@ -106,16 +101,16 @@
 (defn deallocate (self:&Heap (p ?&ui8) size:usize align:usize):void
   (heap-deallocate p size align))
 
-(defn handle (self:&Heap):Alloc
-  (return (Alloc ALLOC-HEAP null)))
+(defn allocate-zeroed (self:&Heap size:usize align:usize) ?&ui8
+  (return (heap-allocate-zeroed size align)))
 
 (defn drop (self:&Heap):void
   (return))
 
 ; ---------------------------------------------------------------------------
 ; Arena: a chain of blocks from a parent allocator, bump-allocated and released
-; together. Memory it hands out is zero-filled. A zero-filled `Arena` is an
-; empty arena over the heap with the default growth policy.
+; together. Memory it hands out is zero-filled. `(make Arena)` is an empty arena
+; over the heap with the default growth policy.
 ; ---------------------------------------------------------------------------
 (defstruct ArenaBlock
   next:?&ArenaBlock
@@ -242,8 +237,8 @@
 (defn deallocate (self:&Arena (p ?&ui8) size:usize align:usize):void
   (arena-deallocate self p size))
 
-(defn handle (self:&Arena):Alloc
-  (return (Alloc ALLOC-ARENA self)))
+(defn allocate-zeroed (self:&Arena size:usize align:usize) ?&ui8
+  (return (arena-allocate self size align)))
 
 ; Frees every block; the arena is then empty and reusable.
 (defn drop (self:&Arena):void
@@ -318,8 +313,10 @@
 (defn deallocate (self:&FixedBuffer (p ?&ui8) size:usize align:usize):void
   (fixed-deallocate self p size))
 
-(defn handle (self:&FixedBuffer):Alloc
-  (return (Alloc ALLOC-FIXED self)))
+(defn allocate-zeroed (self:&FixedBuffer size:usize align:usize) ?&ui8
+  (let ((p ?&ui8) (fixed-allocate self size align))
+    (when (!= (as ptr p) null) (memset (as ptr p) 0 size))
+    (return p)))
 
 ; The buffer belongs to whoever supplied it, so drop only checks the count.
 ; There is no checked build to confine it to (overview.md §9 AL-1).
@@ -330,7 +327,7 @@
 
 ; ---------------------------------------------------------------------------
 ; Tracking: forwards to a parent allocator and counts what is outstanding, so
-; `drop` can report a leak (§8.4 option C). A zero-filled `Tracking` is over the heap.
+; `drop` can report a leak (§8.4 option C). `(make Tracking a)` is a tracker over `a`.
 ; ---------------------------------------------------------------------------
 (defstruct Tracking
   parent:Alloc
@@ -345,12 +342,14 @@
            (as ui64 size) (as ui64 (tr 'live)) (as ui64 (tr 'bytes)))
   (return false))
 
+(defn tracking-took (tr:&Tracking (p ?&ui8) size:usize) ?&ui8
+  (when (!= (as ptr p) null)
+    (set! (tr 'live) (+ (tr 'live) 1))
+    (set! (tr 'bytes) (+ (tr 'bytes) size)))
+  (return p))
+
 (defn tracking-allocate (tr:&Tracking size:usize align:usize) ?&ui8
-  (let ((p ?&ui8) (allocate (ref tr 'parent) size align))
-    (when (!= (as ptr p) null)
-      (set! (tr 'live) (+ (tr 'live) 1))
-      (set! (tr 'bytes) (+ (tr 'bytes) size)))
-    (return p)))
+  (return (tracking-took tr (allocate (ref tr 'parent) size align) size)))
 
 (defn tracking-reallocate (tr:&Tracking (p ?&ui8) old:usize new:usize align:usize) ?&ui8
   (when (= (as ptr p) null) (return (tracking-allocate tr new align)))
@@ -379,8 +378,8 @@
 (defn deallocate (self:&Tracking (p ?&ui8) size:usize align:usize):void
   (tracking-deallocate self p size align))
 
-(defn handle (self:&Tracking):Alloc
-  (return (Alloc ALLOC-TRACKING self)))
+(defn allocate-zeroed (self:&Tracking size:usize align:usize) ?&ui8
+  (return (tracking-took self (allocate-zeroed (ref self 'parent) size align) size)))
 
 ; The parent is borrowed, so drop only checks the counts.
 (defn drop (self:&Tracking):void
@@ -389,57 +388,31 @@
              (as ui64 (self 'live)) (as ui64 (self 'bytes)))))
 
 ; ---------------------------------------------------------------------------
-; Alloc dispatch. The plain functions are what compiler-synthesized code calls
-; (closure environments, boxes), since a generic has no single symbol.
+; Handles. The plain functions are what compiler-synthesized code calls
+; (closure environments, nucleus.create), since a generic has no single symbol.
 ; ---------------------------------------------------------------------------
 (defn alloc-allocate (a:&Alloc size:usize align:usize) ?&ui8
-  (let (d:ptr (a 'data))
-    (return (case (a 'kind)
-              ALLOC-ARENA (arena-allocate (unsafe/cast &Arena d) size align)
-              ALLOC-FIXED (fixed-allocate (unsafe/cast &FixedBuffer d) size align)
-              ALLOC-TRACKING (tracking-allocate (unsafe/cast &Tracking d) size align)
-              ALLOC-CUSTOM (let (c:&CustomAlloc (unsafe/cast &CustomAlloc d))
-                             ((c 'allocate-fn) (c 'instance) size align))
-              (heap-allocate size align)))))
+  (return (allocate a size align)))
 
 (defn alloc-reallocate (a:&Alloc (p ?&ui8) old:usize new:usize align:usize) ?&ui8
-  (let (d:ptr (a 'data))
-    (return (case (a 'kind)
-              ALLOC-ARENA (arena-reallocate (unsafe/cast &Arena d) p old new align)
-              ALLOC-FIXED (fixed-reallocate (unsafe/cast &FixedBuffer d) p old new align)
-              ALLOC-TRACKING (tracking-reallocate (unsafe/cast &Tracking d) p old new align)
-              ALLOC-CUSTOM (let (c:&CustomAlloc (unsafe/cast &CustomAlloc d))
-                             ((c 'reallocate-fn) (c 'instance) p old new align))
-              (heap-reallocate p old new align)))))
+  (return (reallocate a p old new align)))
 
 (defn alloc-deallocate (a:&Alloc (p ?&ui8) size:usize align:usize):void
-  (let (d:ptr (a 'data))
-    (case (a 'kind)
-      ALLOC-ARENA (arena-deallocate (unsafe/cast &Arena d) p size)
-      ALLOC-FIXED (fixed-deallocate (unsafe/cast &FixedBuffer d) p size)
-      ALLOC-TRACKING (tracking-deallocate (unsafe/cast &Tracking d) p size align)
-      ALLOC-CUSTOM (let (c:&CustomAlloc (unsafe/cast &CustomAlloc d))
-                     ((c 'deallocate-fn) (c 'instance) p size align))
-      (heap-deallocate p size align))))
+  (deallocate a p size align))
 
-; A handle over a hand-built table, for an allocator the kinds above do not cover.
-(defn custom-alloc (c:&CustomAlloc):Alloc
-  (return (Alloc ALLOC-CUSTOM c)))
+; The borrowing coercion is the conversion; `handle` spells it where no typed
+; slot does (dyn-arbitrary-protocols.md §4.7). The concrete overloads exist
+; because only they take a by-value binding's address implicitly: `(handle heap)`.
+(defn handle (a:&T :where (Allocator T)):Alloc
+  (return a))
 
-; A handle is not the allocator, so it has no `Drop`.
-(extend Alloc Allocator)
+(defn handle (a:&Heap):Alloc (return a))
+(defn handle (a:&Arena):Alloc (return a))
+(defn handle (a:&FixedBuffer):Alloc (return a))
+(defn handle (a:&Tracking):Alloc (return a))
 
-(defn allocate (self:&Alloc size:usize align:usize) ?&ui8
-  (return (alloc-allocate self size align)))
-
-(defn reallocate (self:&Alloc (p ?&ui8) old:usize new:usize align:usize) ?&ui8
-  (return (alloc-reallocate self p old new align)))
-
-(defn deallocate (self:&Alloc (p ?&ui8) size:usize align:usize):void
-  (alloc-deallocate self p size align))
-
-(defn handle (self:&Alloc):Alloc
-  (return @self))
+(defn handle (a:&Alloc):Alloc
+  (return @a))
 
 ; ---------------------------------------------------------------------------
 ; Initialization (overview.md §5): one method name, `init`, across the three
@@ -463,7 +436,13 @@
 (defn init (self:&T :where (Init T)):void
   (init self (handle &heap)))
 
-; So `(make Tracking a)` is a tracker over `a`, as for any object that stores one.
+; So `(make Arena a)` is an empty arena over `a`, and `(make Tracking a)` a
+; tracker over `a`, as for any object that stores a handle.
+(extend Arena Init)
+
+(defn init (self:&Arena a:Alloc):void
+  (set! (deref self) (arena-in a 0)))
+
 (extend Tracking Init)
 
 (defn init (self:&Tracking a:Alloc):void

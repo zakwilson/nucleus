@@ -66,10 +66,8 @@
     (return v)))
 
 (defvar g-tests:&(Vector TestCase) (test-cases-new))
-; Lazily built, like lib/nucleus/io.nuc's output buffer: a global String with a
-; constant initializer would need an allocator this module has no reason to own.
-(defvar g-fail-buf:String)
-(defvar g-fail-ready:i32 0)
+; An empty String over the heap, as a constant, so no program pays a constructor for it.
+(defvar g-fail-buf:String (String (bytes ((Vector ui8) (alloc &heap)))))
 
 ; Register a test by name. The data-driven entry point: a suite that reads its
 ; cases from a table calls this once per row, before `test-main`.
@@ -104,18 +102,13 @@
 
 ; Clears the failure buffer and hands it back to be written into.
 (defn test-fail-begin ():&String
-  (when (= g-fail-ready 0)
-    (init &g-fail-buf)
-    (set! g-fail-ready 1))
   (string-clear &g-fail-buf)
   (return &g-fail-buf))
 
 (defn test-failure-text ():StrView
-  (when (= g-fail-ready 0) (return ""))
   (return (string-as-view &g-fail-buf)))
 
 (defn test-failure-len ():usize
-  (when (= g-fail-ready 0) (return 0))
   (return (byte-len &g-fail-buf)))
 
 ; `(fail! "expected " x " got " y)` — render, then propagate. A macro because
@@ -398,33 +391,33 @@
 ; string -- so a line that is not one is skipped rather than failing the parse,
 ; which is what lets output from a tool `nucleusc` invoked ride along.
 (defn read-diagnostics (text:StrView):!(Vector Diagnostic)
-  (let (out:(Vector Diagnostic) ((Vector Diagnostic))
+  (let (out:&(Vector Diagnostic) (alloca (Vector Diagnostic))
         it:LineIter (strview-lines &text))
-    (init &out)
+    (init out)
     (while (not (lines-iter-done &it))
       (let (line:StrView (lines-iter-next &it))
         (when (strview-has-prefix line "{:severity ")
-          (conj &out (try (diag-of-node (try (edn-parse line))))))))
-    (return (ok out))))
+          (conj out (try (diag-of-node (try (edn-parse line))))))))
+    (return (ok @out))))
 
 ; Every diagnostic, one per line, for a failure message.
 (defn diag-list-text (ds:&(Vector Diagnostic)):String
-  (let (s:String (String)
+  (let (s:&String (alloca String)
         n:usize (count ds)
         i:usize 0)
-    (init &s)
-    (when (= n 0) (str-into &s "\n     (no diagnostics)"))
+    (init s)
+    (when (= n 0) (str-into s "\n     (no diagnostics)"))
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (str-into &s "\n     " (keyword-name (d 'severity)) " "
+        (str-into s "\n     " (keyword-name (d 'severity)) " "
                   (d 'file) ":" (d 'line) ": " (d 'message))
         (let (m:usize (count (d 'notes))
               j:usize 0)
           (while (< j m)
-            (str-into &s "\n       note: " (invoke (d 'notes) j))
+            (str-into s "\n       note: " (invoke (d 'notes) j))
             (set! j (+ j 1)))))
       (set! i (+ i 1)))
-    (return s)))
+    (return @s)))
 
 (defn diag-matches (d:&Diagnostic severity:StrView file:StrView line:i32 needle:StrView):bool
   (return (and (= (keyword-name (d 'severity)) severity)
