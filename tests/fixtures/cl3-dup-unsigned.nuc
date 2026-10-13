@@ -1,0 +1,5 @@
+; Unsigned members compare unsigned.
+(import-use nucleus.const) (import-use nucleus.hashset)
+
+(defn main ():i32
+  (let (s:(Const (HashSet ui8)) #{200 7 200}) (return (unsafe/cast i32 (count s)))))

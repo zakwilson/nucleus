@@ -10,6 +10,7 @@
 (import-use nucleus.read)
 (import-use nucleus.strview)
 (import-use nucleus.hashset)
+(import-use nucleus.const)   ; a literal is a Const
 
 ; Generic / polymorphism registry, bounded-generic def-time checking, Stage 11
 ; tyvar-from-receiver inference + structural unification, and the Valid inferred
@@ -186,6 +187,15 @@
         (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
           (split-typed (hd 's) (as &Symbol &nm) (as &Symbol &tail))
           (when (= nm name) (return true))))))
+  (return false))
+
+; Core libraries share one link prefix, so a core method of a core protocol never
+; takes the solitary name: two libraries' lone conformers collide (core-link-names.md §3).
+(defn core-protocol-method? (m:&Method name:Symbol):bool
+  (when (not (core-ns? (m 'src-ns))) (return false))
+  (when (contains? g-core-proto-methods name) (return true))
+  (doseq (p g-protocols (VecIter &Protocol))
+    (when (and (core-ns? (p 'src-ns)) (proto-declares-method? p name)) (return true)))
   (return false))
 
 ; A recorded conformance of `t`, by the key dispatch asks (`type-spelling`).
@@ -448,24 +458,23 @@
 ; sanitize handles any remaining stragglers. Used when a name carrying an
 ; operator method is overloaded and its methods must take mangled symbols (§10.3).
 (defn op-name-token (name:Symbol):StrView
-  (let (mnemonic:&(HashMap StrView StrView)
-        {"_+" "add"
-         "_-" "sub"
-         "_*" "mul"
-         "_/" "div"
-         "%" "rem"
-         "=" "eq"
-         "!=" "ne"
-         "<" "lt"
-         "<=" "le"
-         ">" "gt"
-         ">=" "ge"
-         "bit-and" "band"
-         "bit-or" "bor"
-         "bit-xor" "bxor"
-         "bit-shl" "bshl"
-         "bit-shr" "bshr"})
-    (match (invoke mnemonic (symbol-as-view name))
+  (let (mnemonic {"_+" "add"
+                  "_-" "sub"
+                  "_*" "mul"
+                  "_/" "div"
+                  "%" "rem"
+                  "=" "eq"
+                  "!=" "ne"
+                  "<" "lt"
+                  "<=" "le"
+                  ">" "gt"
+                  ">=" "ge"
+                  "bit-and" "band"
+                  "bit-or" "bor"
+                  "bit-xor" "bxor"
+                  "bit-shl" "bshl"
+                  "bit-shr" "bshr"})
+    (match (mnemonic (symbol-as-view name))
       ((some res) (return res))
       (none (return (sanitize-for-ir (ir-name-token (symbol-as-view name))))))))
 
@@ -924,7 +933,8 @@
             ; picked up; everything else finalizes now.
             (when (or (> n-user 0) (!= has-generic 0))
               (if (and (= has-intrinsic 0)
-                       (= has-generic 0) (= n-user 1))
+                       (= has-generic 0) (= n-user 1)
+                       (not (core-protocol-method? (as &Method (invoke (gg 'methods) 0)) (gg 'name))))
                 (let (m0:&Method (as &Method (invoke (gg 'methods) 0)))
                   (set! (gg 'mangled) 0)
                   ; Stage 12 N4: a solitary (unmangled, C-callable) generic keeps
@@ -1014,7 +1024,8 @@
                           (when (and (= (mi 'ir-fixed) 0) (late-renamable? mi))
                             (let (pfx:Symbol (method-ir-prefix gg mi))
                               (if (and (= has-intrinsic 0) (= has-generic 0)
-                                       (= (generic-user-methods-with-prefix gg pfx) 1))
+                                       (= (generic-user-methods-with-prefix gg pfx) 1)
+                                       (not (core-protocol-method? mi (gg 'name))))
                                 (set! (mi 'ir-name) (symbol-intern (fstr "@"
                                                           (def-compose pfx
                                                  (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
@@ -1264,7 +1275,43 @@
     (die-at line (fstr "no matching method for overloaded '" (gg 'name)
                        "' with argument types (" (arg-type-spellings argtypes nargs) ")"
                        (unreachable-method-note gg argtypes nargs)
+                       (const-receiver-note gg argtypes nargs)
                        (candidate-notes gg argtypes arg-nodes nargs line)))))
+
+; Does any method of the generic named `name`, reachable or not, come from `ns`?
+(defn generic-has-ns-method (name:Symbol ns:Symbol):bool
+  (when-some (full (generic-lookup name))
+    (doseq (m (full 'methods) (VecIter &Method))
+      (when (= (m 'src-ns) ns) (return true))))
+  (return false))
+
+; A `Const` first argument with no `Const` method of this name: a mutation
+; (stage25-const-literals §5.6). With one, the likely miss is the import.
+(defn const-receiver-note (gg:ptr:Generic argtypes:ptr nargs:i32):StrView
+  (when (= nargs 0) (return ""))
+  (let (t:?&Type (aref (unsafe/cast &ptr argtypes) 0))
+    (when (and (!= t null) (= (t 'kind) TY-PTR) (!= (t 'elem) null)) (set! t (t 'elem)))
+    (when (or (= t null) (!= (t 'kind) TY-STRUCT)) (return ""))
+    (let (sd:&StructDef (unsafe/cast &StructDef (t 'sdef))
+          ot:ptr (as ptr (sd 'origin-template))
+          mut:StrView "")
+      (when (= ot null) (return ""))
+      (when (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.const" "ConstVec"))))
+        (set! mut "Vector"))
+      (when (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.const" "ConstSet"))))
+        (set! mut "HashSet"))
+      (when (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.const" "ConstMap"))))
+        (set! mut "HashMap"))
+      (when (= mut "") (return ""))
+      (when (generic-has-ns-method (gg 'name) (symbol-intern "nucleus.const"))
+        (if (= (ns-reachable-bare (symbol-intern "nucleus.const")) 0)
+          (return "\n  note: a literal is a Const, whose methods are in nucleus.const -- add (import-use nucleus.const)")
+          (return "")))
+      (let ((acc String) (str-alloc g-arena (fstr "\n  note: a Const collection is read-only -- build one with (make (" mut)))
+        (dotimes (i (sd 'origin-nargs))
+          (str-into acc " " (type-display (aref (unsafe/cast &ptr (sd 'origin-args)) i))))
+        (str-into acc ") heap ...)")
+        (return (string-as-view acc))))))
 
 ; The exact method the import environment filtered out of `gg`, named by its
 ; namespace, or "" — the one fix "no matching method" otherwise hides.
@@ -1851,7 +1898,7 @@
   (let (run:usize (type-sigil-run name))
     (when (> run 0)
       (return (tyname-resolvable (symbol-intern (strview-drop-bytes (symbol-as-view name) run))))))
-  ; `builtin-type-name`, not `g-primitive-type-set`: only the former was
+  ; `builtin-type-name`, not `PRIMITIVE-TYPE-NAMES`: only the former was
   ; extracted from parse-type-name, the set this mirrors (context/conventions.md,
   ; "A concrete type read as a TYVAR silently drops a whole instantiation").
   (when (!= (as ptr (builtin-type-name name)) null) (return 1))
@@ -2132,6 +2179,10 @@
                            nline out-tyvars io-ntv)
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return)))
+    ; `(Const X)` is a spelling over X, whose arguments it passes through.
+    (when (and (= (node-len (as ptr node)) 2) (= (node-at (as ptr node) 0) 'Const))
+      (collect-tyvars-at (node-at (as ptr node) 1) in-tmpl nline out-tyvars io-ntv)
+      (return))
     (when (!= (node-inline-aggregate node) 0)
       (dotimes (mi (- (node-len (as ptr node)) 1))
         (let (mname:Symbol (symbol-none))
@@ -2193,6 +2244,10 @@
       (let (r:i32 (unify-tpat ex at tyvars ntv out-bound line))
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return r))))
+  ; `(Const X)` resolves by X's shape only once X is concrete; as a pattern it
+  ; is the Const template's own.
+  (let (ce:?&Node (const-tpat-expand pat line))
+    (when (!= ce null) (return (unify-tpat ce at tyvars ntv out-bound line))))
   ; PK-4b: a sigil pattern unifies its operand against the type UNDER the
   ; sigils, peeled outermost first as the parser applies them (`?!T`: the
   ; Maybe, then the Result). A type that is not that wrapper is a mismatch.
@@ -3667,31 +3722,22 @@
                  (or (strview-has-prefix v "?") (strview-has-prefix v "!"))
                  (not (strview-has-prefix v "!="))))))
 
-; Is this head one of the core special forms (mirrors emit-list's dispatch)?
-; Such forms are handled structurally by gcheck, never as function calls.
-; hp is the head Node* itself (not its string spelling) — every symbol Node
-; is `intern-symbol`-canonicalized (lib/nucleus/node.nuc), so comparing the whole
-; Node* by `=` against a quoted-symbol literal ('let, 'with, ...) is a valid,
-; fast identity test, matching emit-list's dispatch in nucleusc.nuc. Node is
-; not a string kind, so this `=` is a plain `icmp eq ptr` regardless of hp's
-; declared pointer kind — (ptr Node) here costs nothing (unlike the CStr/
-; Node.s identity trap for genuine *string* params elsewhere in this file).
+; The heads gcheck handles structurally, never as calls (emit-list's special forms).
+(defconst- GCHECK-SPECIAL-FORMS
+  #{"let" "with" "do" "cond" "return" "while" "set!" "inc!" "quote" "quasiquote"
+    "ast-first" "ast-rest" "ast-at" "ast-len" "not" "_and" "_or" "cast" "ref"
+    "deref" "ptr+" "_get" "sizeof" "alignof" "source-file" "source-line" "alloca"
+    "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
+    "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
+    "funcall-ptr-ptr" "as" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
+    "unsafe/funcall-ptr-i32" "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
+    "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some" "move" "defer"
+    "err-name" "err-message" "match" "__make" "__init-then" "err!" "try"
+    "type-token" "signal"})
+
 (defn gcheck-special-form (hp:&Node):bool
-  (if-some (head (as-ref hp))
-           (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
-                        'ast-first 'ast-rest 'ast-at 'ast-len
-                        'not '_and '_or 'cast 'ref 'deref 'ptr+ '_get
-                        'sizeof 'alignof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
-                        'struct-fields 'type-name 'conforms?
-                        'funcall 'funcall-void
-                        'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
-                        'as 'unsafe/cast 'unsafe/ptr+ 'unsafe/funcall-ptr-1 
-                        'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
-                        'unsafe/funcall-ptr-ptr 'some 'as-ref 'unwrap
-                        'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
-                        'match '__make '__init-then 'err! 'try 'type-token 'signal}
-                       head)
-           false))
+  (return (and (= (hp 'kind) NODE-SYM)
+               (contains? GCHECK-SPECIAL-FORMS (symbol-as-view (hp 's))))))
 
 ; Declared type of a let/with binding name in a generic body. Handles both the
 ; un-desugared colon symbol ("r:T") and the desugared (name type) cell. Returns
@@ -4603,6 +4649,148 @@
   (when (!= (conformance-lookup type-name proto-name) 0) (return true))
   (return (conformance-promise-redeem (type-canon-name type-name)
                                       (protocol-canon-name proto-name))))
+
+; `(Const C)`: the `nucleus.const` template of the first shape C conforms to,
+; most specific first (design/stage25-const-literals/overview.md §4.2).
+(defn const-type-of (c:&Type line:i32):&Type
+  (core-ns-require "nucleus.const" "(Const C)" line)
+  (when-some (t (const-shape-type c "nucleus.coll/Assoc" "nucleus.const/ConstMap" 0 2 line))
+    (return t))
+  (when-some (t (const-shape-type c "nucleus.coll/Set" "nucleus.const/ConstSet" 1 1 line))
+    (return t))
+  (when-some (t (const-shape-type c "nucleus.coll/Seq" "nucleus.const/ConstVec" 2 1 line))
+    (return t))
+  (die-at line (fstr "(Const C): Const takes a type conforming to Seq, Set or Assoc; "
+                     (type-display c) " conforms to none")))
+
+(defn shape-index (pkey:Symbol):i32
+  (when (= pkey "nucleus.coll/Assoc") (return 0))
+  (when (= pkey "nucleus.coll/Set") (return 1))
+  (when (= pkey "nucleus.coll/Seq") (return 2))
+  (return -1))
+
+; The Const template `tmpl` over the first `nargs` arguments of C's `proto`
+; conformance, registered or only written, or null when C does not conform.
+(defn const-shape-type (c:&Type proto:StrView tmpl:StrView shape:i32 nargs:i32 line:i32):?&Type
+  (let (argts:ptr (const-shape-args c (symbol-intern proto) nargs line))
+    (when (= argts null) (set! argts (const-shape-written c shape nargs line)))
+    (when (= argts null) (return null))
+    (let (st:?&StructTemplate (struct-template-lookup-ref (symbol-intern tmpl)))
+      (when (= st null) (die-at line (fstr "(Const C): " tmpl " is not loaded")))
+      (return (struct-template-stamp-types st argts nargs line)))))
+
+(defn const-shape-args (c:&Type p:Symbol nargs:i32 line:i32):ptr
+  (let (cs:Symbol (type-spelling c))
+    (when (not (conformance-known cs p)) (return null))
+    (let (cn:i32 0
+          args:?&(Vector Symbol) (conformance-args cs p (as &i32 &cn)))
+      (when (or (= args null) (< cn nargs)) (return null))
+      (let (av:&(Vector Symbol) (unsafe/cast &(Vector Symbol) args)
+            argts:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes))))
+        (dotimes (i nargs)
+          (set! (aref (unsafe/cast &ptr argts) i) (conf-arg-to-type (invoke av i:usize) line)))
+        (return argts)))))
+
+; Every written `(extend S (P …))` to a shape protocol. A root signature is
+; prescanned before any imported `extend` registers.
+(defn prescan-shape-extends (forms:?&Node):void
+  (dotimes (i (node-len forms))
+    (let (f:?&Node (as ?&Node (node-at forms i)))
+      (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 3))
+        (let (h:?&Node (as ?&Node (node-at f 0))
+              s:?&Node (as ?&Node (node-at f 1))
+              p:?&Node (as ?&Node (node-at f 2)))
+          (when (and (= (node-kind h) NODE-SYM) (= (unsafe/cast &Node h) 'extend)
+                     (or (= (node-kind s) NODE-SYM) (= (node-kind s) NODE-LIST))
+                     (= (node-kind p) NODE-LIST))
+            (let (k:i32 (shape-index (dyn-proto-key (node-head-sym (as ptr p)))))
+              (when (>= k 0)
+                (let (e:&ShapeExtend (new ShapeExtend g-arena))
+                  (set! (e 'subject) (unsafe/cast &Node s))
+                  (set! (e 'proto) (unsafe/cast &Node p))
+                  (set! (e 'shape) k)
+                  (set! (e 'ns) g-current-ns)
+                  (set! (e 'path) g-source-path)
+                  (set! (e 'imports) g-file-imports)
+                  (conj g-shape-extends e))))))))))
+
+; C's arguments for `shape` from a written extend: a template's, with its type
+; variables bound to the instance's arguments.
+(defn const-shape-written (c:&Type shape:i32 nargs:i32 line:i32):ptr
+  (when (!= (c 'kind) TY-STRUCT) (return null))
+  (let (sd:&StructDef (unsafe/cast &StructDef (c 'sdef)))
+    (doseq (e g-shape-extends (VecIter &ShapeExtend))
+      (when (= (e 'shape) shape)
+        (let (here:NameEnv (name-env-enter (e 'ns) (e 'path) (e 'imports))
+              argts:ptr (shape-extend-args e sd nargs line))
+          (name-env-set here)
+          (when (!= argts null) (return argts))))))
+  (return null))
+
+(defn shape-extend-args (e:&ShapeExtend sd:&StructDef nargs:i32 line:i32):ptr
+  (let (s:&Node (e 'subject)
+        p:&Node (e 'proto)
+        ntv:i32 0
+        ta:ptr null)
+    (if (= (s 'kind) NODE-SYM)
+      (when (!= (as ptr (struct-lookup-ref (s 's))) (as ptr sd)) (return null))
+      (let (st:?&StructTemplate (struct-template-lookup-ref (node-head-sym (as ptr s))))
+        (when (or (= st null) (!= (as ptr (sd 'origin-template)) (as ptr st))) (return null))
+        (set! ntv (- (node-len (as ptr s)) 1))
+        (when (!= ntv (sd 'origin-nargs)) (return null))
+        (set! ta (sd 'origin-args))))
+    (when (< (- (node-len (as ptr p)) 1) nargs) (return null))
+    (let (argts:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes))))
+      (dotimes (i nargs)
+        (let (an:&Node (unsafe/cast &Node (node-at (as ptr p) (+ i 1)))
+              t:ptr null)
+          (when (= (an 'kind) NODE-SYM)
+            (dotimes (j ntv)
+              (let (sn:&Node (unsafe/cast &Node (node-at (as ptr s) (+ j 1))))
+                (when (and (= (sn 'kind) NODE-SYM) (= (sn 's) (an 's)))
+                  (set! t (aref (unsafe/cast &ptr ta) j))))))
+          (when (= t null) (set! t (parse-type-from-node (as ptr an) line)))
+          (set! (aref (unsafe/cast &ptr argts) i) t)))
+      (return argts))))
+
+; `(Const X)` over a template pattern `X` that mentions a type variable, as the
+; Const template's own pattern: `(Const (Vector T))` is `(ConstVec T)`, read off
+; Vector's written shape conformance. Null when `pat` is not one.
+(defn const-tpat-expand (pat:?&Node line:i32):?&Node
+  (when (or (!= (node-kind pat) NODE-LIST) (!= (node-len (as ptr pat)) 2)
+            (!= (node-at (as ptr pat) 0) 'Const))
+    (return null))
+  (let (x:?&Node (as ?&Node (node-at (as ptr pat) 1)))
+    (when (!= (node-kind x) NODE-LIST) (return null))
+    (let (st:?&StructTemplate (struct-template-lookup-ref (node-head-sym (as ptr x))))
+      (when (= st null) (return null))
+      (dotimes (k 3)
+        (doseq (e g-shape-extends (VecIter &ShapeExtend))
+          (when (and (= (e 'shape) k) (= ((e 'subject) 'kind) NODE-LIST))
+            (let (here:NameEnv (name-env-enter (e 'ns) (e 'path) (e 'imports))
+                  est:?&StructTemplate (struct-template-lookup-ref (node-head-sym (as ptr (e 'subject)))))
+              (name-env-set here)
+              (when (= (as ptr est) (as ptr st))
+                (return (const-tpat-build e (unsafe/cast &Node x) k line))))))))
+    (return null)))
+
+; `(ConstT a…)` from extend record `e`, its subject's type variables replaced by `x`'s arguments.
+(defn const-tpat-build (e:&ShapeExtend x:&Node k:i32 line:i32):&Node
+  (let (s:&Node (e 'subject)
+        p:&Node (e 'proto)
+        nargs:i32 (if (= k 0) 2 1)
+        b:&Node (node-list-new line))
+    (node-push b (intern-node (core-spelling "nucleus.const"
+                                             (cond (= k 0) "ConstMap" (= k 1) "ConstSet" true "ConstVec"))))
+    (dotimes (i nargs)
+      (let (an:?&Node (as ?&Node (node-at (as ptr p) (+ i 1)))
+            out:?&Node an)
+        (when (= (node-kind an) NODE-SYM)
+          (dotimes (j (- (node-len (as ptr s)) 1))
+            (when (= (node-at (as ptr s) (+ j 1)) (as ptr an))
+              (set! out (as ?&Node (node-at (as ptr x) (+ j 1)))))))
+        (node-push b out)))
+    (return (node-list-done b))))
 
 ; The one answer to "does `ty` conform to `proto`", for `:where` dispatch and
 ; `conforms?` alike. Valid holds here and is checked structurally at the call.

@@ -1,0 +1,516 @@
+; Stage 25 — `Const` collection literals
+; (design/stage25-const-literals/overview.md). The refusals are rows of
+; tests/manifest/diagnostics.edn (`cl*-`).
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+
+; Write `src` as `main.nuc` in a fresh scratch subdirectory `sub`, build and run it.
+(defn const-run (sub:StrView src:StrView):!String
+  (let (dir:String (try (test-scratch-sub sub))
+        m:String (try (write-into (string-as-view &dir) "main.nuc" src))
+        out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+    (drop &m)
+    (drop &dir)
+    (return (ok out))))
+
+; The same program's IR.
+(defn const-ir (sub:StrView src:StrView):!Compiled
+  (let (dir:String (try (test-scratch-sub sub))
+        m:String (try (write-into (string-as-view &dir) "main.nuc" src))
+        c:Compiled (try (compile-path (string-as-view &m))))
+    (drop &m)
+    (drop &dir)
+    (return (ok c))))
+
+; ---------------------------------------------------------------------------
+; CL-0: library groundwork
+; ---------------------------------------------------------------------------
+
+; `init` from a `Const` reserves once, so its inserts must not resize.
+(deftest cl0-reserve
+  (let (out:String (try (const-run "cl0reserve" "(import-use nucleus.io)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.create)
+(defn main ():i32
+  (with (s (make (HashSet i32))
+         m (make (HashMap i32 i32)))
+    (reserve &s 100)
+    (reserve &m 100)
+    (let (sc:usize (s 'cap)
+          mc:usize (m 'cap))
+      (dotimes (i 100)
+        (conj &s i)
+        (assoc &m i (* i 2)))
+      (println (if (= sc (s 'cap)) \"same\" \"grew\") \" \"
+               (if (= mc (m 'cap)) \"same\" \"grew\") \" \"
+               (count &s) \" \" (count &m))
+      (reserve &s 10)
+      (println (if (= sc (s 'cap)) \"kept\" \"shrank\"))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "same same 100 100\nkept\n"))
+    (drop &out))
+  (return (ok)))
+
+; A constant header over a constant table, with the template type left to the literal.
+(defn cl0-defconst-src ():StrView (return "(import-use nucleus.io)
+(defstruct (CV T) data:ptr len:usize)
+(defconst TBL (array i32 10 20 30))
+(defconst V ((CV i32) &TBL 3))
+(defn main ():i32
+  (println (aref (unsafe/cast &i32 (V 'data)) 2) \" \" (V 'len))
+  (return 0))
+"))
+
+(deftest cl0-defconst-template-literal
+  (let (out:String (try (const-run "cl0dc" (cl0-defconst-src)))
+        c:Compiled (try (const-ir "cl0dcir" (cl0-defconst-src)))
+        iv:StrView (compiled-ir &c))
+    (try (check-eq (string-as-view &out) "30 3\n"))
+    (try (check-match iv "@V = constant %CV.i32 { ptr @TBL, i64 3 }*"))
+    (drop &c)
+    (drop &out))
+  (return (ok)))
+
+; `Entry` is `nucleus.coll`'s, and `nucleus.hashmap` still exports it.
+(deftest cl0-entry-in-coll
+  (let (out:String (try (const-run "cl0entry" "(import-use nucleus.io)
+(import-use nucleus.coll)
+(defn main ():i32
+  (let (e:(Entry i32 i32) ((Entry i32 i32) 4 5))
+    (println (e 'key) \" \" (e 'val)))
+  (return 0))
+"))
+        out2:String (try (const-run "cl0entry2" "(import-use nucleus.io)
+(import-use nucleus.hashmap)
+(import-use nucleus.create)
+(defn main ():i32
+  (with (m (make (HashMap i32 i32)))
+    (conj &m ((Entry i32 i32) 7 8))
+    (println (count &m)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "4 5\n"))
+    (try (check-eq (string-as-view &out2) "1\n"))
+    (drop &out2)
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-1: lib/nucleus/const.nuc, over headers built by hand
+; ---------------------------------------------------------------------------
+
+(defn cl1-src ():StrView (return "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(import-use nucleus.strview)
+(import-use nucleus.numeric)
+(defconst VD (array i32 10 20 30))
+(defconst V ((ConstVec i32) &VD 3))
+(defconst SD (array i32 1 3 5 7 9 11 13 15 17 19))
+(defconst S ((ConstSet i32) &SD 10))
+(defconst S4 ((ConstSet i32) &SD 4))
+(defconst MD (array (Entry i32 i32) ((Entry i32 i32) 1 100) ((Entry i32 i32) 5 500)
+                    ((Entry i32 i32) 9 900)))
+(defconst M ((ConstMap i32 i32) &MD 3))
+(defn main ():i32
+  (println (count V) \" \" (V 1) \" \" (contains? V 20) \" \" (contains? V 21))
+  (println (contains? S 19) \" \" (contains? S 2) \" \" (contains? S 1) \" \"
+           (contains? S4 7) \" \" (contains? S4 9))
+  (doseq (x V (ConstIter i32)) (print x \" \"))
+  (println)
+  (match (M 5) ((some v) (println \"m5=\" v)) (none (println \"m5 none\")))
+  (match (M 6) ((some v) (println \"m6=\" v)) (none (println \"m6 none\")))
+  (doseq (e M (ConstIter (Entry i32 i32))) (print (e 'key) \":\" (e 'val) \" \"))
+  (println)
+  (with (v (make (Vector i32) heap V)
+         s (make (HashSet i32) heap S)
+         m (make (HashMap i32 i32) heap M))
+    (conj &v 40)
+    (println (count &v) \" \" (&v 3) \" \" (count &s) \" \" (contains? &s 13) \" \" (count &m))
+    (match (get &m 9) ((some x) (println \"hm9=\" x)) (none (println \"none\"))))
+  (let (p:&(HashSet i32) (new (HashSet i32) heap S))
+    (println \"new \" (count p))
+    (drop p)
+    (deallocate (handle heap) (unsafe/cast ?&ui8 p) (as usize (sizeof (HashSet i32)))
+                (as usize (alignof (HashSet i32)))))
+  (let (buf:&i32 (alloca (array i32 6)))
+    (set! (aref buf 0) 5) (set! (aref buf 1) 3) (set! (aref buf 2) 5)
+    (set! (aref buf 3) 1) (set! (aref buf 4) 3) (set! (aref buf 5) 9)
+    (let (n:usize (const-seal buf 6))
+      (print \"sealed \" n \":\")
+      (dotimes (i (unsafe/cast i32 n)) (print \" \" (aref buf i)))
+      (println)))
+  (let (eb:&(Entry StrView i32) (alloca (array (Entry StrView i32) 3)))
+    (set! (aref eb 0) ((Entry StrView i32) \"b\" 1))
+    (set! (aref eb 1) ((Entry StrView i32) \"a\" 2))
+    (set! (aref eb 2) ((Entry StrView i32) \"b\" 3))
+    (let (n:usize (const-seal eb 3))
+      (print \"map-sealed \" n \":\")
+      (dotimes (i (unsafe/cast i32 n)) (print \" \" ((aref eb i) 'key) \"=\" ((aref eb i) 'val)))
+      (println)))
+  ; \"ab\" cut from \"abz\" is not NUL-terminated: a strcmp would call it distinct.
+  (let (whole:StrView \"abz\"
+        cut:StrView (unwrap (strview-sub-bytes &whole 0 2))
+        sb:&StrView (alloca (array StrView 2)))
+    (set! (aref sb 0) cut) (set! (aref sb 1) \"ab\")
+    (println \"sv-sealed \" (const-seal sb 2)))
+  (let (fb:&f64 (alloca (array f64 3)))
+    (set! (aref fb 0) 1.5) (set! (aref fb 1) 0.0) (set! (aref fb 2) -0.0)
+    (println \"f64-sealed \" (const-seal fb 3)))
+  (return 0))
+"))
+
+; Lookup on each side of the linear-scan threshold, iteration, `make`/`new` from
+; each kind, and `const-seal`: sets keep one of each, a later map key wins, a
+; StrView compares by its own bytes (ConstOrd, not CStr), and 0.0 and -0.0 are one.
+(deftest cl1-const-templates
+  (let (out:String (try (const-run "cl1" (cl1-src))))
+    (try (check-eq (string-as-view &out) "3 20 true false
+true false true true false
+10 20 30 
+m5=500
+m6 none
+1:100 5:500 9:900 
+4 40 10 true 3
+hm9=900
+new 10
+sealed 4: 1 3 5 9
+map-sealed 2: a=2 b=3
+sv-sealed 1
+f64-sealed 2
+"))
+    (drop &out))
+  (return (ok)))
+
+; `const-cmp` is a core protocol's method, so a core library's lone overload is
+; mangled: char.nuc's and numeric.nuc's would otherwise both be `@nuc_const-cmp`.
+(deftest cl1-core-protocol-method-mangled
+  (let (a:Compiled (try (compile-path "lib/nucleus/numeric.nuc"))
+        b:Compiled (try (compile-path "lib/nucleus/char.nuc")))
+    (try (check-match (compiled-ir &a) "define * @nuc_const_cmp.f64.f64(*"))
+    (try (check-match (compiled-ir &b) "define * @nuc_const_cmp.Char.Char(*"))
+    (try (check-not-match (compiled-ir &a) "define * @nuc_const-cmp(*"))
+    (drop &b)
+    (drop &a))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-2: the `(Const C)` spelling, resolved by shape
+; ---------------------------------------------------------------------------
+
+; In signatures, for each of the three shapes, above any imported `extend` registers.
+(deftest cl2-const-params
+  (let (out:String (try (const-run "cl2params" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(defconst VD (array i32 10 20 30))
+(defconst V ((ConstVec i32) &VD 3))
+(defconst MD (array (Entry i32 i32) ((Entry i32 i32) 1 100) ((Entry i32 i32) 5 500)))
+(defn total (xs:(Const (Vector i32))):i32
+  (let (t:i32 0)
+    (doseq (x xs (ConstIter i32)) (set! t (+ t x)))
+    (return t)))
+(defn has (s:(Const (HashSet i32)) x:i32):bool (return (contains? s x)))
+(defn look (m:(Const (HashMap i32 i32)) k:i32):i32
+  (match (m k) ((some v) (return v)) (none (return -1))))
+(defn main ():i32
+  (println (total V))
+  (let (s:(Const (HashSet i32)) ((ConstSet i32) &VD 3)
+        m:(Const (HashMap i32 i32)) ((ConstMap i32 i32) &MD 2))
+    (println (has s 20) \" \" (has s 21) \" \" (look m 5) \" \" (look m 6)))
+  (return 0))\n")))
+    (try (check-eq (string-as-view &out) "60\ntrue false 500 -1\n"))
+    (drop &out))
+  (return (ok)))
+
+; A user type joins through its shape conformance, written below the use; a type
+; that is both a Seq and a Set takes the Set row.
+(deftest cl2-user-shapes
+  (let (out:String (try (const-run "cl2user" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(defconst BD (array i32 1 2 7))
+(defstruct Bag n:i32)
+; Written above Bag's extend.
+(defn size-of (b:(Const Bag)):usize (return (count b)))
+(defn union (self:&Bag o:&Bag):void (return))
+(defn difference (self:&Bag o:&Bag):void (return))
+(defn intersection (self:&Bag o:&Bag):void (return))
+(defn contains? (self:&Bag e:i32):bool (return false))
+(extend Bag (Set i32))
+; A Seq that is also a Set takes the Set row.
+(defstruct Both n:i32)
+(defn invoke (self:&Both i:usize):i32 (return 0))
+(defn append (self:&Both e:i32):void (return))
+(defn insert (self:&Both i:usize e:i32):void (return))
+(defn contains? (self:&Both e:i32):bool (return false))
+(defn union (self:&Both o:&Both):void (return))
+(defn difference (self:&Both o:&Both):void (return))
+(defn intersection (self:&Both o:&Both):void (return))
+(extend Both (Seq i32))
+(extend Both (Set i32))
+(defn both-has (b:(Const Both) x:i32):bool (return (contains? b x)))
+(defn main ():i32
+  (println (size-of ((ConstSet i32) &BD 3)) \" \" (both-has ((ConstSet i32) &BD 3) 7))
+  (return 0))\n")))
+    (try (check-eq (string-as-view &out) "3 true\n"))
+    (drop &out))
+  (return (ok)))
+
+; The `.nuch` keeps the written spelling and its importer resolves it; the C header
+; names the instance struct.
+(deftest cl2-nuch-and-cheader
+  (let (dir:String (try (test-scratch-sub "cl2nuch"))
+        dv:StrView (string-as-view &dir)
+        inc:String (try (test-scratch-sub "cl2nuch/inc"))
+        src:String (try (test-scratch-sub "cl2nuch/src"))
+        lib:String (try (write-into (string-as-view &src) "cl2lib.nuc" "(ns cl2lib)
+(import-use nucleus.const)
+(import-use nucleus.vector)
+(defn total (xs:(Const (Vector i32))):usize (return (count xs)))
+"))
+        h:String (try (emit-into "" "--emit-nuch" (string-as-view &lib) (string-as-view &inc) "cl2lib.nuch"))
+        ht:String (try (read-file (string-as-view &h)))
+        ch:String (try (emit-for-file "" "--emit-cheader" (string-as-view &lib)))
+        u:String (try (write-into dv "cl2use.nuc" "(import-use nucleus.const)
+(import-use cl2lib)
+(defn main ():i32 (return (unsafe/cast i32 (total ((ConstVec i32) null 0)))))
+"))
+        ir:String (try (emit-for-file (string-as-view &inc) "--emit-llvm" (string-as-view &u))))
+    (try (check-line (string-as-view &ht) "(declare total ((xs (Const (Vector i32)))) :usize)"))
+    (try (check-match (string-as-view &ch) "size_t cl2lib__total(struct nuc_ConstVec_i32 xs);"))
+    (try (check-match (string-as-view &ir) "declare i64 @cl2lib__total(i64, i64)"))
+    (drop &ir) (drop &u) (drop &ch) (drop &ht) (drop &h) (drop &lib) (drop &src) (drop &inc) (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CL-3: a literal is a `Const`
+; ---------------------------------------------------------------------------
+
+; Constant tables come out sorted; a run-time set is sealed (deduplicated, later
+; map key wins); `defconst` and `defvar` take literals; a want adapts numbers.
+(deftest cl3-literals
+  (let (out:String (try (const-run "cl3lit" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.coll)
+(import-use nucleus.strview)
+(import-use nucleus.node)
+(import-use nucleus.keyword)
+(defn seven ():i32 (return 7))
+(defconst KS #{30 10 20})
+(defconst KM {\"b\" 2 \"a\" 1})
+(defvar gv:(Const (Vector i64)) [3 1 2])
+(defvar gr:(Const (HashSet i32)) #{(seven) 1 7})
+(defn show (s:(Const (HashSet i32))):void
+  (doseq (e s (ConstIter i32)) (print e \" \"))
+  (println))
+(defn main ():i32
+  (let (x:i32 4 y:i32 2)
+    (show #{5 1 3})
+    (show #{x y x 9})
+    (show KS)
+    (show gr)
+    (doseq (e gv (ConstIter i64)) (print e \" \"))
+    (println)
+    (doseq (e KM (ConstIter (Entry StrView i32))) (print (e 'key) \"=\" (e 'val) \" \"))
+    (println)
+    (let (m {x 1 y 2 x 3})
+      (match (m 4) ((some v) (println \"m4=\" v)) (none (println \"none\"))))
+    (let (f:(Const (Vector f64)) [1 2.5])
+      (println (f 0) \" \" (f 1)))
+    (let (e:(Const (HashSet i32)) #{})
+      (println (count e) \" \" (contains? e 1)))
+    (println (contains? #{'b 'a} 'a) \" \" (contains? #{'b 'a} 'c) \" \"
+             (contains? #{:b :a} :b) \" \" (contains? #{:b :a} :c)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "1 3 5 \n2 4 9 \n10 20 30 \n1 7 \n3 1 2 \na=1 b=2 \nm4=3\n1 2.5\n0 false\ntrue false true false\n"))
+    (drop &out))
+  (return (ok)))
+
+; The compiler's order and `const-cmp` agree, row for row (§5.2): each set is
+; written in reverse and read back ascending under `const-cmp`.
+(deftest cl3-order-agrees
+  (let (out:String (try (const-run "cl3ord" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(defn asc (s:(ConstSet T) :where (ConstOrd T)):bool
+  (let (d:&T (unsafe/cast &T (s 'data)) i:i64 1)
+    (while (< i (unsafe/cast i64 (count s)))
+      (when (>= (const-cmp (aref d (- i 1)) (aref d i)) 0) (return false))
+      (set! i (+ i 1)))
+    (return true)))
+(defn main ():i32
+  (let (a:(Const (HashSet i8)) #{3 -1 -128}
+        b:(Const (HashSet i16)) #{300 -300 0}
+        c:(Const (HashSet i32)) #{9 -9 0}
+        d:(Const (HashSet i64)) #{5000000000 -5000000000 1}
+        e:(Const (HashSet ssize)) #{2 -2 0}
+        f:(Const (HashSet ui8)) #{255 200 7}
+        g:(Const (HashSet ui16)) #{65535 2 1}
+        h:(Const (HashSet ui32)) #{4000000000 2 1}
+        i:(Const (HashSet ui64)) #{9000000000000000000 2 1}
+        j:(Const (HashSet usize)) #{3 2 1}
+        k:(Const (HashSet bool)) #{true false}
+        l #{\\c \\b \\a}
+        m:(Const (HashSet f32)) #{2.5 -1 0.5}
+        n #{1e10 -3.5 0.25}
+        o #{\"b\" \"abc\" \"ab\" \"a\"}
+        p #{c\"b\" c\"a\"})
+    (println (asc a) (asc b) (asc c) (asc d) (asc e) (asc f) (asc g) (asc h)
+             (asc i) (asc j) (asc k) (asc l) (asc m) (asc n) (asc o) (asc p)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "truetruetruetruetruetruetruetruetruetruetruetruetruetruetruetrue\n"))
+    (drop &out))
+  (return (ok)))
+
+; Membership in a constant set is a call to `contains?` over a constant table:
+; nothing allocated, initialized or dropped.
+(deftest cl3-membership-no-alloc
+  (let (c:Compiled (try (const-ir "cl3mem" "(import-use nucleus.const)
+(defn f (x:i64):bool (return (contains? #{3 1 2} x)))
+(defn main ():i32 (return (if (f 2) 0 1)))
+"))
+        ir:StrView (compiled-ir &c))
+    (try (check-match ir "@.const.0 = private unnamed_addr constant [3 x i64] [i64 1, i64 2, i64 3]"))
+    (try (check-in-define ir "f" "*call i1 @nuc_contains_QMARK.nuc_ConstSet.i64.i64(*"))
+    (try (check-not-in-define ir "f" "*malloc*"))
+    (try (check-not-in-define ir "f" "*allocate*"))
+    (try (check-not-in-define ir "f" "*@nuc_init*"))
+    (try (check-not-in-define ir "f" "*drop*"))
+    (drop &c))
+  (return (ok)))
+
+; `make` from a literal is one `init` from the `Const`, so a million of them
+; under a Tracking allocator leave nothing live.
+(deftest cl3-make-from-literal
+  (let (out:String (try (const-run "cl3make" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.strview)
+(defn main ():i32
+  (let (v:(Vector i64) (make (Vector i64) heap [1 2 5000000000]))
+    (println (count &v) \" \" (&v 2))
+    (drop &v))
+  (with (t (make Tracking))
+    (dotimes (i 1000000)
+      (with (v (make (Vector i64) &t [1 2 3])
+             m (make (HashMap StrView i32) &t {\"a\" 1}))
+        0))
+    (println (t 'live)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "3 5000000000\n0\n"))
+    (drop &out))
+  (return (ok)))
+
+(deftest cl3-make-no-splice
+  (let (c:Compiled (try (const-ir "cl3splice" "(import-use nucleus.const)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(defn main ():i32
+  (with (v (make (Vector i64) heap [1 2 3]))
+    (return (unsafe/cast i32 (count &v)))))
+"))
+        ir:StrView (compiled-ir &c))
+    (try (check-not-in-define ir "main" "*conj*"))
+    (try (check-in-define ir "main" "*call void @nuc_init.*ConstVec*"))
+    (drop &c))
+  (return (ok)))
+
+; A literal argument takes its parameter's `Const` type (§5.4): a solitary
+; function's, the one candidate `contains?` leaves, each overload by its brackets.
+(deftest cl3-argument-want
+  (let (out:String (try (const-run "cl3arg" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(defn mean (xs:(Const (Vector f64))):f64
+  (let (s:f64 0.0)
+    (doseq (e xs (ConstIter f64)) (set! s (+ s e)))
+    (return (/ s (unsafe/cast f64 (count xs))))))
+(defn f (xs:(Const (Vector i32))):i32 (return 1))
+(defn f (xs:(Const (HashSet i32))):i32 (return 2))
+(defn main ():i32
+  (let (k:i64 5000000000)
+    (println (mean [1 2 4.5]) \" \" (contains? #{1 5000000000} k) \" \" (f [1 2]) (f #{1 2})))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "2.5 true 12\n"))
+    (drop &out))
+  (return (ok)))
+
+; A user collection is built from `#{…}` through its own `init` overload.
+(deftest cl3-user-init
+  (let (out:String (try (const-run "cl3user" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(defstruct Bag n:usize total:i32)
+(extend Bag (Set i32))
+(extend Bag Init)
+(defn init (self:&Bag a:Alloc):void (set! (self 'n) 0) (set! (self 'total) 0))
+(defn init (self:&Bag a:Alloc v:(ConstSet i32)):void
+  (init self a)
+  (doseq (e v (ConstIter i32)) (set! (self 'n) (+ (self 'n) 1)) (set! (self 'total) (+ (self 'total) e))))
+(defn union (self:&Bag o:&Bag):void (return))
+(defn difference (self:&Bag o:&Bag):void (return))
+(defn intersection (self:&Bag o:&Bag):void (return))
+(defn contains? (self:&Bag e:i32):bool (return false))
+(defn main ():i32
+  (let (b:Bag (make Bag heap #{3 1 2}))
+    (println (b 'n) \" \" (b 'total)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "3 6\n"))
+    (drop &out))
+  (return (ok)))
+
+; A generic function takes `(Const C)` over a type variable, for each shape;
+; the pattern is the Const template's, read off C's written shape conformance.
+(deftest cl3-generic-const-params
+  (let (out:String (try (const-run "cl3gen" "(import-use nucleus.io)
+(import-use nucleus.const)
+(import-use nucleus.coll)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.strview)
+(defn total (xs:(Const (Vector T)) :where (Any T)):usize (return (count xs)))
+(defn has (s:(Const (HashSet T)) x:T :where (ConstOrd T)):bool (return (contains? s x)))
+(defn look (m:(Const (HashMap K V)) k:K):?V (return (get m k)))
+(defn main ():i32
+  (println (total [1 2 3]) \" \" (has #{5 6} 6) \" \" (has #{5 6} (as i64 7)))
+  (match (look {\"a\" 1} \"a\") ((some v) (println v)) (none (println \"none\")))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "3 true false\n1\n"))
+    (drop &out))
+  (return (ok)))

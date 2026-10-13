@@ -24,3 +24,4 @@ bool nuc_char_is_alnum(uint32_t c) asm("nuc_char-is-alnum");
 bool nuc_char_is_whitespace(uint32_t c) asm("nuc_char-is-whitespace");
 uint32_t nuc_char_ascii_upper(uint32_t c) asm("nuc_char-ascii-upper");
 uint32_t nuc_char_ascii_lower(uint32_t c) asm("nuc_char-ascii-lower");
+int32_t nuc_const_cmp_Char_Char(uint32_t a, uint32_t b) asm("nuc_const_cmp.Char.Char");

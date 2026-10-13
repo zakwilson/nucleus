@@ -63,8 +63,8 @@
 ; the IR of every fn-pointer program to buy nothing this interface needs. A tag
 ; is still exactly one table; the operations are `case`-dispatched beside it.
 (defconst BK-MACRO 0)            ; g-macros
-(defconst BK-SPECIAL 1)          ; g-special-form-set + the `unsafe/` roster
-(defconst BK-PRIMITIVE 2)        ; g-primitive-type-set
+(defconst BK-SPECIAL 1)          ; SPECIAL-FORM-NAMES + the `unsafe/` roster
+(defconst BK-PRIMITIVE 2)        ; PRIMITIVE-TYPE-NAMES
 (defconst BK-GENERIC 3)          ; g-generics
 (defconst BK-GLOBAL 4)           ; g-globals (a Scope)
 (defconst BK-PROTOCOL 5)         ; g-protocols
@@ -1039,6 +1039,16 @@
   redeemed:bool
   tkey:Symbol
   pkey:Symbol)
+
+; A written `extend` to a shape protocol, read before any signature, so `(Const C)`
+; resolves above it (design/stage25-const-literals/overview.md §4.2).
+(defstruct ShapeExtend
+  (subject &Node)
+  (proto &Node)
+  shape:i32
+  ns:Symbol
+  path:Symbol
+  (imports ?&ImportVec))
 
 ; A `conforms?` that answered no; a later conformance for the pair is refused (CQ-1b).
 (defstruct ConformanceNo

@@ -6,5 +6,6 @@
 ; `g-arena`'s constant initializer boxes `&heap`, which `vector` already did.
 (import-use nucleus.vector)
 (import-use nucleus.arena)
-(let (v [10 20 30]) (v 1))
-(let (v [7 8]) (unsafe/cast i32 (count v)))
+(import-use nucleus.create)
+(let (v (make (Vector i32) heap [10 20 30])) (&v 1))
+(let (v (make (Vector i32) heap [7 8])) (unsafe/cast i32 (count &v)))

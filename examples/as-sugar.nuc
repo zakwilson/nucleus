@@ -9,6 +9,7 @@
 (import-use nucleus.hashset)
 (import-use nucleus.strview)
 (import-use nucleus.hashmap)
+(import-use nucleus.const)
 
 (defstruct Rec (k i32))
 

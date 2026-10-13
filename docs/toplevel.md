@@ -352,10 +352,12 @@ keyword literal lowers to calls into its library by full name, so the file must
 load that library:
 
 ```
-main.nuc:3: error: a vector literal needs nucleus.vector — add (import-use nucleus.vector)
+main.nuc:3: error: a vector literal needs nucleus.const — add (import-use nucleus.const)
 ```
 
-(`#{…}` needs `nucleus.hashset`, `{…}` `nucleus.hashmap`, `:kw` `nucleus.keyword`.)
+(Every bracket literal needs `nucleus.const`, which each collection import
+brings; one bound to a mutable type also needs that collection's library. `:kw`
+needs `nucleus.keyword`.)
 The types and protocols the compiler itself reasons about — `StrView` for a
 string literal, `Node` in a macro, `Drop`, `Clone`, `Maybe`, `Result`, `Err`'s
 handler chain — are the core library's by key, whatever the file names them.

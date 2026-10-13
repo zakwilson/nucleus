@@ -1,0 +1,5 @@
+; A string set's order is StrView's, in nucleus.strview.
+(import-use nucleus.const)
+
+(defn main ():i32
+  (let (s #{"a" "b"}) (return (unsafe/cast i32 (count s)))))

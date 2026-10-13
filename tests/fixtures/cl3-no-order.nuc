@@ -1,0 +1,8 @@
+; A struct member has no order unless the struct conforms to ConstOrd.
+(import-use nucleus.const)
+
+(defstruct P x:i32)
+
+(defn main ():i32
+  (let (a:P (P 1))
+    (let (s #{a}) (return 0))))

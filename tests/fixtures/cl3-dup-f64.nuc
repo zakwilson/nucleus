@@ -1,0 +1,6 @@
+; 0.0 and -0.0 are one value, as under `=`.
+(import-use nucleus.const)
+(import-use nucleus.numeric)
+
+(defn main ():i32
+  (let (s #{0.0 1.5 -0.0}) (return (unsafe/cast i32 (count s)))))

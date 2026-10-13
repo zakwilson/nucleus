@@ -1,0 +1,4 @@
+(import-use nucleus.const)
+
+(defn main ():i32
+  (let (s #{true false true}) (return (unsafe/cast i32 (count s)))))

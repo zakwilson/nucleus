@@ -17,6 +17,7 @@
 (import-use nucleus.vector)
 (import-use nucleus.hashmap)
 (import-use nucleus.hashset)
+(import-use nucleus.const)   ; a literal is a Const
 (import-use nucleus.string)
 (import-use nucleus.intern)
 (import-use nucleus.fmt)
@@ -28,18 +29,16 @@
 (import-use nucleus.io)
 (import-use nucleus.read)
 (defn c-fn-noreturn (fname:Symbol):bool
-  (let (names:&(HashSet StrView)
-        #{"exit" "abort" "_exit" "_Exit" "quick_exit"
-          "abort_handler_s" "longjmp" "siglongjmp"})
-    (return (contains? names (symbol-as-view fname)))))
+  (return (contains? #{"exit" "abort" "_exit" "_Exit" "quick_exit"
+                       "abort_handler_s" "longjmp" "siglongjmp"}
+                     (symbol-as-view fname))))
 
 ; Likewise by name: the setjmp family. clang treats these as builtins and adds
 ; `returns_twice` itself, so `clang -E` leaves no attribute here to parse.
 (defn c-fn-returns-twice (fname:Symbol):bool
-  (let (names:&(HashSet StrView)
-        #{"setjmp" "_setjmp" "__sigsetjmp" "sigsetjmp"
-          "savectx" "vfork" "getcontext"})
-    (return (contains? names (symbol-as-view fname)))))
+  (return (contains? #{"setjmp" "_setjmp" "__sigsetjmp" "sigsetjmp"
+                       "savectx" "vfork" "getcontext"}
+                     (symbol-as-view fname))))
 
 ; ============================================================
 ; C header parsing (clang -E)
@@ -600,11 +599,10 @@
             (when (= (symbol-len tok) 0) (set! done 1))
             (when (= done 0)
               (cond
-                (let (quals:&(HashSet StrView)
-                      #{"const" "volatile" "restrict" "__restrict" "_Atomic"
-                        "extern" "static" "inline" "__inline" "__inline__"
-                        "__extension__" "_Noreturn"})
-                  (contains? quals (symbol-as-view tok)))
+                (contains? #{"const" "volatile" "restrict" "__restrict" "_Atomic"
+                             "extern" "static" "inline" "__inline" "__inline__"
+                             "__extension__" "_Noreturn"}
+                           (symbol-as-view tok))
                   (set! pos tok-end)
                 ; Stage 16 C1 (design/stage16-ergonomics/c-boundary-defects.md
                 ; §3): a bare `unsigned`/`signed` IS a type — implicitly
@@ -621,10 +619,9 @@
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 0
                             peek-tok:Symbol (c-read-ident buf peek-pos len (as &i64 &peek-end)))
-                        (when (not (let (ints:&(HashSet StrView)
-                                          #{"int" "char" "short" "long"
-                                            "__int128" "_BitInt"})
-                                      (contains? ints (symbol-as-view peek-tok))))
+                        (when (not (contains? #{"int" "char" "short" "long"
+                                                "__int128" "_BitInt"}
+                                              (symbol-as-view peek-tok)))
                           (set! base-name (symbol-intern "int")) (set! done 1))))
                 (= tok "long")
                   (do (set! is-long (+ is-long 1))
@@ -1737,12 +1734,12 @@
         e:i64 0
         tok:Symbol (c-read-ident buf p len (as &i64 &e)))
     (when (= (symbol-len tok) 0) (return 0))
-    (let (specs:&(HashSet StrView)
-          #{"void" "char" "short" "int" "long" "float" "double"
-            "signed" "unsigned" "_Bool" "const" "volatile"
-            "restrict" "__restrict" "_Atomic" "struct" "union"
-            "enum" "__extension__"})
-      (when (contains? specs (symbol-as-view tok)) (return 1)))
+    (when (contains? #{"void" "char" "short" "int" "long" "float" "double"
+                       "signed" "unsigned" "_Bool" "const" "volatile"
+                       "restrict" "__restrict" "_Atomic" "struct" "union"
+                       "enum" "__extension__"}
+                     (symbol-as-view tok))
+      (return 1))
     (if-some (td (c-typedef-find tok)) (return 1) 0)
     (let (sd:ptr (lookup-struct tok))
       (when (!= sd null) (return 1)))
@@ -3854,29 +3851,28 @@
           (name-env-set here)
           (return c))))
     0)
-  (let (mapping:&(HashMap StrView StrView)
-        {"void" "void"
-         "i8" "int8_t"
-         "i16" "int16_t"
-         "i32" "int32_t"
-         "int" "int32_t"
-         "i64" "int64_t"
-         "ui8" "uint8_t"
-         "ui16" "uint16_t"
-         "ui32" "uint32_t"
-         "ui64" "uint64_t"
-         "f32" "float"
-         "f64" "double"
-         "f16" "_Float16"
-         "f80" "long double"
-         "f128" "_Float128"
-         "bool" "bool"
-         "usize" "size_t"
-         "ssize" "ptrdiff_t"
-         "Char" "uint32_t"
-         "Err" "int32_t"
-         "CStr" "const char*"
-         "ptr" "void*"})
+  (let (mapping {"void" "void"
+                 "i8" "int8_t"
+                 "i16" "int16_t"
+                 "i32" "int32_t"
+                 "int" "int32_t"
+                 "i64" "int64_t"
+                 "ui8" "uint8_t"
+                 "ui16" "uint16_t"
+                 "ui32" "uint32_t"
+                 "ui64" "uint64_t"
+                 "f32" "float"
+                 "f64" "double"
+                 "f16" "_Float16"
+                 "f80" "long double"
+                 "f128" "_Float128"
+                 "bool" "bool"
+                 "usize" "size_t"
+                 "ssize" "ptrdiff_t"
+                 "Char" "uint32_t"
+                 "Err" "int32_t"
+                 "CStr" "const char*"
+                 "ptr" "void*"})
     (match (mapping (symbol-as-view name))
       ((some n) (return n))
       (none
@@ -3972,7 +3968,7 @@
             (when (and (!= op null) (!= (cheader-ref-ptr-cell op) 0))
               (return (fstr (type-node-to-c (as ptr op)) (niche-c-note (cheader-err-niche? (as ?&Node tn)))))))
           (when (and (!= head null) (= (node-kind head) NODE-SYM)
-                     (or (= head 'dyn)
+                     (or (= head 'dyn) (= head 'Const)
                          (!= (struct-template-lookup-ref ((as ptr:Node head) 's)) null)))
             (return (cheader-type-c (parse-type-from-node tn (n 'line)))))
           ; `ref` is `ptr`'s synonym (types.md §Pointer kinds), so both spell

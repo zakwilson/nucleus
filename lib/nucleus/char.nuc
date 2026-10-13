@@ -27,6 +27,7 @@
 
 (import-use nucleus.error)          ; deferror / !T / err!
 (import-use nucleus.string-errors)  ; invalid-codepoint (canonical home)
+(import-use nucleus.coll)           ; ConstOrd
 
 ; ---------------------------------------------------------------------------
 ; DecodeResult — the outcome of a single UTF-8 decode attempt.
@@ -267,3 +268,9 @@
     (if (and (>= n 65) (<= n 90))
       (as Char (+ n 32))
       c)))
+
+; `Const` ordering (nucleus.const): by code point.
+(defn const-cmp ((a Char) (b Char)):i32
+  (let (x:ui32 (as ui32 a) y:ui32 (as ui32 b))
+    (return (if (< x y) -1 (if (> x y) 1 0)))))
+(extend Char ConstOrd)

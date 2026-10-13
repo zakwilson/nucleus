@@ -51,11 +51,12 @@ typedef struct nuc_NodeIter {
 } nuc_NodeIter;
 
 struct nuc_Node* /* nullable */ nuc_next_pnuc_NodeIter(struct nuc_NodeIter* self) asm("nuc_next.pnuc_NodeIter");
-size_t nuc_count(struct nuc_Node* self);
-void nuc_conj(struct nuc_Node* self, struct nuc_Node* elem);
-bool nuc_empty_QMARK(struct nuc_Node* self);
-struct nuc_NodeIter nuc_iter(struct nuc_Node* self);
-struct nuc_Node* nuc_invoke(struct nuc_Node* self, size_t i);
-void nuc_append(struct nuc_Node* self, struct nuc_Node* elem);
-bool nuc_contains_QMARK(struct nuc_Node* self, struct nuc_Node* elem);
-void nuc_insert(struct nuc_Node* self, size_t i, struct nuc_Node* elem);
+size_t nuc_count_pnuc_Node(struct nuc_Node* self) asm("nuc_count.pnuc_Node");
+void nuc_conj_pnuc_Node_pnuc_Node(struct nuc_Node* self, struct nuc_Node* elem) asm("nuc_conj.pnuc_Node.pnuc_Node");
+bool nuc_empty_QMARK_pnuc_Node(struct nuc_Node* self) asm("nuc_empty_QMARK.pnuc_Node");
+struct nuc_NodeIter nuc_iter_pnuc_Node(struct nuc_Node* self) asm("nuc_iter.pnuc_Node");
+struct nuc_Node* nuc_invoke_pnuc_Node_usize(struct nuc_Node* self, size_t i) asm("nuc_invoke.pnuc_Node.usize");
+void nuc_append_pnuc_Node_pnuc_Node(struct nuc_Node* self, struct nuc_Node* elem) asm("nuc_append.pnuc_Node.pnuc_Node");
+bool nuc_contains_QMARK_pnuc_Node_pnuc_Node(struct nuc_Node* self, struct nuc_Node* elem) asm("nuc_contains_QMARK.pnuc_Node.pnuc_Node");
+void nuc_insert_pnuc_Node_usize_pnuc_Node(struct nuc_Node* self, size_t i, struct nuc_Node* elem) asm("nuc_insert.pnuc_Node.usize.pnuc_Node");
+int32_t nuc_const_cmp_pnuc_Node_pnuc_Node(struct nuc_Node* a, struct nuc_Node* b) asm("nuc_const_cmp.pnuc_Node.pnuc_Node");

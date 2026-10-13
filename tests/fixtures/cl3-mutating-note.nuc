@@ -1,0 +1,7 @@
+; `conj` on a Const names the mutable type to build instead.
+(import-use nucleus.const)
+(import-use nucleus.hashset)
+
+(defn main ():i32
+  (let (s #{1 2}) (conj s 3))
+  (return 0))

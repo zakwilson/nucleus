@@ -16,4 +16,5 @@ struct nuc_Symbol nuc_keyword_symbol(struct nuc_Keyword self) asm("nuc_keyword-s
 bool nuc_eq_nuc_Keyword_nuc_Keyword(struct nuc_Keyword a, struct nuc_Keyword b) asm("nuc_eq.nuc_Keyword.nuc_Keyword");
 bool nuc_ne_nuc_Keyword_nuc_Keyword(struct nuc_Keyword a, struct nuc_Keyword b) asm("nuc_ne.nuc_Keyword.nuc_Keyword");
 size_t nuc_hash_pnuc_Keyword(struct nuc_Keyword* self) asm("nuc_hash.pnuc_Keyword");
+int32_t nuc_const_cmp_nuc_Keyword_nuc_Keyword(struct nuc_Keyword a, struct nuc_Keyword b) asm("nuc_const_cmp.nuc_Keyword.nuc_Keyword");
 /* to-str: uses an error-union or option type; not exported */

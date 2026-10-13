@@ -1,0 +1,6 @@
+; An element is checked against the want as a call argument is: no silent narrowing.
+(import-use nucleus.const) (import-use nucleus.vector)
+
+(defn main ():i32
+  (let (n:i64 5)
+    (let (v:(Const (Vector i32)) [n 1]) (return 0))))

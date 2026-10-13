@@ -8,6 +8,8 @@
 void nuc_hashmap_oom(void) asm("nuc_hashmap-oom");
 /* init: generic template; not exported */
 /* hashmap-resize: generic template; not exported */
+/* reserve: generic template; not exported */
+/* init: generic template; not exported */
 /* assoc: generic template; not exported */
 /* set: generic template; not exported */
 /* dissoc: generic template; not exported */

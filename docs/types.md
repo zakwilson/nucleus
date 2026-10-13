@@ -156,7 +156,7 @@ position — parameter, return, `defstruct` field, `defvar` name, `let`, `with`:
 
 ```lisp
 (defstruct Reg tbl:SymTab names:NameSet)
-(defvar g-special-form-set:NameSet (build-special-form-set))
+(defvar g-names:NameSet (build-name-set))
 (defn tally (m:SymTab):Count (return (as Count (count m))))
 (defn main ():i32
   (with (m:SymTab (alloca (HashMap CStr i32)))

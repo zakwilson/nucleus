@@ -2319,6 +2319,7 @@
       (return (or (= c0 63) (= c0 33)
                   (= hp 'ptr) (= hp 'raw) (= hp 'ref) (= hp 'array) (= hp 'fn)
                   (= hp 'struct) (= hp 'union) (= hp 'dyn) (= hp 'BoxedFn) (= hp 'Maybe)
+                  (= hp 'Const)
                   (!= (struct-template-lookup-ref hs) null)
                   (!= (union-template-lookup-ref hs) null)
                   (!= (type-alias-app-of n) null))))))
@@ -2705,6 +2706,15 @@
               (when (!= (pnode 'kind) NODE-SYM)
                 (die-at line "(dyn P): the protocol must be a name or an application (P arg...)"))
               (return (dyn-name-type (pnode 's) false line))))))
+      ; `(Const C)` resolves by the shape protocol C conforms to, which the
+      ; later-imported generics.nuc answers (design/stage25-const-literals §4.2).
+      (let (head:ptr (node-first n))
+        (when (= head 'Const)
+          (when (!= (node-len (as ptr n)) 2)
+            (die-at line "(Const C): expects one collection type, as (Const (Vector i32))"))
+          (let (c:ptr (parse-type-from-node (node-first (unsafe/cast &Node (node-rest n))) line))
+            (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
+            (return (funcall (unsafe/cast ((fn &Type) (ptr i32)) g-const-type-hook) c line)))))
       ; Check for function pointer type: ((fn ret) (param-types...))
       (let (head:ptr (node-first n))
         (when (!= head null)

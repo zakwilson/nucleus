@@ -8,6 +8,7 @@
 void nuc_hashset_oom(void) asm("nuc_hashset-oom");
 /* init: generic template; not exported */
 /* hashset-resize: generic template; not exported */
+/* reserve: generic template; not exported */
 /* insert: generic template; not exported */
 /* contains?: generic template; not exported */
 /* set-remove: generic template; not exported */
@@ -17,6 +18,7 @@ void nuc_hashset_oom(void) asm("nuc_hashset-oom");
 /* union: generic template; not exported */
 /* difference: generic template; not exported */
 /* intersection: generic template; not exported */
+/* init: generic template; not exported */
 /* drop: generic template; not exported */
 /* next: generic template; not exported */
 /* hashset-iter: generic template; not exported */

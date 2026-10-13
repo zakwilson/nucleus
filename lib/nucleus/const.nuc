@@ -1,0 +1,224 @@
+; Stage 25 — `Const` collections: the type of a collection literal
+; (design/stage25-const-literals/overview.md §4).
+;
+; A `Const` is a read-only `{data, len}` view over a table the compiler laid
+; out: `[…]` is a `(ConstVec T)`, `#{…}` a `(ConstSet T)` sorted by
+; `const-cmp` with no duplicates, `{…}` a `(ConstMap K V)` of `Entry`s sorted
+; by key with distinct keys. A table of constants is a private constant global,
+; so a literal costs no allocation, init or drop. `(Const C)` names these by
+; the shape protocol `C` conforms to.
+;
+; Methods take `self` by value: a `Const` is two words, and template dispatch
+; does not take a by-value binding's address (§2.6).
+;
+; This file must not reach `f64` (no `nucleus.numeric`), so literals work on
+; AVR. Each type's `const-cmp` lives with the type, which is why `f64`'s is in
+; numeric.nuc, `StrView`'s in strview.nuc and `Char`'s in char.nuc.
+; ---------------------------------------------------------------------------
+
+(ns nucleus.const)
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+
+(extern stderr:ptr)
+
+(defstruct (ConstVec T) data:ptr len:usize)
+(defstruct (ConstSet T) data:ptr len:usize)
+(defstruct (ConstMap K V) data:ptr len:usize)
+
+; ---------------------------------------------------------------------------
+; const-cmp: the order a set's members and a map's keys are sorted by
+; (`ConstOrd`, nucleus.coll). The compiler sorts constant tables with its own
+; copy of these rows (§5.2), so the two must agree exactly.
+; ---------------------------------------------------------------------------
+(defn const-cmp (a:i8 b:i8):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:i16 b:i16):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:i32 b:i32):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:i64 b:i64):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:ssize b:ssize):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:ui8 b:ui8):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:ui16 b:ui16):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:ui32 b:ui32):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:ui64 b:ui64):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:usize b:usize):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:bool b:bool):i32
+  (return (const-cmp (if a 1 0) (if b 1 0))))
+; NaN never reaches a constant table (the compiler refuses it), and 0.0 and
+; -0.0 compare equal here, as under `=`.
+(defn const-cmp (a:f32 b:f32):i32 (return (if (< a b) -1 (if (> a b) 1 0))))
+(defn const-cmp (a:CStr b:CStr):i32
+  (let (c:i32 (strcmp a b))
+    (return (if (< c 0) -1 (if (> c 0) 1 0)))))
+(extend i8 ConstOrd) (extend i16 ConstOrd) (extend i32 ConstOrd) (extend i64 ConstOrd)
+(extend ssize ConstOrd) (extend ui8 ConstOrd) (extend ui16 ConstOrd)
+(extend ui32 ConstOrd) (extend ui64 ConstOrd) (extend usize ConstOrd)
+(extend bool ConstOrd) (extend f32 ConstOrd) (extend CStr ConstOrd)
+
+; A map's entries order by key alone.
+(defn const-cmp (a:(Entry K V) b:(Entry K V)):i32
+  (return (const-cmp (a 'key) (b 'key))))
+(extend (Entry K V) ConstOrd)
+
+; ---------------------------------------------------------------------------
+; const-seal: sort a table of `n` elements filled at run time and drop equal
+; neighbours, keeping the LAST of each run, so a later map key wins. Returns the
+; new length. Insertion sort: it is stable, and a literal is small.
+; ---------------------------------------------------------------------------
+(defn const-seal (data:&T n:usize :where (ConstOrd T)):usize
+  (when (< n 2) (return n))
+  (let (i:usize 1)
+    (while (< i n)
+      (let (x:T (aref data (as i64 i))
+            j:usize i)
+        (while (and (> j 0) (> (const-cmp (aref data (as i64 (- j 1))) x) 0))
+          (set! (aref data (as i64 j)) (aref data (as i64 (- j 1))))
+          (set! j (- j 1)))
+        (set! (aref data (as i64 j)) x))
+      (set! i (+ i 1))))
+  (let (out:usize 0 i:usize 0)
+    (while (< i n)
+      (let (x:T (aref data (as i64 i)))
+        (if (and (> out 0) (= (const-cmp (aref data (as i64 (- out 1))) x) 0))
+          (set! (aref data (as i64 (- out 1))) x)
+          (do (set! (aref data (as i64 out)) x)
+              (set! out (+ out 1)))))
+      (set! i (+ i 1)))
+    (return out)))
+
+; Index of `x` in a sorted table, or `len` when absent. A linear scan below 8
+; elements is correct on a sorted table and cheaper than halving.
+(defn const-find (data:&T len:usize x:T :where (ConstOrd T)):usize
+  (when (< len 8)
+    (let (i:usize 0)
+      (while (< i len)
+        (when (= (const-cmp (aref data (as i64 i)) x) 0) (return i))
+        (set! i (+ i 1))))
+    (return len))
+  (let (lo:usize 0 hi:usize len)
+    (while (< lo hi)
+      (let (mid:usize (+ lo (/ (- hi lo) 2))
+            c:i32 (const-cmp (aref data (as i64 mid)) x))
+        (cond (= c 0) (return mid)
+              (< c 0) (set! lo (+ mid 1))
+              true (set! hi mid)))))
+  (return len))
+
+; ---------------------------------------------------------------------------
+; ConstVec T
+; ---------------------------------------------------------------------------
+(defn count (self:(ConstVec T)):usize (return (self 'len)))
+(defn empty? (self:(ConstVec T)):bool (return (= (self 'len) 0)))
+
+(defn const-bounds (i:usize n:usize):void
+  (fprintf stderr "Const: index %llu out of bounds (len %llu)\n" (as ui64 i) (as ui64 n))
+  (exit 1))
+
+; `(v i)`: the element at `i`; out of bounds exits, as Vector's does.
+(defn invoke (self:(ConstVec T) i:usize):T
+  (when (>= i (self 'len)) (const-bounds i (self 'len)))
+  (return (aref (unsafe/cast &T (self 'data)) (as i64 i))))
+
+; A vector is in source order, so membership is a linear `=` scan.
+(defn contains? (self:(ConstVec T) e:T):bool
+  (let (p:&T (unsafe/cast &T (self 'data)) i:usize 0)
+    (while (< i (self 'len))
+      (when (= (aref p (as i64 i)) e) (return true))
+      (set! i (+ i 1))))
+  (return false))
+
+(defstruct (ConstIter T) data:ptr pos:usize len:usize)
+(extend (ConstIter T) (Iterator T))
+(defn next (self:&(ConstIter T)):?T
+  (when (>= (self 'pos) (self 'len)) (return none))
+  (let (v:T (aref (unsafe/cast &T (self 'data)) (as i64 (self 'pos))))
+    (set! (self 'pos) (+ (self 'pos) 1))
+    (return (some v))))
+
+(defn iter (self:(ConstVec T)) (ConstIter T)
+  (let (it:&(ConstIter T) (alloca (ConstIter T)))
+    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (return @it)))
+
+; ---------------------------------------------------------------------------
+; ConstSet T — iterates in ascending `const-cmp` order (Q4).
+; ---------------------------------------------------------------------------
+(defn count (self:(ConstSet T)):usize (return (self 'len)))
+(defn empty? (self:(ConstSet T)):bool (return (= (self 'len) 0)))
+
+(defn contains? (self:(ConstSet T) e:T):bool
+  (return (< (const-find (unsafe/cast &T (self 'data)) (self 'len) e) (self 'len))))
+
+(defn iter (self:(ConstSet T)) (ConstIter T)
+  (let (it:&(ConstIter T) (alloca (ConstIter T)))
+    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (return @it)))
+
+; ---------------------------------------------------------------------------
+; ConstMap K V — `(Entry K V)`s in ascending key order (Q4).
+; ---------------------------------------------------------------------------
+(defn count (self:(ConstMap K V)):usize (return (self 'len)))
+(defn empty? (self:(ConstMap K V)):bool (return (= (self 'len) 0)))
+
+(defn- const-map-find (self:(ConstMap K V) key:K):usize
+  (let (p:&(Entry K V) (unsafe/cast &(Entry K V) (self 'data))
+        len:usize (self 'len))
+    (when (< len 8)
+      (let (i:usize 0)
+        (while (< i len)
+          (when (= (const-cmp ((aref p (as i64 i)) 'key) key) 0) (return i))
+          (set! i (+ i 1))))
+      (return len))
+    (let (lo:usize 0 hi:usize len)
+      (while (< lo hi)
+        (let (mid:usize (+ lo (/ (- hi lo) 2))
+              c:i32 (const-cmp ((aref p (as i64 mid)) 'key) key))
+          (cond (= c 0) (return mid)
+                (< c 0) (set! lo (+ mid 1))
+                true (set! hi mid)))))
+    (return len)))
+
+; `(m k)` routes here, as it does to HashMap's `get`.
+(defn get (self:(ConstMap K V) key:K):?V
+  (let (i:usize (const-map-find self key))
+    (when (>= i (self 'len)) (return none))
+    (return (some ((aref (unsafe/cast &(Entry K V) (self 'data)) (as i64 i)) 'val)))))
+
+(defn contains? (self:(ConstMap K V) key:K):bool
+  (return (< (const-map-find self key) (self 'len))))
+
+(defn iter (self:(ConstMap K V)) (ConstIter (Entry K V))
+  (let (it:&(ConstIter (Entry K V)) (alloca (ConstIter (Entry K V))))
+    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (return @it)))
+
+; keys / vals: single-projection cursors, as HashMap's.
+(defstruct (ConstKeyIter K V) data:ptr pos:usize len:usize)
+(defstruct (ConstValIter K V) data:ptr pos:usize len:usize)
+(extend (ConstKeyIter K V) (Iterator K))
+(extend (ConstValIter K V) (Iterator V))
+
+(defn next (self:&(ConstKeyIter K V)):?K
+  (when (>= (self 'pos) (self 'len)) (return none))
+  (let (k:K ((aref (unsafe/cast &(Entry K V) (self 'data)) (as i64 (self 'pos))) 'key))
+    (set! (self 'pos) (+ (self 'pos) 1))
+    (return (some k))))
+
+(defn next (self:&(ConstValIter K V)):?V
+  (when (>= (self 'pos) (self 'len)) (return none))
+  (let (v:V ((aref (unsafe/cast &(Entry K V) (self 'data)) (as i64 (self 'pos))) 'val))
+    (set! (self 'pos) (+ (self 'pos) 1))
+    (return (some v))))
+
+(defn keys (self:(ConstMap K V)) (ConstKeyIter K V)
+  (let (it:&(ConstKeyIter K V) (alloca (ConstKeyIter K V)))
+    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (return @it)))
+
+(defn vals (self:(ConstMap K V)) (ConstValIter K V)
+  (let (it:&(ConstValIter K V) (alloca (ConstValIter K V)))
+    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (return @it)))

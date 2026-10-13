@@ -1,0 +1,5 @@
+; A literal loads nucleus.const, but its methods need the import.
+(import-use nucleus.vector)
+
+(defn main ():i32
+  (return (unsafe/cast i32 (count [1 2]))))

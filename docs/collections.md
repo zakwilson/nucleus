@@ -606,85 +606,118 @@ nodes.
 
 ## Literal sugar (`[…]`, `{…}`, `#{…}`)
 
-The reader provides bracket literals that construct and initialise a collection
-from scalar elements. Commas are whitespace, so `{:a 1, :b 2}` is `{:a 1 :b 2}`. Each expands, in the reader, to a `let` that
-stack-allocates the (stamped) collection, runs the one-argument `init` (so its
-buffers come from the **heap**), `conj`/`assoc`-es every element, and
-yields the `(ref Coll)`. Placed as the right-hand side of a `with` binding, the
-outer `with` fires `Drop` at scope exit because every collection conforms to
-`Drop`.
+A bracket literal is a **`Const`**: a read-only `{data, len}` view over a table
+the compiler lays out. Commas are whitespace, so `{:a 1, :b 2}` is `{:a 1 :b 2}`.
 
-| Literal | Expands to | Element type |
+| Literal | Type | Table |
 |---|---|---|
-| `[e1 e2 …]` | `(Vector E)` + `init` + `conj` | inferred from elements |
-| `{k1 v1 k2 v2 …}` | `(HashMap K V)` + `init` + `assoc` | keys infer `K`, values infer `V` |
-| `#{e1 e2 …}` | `(HashSet E)` + `init` + `conj` | inferred from elements |
+| `[e1 e2 …]` | `(ConstVec E)` | source order |
+| `#{e1 e2 …}` | `(ConstSet E)` | sorted, no duplicates |
+| `{k1 v1 k2 v2 …}` | `(ConstMap K V)` | `(Entry K V)` sorted by key, keys distinct |
+
+The three templates live in `lib/nucleus/const.nuc`. A literal needs
+`nucleus.const` in the file's import closure, which every collection import
+brings; **calling a method on one** (`count`, `contains?`, `get`, `iter`, `(v i)`)
+needs `(import-use nucleus.const)` in the file itself, and the no-match error
+says so. `(Const C)` names the type for a collection `C`: by the shape protocol
+`C` conforms to, `(Const (HashMap K V))` is `(ConstMap K V)`, `(Const (HashSet
+E))` is `(ConstSet E)`, `(Const (Vector E))` is `(ConstVec E)`, and a user type
+conforming to `Assoc`, `Set` or `Seq` (checked in that order) gets the matching
+one. A generic function may take `(Const (Vector T))` and friends.
 
 ```lisp
-(with ((v (ref (Vector i32))) [1 2 3])
-  (printf "%d\n" (v (as usize 0))))            ; 1
+(import-use nucleus.const)
 
-(with ((m (ref (HashMap StrView i32))) {"foo" 42 "bar" 7})
-  (match (get m "foo")
-    ((some x) (printf "%d\n" x))                  ; 42
-    (none     (printf "absent\n"))))
+(defn delimiter? (c:i32):bool
+  (return (contains? #{40 41 91 93 123 125 59 34} c)))   ; a sorted [8 x i32] table
 
-(with ((s (ref (HashSet StrView))) #{"a" "b" "c"})
-  (printf "%d\n" (contains? s "a")))             ; 1
+(defn mean (xs:(Const (Vector f64))):f64
+  (let (s:f64 0.0)
+    (doseq (x xs (ConstIter f64)) (set! s (+ s x)))
+    (return (/ s (unsafe/cast f64 (count xs))))))
+
+(mean [1 2 4.5])                                         ; 2.5: the table is f64
 ```
 
-The example expands `[1 2 3]` to roughly this — at emit time, which is what
-lets an element be a variable rather than only a literal:
+A literal of constants costs no allocation, `init` or `drop`: it is a private
+constant global and a two-word header. A `Const` has `count`, `empty?`, `iter`
+(a `ConstIter`), `contains?`, and per shape `(v i)`, or `get`/`(m k)`/`keys`/`vals`.
+It has no mutating method: `(conj s 3)` on a `ConstSet` is a no-match error with
+the note `a Const collection is read-only -- build one with (make (HashSet i32) heap ...)`.
+
+**Order and duplicates.** Sets and maps iterate in ascending order, and that
+order is reliable. Constant tables are sorted at compile time, in this order:
+
+| Type | Order | Duplicates |
+|---|---|---|
+| `i8`…`i64`, `ssize` | signed | equal values |
+| `ui8`…`ui64`, `usize`, `bool`, `Char` | unsigned | equal values |
+| `f32`, `f64` | numeric | `0.0` and `-0.0` are one value, as under `=` |
+| `StrView` | bytes, then length | equal bytes |
+| `CStr` | bytes to the NUL | equal bytes |
+
+A duplicate set member or map key among constants is a compile-time error
+(`duplicate key "a" in a map literal`). The order is `const-cmp`, reached through
+the `nucleus.coll/ConstOrd` protocol; `StrView`'s lives in `nucleus.strview`,
+`Char`'s in `nucleus.char` and `f64`'s in `nucleus.numeric`, so a set or map
+literal of those needs that import (the error names it). `const.nuc` itself
+never reaches `f64`, so literals work on AVR (`examples/avr-const.nuc`).
+
+**Non-constant elements.** Elements may be any typed expression — a variable, a
+`defenum` member, a call — evaluated left to right, keys before values. A literal
+with a non-constant element is filled in a frame array, and a set or map is then
+sealed at run time by `const-seal`: sorted, duplicates dropped, a later map key
+winning. The header points into the frame, so it carries the frame's escape
+taint: returning it, or storing it anywhere that outlives the frame, is refused
+(see [Pointer lifecycle](special-forms.md#pointer-lifecycle-escape-analysis)).
+Quoted symbols and keywords always take this path, ordered by identity, so
+`(contains? #{'let 'do} head)` is an identity lookup with no allocation.
+A struct element needs a `const-cmp` overload and `(extend T ConstOrd)`.
+
+**The want decides what is built.**
+
+| Where the literal is | Result |
+|---|---|
+| no declared type (an untyped `let`, a `contains?` operand) | `(Const C)`, `C` inferred from the elements |
+| declared `(Const C)` (a binding, a parameter, a return) | that type; the elements adapt to it |
+| declared `(Vector E)`, `(HashSet E)`, `(HashMap K V)` by value | a heap collection, built by one `init` from the `Const` |
+| declared `(ref C)` (`with ((v (ref (Vector i32))) [1 2 3])`) | the same, in a stack header |
+| a call argument whose parameter is a `Const` of the literal's shape | that parameter's type |
+| `defconst NAME <literal>` | a constant table; `NAME` holds the header |
+| a `defvar` of a `Const` type | a constant table, or, with a run-time element, a global array filled and sealed at startup |
 
 ```lisp
-(let ((__gs_N (ref (Vector i32))) (alloca (Vector i32)))
-  (init __gs_N)
-  (conj __gs_N 1) (conj __gs_N 2) (conj __gs_N 3)
-  __gs_N)
+(let (v:(Vector i64) [1 2 3])                  ; a heap vector; drop it, or bind with `with`
+  (conj &v 4))
+(with ((s (ref (HashSet StrView))) #{"a" "b"})  ; a heap set, dropped at scope exit
+  (conj s "c"))
+(defconst KEYWORDS #{"if" "else" "while"})       ; a sorted table of StrView
+(make (Vector i64) heap [1 2 3])                 ; make/new from a literal: one init
 ```
 
-**Elements may be any typed expression.** A variable, a `defconst` or `defenum`
-member, a call — not only a literal:
+For a call argument the parameter supplies the want. For an overloaded or
+generic callee, the other arguments' types bind its type variables first, and
+the want comes from the one candidate whose parameter there is a `Const` of the
+literal's bracket shape: `(contains? #{1 2 3} x)` at `x:i64` lays out `i64`s,
+and overloads on `(Const (Vector i32))` and `(Const (HashSet i32))` are told
+apart by `[…]` versus `#{…}`. A call never allocates for a literal: passing one
+to a `(Vector i64)` or `&(Vector i64)` parameter is an error naming
+`(make (Vector i64) heap …)`.
 
-```lisp
-(defenum BK BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-MACRO)
-(let (extra:i32 7)
-  (with ((s (ref (HashSet i32))) #{BK-GLOBAL BK-PROTOCOL extra (twice 9)})
-    (printf "%d\n" (unsafe/cast i32 (count s)))))     ; 4
-```
+**Element-type inference.** With no want, the type comes from the elements, in
+two tiers. An **integer or float literal adapts** to whatever the other elements
+settle on — `[1 n]` at `n:i64` is a `(ConstVec i64)`. Everything else is
+**fixed and must agree**: a string literal is `StrView` (a `c"…"` is `CStr`), a
+keyword `Keyword`, a quoted symbol `(ref Node)`, and any other expression its
+own type. With only adaptable literals the defaults are `i32` and `f64`. Under a
+want each element is checked as a call argument would be, so a value is never
+narrowed to suit the collection: `[n 1]` at a `(Vector i32)` with `n:i64` is
+`vector literal: element n (i64) does not fit i32`, and `300` in a
+`(Const (HashSet ui8))` is `integer literal 300 does not fit ui8`.
 
-Elements are evaluated **left to right**, keys before values within a map pair.
-
-**Element-type inference.** The element type comes from the **declared type**
-when there is one, and from the elements otherwise:
-
-```lisp
-(with ((v (ref (Vector i64))) [1 2 3]) …)   ; (Vector i64) — the binding decides
-(let (n:i64 9) (with ((v (ref (Vector i64))) [n 1 2]) …))
-(contains? #{BK-GLOBAL BK-MACRO} kind)      ; no declared type — (HashSet i32)
-```
-
-Inferring from the elements has two tiers. An **integer or float literal
-adapts** to whatever the other elements settle on — `[1 n]` at `n:i64` is a
-`(Vector i64)`, exactly as `(conj v 1)` on a `(Vector i64)` is already accepted.
-Everything else is **fixed and must agree**: a string literal is `StrView`
-(the type `"…"` has everywhere else), a keyword literal `Keyword`, a quoted
-symbol `(ref Node)`, and any other
-expression contributes its own type. A value is never narrowed to suit the
-collection, so `[n 1]` at a declared `(Vector i32)` with `n:i64` is refused
-rather than truncated. With nothing but adaptable literals the defaults are
-`i32` and `f64`, and there is no magnitude-based `i64` promotion. An empty
-literal with no declared type has nothing to infer from and is refused; the
-message names the alternative, e.g. `empty vector literal: use (make (Vector T))
-from nucleus.create`.
-
-**A keyword literal needs `(import-use nucleus.keyword)`.** The other three literal
-element types are builtins, but `Keyword` is defined in `lib/nucleus/keyword.nuc` and is
-not reached transitively from the collection imports — so `#{:a :b}` is the one
-bracket literal that can fail with `unknown type: Keyword` despite the collection
-itself being imported. The diagnostic names the file to import. Keywords are the
-idiomatic key type when keys are known names: equality is an interned-id compare
-and hashing is a cached load, both cheaper than a byte walk.
+**A keyword literal needs `(import-use nucleus.keyword)`.** `Keyword` is defined
+in `lib/nucleus/keyword.nuc`, which the collection imports do not reach. Keywords
+are the idiomatic key type when keys are known names.
 
 ```lisp
 (with ((m (ref (HashMap Keyword i32))) {:width 640 :height 480})
@@ -693,32 +726,26 @@ and hashing is a cached load, both cheaper than a byte walk.
 
 **Errors.** Each of these is a compile-time error:
 
-- **Empty literal with no declared type** (`[]`, `{}`, `#{}`) — there is nothing
-  to infer from; the message names the constructor. With a declared type an
-  empty literal is fine: `(with ((v (ref (Vector i32))) []) …)`.
-- **Mixed element types** (`[1 2.0 3]`, `[a b]` at `a:i32 b:i64`) — types do not
-  widen against each other. Where both are known the message names them.
-- **An element type that cannot be spelled** (`[p p]` at `p:(ref P)`) — inference
-  goes through the compiler's round-trip type spelling, which flattens `(ref T)`
-  to `ptr:T` and cannot spell an array or function type at all. Declare the
-  collection's type and the element type comes from there instead.
-- **Odd map element count** (`{"a" 1 "b"}`) — keys and values must pair up.
-- **The `(ref Coll)` escaping its frame** — the header is a stack slot, so
-  `(defn f ():&(Vector i32) [1 2 3])` and `(defvar g:&(Vector i32) [1 2 3])`
-  are refused as escapes (the global's initializer runs in a startup function
-  whose frame is gone before `main`). Declare the slot **by value** instead —
-  `(defvar g:(Vector i32) [1 2 3])`, `(defn f ():(Vector i32) [1 2 3])` — which
-  copies the header out; the copy owns the heap buffer. See
-  [Pointer lifecycle](special-forms.md#pointer-lifecycle-escape-analysis).
+- **An empty literal with no declared type** (`[]`, `{}`, `#{}`) — nothing to
+  infer from; the message names `make`. With a declared type an empty literal
+  is the empty `Const`, or an empty collection.
+- **Mixed element types** without a want (`[1 2.0 3]`, `[a b]` at `a:i32
+  b:i64`) — types do not widen against each other.
+- **An element that does not fit the want**, as above.
+- **A duplicate** constant member or key, as above.
+- **An odd map element count** (`{"a" 1 "b"}`).
+- **A frame-backed literal escaping**, as above. `(defvar g:&(Vector i32) [1 2
+  3])` is refused for the same reason; `(defvar g:(Vector i32) [1 2 3])` copies
+  the header out and owns the heap buffer.
 
-A bare `a` in a literal is a **variable reference**, as everywhere else; it is
-not a symbol value. A symbol element is written `'a`, and its near neighbours
-are still refused because they are not `(ref Node)`: `'(a b)` is a quoted list
-and `'1` a quoted int, both `(ptr Node)`.
+A bare `a` in a literal is a **variable reference**, as everywhere else. A
+symbol element is written `'a`; `'(a b)` and `'1` are `(ptr Node)`, not
+`(ref Node)`, and are refused in a `(ref Node)` collection.
 
-Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`;
-the refusals are covered by the `s16-kwlit-refused-*` and
-`s16-litvar-refused-*` units in `tests/suite-s16.nuc`.
+Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`
+and `tests/suite-const.nuc`; the refusals are the `cl3-*` rows of
+`tests/manifest/diagnostics.edn` and the `s16-*lit-refused-*` units in
+`tests/suite-s16.nuc`.
 
 ---
 

@@ -1,5 +1,6 @@
 Nucleus REPL (type Ctrl-D to exit)
 nuc> nuc> nuc> nuc> nuc> nuc>   imported nucleus.hashset
+nuc> nuc>   nucleus.const already imported
 nuc>   1
 nuc>   0
 nuc> nuc> nuc> nuc>   111

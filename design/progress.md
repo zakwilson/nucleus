@@ -920,6 +920,63 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 25 — `Const` collection literals built: CL-0 … CL-6 (2026-10-13)
+
+[stage25-const-literals/overview.md](stage25-const-literals/overview.md) is built, with as-built notes in its §11. Uncommitted.
+
+- **CL-0/CL-1, library.** `Entry` moved to `nucleus.coll`, with `reserve` on `HashSet`/`HashMap`. `lib/nucleus/const.nuc` has `ConstVec`/`ConstSet`/`ConstMap`, `ConstIter`, `const-cmp`, `const-seal` and `const-find`, plus `init` overloads from each `Const` in the three collection files. `examples/avr-const.nuc` runs under simavr.
+  - **`ConstOrd` (new, in `nucleus.coll`).** A template resolves names in its defining file, so `const-cmp` overloads in other files were unreachable, and a `StrView` silently adapted to the `CStr` overload. Each type's order is now a `ConstOrd` conformance beside the type: `f64` in numeric, `Char` in char, `StrView` in strview, `&Node` by address in node, `Keyword` by symbol address in keyword.
+  - **Core link names.** A core method of a core protocol now always mangles (`core-protocol-method?`), because two core libraries' lone `const-cmp` overloads both took `nuc_const-cmp` and collided in `lib-so`.
+- **CL-2, `(Const C)`.** It resolves by shape conformance through `const-type-of`, with a `ShapeExtend` prescan so the spelling works above the `extend`. `.nuch` and C headers carry it.
+- **CL-3, the lowering.**
+  - A literal of constants is a sorted private table; duplicates and out-of-range constants are refused at compile time.
+  - Other literals fill a frame array (a global one in a global initializer) and are sealed at run time.
+  - The want table is built, and so are the argument rule, the `defconst`/`defvar` arms, an element fit check (it closes `set!`'s silent narrowing), the mutating-call and missing-import notes, and generic `(Const (Vector T))` parameters. `create-form` no longer inspects literals.
+  - A set or map literal of `StrView`/`Char`/`f64` requires that type's library.
+- **CL-4.** The boot was refreshed; a clean copy builds from it and reaches the fixed point.
+- **CL-5, the sweep.**
+  - The twelve `src/` sites are `Const` literals.
+  - `NameSet`, both builders and both `g-*-set` globals are replaced by `defconst-` `SPECIAL-FORM-NAMES`/`PRIMITIVE-TYPE-NAMES`, and `gcheck-special-form` uses a `StrView` set.
+  - No swept function allocates.
+- **Measured (§9, medians of 5, against CL-2).**
+
+  | Compile | CL-2 heap calls | CL-5 heap calls | CL-2 time | CL-5 time |
+  |---|---|---|---|---|
+  | Header (glib/SDL2/cairo) | 334,332 | 81,377 (−76%) | 0.698 s | 0.671 s |
+  | Failing (`(no-such-fn 1)`) | 588,982 | 47,891 (−92%) | 0.166 s | 0.142 s |
+  | Self-compile | 13,951,445 | 13,992,731 | 7.72 s | 7.82 s (ranges overlap) |
+
+  - The two absolute gates (75,994 and 41,348) are missed by the same drift CL-0 to CL-2 added to the baseline; the savings match or beat the emulation's.
+  - Self-compile compares different inputs. On the same CL-5 source, the sweep saves 196k heap calls (−1.4%) against the pre-sweep compiler, and time is unchanged.
+  - Leak probe: an 8-int membership test makes no allocation and inlines to a binary search, at 4.4 ns per evaluation (it was about 210 ns). The `or` chain is a folded range check and runs 3.4× faster, so **the 2× gate is missed**.
+- **Tests.**
+  - 17 `cl3-*` manifest rows; 8 `cl3-*` units in `tests/suite-const.nuc`; `tests/repl/cl3-const-tables.in`.
+  - Re-pointed: the `hashset-lit-test` duplicates, the s16 mixed-literal messages, the an2 import message, three REPL goldens (`(import-use nucleus.const)`; `al5` uses `make`) and `as-sugar`.
+  - No golden changed iteration order: every order golden binds a mutable type.
+- **Gates.** `make test` 1459/0/0, `check-headers`, `abi-test`, `avr-test`, `lib-so`, `make bootstrap`.
+- **Deferred.** Five entries: a by-value temporary stored through a `&T` parameter; two REPL defects (the strview-before-arena import, and poisoning after a failed instantiation); wide-key `get`'s message; and the NaN refusal, which no literal can reach.
+
+---
+
+## Stage 25 — `Const` collection literals designed (2026-10-12)
+
+[stage25-const-literals/overview.md](stage25-const-literals/overview.md) is written. Nothing is built, and no compiler or library code changed. Q1–Q11 await a ruling.
+
+- **Census.** `src/` has 12 sites, 11 of them with constant elements; the other is the 64 quoted symbols in `gcheck-special-form`. `lib/` has none. `examples/` has 21 sites, 17 constant. `tests/fixtures` has 10 and `tests/repl` 11, all constant. The embedded suite programs have 35 sites, 24 constant. No bare literal is mutated anywhere.
+- **Measured.** Every evaluation of a literal allocates, and nothing frees it: 264 bytes for a small set. In a copy of the tree with the `src/` literals moved into globals, IR is byte-identical, heap calls fall 77% on a `glib`/`SDL2`/`cairo` header compile and 93% on a compile with one unresolved name, and self-compile time is unchanged within noise.
+- **Found.**
+  - A second template `InitFrom` conformance is dropped silently.
+  - `defconst` refuses a template-head struct literal unless the type is declared.
+  - No collection literal compiles for AVR today.
+  - Tier-1 dispatch needs the `Const` methods to take `self` by value.
+- **Revised 2026-10-13.**
+  - `(Const C)` resolves by the shape protocol `C` conforms to (`Assoc`, then `Set`, then `Seq`) rather than a fixed table, so a user collection gets a `Const` form by conforming. A new type kind was weighed and not recommended.
+  - The argument rule counts only candidates whose `Const` parameter matches the literal's brackets.
+  - The census now records literal positions. 66 are `let`/`with` bindings, 8 `contains?` operands, 7 `make`/`new` operands, 6 `defvar` initializers and 2 return values; none is passed to any other function.
+- **Ruled 2026-10-13: Q1–Q11 all as recommended.** Sorted iteration is a documented guarantee (Q4). Three items went to [deferred](deferred/overview.md): a read-only collection protocol (Q7), `nucleus.const` in the prelude (Q8), and constant symbols and keywords (Q11).
+
+---
+
 ## Build: the boot binary follows `boot/nucleusc.ll` (2026-10-11)
 
 `make clean && make` failed on a host after the AL-5 boot refresh: `allocator.nuc:24: (dyn P): protocol must be a bare symbol`. The host's gitignored `bin/nucleusc` predated the refresh, and `make clean` kept it. `ensure-boot` relinked it only when it could not execute. `bin/nucleusc` is now a file target that depends on `boot/nucleusc.ll`, so a refresh or a merge relinks it. Checked in the scratch tree: a binary older than the IR is relinked, and a second `make` does nothing. `context/build.md` is updated.

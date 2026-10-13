@@ -29,6 +29,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.intern)
 (import-use nucleus.intern-str)
+(import-use nucleus.coll)       ; ConstOrd
 
 (defstruct Keyword sym:Symbol)
 
@@ -57,6 +58,12 @@
 (extend Keyword Hash)
 (defn hash (self:&Keyword):usize
   (return (hash (ref self 'sym))))
+
+; Interned identity, as `=` is: the order is the symbols' addresses.
+(extend Keyword ConstOrd)
+(defn const-cmp (a:Keyword b:Keyword):i32
+  (let (x:usize (unsafe/cast usize ((a 'sym) 'p)) y:usize (unsafe/cast usize ((b 'sym) 'p)))
+    (return (if (< x y) -1 (if (> x y) 1 0)))))
 
 (extend Keyword ToStr)
 (defn to-str (self:Keyword out:&String):!void

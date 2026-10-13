@@ -1,0 +1,5 @@
+; A duplicate member of a constant set is refused when the table is laid out.
+(import-use nucleus.const)
+
+(defn main ():i32
+  (let (s #{-3 1 -3}) (return (unsafe/cast i32 (count s)))))

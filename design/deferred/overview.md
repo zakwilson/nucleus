@@ -621,6 +621,14 @@ gate applies.
 `&String` source visible to `conforms?`, and `(InitFrom StrView)` over
 `(string-as-view &s)` already copies a `String` losslessly.
 
+**A bug inside the rule, found in Stage 25 (2026-10-12):** for a *template*, a
+second conformance is dropped without a diagnostic.
+`(extend (Vector T) (InitFrom (Box T)))` beside `Vector`'s existing
+`(InitFrom (Vector T))` is accepted, but `(conforms? (Vector i32) (InitFrom (Box i32)))`
+answers no. A concrete type gets the "re-extends protocol … with different
+associated arguments" refusal; the template path should give the same one.
+([stage25-const-literals/overview.md](../stage25-const-literals/overview.md) §2.4.)
+
 ## A struct literal does not carry its fields' escape taint
 
 Found in Stage 24 BD-1, 2026-10-10. This is the boundary in
@@ -697,3 +705,104 @@ dispatch does not take a by-value binding's address implicitly. That is why
 `(handle &x)`. The fix: let the conversion rank as an implicit coercion in
 method matching, after exact and widening matches, and give the template tier
 the concrete tier's lvalue-address pass.
+
+## Reader extensibility: user literal syntax
+
+Raised 2026-10-12 while designing `Const` literals, and ruled out of their scope.
+Today a user cannot add literal syntax. `def-rmacro` takes a prefix starting with
+one of `` $ ' @ ^ ` | ~ `` and wraps the next form as `(wrap form)`, so it
+cannot define brackets. A tagged literal `#tag form` is read as
+`(tagged-lit tag form)` and then refused in source ("is data syntax: Nucleus
+source has no reader for it"); only EDN reads it, at run time. A user type
+joins literal syntax only as something built from a literal, through `make`,
+`new` or `init`.
+
+The natural shape, if wanted: a source reader for tags, such as
+`(def-tag geom/pt make-point)`, rewriting `#geom/pt [1 2]` to a call on the
+literal's compile-time value. That gives user types literal syntax without
+opening up the reader's brackets. A documented `(literal-kind node)` for macros
+belongs with it.
+
+**Not wanted until** a user type needs its own literal spelling.
+
+## A read-only collection protocol
+
+Deferred from Stage 25 Q7, 2026-10-13
+([stage25-const-literals/overview.md](../stage25-const-literals/overview.md) §10).
+A protocol such as `Lookup` or `Count`, conformed to by both the `Const`
+templates and the mutable collections, would let a function take either. Today
+`Coll`, `Seq`, `Assoc` and `Set` all include mutating methods, so a `Const`
+conforms to none of them. **Not wanted until** a function needs to accept both;
+the Stage 25 census found every lookup on the literal itself.
+
+## `nucleus.const` in the prelude
+
+Deferred from Stage 25 Q8, 2026-10-13. A literal requires `nucleus.const` in the
+file's import closure, and every current user has it through `vector`,
+`hashset` or `hashmap`. Putting it in the `nucleus.core` prelude would let a
+file with no collection import write a literal, at the cost of compiling it for
+every file. Revisit if a literal-only file (lookup tables with no mutable
+collection) turns out to be common, or if the prelude's cost is measured as
+negligible.
+
+## Constant symbols and keywords in `Const` literals
+
+Deferred from Stage 25 Q11, 2026-10-13. Quoted symbols and keywords have no
+compile-time value: `'let` is a run-time `nuc_intern-symbol` call and `:k` a
+run-time `keyword-intern`, and identity is the interned pointer. So a literal of
+them takes the run-time seal path (frame storage, sorted at run time). A
+spelling-keyed constant form is possible: store each one in the interner's
+layout, compare by spelling, and re-intern when read as a value. The cost is
+that `=` on an iterated element would differ from `=` on an interned one.
+**Not wanted until** a hot path needs a constant symbol or keyword set; the one
+`src/` user is rewritten over spellings in the Stage 25 sweep.
+
+## `(View &TBL 3)` with a `&T` field says "too many initializers"
+
+Found in Stage 25, 2026-10-12
+([stage25-const-literals/overview.md](../stage25-const-literals/overview.md) §2.5).
+In a constant struct literal, `(defstruct View data:&i32 len:usize)` with
+`(defconst V (View &TBL 3))` is refused with "too many initializers for struct
+'View'": `(ref TBL)` is read as a field/value pair rather than one value. A
+`ptr` field works, which is why the `Const` templates use `data:ptr`. The fix is
+for the constant struct-literal reader to take `&NAME` as one positional value,
+as the run-time path does.
+
+## A by-value struct temporary stored through a `&T` parameter
+
+Found in Stage 25 CL-2, 2026-10-13. A struct constructor call yields a frame
+temporary (`(P 1 2)` is a `&P` into an `alloca`). Passed to a `&T` parameter
+and stored into a longer-lived container (`(conj g-vec (Rec …))` with
+`g-vec:&(Vector &Rec)`), the pointer outlives the frame and nothing refuses it:
+the compiler crashed later reading the dangling records. The call boundary
+drops the frame taint, as a struct literal's fields do (see "A struct literal
+does not carry its fields' escape taint"). The fix belongs with that one: a `&T`
+argument keeps its frame taint into a store the callee makes. The compiler's
+own site now allocates with `(new ShapeExtend g-arena)`.
+
+## The REPL: importing `nucleus.strview` before `nucleus.arena` breaks the arena
+
+Found in Stage 25 CL-3, 2026-10-13, present at CL-2 and before. In one session,
+`(import-use nucleus.strview)` then `(import-use nucleus.arena)` reports
+"'nucleus.arena/g-arena' was imported compile-time-only — it has no definition
+in this program". `strview` reaches `nucleus.error`, which `import-ct`s
+`nucleus.node`, which loads `arena` compile-time-only; the later real import
+then finds the CT-only binding. `tests/repl/stdlib.in` imports `arena` first for
+this reason (its D8 comment).
+
+## The REPL: a failed template instantiation poisons later entries
+
+Observed in Stage 25 CL-3, 2026-10-13. After an entry's instantiation failed
+and was recovered (a `const-find` constraint error), every later entry failed
+with "IR parse error: redefinition of type %nuc_Maybe.nuc_StrView". The failed
+entry's type definitions appear to stay in the preamble. Not reduced further;
+the triggering error is now refused before instantiation ("a set literal of
+StrView needs nucleus.strview").
+
+## `(get m k)` with a wider key falls to the computed-field path
+
+Found in Stage 25 CL-3, 2026-10-13, and the same for `HashMap`. With
+`m:(HashMap i32 i32)` (or a `ConstMap`) and `k:i64`, `(get m k)` finds no `get`
+override (dispatch never narrows) and falls to the computed-field intrinsic,
+which says "computed field access requires a homogeneous struct". The message
+should be the no-match diagnostic with its candidate note.

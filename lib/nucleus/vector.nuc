@@ -33,6 +33,7 @@
 (import-use nucleus.allocator)
 (import-use nucleus.coll)
 (import-use nucleus.iterator)
+(import-use nucleus.const)
 
 ; ---------------------------------------------------------------------------
 ; Panic helpers. These are NON-generic so they are emitted once and resolve
@@ -218,6 +219,13 @@
 (defn init (self:&(Vector T) a:Alloc v:(Vector T)):void
   (init self a)
   (vector-extend self &v))
+
+; From a literal: one copy of its table. A plain overload, not a second
+; `InitFrom` conformance (stage25-const-literals Q5).
+(defn init (self:&(Vector T) a:Alloc v:(ConstVec T)):void
+  (init self a)
+  (when (> (v 'len) 0)
+    (vector-extend-raw self (unsafe/cast &T (v 'data)) (v 'len))))
 
 (defn drop (self:&(Vector T)):void
   (when (!= (as ptr (_get self 'data)) null)

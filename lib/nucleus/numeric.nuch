@@ -1,5 +1,6 @@
 ; .nuch header for lib/nucleus/numeric.nuc
 (ns nucleus.numeric)
+(import-use nucleus.coll)
 (defprotocol Eq (= (a:Self b:Self) :bool) (!= (a:Self b:Self) :bool))
 (defprotocol Ord (< (a:Self b:Self) :bool) (<= (a:Self b:Self) :bool) (> (a:Self b:Self) :bool) (>= (a:Self b:Self) :bool))
 (extend Ord Eq)
@@ -13,3 +14,5 @@
 (extend f32 Ord)
 (extend f32 Num)
 (extend CStr Eq)
+(defmethod "@nuc_const_cmp.f64.f64" const-cmp ((a f64) (b f64)) :i32)
+(extend f64 ConstOrd)

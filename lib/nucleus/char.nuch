@@ -2,6 +2,7 @@
 (ns nucleus.char)
 (import-use nucleus.error)
 (import-use nucleus.string-errors)
+(import-use nucleus.coll)
 (defstruct DecodeResult (ch Char) (nbytes usize) (ok i32))
 (declare char-utf8-len ((c Char)) :usize)
 (declare char-encode-utf8 ((c Char) (buf (ref ui8))) :usize)
@@ -16,3 +17,5 @@
 (declare char-is-whitespace ((c Char)) :bool)
 (declare char-ascii-upper ((c Char)) :Char)
 (declare char-ascii-lower ((c Char)) :Char)
+(defmethod "@nuc_const_cmp.Char.Char" const-cmp ((a Char) (b Char)) :i32)
+(extend Char ConstOrd)

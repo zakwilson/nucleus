@@ -1,0 +1,6 @@
+; A map's keys are distinct.
+(import-use nucleus.const)
+(import-use nucleus.strview)
+
+(defn main ():i32
+  (let (m {"a" 1 "b" 2 "a" 3}) (return (unsafe/cast i32 (count m)))))

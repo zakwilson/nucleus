@@ -1,0 +1,9 @@
+; `(Const C)` needs a C that conforms to a shape protocol; Foo conforms to none.
+(import-use nucleus.const)
+
+(defstruct Foo x:i32)
+
+(defn f (a:(Const Foo)):void
+  (return))
+
+(defn main ():i32 (return 0))

@@ -325,9 +325,11 @@ Both do the same steps:
    and exits with `new: out of memory` on failure. `make` uses a frame slot.
 2. If `T` conforms to `Init`, call `(init p (handle a) args…)`. With no args
    this is `Init`. With one, it is whichever `init` overload the value's type
-   selects. A `[…]`, `#{…}` or `{…}` literal argument becomes `init` followed by
-   one `conj` (or `assoc`) per element, because initializing from the literal's
-   temporary would leak its buffer.
+   selects. A `[…]`, `#{…}` or `{…}` literal argument is a `Const`, typed from
+   the `init` that takes one, so `(make (Vector i64) heap [1 2 3])` is one
+   `init` from a constant table of `i64`s: `reserve` once, then copy
+   ([Literal sugar](collections.md#literal-sugar---)). A user collection takes
+   a literal by defining `(init self:&C a:Alloc v:(ConstSet E))` beside its `Init`.
 3. Otherwise, build `T` like a struct literal, `(new Pt a 1 2)`, or zero-fill it
    when there are no args. A union works the same way, `(make Shape heap rect 1.0 2.0)`.
 

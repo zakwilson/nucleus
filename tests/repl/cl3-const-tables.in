@@ -1,0 +1,10 @@
+; Stage 25: each entry is its own module, so each literal's table is a private
+; global of its entry, named by that module's counter; neither may collide.
+(import-use nucleus.const)
+(contains? #{3 1 2} 2)
+(contains? #{30 10 20} 20)
+(contains? #{3 1 2} 9)
+; A `defconst` table outlives its entry.
+(defconst KS #{9 8 7})
+(contains? KS 8)
+(unsafe/cast i32 (count KS))

@@ -1,0 +1,4 @@
+(import-use nucleus.const) (import-use nucleus.hashset)
+
+(defn main ():i32
+  (let (s:(Const (HashSet f32)) #{1.5 2 1.5}) (return (unsafe/cast i32 (count s)))))

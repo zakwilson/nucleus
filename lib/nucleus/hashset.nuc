@@ -45,6 +45,7 @@
 (import-use nucleus.allocator)
 (import-use nucleus.coll)
 (import-use nucleus.iterator)
+(import-use nucleus.const)
 (import-use nucleus.hash)
 
 ; ---------------------------------------------------------------------------
@@ -143,6 +144,14 @@
           (set! (s 'keys) new-keys)
           (set! (s 'states) new-states)
           (set! (s 'cap) new-cap))))))
+
+; reserve: room for n members with no resize, i.e. n*4 < cap*3.
+(defn reserve (self:&(HashSet T) n:usize):void
+  (let (cap:usize (self 'cap))
+    (while (>= (* n 4) (* cap 3))
+      (set! cap (* cap 2)))
+    (when (> cap (self 'cap))
+      (hashset-resize self cap))))
 
 ; ---------------------------------------------------------------------------
 ; insert: add elem to the set. No-op if already present. Grows by doubling
@@ -299,6 +308,15 @@
 (extend (HashSet T) (Set T))
 (extend (HashSet T) Drop)
 (extend (HashSet T) Init)
+
+; From a literal: reserved once, so the inserts never rehash (stage25 Q5).
+(defn init (self:&(HashSet T) a:Alloc v:(ConstSet T)):void
+  (init self a)
+  (reserve self (v 'len))
+  (let (p:&T (unsafe/cast &T (v 'data)) i:usize 0)
+    (while (< i (v 'len))
+      (insert self (aref p (as i64 i)))
+      (set! i (+ i 1)))))
 
 ; ---------------------------------------------------------------------------
 ; Drop: free the keys and states buffers through the stored allocator, then

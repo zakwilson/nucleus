@@ -1313,7 +1313,7 @@
 ; A literal's lowering names its library by full name, so the file must load it.
 (deftest an2-literal-needs-its-library
   (try (an2-refused "an2-vlit.nuc" "(defn main ():i32 (let (v [1 2]) (return 0)))
-" 1 "a vector literal needs nucleus.vector — add (import-use nucleus.vector)"))
+" 1 "a vector literal needs nucleus.const — add (import-use nucleus.const)"))
   (try (an2-refused "an2-klit.nuc" "(defn main ():i32 (let (k :a) (return 0)))
 " 1 "a keyword literal needs nucleus.keyword — add (import-use nucleus.keyword)"))
   (return (ok)))

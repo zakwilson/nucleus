@@ -1,0 +1,8 @@
+; A call never allocates for a literal argument.
+(import-use nucleus.const)
+(import-use nucleus.vector)
+
+(defn g (xs:&(Vector i64)):usize (return (count xs)))
+
+(defn main ():i32
+  (return (unsafe/cast i32 (g [1 2 3]))))

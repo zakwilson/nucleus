@@ -42,6 +42,7 @@
 (import-use nucleus.string-errors) ; str-index-out-of-bounds, invalid-char-boundary
 (import-use nucleus.iterator)      ; (Iterator E)
 (import-use nucleus.fnv)
+(import-use nucleus.coll)           ; ConstOrd
 ; NOTE: string-protocols.nuc imports strview, so we CANNOT import it here
 ; (circular).  The ByteStr/Str conformances for StrView live in strview-str.nuc,
 ; which imports both strview and string-protocols.
@@ -588,6 +589,12 @@
 (defn < (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (< (strview-cmp-raw &la &lb) 0) true false)))
+
+; `Const` ordering (nucleus.const): bytes, then length, as `<`.
+(defn const-cmp (a:StrView b:StrView):i32
+  (let (la:StrView a lb:StrView b c:i32 (strview-cmp-raw &la &lb))
+    (return (if (< c 0) -1 (if (> c 0) 1 0)))))
+(extend StrView ConstOrd)
 (defn <= (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (<= (strview-cmp-raw &la &lb) 0) true false)))

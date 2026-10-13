@@ -1,0 +1,4 @@
+(import-use nucleus.const)
+
+(defn main ():i32
+  (let (s #{c"x" c"y" c"x"}) (return (unsafe/cast i32 (count s)))))

@@ -183,12 +183,74 @@
 ; Global scope
 (defvar g-globals:&Scope (scope-new null))
 
-; Name-kind membership sets (built by their own initializers; never dropped).
-; special-form-named and primitive-type-named consult these instead of long
-; string-comparison chains.
-(deftype NameSet &(HashSet StrView))
-(defvar g-special-form-set:NameSet (build-special-form-set))
-(defvar g-primitive-type-set:NameSet (build-primitive-type-set))
+; The names `special-form-named` reserves: nothing may shadow them. The bare
+; retired `unsafe/*` spellings stay reserved; the qualified ones answer through
+; `unsafe-qualified-op`.
+(defconst- SPECIAL-FORM-NAMES
+  #{ ; control flow / binding
+     "let" "with" "do" "cond" "return" "while"
+     ; Stage 16: lexically scoped macros (a reservation — nothing may shadow
+     ; it, and macrolet-bind refuses to shadow anything else in this set).
+     "macrolet"
+     ; mutation
+     "set!" "inc!" "dec!"
+     ; memory / pointers
+     "array" "label" "goto" "label-addr" "goto-ptr"
+     "." ".&" "cast" "as" "addr-of" "deref"
+     "ptr-set!" "ptr+" "_get" ".set!"
+     "sizeof" "alignof" "alloca" "aref" "aset!"
+     ; Stage 18 TF-4: the call site's own file and line, as literals.
+     "source-file" "source-line"
+     ; literals / quoting
+     "quote" "quasiquote" "char"
+     ; Stage 16: reader-generated collection-literal heads. Reserved (not
+     ; user-writable sugar) so nothing may shadow what `[…]` expands to.
+     "vector-lit" "hashset-lit" "hashmap-lit" "tagged-lit"
+      ; logic
+      "not" "_and" "_or"
+     ; macros / functions
+     "gensym" "macro-error" "struct-fields" "type-name" "conforms?" "funcall" "funcall-void"
+     "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
+     ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
+     ; each routes to the exact same emitter as its bare alias above. UN-5
+     ; retired the bare aliases as dispatch-time hard errors (D6); the bare
+     ; spellings stay in this set only so the names remain reserved (a defn/
+     ; defvar/etc. still may not shadow them).
+     ; option / result
+     "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
+     ; ownership / control
+     "move" "defer" "match" "__make" "__init-then"
+     ; error handling
+     "defunion" "deferror" "err!" "err-name" "err-message" "try"
+     "type-token" "__err-handled" "signal"
+     ; top-level definers
+     "defn" "defvar" "defconst" "defenum" "defstruct"
+     "defmacro" "defprotocol" "extend" "def-rmacro"
+     ; Stage 16: type aliases (container-type-sugar.md)
+     "deftype"
+     ; Stage 12 N3: private definer variants (trailing `-`)
+     "defn-" "defvar-" "defconst-" "defenum-" "defstruct-"
+     "defmacro-" "defprotocol-" "defunion-" "deftype-"
+     "import" "import-use" "import-only" "import-prefixed"
+     "require" "require-ct"
+     "unsafe-import-private" "extern" "declare" "compile-time"
+     ; Stage 12 N4: namespace IR-prefix override
+     "set-ir-prefix"
+     ; Stage 12 N5: re-export form
+     "export"
+     ; Stage 14 AVR-5: LLVM string function-attribute directive (reserved so a
+     ; defn/defvar/etc. cannot shadow it).
+     "fn-attr" })
+
+; The names `primitive-type-named` answers for.
+(defconst- PRIMITIVE-TYPE-NAMES
+  #{ ; integer types (plus bool, which is not one)
+     "int" "bool" "i8" "i16" "i32" "i64"
+     "ui8" "ui16" "ui32" "ui64"
+     ; float types
+     "f32" "f64" "float" "double" "f16" "f80" "f128"
+     ; pointer / special
+     "ptr" "void" "CStr" "Err" })
 
 ; Stage 15 B5: the shared binding table — one row per name-keyed registry, in
 ; resolution priority order. See `build-binding-kinds` (beside `emit-dispatch`)
@@ -474,6 +536,7 @@
 ; CQ-1 (design/stage24-allocation/conformance-query.md §2). Promises are redeemed
 ; only once emission starts, when every file's protocols are registered.
 (defvar g-conf-promises:&(Vector &ConformancePromise) (new (Vector &ConformancePromise) g-arena))
+(defvar g-shape-extends:&(Vector &ShapeExtend) (new (Vector &ShapeExtend) g-arena))
 (defvar g-conf-noes:&(Vector &ConformanceNo) (new (Vector &ConformanceNo) g-arena))
 (defvar g-promises-open:bool false)
 (defvar g-conf-promising:bool false)
@@ -516,6 +579,10 @@
 ; (tmpl-conformance-check-instance, in generics.nuc) is invoked from union-
 ; registry.nuc (struct-template-stamp-types), imported BEFORE generics.nuc.
 (defvar g-tmpl-conf-check-hook:ptr (unsafe/cast ptr tmpl-conformance-check-instance))
+
+; g-const-type-hook: `(Const C)` (union-registry.nuc) asks conformances, which
+; generics.nuc keeps (const-type-of).
+(defvar g-const-type-hook:ptr (unsafe/cast ptr const-type-of))
 
 ; g-stamp-maybe-type-hook: stamp-maybe-type (in union-emit.nuc) is invoked from
 ; node-type-call (in generics.nuc, imported BEFORE union-emit.nuc) to type the
@@ -924,6 +991,9 @@
 ; Imported protocol keys from pass 1: a signature-prescan key must see a flattened
 ; namespace's protocol before `prescan-protocols` registers it.
 (defvar g-proto-decl-keys:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; The method names core protocols declare, from pass 1: a root file finalizes its
+; generics before its imports' protocols register (core-protocol-method?).
+(defvar g-core-proto-methods:&(Vector Symbol) (new (Vector Symbol) g-arena))
 
 ; Stage 15 B2a: has any file in this unit declared a namespace? Nothing but
 ; `emit-ns` sets it, so it is 0 for every build of this compiler and for every
@@ -1021,6 +1091,7 @@
 (import-use nucleus.process)
 (import-use nucleus.hash)
 (import-use nucleus.hashset)
+(import-use nucleus.const)   ; a literal is a Const
 
 ; ============================================================
 ; Stage 17 C1: `fstr`, the native-string replacement for the `fmt-*` helpers.
@@ -4778,19 +4849,18 @@
                ((bv 'type) 'kind))
         (die-at line (fstr (bop 'name) " float operand width mismatch — use explicit cast")))
       (let (finstr:StrView "")
-        (let (fops:&(HashMap StrView StrView)
-              {"_+" "fadd"
-               "_-" "fsub"
-               "_*" "fmul"
-               "_/" "fdiv"
-               "%" "frem"
-               "=" "fcmp oeq"
-               "!=" "fcmp one"
-               "<" "fcmp olt"
-               "<=" "fcmp ole"
-               ">" "fcmp ogt"
-               ">=" "fcmp oge"})
-          (match (invoke fops (symbol-as-view (bop 'name)))
+        (let (fops {"_+" "fadd"
+                    "_-" "fsub"
+                    "_*" "fmul"
+                    "_/" "fdiv"
+                    "%" "frem"
+                    "=" "fcmp oeq"
+                    "!=" "fcmp one"
+                    "<" "fcmp olt"
+                    "<=" "fcmp ole"
+                    ">" "fcmp ogt"
+                    ">=" "fcmp oge"})
+          (match (fops (symbol-as-view (bop 'name)))
             ((some name) (set! finstr name))
             (none null)))
         (when (str-empty? &finstr)
@@ -8007,7 +8077,11 @@
     (let (args:ptr (arena-alloc (* (+ max-args 1) (sizeof Val)))
           i:i32 0)
       (while (< i nargs)
-        (let (v:&Val (emit-node (arg-target-rewrite (node-at cc (+ i 1)) (fn-param-type ft0 i)) scope))
+        (let (an:ptr (node-at cc (+ i 1))
+              lw:StrView (lit-form-what an)
+              v:&Val (if (= lw "")
+                       (emit-node (arg-target-rewrite an (fn-param-type ft0 i)) scope)
+                       (emit-arg-with-want an scope (literal-param-want (fn-param-type ft0 i) lw (cc 'line)))))
           (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing :optional args, emitting each default
@@ -12822,6 +12896,106 @@
                   (= (type-eq t pt) 0) (return null))))))
     (return t)))
 
+; Does an argument of static type `at` (node `an`) leave parameter `pt` a candidate?
+; Loose on purpose: dispatch still decides, so this only has to rule out.
+(defn lit-arg-fits (at:?&Type pt:?&Type an:ptr):bool
+  (when (or (= at null) (= pt null)) (return true))
+  (when (!= (type-eq at pt) 0) (return true))
+  (let (ra:?&Type (struct-value-ref-type at))
+    (when (and (!= ra null) (!= (type-eq ra pt) 0)) (return true)))
+  (when (and (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+             (or (!= (is-int-type pt) 0) (!= (is-float-type pt) 0)))
+    (return true))
+  (return false))
+
+; Method `m`'s parameter `i` under the other arguments' static types `ats`, or
+; null when one of them rules `m` out or leaves a type variable unbound.
+(defn literal-arg-candidate (m:&Method ats:ptr nn:&Node nargs:i32 i:i32):?&Type
+  (when (= (m 'kind) METHOD-USER)
+    (dotimes (j nargs)
+      (when (and (!= j i)
+                 (not (lit-arg-fits (aref (unsafe/cast &ptr ats) j)
+                                    (aref (unsafe/cast &ptr (m 'param-types)) j)
+                                    (node-at nn (+ j 1)))))
+        (return null)))
+    (return (aref (unsafe/cast &ptr (m 'param-types)) i)))
+  (when (!= (m 'kind) METHOD-GENERIC) (return null))
+  (let (ntv:i32 (m 'num-tyvars)
+        params:ptr (node-at (m 'body) 2)
+        bound:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
+        saved:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
+        line:i32 (method-text-line m (nn 'line))
+        here:NameEnv (method-env-enter m)
+        out:?&Type null
+        ok:bool true)
+    (dotimes (k ntv) (set! (aref (unsafe/cast &ptr bound) k) null))
+    (dotimes (j nargs)
+      (let (at:?&Type (aref (unsafe/cast &ptr ats) j))
+        (when (and ok (!= j i) (!= at null))
+          (let (ptn:?&Node (binding-type-node (node-at params j)))
+            (memcpy saved bound (* ntv (ptr-bytes)))
+            (when (= (unify-tpat ptn at (m 'tyvars) ntv bound line) 0)
+              (memcpy bound saved (* ntv (ptr-bytes)))
+              (let (ra:?&Type (struct-value-ref-type at))
+                (when (or (= ra null) (= (unify-tpat ptn ra (m 'tyvars) ntv bound line) 0))
+                  (memcpy bound saved (* ntv (ptr-bytes)))
+                  ; A number adapts to its parameter; it binds nothing and rules nothing out.
+                  (let (lk:i32 (lit-elem-kind (node-at nn (+ j 1))))
+                    (when (and (!= lk 1) (!= lk 2)) (set! ok false))))))))))
+    (dotimes (k ntv) (when (= (aref (unsafe/cast &ptr bound) k) null) (set! ok false)))
+    (when ok
+      (set! out (resolve-param-type-bound (binding-type-node (node-at params i))
+                                          (m 'tyvars) bound ntv line)))
+    (name-env-set here)
+    (return out)))
+
+; The want a collection-literal argument takes from its parameter (§5.4): the
+; one candidate whose parameter there is a `Const` of the literal's shape.
+(defn literal-arg-want (g:&Generic nn:&Node nargs:i32 i:i32 scope:&Scope what:StrView):?&Type
+  (let (ctmpl:Symbol (lit-const-tmpl (if (= what "map") 1 0) what)
+        ats:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        found:?&Type null
+        hits:i32 0)
+    (when (= (struct-template-lookup-ref ctmpl) null) (return null))
+    (dotimes (j nargs)
+      (set! (aref (unsafe/cast &ptr ats) j)
+            (if (= j i) null (node-type (node-at nn (+ j 1)) scope))))
+    (dotimes (k (unsafe/cast i32 (count (g 'methods))))
+      (let (m:&Method (invoke (g 'methods) k:usize))
+        ; A stamped instance is its template's cache; counting both would be two.
+        (when (and (= (m 'num-params) nargs) (= (m 'has-rest) 0) (= (m 'variadic) 0)
+                   (= (as ptr (m 'origin-template)) null))
+          (let (pt:?&Type (literal-arg-candidate m ats nn nargs i))
+            (when (!= (lit-const-want (as ptr pt) ctmpl) null)
+              (inc! hits)
+              (set! found pt))))))
+    (return (if (= hits 1) found null))))
+
+; A solitary callee's parameter as a literal argument's want: a `Const` of the
+; literal's shape is one; a mutable collection is refused, since a call never allocates.
+(defn literal-param-want (pt:?&Type what:StrView line:i32):?&Type
+  (when (= pt null) (return null))
+  (when (!= (lit-const-want (as ptr pt) (lit-const-tmpl (if (= what "map") 1 0) what)) null)
+    (return pt))
+  (let (s:?&Type (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null)) (pt 'elem) pt))
+    (when (and (!= s null) (= (s 'kind) TY-STRUCT))
+      (let (ot:ptr (as ptr (-> (s 'sdef) (unsafe/cast &StructDef _) (_ 'origin-template))))
+        (when (and (!= ot null)
+                   (or (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.vector" "Vector"))))
+                       (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.hashset" "HashSet"))))
+                       (= ot (as ptr (struct-template-lookup-ref (core-spelling "nucleus.hashmap" "HashMap"))))))
+          (die-at line (fstr "a " what " literal cannot be passed as " (type-display pt)
+                             ": a call does not allocate -- pass (make " (type-display s) " heap …)"))))))
+  (return null))
+
+; Emit argument node `an` under `want`; only a collection literal reads it.
+(defn emit-arg-with-want (an:ptr scope:&Scope want:?&Type):&Val
+  (let (saved:ptr g-want-type)
+    (set! g-want-type (as ptr want))
+    (let (v:&Val (emit-node an scope))
+      (set! g-want-type saved)
+      (return v))))
+
 (defn emit-generic-call (n:?&Node scope:&Scope g:&Generic):&Val
   (let (nn:&Node (unsafe/cast &Node n)
         nargs:i32 (- (node-len nn) 1)
@@ -12842,7 +13016,10 @@
         (let (anode:ptr (node-at nn (+ i 1)))
           (when (!= (arg-sum-ctor anode) 0)
             (set! anode (arg-target-rewrite anode (generic-arg-target g nargs i))))
-          (let (v:&Val (emit-node anode scope))
+          (let (lw:StrView (lit-form-what anode)
+                v:&Val (if (= lw "")
+                         (emit-node anode scope)
+                         (emit-arg-with-want anode scope (literal-arg-want g nn nargs i scope lw))))
             (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
             (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
             (set! (aref (unsafe/cast &ptr arg-nodes) i) anode))))
@@ -13841,7 +14018,8 @@
   (let (nn:&Node (unsafe/cast &Node n))
     (when (= (nn 'kind) NODE-INT) (return 1))
     (when (= (nn 'kind) NODE-FLOAT) (return 2))
-    (when (= (nn 'kind) NODE-STR) (return 3))
+    ; A `c"…"` is a CStr value, not the StrView a bare string adapts to.
+    (when (and (= (nn 'kind) NODE-STR) (= (nn 'i) 0)) (return 3))
     (when (= (nn 'kind) NODE-KEYWORD) (return 4))
     (when (!= (lit-is-quoted-sym n) 0) (return 5))
     (return 0)))
@@ -13962,88 +14140,404 @@
           (when (!= (as ptr (sd 'origin-template)) (as ptr st)) (return null))
           (return (lit-sym (sd 'name))))))))
 
-; One literal's expansion:
-;   (let (g:(ref <Coll>) (alloca <Coll>)) (init g) (<add> g e …) … g)
-; built exactly as the reader used to build it, so a literal-only element list
-; emits the IR it always did. `<Coll>` comes from the want when one is armed and
-; from the elements otherwise. The two `<Coll>` positions get separate list
-; nodes because each stamps the type; an interned type SYMBOL inside them is
-; shared, as it always was.
+; ------------------------------------------------------------
+; Stage 25: a literal is a `Const` (design/stage25-const-literals/overview.md §5)
+; ------------------------------------------------------------
+
+(defvar g-const-lit-count:i32 0)
+
+; The `nucleus.const` template a literal of this bracket shape builds.
+(defn lit-const-tmpl (is-map:i32 what:StrView):Symbol
+  (when (!= is-map 0) (return (core-spelling "nucleus.const" "ConstMap")))
+  (when (= what "set") (return (core-spelling "nucleus.const" "ConstSet")))
+  (return (core-spelling "nucleus.const" "ConstVec")))
+
+; `want`'s StructDef when it is an instance of `ctmpl`, else null.
+(defn lit-const-want (want:ptr ctmpl:Symbol):?&StructDef
+  (when (= want null) (return null))
+  (let (w:&Type (unsafe/cast &Type want))
+    (when (!= (w 'kind) TY-STRUCT) (return null))
+    (let (sd:&StructDef (unsafe/cast &StructDef (w 'sdef))
+          st:?&StructTemplate (struct-template-lookup-ref ctmpl))
+      (when (or (= st null) (!= (as ptr (sd 'origin-template)) (as ptr st))) (return null))
+      (return sd))))
+
+; How the compiler orders constants of `t` (§5.2): 1 signed, 2 unsigned, 3 float,
+; 4 bytes. 0: no compile-time order, so the table is sealed at run time.
+(defn lit-order-class (t:&Type):i32
+  (let (k:i32 (t 'kind))
+    (when (= k TY-BOOL) (return 2))
+    (when (= k TY-ERR) (return 0))
+    (when (!= (is-int-type t) 0) (return (if (!= (is-unsigned t) 0) 2 1)))
+    (when (or (= k TY-F32) (= k TY-F64)) (return 3))
+    (when (or (!= (type-is-strview t) 0) (= k TY-CSTR)) (return 4))
+    (return 0)))
+
+; Is `e` a constant the compiler lays out at `t` (§5.1)?
+(defn lit-const-elem? (e:ptr t:&Type cls:i32):bool
+  (when (= e null) (return false))
+  (let (n:&Node (unsafe/cast &Node e)
+        k:i32 (n 'kind))
+    (when (or (= cls 1) (= cls 2))
+      (when (= (t 'kind) TY-BOOL) (return (or (= e 'true) (= e 'false))))
+      (when (= (t 'kind) TY-CHAR) (return (or (= k NODE-CHAR) (= k NODE-INT))))
+      (return (= k NODE-INT)))
+    (when (= cls 3) (return (or (= k NODE-INT) (= k NODE-FLOAT))))
+    (when (= cls 4) (return (and (= k NODE-STR) (or (= (t 'kind) TY-CSTR) (= (n 'i) 0)))))
+    (return false)))
+
+; `lit-const-elem?`, refusing a number or string literal that cannot be a `t` at all.
+(defn lit-const-slot? (e:ptr t:&Type cls:i32 what:StrView):bool
+  (when (lit-const-elem? e t cls) (return true))
+  (let (k:i32 (lit-elem-kind e))
+    (when (and (!= cls 0) (>= k 1) (<= k 3))
+      (die-at (node-line e g-form-line)
+        (fstr what " literal: " (lit-elem-display e) " does not fit " (type-display t)))))
+  (return false))
+
+(defn lit-int-val (e:ptr):i64
+  (when (= e 'true) (return 1))
+  (when (= e 'false) (return 0))
+  (return ((unsafe/cast &Node e) 'i)))
+
+(defn lit-float-val (e:ptr):f64
+  (let (n:&Node (unsafe/cast &Node e))
+    (when (= (n 'kind) NODE-INT) (return (unsafe/cast f64 (n 'i))))
+    (return (float-literal-value (symbol-as-view (n 's))))))
+
+; Two constants of class `cls` in `const-cmp`'s order; the two must agree row for row.
+(defn lit-cmp (a:ptr b:ptr cls:i32):i32
+  (when (= cls 1)
+    (let (x:i64 (lit-int-val a) y:i64 (lit-int-val b))
+      (return (if (< x y) -1 (if (> x y) 1 0)))))
+  (when (= cls 2)
+    (let (x:ui64 (unsafe/cast ui64 (lit-int-val a)) y:ui64 (unsafe/cast ui64 (lit-int-val b)))
+      (return (if (< x y) -1 (if (> x y) 1 0)))))
+  (when (= cls 3)
+    (let (x:f64 (lit-float-val a) y:f64 (lit-float-val b))
+      (return (if (< x y) -1 (if (> x y) 1 0)))))
+  (let (x:StrView (symbol-as-view ((unsafe/cast &Node a) 's))
+        y:StrView (symbol-as-view ((unsafe/cast &Node b) 's))
+        c:i32 (strview-cmp-raw &x &y))
+    (return (if (< c 0) -1 (if (> c 0) 1 0)))))
+
+(defn lit-elem-display (e:ptr):StrView
+  (let (n:&Node (unsafe/cast &Node e))
+    (when (and (= (n 'kind) NODE-CHAR) (> (n 'i) 32) (< (n 'i) 127))
+      (return (fstr "\\" (as Char (unsafe/cast ui32 (n 'i)))))))
+  (let (s:String (node-str (as ?&Node e)))
+    (return (fstr (string-as-view &s)))))
+
+; Sort `idx` (positions into `keys`) ascending and refuse equal neighbours (§5.2).
+; Insertion sort: it is stable, and a literal is small.
+(defn lit-sort-refuse-dups (keys:ptr idx:ptr n:i32 cls:i32 what:StrView noun:StrView line:i32):void
+  (when (= cls 3)
+    (dotimes (i n)
+      (let (v:f64 (lit-float-val (aref (unsafe/cast &ptr keys) i)))
+        (when (!= v v)
+          (die-at (node-line (aref (unsafe/cast &ptr keys) i) line)
+            (fstr what " literal: NaN cannot be a " noun ", since it equals nothing"))))))
+  (let (i:i32 1)
+    (while (< i n)
+      (let (x:i32 (aref (unsafe/cast &i32 idx) i) j:i32 i)
+        (while (and (> j 0)
+                    (> (lit-cmp (aref (unsafe/cast &ptr keys) (aref (unsafe/cast &i32 idx) (- j 1)))
+                                (aref (unsafe/cast &ptr keys) x) cls) 0))
+          (set! (aref (unsafe/cast &i32 idx) j) (aref (unsafe/cast &i32 idx) (- j 1)))
+          (set! j (- j 1)))
+        (set! (aref (unsafe/cast &i32 idx) j) x))
+      (set! i (+ i 1))))
+  (let (i:i32 1)
+    (while (< i n)
+      (let (a:ptr (aref (unsafe/cast &ptr keys) (aref (unsafe/cast &i32 idx) (- i 1)))
+            b:ptr (aref (unsafe/cast &ptr keys) (aref (unsafe/cast &i32 idx) i)))
+        (when (= (lit-cmp a b cls) 0)
+          (let (later:ptr (if (> (node-line b 0) (node-line a 0)) b a))
+            (die-at (node-line later line)
+              (fstr "duplicate " noun " " (lit-elem-display b) " in a " what " literal")))))
+      (set! i (+ i 1)))))
+
+; One table element's constant text at `t`.
+(defn lit-write-const (e:ptr t:&Type what:StrView line:i32):void
+  (let (n:&Node (unsafe/cast &Node e))
+    (when (and (= (n 'kind) NODE-INT) (!= (is-int-type t) 0) (= (int-literal-fits (n 'i) t) 0))
+      (die-at (node-line e line)
+        (fstr what " literal: integer literal " (n 'i) " does not fit " (type-display t))))
+    (cond (and (= (n 'kind) NODE-INT) (!= (is-float-type t) 0))
+            (emit g-out (float-literal-ir-at (fstr (n 'i) ".0") t))
+          (= (n 'kind) NODE-CHAR) (emit g-out (fstr (n 'i)))
+          true (defvar-write-const (as ?&Node e) t line))))
+
+; `@.const.N = private unnamed_addr constant [n x E] […]` over `keys` (and `vals`,
+; for a map's entries) in `idx` order; returns the name.
+(defn emit-const-table (ety:&Type kty:&Type vty:?&Type keys:ptr vals:ptr idx:ptr n:i32
+                        what:StrView line:i32):StrView
+  (let (name:StrView (fstr "@.const." g-const-lit-count)
+        eir:StrView (type-to-ir ety))
+    (inc! g-const-lit-count)
+    (emit g-out name " = private unnamed_addr constant [" n " x " eir "] [")
+    (dotimes (i n)
+      (let (j:i32 (aref (unsafe/cast &i32 idx) i))
+        (when (!= i 0) (emit g-out ", "))
+        (emit g-out eir " ")
+        (if (= vty null)
+          (lit-write-const (aref (unsafe/cast &ptr keys) j) kty what line)
+          (do (emit g-out "{ " (type-to-ir kty) " ")
+              (lit-write-const (aref (unsafe/cast &ptr keys) j) kty what line)
+              (emit g-out ", " (type-to-ir vty) " ")
+              (lit-write-const (aref (unsafe/cast &ptr vals) j) vty what line)
+              (emit g-out " }")))))
+    (emit g-out "]\n\n")
+    (return name)))
+
+(defn lit-int-node (v:i64 line:i32):ptr
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'line) line)
+    (set! (n 'i) v)
+    (return (as ptr n))))
+
+; Elements that are not all constant: a frame table filled in source order and,
+; for a set or map, sealed (§5.3). The header keeps the table's frame taint.
+(defn emit-const-lit-runtime (scope:&Scope csd:&StructDef ety:&Type keys:ptr vals:ptr n:i32
+                              sealed:bool line:i32):&Val
+  (let (b:ptr (as ptr (nucleus_gensym))
+        enode:ptr (lit-sym (type-spelling ety))
+        cb:&Node (node-list-new line))
+    (dotimes (i n)
+      (let (elem:ptr (if (= vals null)
+                       (aref (unsafe/cast &ptr keys) i)
+                       (lit-list3 enode (aref (unsafe/cast &ptr keys) i)
+                                  (aref (unsafe/cast &ptr vals) i) line)))
+        (node-push cb (lit-list3 (lit-sym "set!")
+                                 (lit-list3 (lit-sym "aref") b (lit-int-node (as i64 i) line) line)
+                                 elem line))))
+    (let (len:ptr (if sealed
+                    (lit-list3 (lit-sym (core-spelling "nucleus.const" "const-seal")) b
+                               (lit-int-node (as i64 n) line) line)
+                    (lit-int-node (as i64 n) line)))
+      (node-push cb (lit-list2 (lit-sym "deref") (lit-list3 (lit-sym (csd 'name)) b len line) line)))
+    (let (decl:ptr (lit-list2 b (lit-ref (lit-sym (type-spelling ety)) line) line)
+          arr:ptr (lit-list3 (lit-sym "array") (lit-sym (type-spelling ety)) (lit-int-node (as i64 n) line) line)
+          bindings:ptr (lit-list2 decl (if (!= g-init-fn-active 0)
+                                         (lit-const-global-storage ety n line)
+                                         (lit-alloca arr line))
+                                  line)
+          form:ptr (as ptr (node-cons (lit-sym "let")
+                             (node-cons bindings (as ptr (node-list-done cb)) line) line))
+          saved:ptr g-want-type)
+      (set! g-want-type null)
+      (let (rv:&Val (emit-node form scope))
+        (set! g-want-type saved)
+        (when (= g-init-fn-active 0) (val-taint-frame rv scope))
+        (return rv)))))
+
+; A global initializer's literal outlives its frame: the table is a zero global
+; it fills (§5.3), reached through a hidden global name.
+(defn lit-const-global-storage (ety:&Type n:i32 line:i32):ptr
+  (let (ir:StrView (fstr "@.const." g-const-lit-count)
+        g:Symbol (symbol-intern (fstr ".const." g-const-lit-count))
+        aty:&Type (array-type ety n))
+    (inc! g-const-lit-count)
+    (emit g-out ir " = internal global [" n " x " (type-to-ir ety) "] zeroinitializer\n\n")
+    (scope-define g-globals g aty ir 1)
+    (return (lit-list3 (lit-sym "unsafe/cast") (lit-ref (lit-sym (type-spelling ety)) line)
+                       (lit-list2 (lit-sym "ref") (lit-sym g) line) line))))
+
+; A literal whose want is a mutable collection: the `Const` first, then one
+; `init` from it (§6).
+(defn emit-collection-lit-mutable (n:?&Node scope:&Scope want:ptr ctmpl:Symbol line:i32):&Val
+  (let (w:&Type (unsafe/cast &Type g-want-type)
+        s:&Type (if (and (= (w 'kind) TY-PTR) (!= (w 'elem) null)) (unsafe/cast &Type (w 'elem)) w)
+        sd:&StructDef (unsafe/cast &StructDef (s 'sdef))
+        st:?&StructTemplate (struct-template-lookup-ref ctmpl))
+    (when (= st null) (die-at line (fstr "a literal needs " ctmpl " -- add (import-use nucleus.const)")))
+    (let (cty:&Type (struct-template-stamp-types st (sd 'origin-args) (sd 'origin-nargs) line)
+          c:ptr (as ptr (nucleus_gensym))
+          g:ptr (as ptr (nucleus_gensym))
+          inner:ptr (lit-list2 (lit-list2 c (lit-sym (-> (cty 'sdef) (unsafe/cast &StructDef _) (_ 'name))) line)
+                               (as ptr n) line)
+          call:ptr (as ptr (node-list4 (lit-sym (core-spelling "nucleus.allocator" "init")) g
+                                       (lit-list2 (lit-sym (core-spelling "nucleus.allocator" "handle"))
+                                                  (lit-sym (core-spelling "nucleus.allocator" "heap")) line)
+                                       c line))
+          gdecl:ptr (lit-list2 (lit-list2 g (lit-ref want line) line) (lit-alloca want line) line)
+          body:ptr (as ptr (node-list4 (lit-sym "let") gdecl call g line))
+          form:ptr (lit-list3 (lit-sym "let") inner body line)
+          saved:ptr g-want-type)
+      (set! g-want-type null)
+      (let (v:&Val (emit-node form scope))
+        (set! g-want-type saved)
+        (return v)))))
+
+; The `Const` instance a literal builds: `csd`'s when a want names one, else
+; stamped from the elements.
+(defn lit-const-type (head:ptr scope:&Scope ctmpl:Symbol what:StrView is-map:i32
+                      tmpl-msg:Symbol empty-msg:StrView csd:?&StructDef line:i32):&Type
+  (when (!= csd null) (return (type-for-sdef (as ptr csd))))
+  (when (= head null) (die-at line empty-msg))
+  (let (kk:i32 0  vk:i32 0
+        argts:ptr (arena-alloc (* 2 (ptr-bytes)))
+        st:?&StructTemplate (struct-template-lookup-ref ctmpl))
+    (when (= st null) (die-at line (fstr "a " what " literal needs " ctmpl " -- add (import-use nucleus.const)")))
+    (if (!= is-map 0)
+      (let (kt:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 0 &kk)
+            vt:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 0 &vk))
+        (set! (aref (unsafe/cast &ptr argts) 0) (parse-type-from-node (if (!= kt null) kt (lit-type-node kk line)) line))
+        (set! (aref (unsafe/cast &ptr argts) 1) (parse-type-from-node (if (!= vt null) vt (lit-type-node vk line)) line)))
+      (let (et:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 0 &kk))
+        (set! (aref (unsafe/cast &ptr argts) 0) (parse-type-from-node (if (!= et null) et (lit-type-node kk line)) line))))
+    (return (struct-template-stamp-types st argts (if (!= is-map 0) 2 1) line))))
+
+; The literal's elements gathered for `cty`: `keys`/`vals` hold the nodes, and the
+; answer says whether every one is a constant the compiler can lay out.
+(defstruct LitElems keys:ptr vals:ptr idx:ptr n:i32 all-const:bool kty:&Type vty:?&Type ety:&Type)
+
+(defn lit-gather (head:ptr cty:&Type what:StrView is-map:i32 line:i32 out:&LitElems):void
+  (let (sd:&StructDef (unsafe/cast &StructDef (cty 'sdef))
+        kty:&Type (unsafe/cast &Type (aref (unsafe/cast &ptr (sd 'origin-args)) 0))
+        vty:?&Type (if (!= is-map 0) (aref (unsafe/cast &ptr (sd 'origin-args)) 1) null)
+        ety:&Type kty
+        cnt:i32 0
+        cur:ptr head)
+    (while (!= cur null) (inc! cnt) (set! cur (as ptr (node-rest (unsafe/cast &Node cur)))))
+    (when (!= is-map 0)
+      (set! cnt (/ cnt 2))
+      (let (et:ptr (arena-alloc (* 2 (ptr-bytes)))
+            est:?&StructTemplate (struct-template-lookup-ref (core-spelling "nucleus.coll" "Entry")))
+        (set! (aref (unsafe/cast &ptr et) 0) kty)
+        (set! (aref (unsafe/cast &ptr et) 1) vty)
+        (set! ety (struct-template-stamp-types est et 2 line))))
+    (let (keys:ptr (arena-alloc (* (as i64 (+ cnt 1)) (ptr-bytes)))
+          vals:ptr (if (!= is-map 0) (arena-alloc (* (as i64 (+ cnt 1)) (ptr-bytes))) null)
+          idx:ptr (arena-alloc (* (as i64 (+ cnt 1)) 4))
+          kcls:i32 (lit-order-class kty)
+          vcls:i32 (if (!= is-map 0) (lit-order-class (unsafe/cast &Type vty)) 0)
+          all-const:bool true
+          i:i32 0)
+      (set! cur head)
+      (while (!= cur null)
+        (let (kn:ptr (node-first (unsafe/cast &Node cur)))
+          (set! (aref (unsafe/cast &ptr keys) i) kn)
+          (set! (aref (unsafe/cast &i32 idx) i) i)
+          (when (not (lit-const-slot? kn kty kcls what)) (set! all-const false))
+          (set! cur (as ptr (node-rest (unsafe/cast &Node cur))))
+          (when (!= is-map 0)
+            (let (vn:ptr (node-first (unsafe/cast &Node cur)))
+              (set! (aref (unsafe/cast &ptr vals) i) vn)
+              (when (not (lit-const-slot? vn (unsafe/cast &Type vty) vcls what)) (set! all-const false))
+              (set! cur (as ptr (node-rest (unsafe/cast &Node cur)))))))
+        (inc! i))
+      (set! (out 'keys) keys)
+      (set! (out 'vals) vals)
+      (set! (out 'idx) idx)
+      (set! (out 'n) cnt)
+      (set! (out 'all-const) all-const)
+      (set! (out 'kty) kty)
+      (set! (out 'vty) vty)
+      (set! (out 'ety) ety))))
+
+; The header constant of an all-constant literal, its table emitted to `g-out`.
+(defn lit-const-header-ir (le:&LitElems what:StrView is-map:i32 line:i32):StrView
+  (when (= (le 'n) 0) (return (fstr "{ ptr null, " (ptr-int-ir) " 0 }")))
+  (when (or (!= is-map 0) (= what "set"))
+    (lit-sort-refuse-dups (le 'keys) (le 'idx) (le 'n) (lit-order-class (le 'kty)) what
+                          (if (!= is-map 0) "key" "element") line))
+  (let (tbl:StrView (emit-const-table (le 'ety) (le 'kty) (le 'vty) (le 'keys) (le 'vals)
+                                      (le 'idx) (le 'n) what line))
+    (return (fstr "{ ptr " tbl ", " (ptr-int-ir) " " (le 'n) " }"))))
+
+; Which literal `n` is: "vector", "set", "map", or "" for none.
+(defn lit-form-what (n:?&Node):StrView
+  (when (!= (node-kind n) NODE-LIST) (return ""))
+  (let (hd:?&Node (node-at n 0))
+    (when (= hd 'vector-lit) (return "vector"))
+    (when (= hd 'hashset-lit) (return "set"))
+    (when (= hd 'hashmap-lit) (return "map")))
+  (return ""))
+
+; A global's constant initializer from a literal (§5.5): the header IR, or ""
+; when the slot is not this literal's `Const` or an element is not constant.
+(defn lit-global-init-ir (init:?&Node ty:&Type line:i32):StrView
+  (let (what:StrView (lit-form-what init))
+    (when (= what "") (return ""))
+    (let (is-map:i32 (if (= what "map") 1 0)
+          csd:?&StructDef (lit-const-want (as ptr ty) (lit-const-tmpl is-map what)))
+      (when (= csd null) (return ""))
+      (let ((le LitElems) (LitElems null null null 0 true ty null ty))
+        (lit-gather (as ptr (node-rest init)) ty what is-map line &le)
+        (when (not (le 'all-const)) (return ""))
+        (return (lit-const-header-ir &le what is-map line))))))
+
+; A bare literal's `Const` type, for `defconst NAME <literal>`, or null.
+(defn lit-bare-const-type (v:?&Node line:i32):?&Type
+  (let (what:StrView (lit-form-what v))
+    (when (= what "") (return null))
+    (core-ns-require "nucleus.const" (fstr "a " what " literal") line)
+    (let (is-map:i32 (if (= what "map") 1 0))
+      (return (lit-const-type (as ptr (node-rest v)) g-globals (lit-const-tmpl is-map what) what
+                              is-map (symbol-intern what) (fstr "defconst: an empty " what " literal needs a type -- (defconst NAME:(Const …) …)")
+                              null line)))))
+
+; Refuse element `e` that a `slot` would not take as a call argument: `set!`
+; alone would narrow it silently.
+(defn lit-check-fit (e:ptr slot:&Type scope:&Scope what:StrView noun:StrView line:i32):void
+  (let (k:i32 (lit-elem-kind e)
+        at:?&Type (node-type (as ?&Node e) scope))
+    (when (= at null) (return))
+    (when (!= (arg-adapts at slot (if (= k 1) 1 0) (if (= k 2) 1 0)) 0) (return))
+    (let (ra:?&Type (struct-value-ref-type slot))
+      (when (and (!= ra null) (!= (type-eq at ra) 0)) (return)))
+    (die-at (node-line e line)
+      (fstr what " literal: " noun " " (lit-elem-display e) " (" (type-display at)
+            ") does not fit " (type-display slot)))))
+
+(defn lit-check-fits (le:&LitElems scope:&Scope what:StrView is-map:i32 line:i32):void
+  (dotimes (i (le 'n))
+    (lit-check-fit (aref (unsafe/cast &ptr (le 'keys)) i) (le 'kty) scope what
+                   (if (!= is-map 0) "key" "element") line)
+    (when (!= is-map 0)
+      (lit-check-fit (aref (unsafe/cast &ptr (le 'vals)) i) (unsafe/cast &Type (le 'vty)) scope what
+                     "value" line))))
+
+; A set's members and a map's keys need `const-cmp`, which `contains?` and `get`
+; reach through ConstOrd. A core type's lives in its own library (const.nuc must not reach f64).
+(defn lit-require-order (kty:&Type what:StrView is-map:i32 line:i32):void
+  (when (conformance-known (type-spelling kty) (core-spelling "nucleus.coll" "ConstOrd")) (return))
+  (let (lib:StrView (cond (!= (type-is-strview kty) 0) "nucleus.strview"
+                          (= (kty 'kind) TY-CHAR) "nucleus.char"
+                          (= (kty 'kind) TY-F64) "nucleus.numeric"
+                          true ""))
+    (when (!= lib "")
+      (core-ns-require lib (fstr "a " what " literal of " (type-display kty)) line))
+    (die-at line (fstr "a Const " what " " (if (!= is-map 0) "key" "element")
+                       " needs const-cmp; " (type-display kty)
+                       " has none (conform it to nucleus.coll/ConstOrd)"))))
+
+; A literal: the `Const` its want or its elements name. `home`/`tmpl-bare` is
+; the mutable collection a declared want builds from it.
 (defn emit-collection-lit (n:?&Node scope:&Scope home:StrView tmpl-bare:StrView what:StrView
                            add-bare:StrView is-map:i32 empty-msg:StrView):&Val
-  (core-ns-require home (fstr "a " what " literal") (node-line (as ptr n) g-form-line))
   (let (line:i32 (node-line (as ptr n) g-form-line)
+        ctmpl:Symbol (lit-const-tmpl is-map what)
         tmpl:Symbol (core-spelling home tmpl-bare)
-        tmpl-msg:Symbol (symbol-intern tmpl-bare)
-        ; The one-argument `init`: every collection's buffers come from the heap.
-        init-fn:Symbol (core-spelling "nucleus.allocator" "init")
-        add-fn:Symbol (core-spelling home add-bare)
         head:ptr (as ptr (node-rest (unsafe/cast &Node n)))
-        want:ptr (collection-lit-want-node tmpl))
-    (when (and (= head null) (= want null)) (die-at line empty-msg))
-    (let (kk:i32 0  vk:i32 0
-          coll1:ptr null  coll2:ptr null)
-      (if (!= want null)
-        ; A want names the type; it does not make a mixed literal meaningful, so
-        ; the elements are still scanned for agreement among themselves.
-        (do
-          (if (!= is-map 0)
-            (do (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 1 &kk)
-                (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 1 &vk))
-            (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 1 &kk))
-          (set! coll1 want) (set! coll2 want))
-        (if (!= is-map 0)
-          (let (kt1:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 0 &kk)
-                vt1:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 0 &vk)
-                kt2:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl-msg line 0 &kk)
-                vt2:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl-msg line 0 &vk))
-            (set! coll1 (lit-list3 (lit-sym tmpl)
-                          (if (!= kt1 null) kt1 (lit-type-node kk line))
-                          (if (!= vt1 null) vt1 (lit-type-node vk line)) line))
-            (set! coll2 (lit-list3 (lit-sym tmpl)
-                          (if (!= kt2 null) kt2 (lit-type-node kk line))
-                          (if (!= vt2 null) vt2 (lit-type-node vk line)) line)))
-          (let (et1:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 0 &kk)
-                et2:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl-msg line 0 &kk))
-            (set! coll1 (lit-list2 (lit-sym tmpl)
-                          (if (!= et1 null) et1 (lit-type-node kk line)) line))
-            (set! coll2 (lit-list2 (lit-sym tmpl)
-                          (if (!= et2 null) et2 (lit-type-node kk line)) line)))))
-      ; Body, forward: (init g) (add g e …) … g. The hygiene symbol is minted
-      ; here, not by the reader, so `__gs_N` is numbered in emission order.
-      (let (gs:ptr (as ptr (nucleus_gensym))
-            cb:&Node (node-list-new line)
-            cur:ptr head)
-        (while (!= cur null)
-          (let (a:ptr (node-first (unsafe/cast &Node cur))
-                form:ptr null)
-            (if (!= is-map 0)
-              ; pairs: the odd-count refusal in the reader guarantees a value
-              (let (vcell:&Node (unsafe/cast &Node (node-rest (unsafe/cast &Node cur))))
-                (set! form (as ptr (node-list4 (lit-sym add-fn)
-                                     gs a
-                                     (node-first vcell) line)))
-                (set! cur (as ptr (node-rest vcell))))
-              (do (set! form (lit-list3 (lit-sym add-fn) gs a line))
-                  (set! cur (as ptr (node-rest (unsafe/cast &Node cur))))))
-            (node-push cb form)))
-        ; The gensym is the literal's value, so the `let` body ends with it.
-        (node-push cb gs)
-        (let (chead:ptr (as ptr (node-list-done cb))
-              decl:ptr (lit-list2 gs (lit-ref coll1 line) line)
-              bindings:ptr (lit-list2 decl (lit-alloca coll2 line) line)
-              init-form:ptr (lit-list2 (lit-sym init-fn) gs line)
-              full-body:ptr (node-cons init-form chead line)
-              form:ptr (as ptr (node-cons (lit-sym "let")
-                                 (node-cons bindings full-body line) line)))
-          ; The want belongs to the literal, not to the `let` it expands into —
-          ; leaving it armed hands a `(ref (Vector i64))` want down to the
-          ; binding init `(alloca …)` underneath it.
-          (let (saved:ptr g-want-type)
-            (set! g-want-type null)
-            (let (v:&Val (emit-node form scope))
-              (set! g-want-type saved)
-              (return v))))))))
+        mwant:ptr (collection-lit-want-node tmpl))
+    (core-ns-require "nucleus.const" (fstr "a " what " literal") line)
+    (when (!= mwant null)
+      (core-ns-require home (fstr "a " what " literal") line)
+      (return (emit-collection-lit-mutable n scope mwant ctmpl line)))
+    (let (cty:&Type (lit-const-type head scope ctmpl what is-map (symbol-intern tmpl-bare) empty-msg
+                                    (lit-const-want g-want-type ctmpl) line)
+          (le LitElems) (LitElems null null null 0 true cty null cty))
+      (lit-gather head cty what is-map line &le)
+      (when (or (!= is-map 0) (= what "set")) (lit-require-order (le 'kty) what is-map line))
+      (when (le 'all-const)
+        (return (alloc-val cty (lit-const-header-ir &le what is-map line))))
+      (lit-check-fits &le scope what is-map line)
+      (return (emit-const-lit-runtime scope (unsafe/cast &StructDef (cty 'sdef)) (le 'ety)
+                                      (le 'keys) (le 'vals) (le 'n)
+                                      (or (!= is-map 0) (= what "set")) line)))))
 
 (defn emit-list (n:?&Node scope:&Scope):&Val
   (let (nn:&Node (unsafe/cast &Node n))
@@ -14106,7 +14600,7 @@
         (when (= hp 'macrolet) (return (emit-macrolet n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
         ; Collection literals. Reader-generated heads (reserved in
-        ; g-special-form-set so nothing may shadow them); see
+        ; SPECIAL-FORM-NAMES so nothing may shadow them); see
         ; emit-collection-lit above.
         (when (= hp 'vector-lit)
           (return (emit-collection-lit n scope "nucleus.vector" "Vector" "vector" "conj" 0
@@ -14246,7 +14740,7 @@
 
 ; Stage 15 B2b: the roster of the built-in `unsafe` namespace, by BARE name
 ; (design/stage14/unsafe-namespace.md D2 Class 1/2). It is a roster rather than
-; seven more entries in `g-special-form-set` because after B2b the members are
+; seven more entries in `SPECIAL-FORM-NAMES` because after B2b the members are
 ; reached by *resolving* `unsafe/x` — `resolve-spelling` binds `unsafe` as an
 ; implicit prefix in every file — and a set of whole qualified strings cannot
 ; answer a resolved question.
@@ -14273,16 +14767,16 @@
       (return (unsafe-op-named (r 'bare))))))
 
 (defn special-form-named (name:Symbol):i32
-  (when (contains? g-special-form-set (symbol-as-view name)) (return 1))
+  (when (contains? SPECIAL-FORM-NAMES (symbol-as-view name)) (return 1))
   ; The `unsafe/` roster left the set in B2b, but the spellings stay reserved:
   ; a `defn`/`defvar`/… may not shadow one, exactly as before.
   (return (unsafe-qualified-op name)))
 
 (defn primitive-type-named (name:Symbol):i32
-  (if (contains? g-primitive-type-set (symbol-as-view name)) (return 1) (return 0)))
+  (if (contains? PRIMITIVE-TYPE-NAMES (symbol-as-view name)) (return 1) (return 0)))
 
 ; The pointer kinds no type registry holds, so the one-kind rule missed them
-; where it already caught `ptr`. Deliberately NOT in g-primitive-type-set, which
+; where it already caught `ptr`. Deliberately NOT in PRIMITIVE-TYPE-NAMES, which
 ; also answers tyname-resolvable (name-resolution.md §15).
 (defn pointer-kind-named (name:Symbol):i32
   (when (= name "ref") (return 1))
@@ -15430,6 +15924,11 @@
     (when (= tk TY-ARRAY)
       (defvar-const-vtables init ty encl)
       (return 1))
+    (when (and (= tk TY-STRUCT) (!= (lit-form-what init) ""))
+      (let (h:StrView (lit-global-init-ir init (unsafe/cast &Type tt) ((unsafe/cast &Node init) 'line)))
+        (when (= h "") (return 0))
+        (set! (aref (unsafe/cast &StrView out-ir) 0) h)
+        (return 1)))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION))
       ; The constant grammar at an aggregate slot is a compound literal, and
       ; `const-struct-lit?` is the same gate `defvar-write-const` applies, so
@@ -15871,7 +16370,14 @@
 ; The type of a stored constant's value, read off its head, or null.
 (defn defconst-value-type (v:?&Node line:i32):?&Type
   (when (!= (node-kind v) NODE-LIST) (return null))
+  (when (!= (lit-form-what v) "") (return (lit-bare-const-type v line)))
   (let (hd:?&Node (node-at v 0))
+    (when (= (node-kind hd) NODE-LIST)
+      (let (hcar:?&Node (node-first hd))
+        (when (and (= (node-kind hcar) NODE-SYM)
+                   (!= (as ptr (struct-template-lookup-ref ((as ptr:Node hcar) 's))) null))
+          (return (parse-type-from-node (as ptr hd) line))))
+      (return null))
     (when (!= (node-kind hd) NODE-SYM) (return null))
     (when (= hd 'array)
       (let (n:i32 0
@@ -18925,7 +19431,8 @@
                           (prescan-file-imports ifs)
                           (prescan-imported-types ifs)
                           (prescan-struct-names ifs)
-                          (prescan-protocol-keys ifs))
+                          (prescan-protocol-keys ifs)
+                          (prescan-shape-extends ifs))
                         (drop &src))
                       (set! g-source-path save-path)
                       (set! g-current-ns save-ns)
@@ -18950,8 +19457,17 @@
             (when (= (node-kind nn) NODE-LIST) (set! nn (node-first nn)))
             (when (= (node-kind nn) NODE-SYM)
               (let (key:Symbol (protocol-key (nn 's)))
-                (when (not (proto-decl-key? key)) (conj g-proto-decl-keys key)))))))
+                (when (not (proto-decl-key? key)) (conj g-proto-decl-keys key))))
+            (when (core-ns? g-current-ns) (note-core-proto-methods f)))))
       (set! fc (node-rest fc)))))
+
+(defn note-core-proto-methods (f:?&Node):void
+  (dotimes (i (- (node-len f) 2))
+    (let (sig:?&Node (node-at f (+ i 2)))
+      (when (and (= (node-kind sig) NODE-LIST) (= (node-kind (node-at sig 0)) NODE-SYM))
+        (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
+          (split-typed ((as ptr:Node (node-at sig 0)) 's) (as &Symbol &nm) (as &Symbol &tail))
+          (when (not (contains? g-core-proto-methods nm)) (conj g-core-proto-methods nm)))))))
 
 (defn prescan-struct-names (forms:?&Node):void
   (prescan-struct-names-mode forms 0))
@@ -20109,6 +20625,7 @@
   ; same moment as before — only the *registration* moved earlier.
   (if (= sigs-done 0)
     (do
+      (prescan-shape-extends forms)
       (prescan-defn-signatures forms)
       ; Stage 15 W8 G-0: this file's own value names, so a `defn` body may name a
       ; `defvar`/`defconst`/`defenum` member declared LATER in the same file. The
@@ -21376,90 +21893,6 @@
     (set! g-target-ptr-bytes (tg 'ptr-size))
     (set! g-elf-sections (elf-object-format (tg 'triple)))
     (set! g-host-ptr-bytes (hg 'ptr-size))))
-
-; Build the two name-kind membership sets used by special-form-named and
-; primitive-type-named. Each runs once, as its global's own initializer, before
-; any parsing occurs. Each set is placed in the arena and never dropped.
-(defn build-special-form-set ():NameSet
-  ; --- special-form-named set (89 members) ---
-  ; Stage 15 B2b removed the seven `unsafe/*` whole-string entries UN-2 added:
-  ; `unsafe` is a real built-in namespace now, so `special-form-named` answers
-  ; for them through `unsafe-qualified-op` (resolve the qualifier, then the
-  ; roster) instead of by string membership. The bare retired spellings (`cast`,
-  ; `ptr+`, `funcall-ptr-*`, `unsafe-import-private`) stay in the set, still
-  ; reserved so nothing may shadow them.
-  (let (s:NameSet (new (HashSet StrView) g-arena))
-  (let (lits:&(HashSet StrView)
-    #{ ; control flow / binding
-       "let" "with" "do" "cond" "return" "while"
-       ; Stage 16: lexically scoped macros (a reservation — nothing may shadow
-       ; it, and macrolet-bind refuses to shadow anything else in this set).
-       "macrolet"
-       ; mutation
-       "set!" "inc!" "dec!"
-       ; memory / pointers
-       "array" "label" "goto" "label-addr" "goto-ptr"
-       "." ".&" "cast" "as" "addr-of" "deref"
-       "ptr-set!" "ptr+" "_get" ".set!"
-       "sizeof" "alignof" "alloca" "aref" "aset!"
-       ; Stage 18 TF-4: the call site's own file and line, as literals.
-       "source-file" "source-line"
-       ; literals / quoting
-       "quote" "quasiquote" "char"
-       ; Stage 16: reader-generated collection-literal heads. Reserved (not
-       ; user-writable sugar) so nothing may shadow what `[…]` expands to.
-       "vector-lit" "hashset-lit" "hashmap-lit" "tagged-lit"
-        ; logic
-        "not" "_and" "_or"
-       ; macros / functions
-       "gensym" "macro-error" "struct-fields" "type-name" "conforms?" "funcall" "funcall-void"
-       "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
-       ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
-       ; each routes to the exact same emitter as its bare alias above. UN-5
-       ; retired the bare aliases as dispatch-time hard errors (D6); the bare
-       ; spellings stay in this set only so the names remain reserved (a defn/
-       ; defvar/etc. still may not shadow them).
-       ; option / result
-       "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
-       ; ownership / control
-       "move" "defer" "match" "__make" "__init-then"
-       ; error handling
-       "defunion" "deferror" "err!" "err-name" "err-message" "try"
-       "type-token" "__err-handled" "signal"
-       ; top-level definers
-       "defn" "defvar" "defconst" "defenum" "defstruct"
-       "defmacro" "defprotocol" "extend" "def-rmacro"
-       ; Stage 16: type aliases (container-type-sugar.md)
-       "deftype"
-       ; Stage 12 N3: private definer variants (trailing `-`)
-       "defn-" "defvar-" "defconst-" "defenum-" "defstruct-"
-       "defmacro-" "defprotocol-" "defunion-" "deftype-"
-       "import" "import-use" "import-only" "import-prefixed"
-       "require" "require-ct"
-       "unsafe-import-private" "extern" "declare" "compile-time"
-       ; Stage 12 N4: namespace IR-prefix override
-       "set-ir-prefix"
-       ; Stage 12 N5: re-export form
-       "export"
-       ; Stage 14 AVR-5: LLVM string function-attribute directive (reserved so a
-       ; defn/defvar/etc. cannot shadow it).
-       "fn-attr" })
-    (into s lits (HashSetIter StrView)))
-  (return s)))
-
-; --- primitive-type-named set (18 members) ---
-(defn build-primitive-type-set ():NameSet
-  (let (s:NameSet (new (HashSet StrView) g-arena))
-  (let (lits:&(HashSet StrView)
-    #{ ; integer types (plus bool, which is not one)
-       "int" "bool" "i8" "i16" "i32" "i64"
-       "ui8" "ui16" "ui32" "ui64"
-       ; float types
-       "f32" "f64" "float" "double" "f16" "f80" "f128"
-       ; pointer / special
-       "ptr" "void" "CStr" "Err" })
-    (into s lits (HashSetIter StrView)))
-  (return s)))
 
 ; Stage 15 W8 G-5 — `compiler-init` is gone (design/global-init.md §5 G-5,
 ; acceptance criterion (A)). Its 52 statements resolved as §2.12 measured them:

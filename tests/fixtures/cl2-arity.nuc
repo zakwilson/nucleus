@@ -1,0 +1,7 @@
+; `(Const C)` takes exactly one type.
+(import-use nucleus.vector)
+
+(defn f (a:(Const (Vector i32) i32)):void
+  (return))
+
+(defn main ():i32 (return 0))

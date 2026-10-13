@@ -1346,3 +1346,60 @@
 {:name "al5-array-slot" :expect :reject
  :file "tests/fixtures/al5-array-slot.nuc" :line 3
  :messages ["defvar: array element 1 is not set, and a (dyn &Allocator) has no zero value"]}
+{:name "cl2-no-shape" :expect :reject
+ :file "tests/fixtures/cl2-no-shape.nuc" :line 6
+ :messages ["(Const C): Const takes a type conforming to Seq, Set or Assoc; Foo conforms to none"]}
+{:name "cl2-arity" :expect :reject
+ :file "tests/fixtures/cl2-arity.nuc" :line 4
+ :messages ["(Const C): expects one collection type, as (Const (Vector i32))"]}
+{:name "cl3-dup-signed" :expect :reject
+ :file "tests/fixtures/cl3-dup-signed.nuc" :line 5
+ :messages ["duplicate element -3 in a set literal"]}
+{:name "cl3-dup-unsigned" :expect :reject
+ :file "tests/fixtures/cl3-dup-unsigned.nuc" :line 5
+ :messages ["duplicate element 200 in a set literal"]}
+{:name "cl3-dup-bool" :expect :reject
+ :file "tests/fixtures/cl3-dup-bool.nuc" :line 4
+ :messages ["duplicate element true in a set literal"]}
+{:name "cl3-dup-char" :expect :reject
+ :file "tests/fixtures/cl3-dup-char.nuc" :line 5
+ :messages ["duplicate element"]}
+{:name "cl3-dup-f64" :expect :reject
+ :file "tests/fixtures/cl3-dup-f64.nuc" :line 6
+ :messages ["duplicate element -0.0 in a set literal"]}
+{:name "cl3-dup-f32" :expect :reject
+ :file "tests/fixtures/cl3-dup-f32.nuc" :line 4
+ :messages ["duplicate element 1.5 in a set literal"]}
+{:name "cl3-dup-strview" :expect :reject
+ :file "tests/fixtures/cl3-dup-strview.nuc" :line 6
+ :messages ["duplicate key \"a\" in a map literal"]}
+{:name "cl3-dup-cstr" :expect :reject
+ :file "tests/fixtures/cl3-dup-cstr.nuc" :line 4
+ :messages ["duplicate element"]}
+{:name "cl3-range" :expect :reject
+ :file "tests/fixtures/cl3-range.nuc" :line 5
+ :messages ["set literal: integer literal 300 does not fit ui8"]}
+{:name "cl3-escape" :expect :reject
+ :file "tests/fixtures/cl3-escape.nuc" :line 5
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "cl3-elem-fit" :expect :reject
+ :file "tests/fixtures/cl3-elem-fit.nuc" :line 6
+ :messages ["vector literal: element n (i64) does not fit i32"]}
+{:name "cl3-mutable-param" :expect :reject
+ :file "tests/fixtures/cl3-mutable-param.nuc" :line 8
+ :messages ["a vector literal cannot be passed as &(Vector i64): a call does not allocate -- pass (make (Vector i64) heap"]}
+{:name "cl3-order-library" :expect :reject
+ :file "tests/fixtures/cl3-order-library.nuc" :line 5
+ :messages ["a set literal of StrView needs nucleus.strview"]}
+{:name "cl3-no-order" :expect :reject
+ :file "tests/fixtures/cl3-no-order.nuc" :line 8
+ :messages ["a Const set element needs const-cmp; P has none (conform it to nucleus.coll/ConstOrd)"]}
+{:name "cl3-defconst-runtime" :expect :reject
+ :file "tests/fixtures/cl3-defconst-runtime.nuc" :line 5
+ :messages ["defconst: 'GR' needs a run-time initializer"]}
+{:name "cl3-mutating-note" :expect :reject
+ :file "tests/fixtures/cl3-mutating-note.nuc" :line 6
+ :notes ["a Const collection is read-only -- build one with (make (HashSet i32) heap ...)"]}
+{:name "cl3-import-note" :expect :reject
+ :file "tests/fixtures/cl3-import-note.nuc" :line 5
+ :notes ["a literal is a Const, whose methods are in nucleus.const -- add (import-use nucleus.const)"]}

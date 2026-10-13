@@ -605,7 +605,7 @@ map=2
 (deftest s16-litvar-refused-narrow-value
   (try (check-litvar-rejects
          "(defn main ():i32 (let (n:i64 5) (with ((v (ref (Vector i32))) [n 1]) (return 0))))"
-         "no matching method for overloaded 'conj'")))
+         "vector literal: element n (i64) does not fit i32")))
 (deftest s16-litvar-refused-unspellable
   (try (check-litvar-rejects
          "(defstruct P x:i32) (defn main ():i32 (let (p:(ref P) (alloca P)) (let (v [p p]) (return 0))))"
@@ -1325,7 +1325,7 @@ map=2
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (return 0))
 (defn g (q:ptr:Pt):i32 (return (f q)))
-" "argument: unchecked pointer where non-null (ref ...) is required"))
+" "unchecked pointer where non-null (ref ...) is required"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn f (p:& Pt):i32 (return 0))
 " "binding name ends in ':'")))
@@ -2989,7 +2989,7 @@ map=2
 (import-use nucleus.keyword)
 (import-use nucleus.allocator)
 (import-use nucleus.coll)
-(import-use nucleus.iterator)
+(import-use nucleus.iterator) (import-use nucleus.node)
 (import-use nucleus.hashset)
 (import-use nucleus.hashmap)
 (import-use nucleus.vector)
@@ -3002,36 +3002,33 @@ map=2
     (drop &s))
   (return (ok)))
 
-; A set of `Keyword` will not take a string. The two conflicting types are named
-; in the message, and pinned — the shell's needle stopped at "mixed element
-; types", which is the half that cannot tell this apart from any other mixture.
+; A set of `Keyword` will not take a string. The declared type is the authority,
+; so the message names the element, its type and the slot.
 (deftest s16-kwlit-refused-mix-set
   (try (check-kwlit "(defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a \"b\"}) 0) 0)"
-                    "set literal: mixed element types -- 'Keyword' and 'StrView'"))
+                    "set literal: element \"b\" (StrView) does not fit Keyword"))
   (return (ok)))
 
-; The vector form reports no types. Measured, not chosen: see the deferred entry
-; on mixed-literal diagnostics naming their types inconsistently.
 (deftest s16-kwlit-refused-mix-vec
   (try (check-kwlit "(defn main ():i32 (with ((v (ref (Vector Keyword))) [:a 1]) 0) 0)"
-                    "vector literal: mixed element types"))
+                    "vector literal: element 1 (i32) does not fit Keyword"))
   (return (ok)))
 
 (deftest s16-kwlit-refused-mix-key
   (try (check-kwlit "(defn main ():i32 (with ((m (ref (HashMap Keyword i32))) {:a 1 \"b\" 2}) 0) 0)"
-                    "map literal: mixed key types -- 'Keyword' and 'StrView'"))
+                    "map literal: key \"b\" (StrView) does not fit Keyword"))
   (return (ok)))
 
 (deftest s16-kwlit-refused-mix-val
   (try (check-kwlit "(defn main ():i32 (with ((m (ref (HashMap Keyword Keyword))) {:a :x :b 2}) 0) 0)"
-                    "map literal: mixed value types"))
+                    "map literal: value 2 (i32) does not fit Keyword"))
   (return (ok)))
 
 ; A quoted symbol lowers to `ptr:Node`, so mixing one with a string is the same
 ; refusal reported over the two lowered types.
 (deftest s16-kwlit-refused-mix-sym
   (try (check-kwlit "(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) #{'a \"b\"}) 0) 0)"
-                    "set literal: mixed element types -- '&Node' and 'StrView'"))
+                    "set literal: element \"b\" (StrView) does not fit &Node"))
   (return (ok)))
 
 ; Element kinds still refused at a `(HashSet (ref Node))`. These used to share
@@ -3064,12 +3061,12 @@ map=2
 
 (deftest s16-symlit-refused-qlist
   (try (check-symlit "#{'(a b) '(c d)}"
-                     "argument: unchecked pointer where non-null (ref ...) is required"))
+                     "unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 (deftest s16-symlit-refused-qint
   (try (check-symlit "#{'1 '2}"
-                     "argument: unchecked pointer where non-null (ref ...) is required"))
+                     "unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 (deftest s16-symlit-refused-bare

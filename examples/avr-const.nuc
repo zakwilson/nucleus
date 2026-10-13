@@ -1,0 +1,46 @@
+; `Const` collections on AVR — ATmega328P, so it runs under simavr.
+;
+; A `ConstVec` and a `ConstSet` over constant tables: `nucleus.const` reaches
+; no `f64`, so it compiles for AVR where `nucleus.vector` cannot. Lookup is a
+; scan of the sorted table; nothing allocates.
+;
+; Build + link + run:
+;   nucleusc --target=avr --mcpu=atmega328p examples/avr-const.nuc -o a.elf
+;   simavr -m atmega328p -f 8000000 a.elf     # observe repeated "CL1:YnYn\n"
+
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/atmega328p.nuc")
+(import-use nucleus.const)
+
+; USART0: 9600 baud @ 8 MHz, 8N1, transmitter enabled (as avr-uart-hello.nuc).
+(defn uart-init ():void
+  (reg16-write UBRR0 51)
+  (reg8-set-bit! UCSR0B TXEN0)
+  (reg8-write UCSR0C (bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
+
+(defn uart-tx (b:ui8):void
+  (let (ready:ui8 0)
+    (while (= ready 0)
+      (set! ready (reg8-test-bit UCSR0A UDRE0))))
+  (reg8-write UDR0 b))
+
+(defconst TAG-BYTES (array ui8 67 76 49))       ; "CL1"
+(defconst TAG ((ConstVec ui8) &TAG-BYTES 3))
+(defconst EVEN-BYTES (array ui8 48 50 52 54 56)) ; "02468", sorted
+(defconst EVEN ((ConstSet ui8) &EVEN-BYTES 5))
+
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  (uart-init)
+  (while true
+    (doseq (b TAG (ConstIter ui8)) (uart-tx b))
+    (uart-tx 58)
+    (dotimes (i:ui8 4)
+      (uart-tx (if (contains? EVEN (+ 48 i)) 89 110)))
+    (uart-tx 10)
+    (delay))
+  (return 0))

@@ -1972,10 +1972,10 @@ and the `?`/`!` sigils — Stage 21 PK-4a, where a fake tyvar did not drop an
 instantiation but *accepted every argument*: `(Vector i32)` bound the "tyvar"
 `?Pt`). It now consults **`builtin-type-name`** — the probe that was extracted
 FROM `parse-type-name` precisely to be asked without dying — rather than
-`g-primitive-type-set`, which answers a different question (the
+`PRIMITIVE-TYPE-NAMES`, which answers a different question (the
 one-symbol-one-kind rule) and omits `Char`/`usize`/`ssize`/`raw`. When adding a
 built-in type, `builtin-type-name` is the one list that matters here; adding it
-only to `g-primitive-type-set` leaves generics over it silently broken. Its
+only to `PRIMITIVE-TYPE-NAMES` leaves generics over it silently broken. Its
 question is "does the type namespace know this name", not "does it parse": a
 `deftype` alias or C typedef of any arity or representability answers 1 (fixed
 2026-09-23; they were the fifth drift), so `parse-type-name` names the real
@@ -2537,7 +2537,7 @@ Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in
 - **A late registration must never rename an emitted symbol.** `generic-add-method` clears `finalized`, so `finalize-generics` re-derives every method's `ir-name` — safe in the prescan, wrong once a call to the old name is already in the IR. Under `g-late-prescan`, `late-renamable?` keeps any method that already has an `ir-name`, and `generic-unbind-solitary` hides the solitary binding when the name becomes registry-dispatched. A method's symbol can therefore depend on source order; headers stay right only because they ask the registry (`defn-form-mangled-name`), never re-derive.
 - **After a leading `(ns …)` the loop walks a different list header.** `apply-leading-ns` returns a `node-rest` view, and `node-splice-at` gives that view a fresh array, so a `(do …)` splice never reaches the caller's list. The header writers read `g-root-forms` (the walked list) for that reason; anything else that reads the unit's forms after compilation must do the same.
 
-The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/nucleus/test.nuc`) is.
+The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `SPECIAL-FORM-NAMES` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/nucleus/test.nuc`) is.
 
 ## A macro-body form that calls into the compiler is six edits
 
@@ -3953,12 +3953,12 @@ first and swallows the private probe. That is the ordinary case for this
 compiler's own libraries, not a corner. Make the private probe a fallback of the
 whole qualified path, never of its else-branch.
 
-## `g-special-form-set` is a RESERVATION, not the dispatcher
+## `SPECIAL-FORM-NAMES` is a RESERVATION, not the dispatcher
 
 Worth knowing before touching either. `emit-list` (`src/nucleusc.nuc`) and
 `node-type-call` (`src/generics.nuc`) dispatch special forms by comparing the
 **interned head pointer** against quoted symbols (`(= hp 'unsafe/cast)`); they
-never consult `g-special-form-set`. The set has exactly **one** consumer,
+never consult `SPECIAL-FORM-NAMES`. The set has exactly **one** consumer,
 `special-form-named` → `name-existing-kind` → `guard-name-kind`, i.e. its whole
 job is "a definer may not shadow this name".
 
@@ -5837,7 +5837,7 @@ top-level forms through six independent, explicitly-enumerated lists:
 5. **`--emit-cheader`** — `src/cheader.nuc`.
 6. **The REPL** — `src/repl.nuc` has its own top-level form chain.
 
-Plus `build-special-form-set` (so the name is reserved and cannot be shadowed)
+Plus `SPECIAL-FORM-NAMES` (so the name is reserved and cannot be shadowed)
 and `text-token-is-definer` (so the "defined nowhere" note can name the file).
 
 **A form missing from any of these is silently dropped, never diagnosed.** The
@@ -7602,3 +7602,27 @@ so `handle` has concrete overloads for `Heap`, `Arena`, `FixedBuffer` and
 `Tracking` beside its `:where (Allocator T)` template. A user allocator is
 `(handle &x)`. Overload resolution does not apply the `&T` to `Alloc` coercion,
 so `(init v &ar)` is refused; write `(init v (handle ar))`.
+
+## A literal is a `Const`: its methods need `(import-use nucleus.const)`
+
+The type resolves through the closure, but method dispatch sees only directly
+imported namespaces, so `(contains? #{…} x)` without the import is a no-match
+(the diagnostic says so). `src/nucleusc.nuc`, `generics.nuc` and `cheader.nuc`
+import it. A struct constructor yields `&T`; the run-time literal path wraps
+it in `deref` to keep the `Const` by value.
+
+## A template's helper calls resolve in the DEFINING file — put per-type behaviour in a protocol
+
+`const-find`'s `const-cmp` calls saw only `const.nuc`'s overloads, so a
+`StrView` adapted silently to the `CStr` one. Per-type order is
+`nucleus.coll/ConstOrd`, conformed beside each type
+(design/stage25-const-literals/overview.md §11). A core method of a core
+protocol always mangles (`core-protocol-method?`): two lone overloads would
+share one `nuc_` link name.
+
+## The argument rule skips stamped instances
+
+`literal-arg-want` counts candidates whose parameter is a `Const` of the
+literal's shape. A stamped template instance (`origin-template` non-null)
+duplicates its template's parameter and makes every call ambiguous, so it is
+skipped.

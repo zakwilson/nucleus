@@ -41,22 +41,13 @@
     `(create-form 0 ~t heap)
     `(create-form 0 ~t ~@args)))
 
-; MODE is 1 for `new`, 0 for `make`. A collection literal is the source only as
-; elements: initializing from the temporary it builds would leak its buffer.
+; MODE is 1 for `new`, 0 for `make`.
 (defmacro create-form (mode t a :rest vals)
   (let (n:i32 (ast-len vals)
         is-new:i32 (if (= (mode 'i) 1) 1 0)
         h (gensym)
         p (gensym)
-        lit:i32 0
         v (ast-at vals 0))
-    (when (= n 1)
-      (let (hd (ast-first v))
-        (when (and (= (v 'kind) NODE-LIST) (!= hd null) (= (hd 'kind) NODE-SYM))
-          (let (s:ptr (as ptr ((hd 's) 'p)))
-            (cond (= s (as ptr (('vector-lit 's) 'p))) (set! lit 1)
-                  (= s (as ptr (('hashset-lit 's) 'p))) (set! lit 1)
-                  (= s (as ptr (('hashmap-lit 's) 'p))) (set! lit 2))))))
     (let (slot (if (= is-new 1)
                  `((~p (ref ~t)) (unsafe/cast (ref ~t)
                                    (create-bytes (allocate-zeroed (ref ~h) (as usize (sizeof ~t))
@@ -80,24 +71,6 @@
                   `(let ((~h Alloc) (handle ~a)) (~t ~@vals)))
         (= n 0)
           `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~result)
-        (= lit 1)
-          (let (steps (ast-rest v)
-                i:i32 0
-                m:i32 (ast-len (ast-rest v))
-                (acc ?&Node) null)
-            (while (< i m)
-              (set! acc `(~@acc (conj ~p ~(ast-at steps i))))
-              (set! i (+ i 1)))
-            `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~@acc ~result))
-        (= lit 2)
-          (let (steps (ast-rest v)
-                i:i32 0
-                m:i32 (ast-len (ast-rest v))
-                (acc ?&Node) null)
-            (while (< (+ i 1) m)
-              (set! acc `(~@acc (assoc ~p ~(ast-at steps i) ~(ast-at steps (+ i 1)))))
-              (set! i (+ i 2)))
-            `(let ((~h Alloc) (handle ~a) ~@slot) (nucleus.allocator/init ~p ~h) ~@acc ~result))
         (= is-new 1)
           `(let ((~h Alloc) (handle ~a) ~@slot)
              (__init-then (nucleus.allocator/init ~p ~h ~v) ~p

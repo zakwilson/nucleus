@@ -118,6 +118,21 @@
   (contains?     (self:&Self elem:E):bool))
 
 ; ---------------------------------------------------------------------------
+; Entry K V — a key/value pair: the element type of a map's Coll conformance
+; (HashMap) and of a ConstMap's table. `iter` over a map yields Entry values so
+; `into`/`doseq`/`reduce` work over it uniformly.
+; ---------------------------------------------------------------------------
+(defstruct (Entry K V)
+  key:K
+  val:V)
+
+; ConstOrd — the order of a `Const` set's members and map's keys
+; (nucleus.const). A protocol so a template reaches each type's `const-cmp`
+; in the type's own file; a bare overload there is out of the template's reach.
+(defprotocol ConstOrd
+  (const-cmp (a:Self b:Self):i32))
+
+; ---------------------------------------------------------------------------
 ; Drop — the Stage 10 lifecycle protocol. An owning collection conforms so a
 ; `with`-bound value frees its buffer at scope exit (statically dispatched in
 ; reverse binding order). The method is named `drop` (NOT `free`) so it does

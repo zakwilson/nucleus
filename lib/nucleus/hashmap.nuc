@@ -36,6 +36,7 @@
 (import-use nucleus.allocator)
 (import-use nucleus.coll)
 (import-use nucleus.iterator)
+(import-use nucleus.const)
 (import-use nucleus.hash)
 
 ; ---------------------------------------------------------------------------
@@ -47,16 +48,8 @@
   (fprintf stderr "hashmap: out of memory\n")
   (exit 1))
 
-; ---------------------------------------------------------------------------
-; Entry K V — a key/value pair, the element type of HashMap's Coll conformance
-; (C2.2c, design/stage11/cleanup2.md). A plain value struct, returned by value
-; like the spike iterator's element. `iter` over a HashMap yields Entry values
-; so `into`/`doseq`/`reduce` work over a map uniformly; `keys`/`vals` remain the
-; separate single-projection iterators (C2.2b).
-; ---------------------------------------------------------------------------
-(defstruct (Entry K V)
-  key:K
-  val:V)
+; `Entry` lives in nucleus.coll, shared with `ConstMap`; re-exported for importers of this file.
+(export nucleus.coll/Entry)
 
 ; ---------------------------------------------------------------------------
 ; HashMap K V: three parallel byte arrays (keys, vals, states) plus metadata.
@@ -154,6 +147,14 @@
           (set! (m 'states) ns)
           (set! (m 'cap) new-cap))))))
 
+; reserve: room for n live entries with no resize, i.e. n*4 < cap*3.
+(defn reserve (self:&(HashMap K V) n:usize):void
+  (let (cap:usize (self 'cap))
+    (while (>= (* n 4) (* cap 3))
+      (set! cap (* cap 2)))
+    (when (> cap (self 'cap))
+      (hashmap-resize self cap))))
+
 ; ---------------------------------------------------------------------------
 ; Assoc K V Ki Vi conformance: assoc, dissoc, get, keys, vals.
 ; Ki = (HashMapKeyIter K V), Vi = (HashMapValIter K V) — declared below.
@@ -161,6 +162,16 @@
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) Drop)
 (extend (HashMap K V) Init)
+
+; From a literal: reserved once, so the inserts never rehash (stage25 Q5).
+(defn init (self:&(HashMap K V) a:Alloc v:(ConstMap K V)):void
+  (init self a)
+  (reserve self (v 'len))
+  (let (p:&(Entry K V) (unsafe/cast &(Entry K V) (v 'data)) i:usize 0)
+    (while (< i (v 'len))
+      (let (e:(Entry K V) (aref p (as i64 i)))
+        (assoc self (e 'key) (e 'val)))
+      (set! i (+ i 1)))))
 
 ; assoc: insert or overwrite the value for key. Grows at 75% load.
 (defn assoc (self:&(HashMap K V) key:K val:V):void

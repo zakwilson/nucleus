@@ -1,0 +1,5 @@
+; A constant that does not fit the wanted element type is refused, not wrapped.
+(import-use nucleus.const) (import-use nucleus.hashset)
+
+(defn main ():i32
+  (let (s:(Const (HashSet ui8)) #{1 300}) (return (unsafe/cast i32 (count s)))))

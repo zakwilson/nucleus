@@ -367,3 +367,9 @@
         (set! k (- k 1))))
     (set! (aref (self 'elems) at) elem)
     (set! (self 'len) (+ (self 'len) 1))))
+
+; Identity order, so a quoted-symbol `Const` set is an identity lookup (nucleus.const).
+(extend &Node ConstOrd)
+(defn const-cmp (a:&Node b:&Node):i32
+  (let (x:usize (unsafe/cast usize a) y:usize (unsafe/cast usize b))
+    (return (if (< x y) -1 (if (> x y) 1 0)))))

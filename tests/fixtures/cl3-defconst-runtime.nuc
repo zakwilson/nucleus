@@ -1,0 +1,7 @@
+; A `defconst` table must be laid out at compile time.
+(import-use nucleus.const)
+
+(defn seven ():i32 (return 7))
+(defconst GR #{(seven) 1})
+
+(defn main ():i32 (return 0))

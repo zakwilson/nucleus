@@ -25,6 +25,7 @@ void nuc_vector_bounds(struct nuc_StrView what, size_t i, size_t n) asm("nuc_vec
 /* vector-extend: generic template; not exported */
 /* init: generic template; not exported */
 /* init: generic template; not exported */
+/* init: generic template; not exported */
 /* drop: generic template; not exported */
 /* next: generic template; not exported */
 /* iter-init: generic template; not exported */

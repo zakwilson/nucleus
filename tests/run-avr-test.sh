@@ -82,6 +82,7 @@ check_example isr         examples/avr-isr.nuc          atmega328p >"$TMP/isr.el
 check_example global-init examples/avr-global-init.nuc  attiny1634 >"$TMP/global-init.elfpath"
 check_example dyn         examples/avr-dyn.nuc          atmega328p >"$TMP/dyn.elfpath"
 check_example alloc       examples/avr-alloc.nuc        atmega328p >"$TMP/alloc.elfpath"
+check_example const       examples/avr-const.nuc        atmega328p >"$TMP/const.elfpath"
 
 # --- Stage 15 W8 G-3: global initializers on a `none`-mechanism target -------
 # design/global-init.md §4.6/§4.8. Two halves, and both matter:
@@ -188,6 +189,25 @@ else
     echo "PASS  avr-test-sim-alloc (observed 'AL5:8' through an allocator handle under simavr)"
   else
     echo "FAIL  avr-test-sim-alloc (no 'AL5:8' observed in simavr output)"
+    sed 's/^/      /' "$SIM_OUT" | head -20
+    FAILED=1
+  fi
+fi
+
+# `Const` collections over constant tables: nucleus.const reaches no f64
+# (stage25-const-literals overview.md §4.1).
+CONST_ELF="$(cat "$TMP/const.elfpath" 2>/dev/null)"
+if [ ! -s "$CONST_ELF" ]; then
+  echo "SKIP  avr-test-sim-const (const.elf was not built — see avr-test-const above)"
+elif ! command -v simavr >/dev/null 2>&1; then
+  echo "SKIP  avr-test-sim-const (simavr not installed)"
+else
+  SIM_OUT="$TMP/sim-const.out"
+  timeout 3 simavr -m atmega328p -f 8000000 "$CONST_ELF" >"$SIM_OUT" 2>&1
+  if grep -aq 'CL1:YnYn' "$SIM_OUT"; then
+    echo "PASS  avr-test-sim-const (observed 'CL1:YnYn' from a ConstVec and a ConstSet under simavr)"
+  else
+    echo "FAIL  avr-test-sim-const (no 'CL1:YnYn' observed in simavr output)"
     sed 's/^/      /' "$SIM_OUT" | head -20
     FAILED=1
   fi

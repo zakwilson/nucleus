@@ -60,6 +60,7 @@ struct nuc_StrView nuc_strview_trim_end(struct nuc_StrView* sv) asm("nuc_strview
 struct nuc_StrView nuc_strview_trim(struct nuc_StrView* sv) asm("nuc_strview-trim");
 int32_t nuc_strview_cmp_raw(struct nuc_StrView* a, struct nuc_StrView* b) asm("nuc_strview-cmp-raw");
 bool nuc_lt_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_lt.nuc_StrView.nuc_StrView");
+int32_t nuc_const_cmp_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_const_cmp.nuc_StrView.nuc_StrView");
 bool nuc_le_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_le.nuc_StrView.nuc_StrView");
 bool nuc_gt_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_gt.nuc_StrView.nuc_StrView");
 bool nuc_ge_nuc_StrView_nuc_StrView(struct nuc_StrView a, struct nuc_StrView b) asm("nuc_ge.nuc_StrView.nuc_StrView");

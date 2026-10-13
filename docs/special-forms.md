@@ -282,6 +282,11 @@ Both share one mechanism:
   `(defvar opts:(Vector i32) [1 2 3])` are all fine — the struct (and, for a
   `Vector`, the ownership of its heap buffer) is copied out of the frame slot,
   and the taint is **discharged** at that store rather than carried.
+  **Except a `Const`:** a `(ConstVec T)`, `(ConstSet T)` or `(ConstMap K V)`
+  header's one pointer is the table, so a by-value `Const` keeps the taint of a
+  frame-filled table. `(defn f (x:i32):(ConstVec i32) (return [x 1]))` is refused;
+  `(return [5 1])` is fine, since a table of constants is a global
+  ([Literal sugar](collections.md#literal-sugar---)).
 - `ref` (`&x`) and the slot producers above (`alloca`, the literals) are the
   **frame-local taint sources**. `ref` does **not** taint:
   - the address of a **global** (`defvar`/`defconst`) — it outlives any frame;

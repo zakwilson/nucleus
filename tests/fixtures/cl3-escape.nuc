@@ -1,0 +1,7 @@
+; A literal with a run-time element lives in the frame, so it cannot be returned.
+(import-use nucleus.const)
+
+(defn pair (x:i32):(ConstVec i32)
+  (return [x 1]))
+
+(defn main ():i32 (return 0))
