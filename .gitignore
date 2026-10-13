@@ -8,3 +8,4 @@ build/out/
 bin/nucleusc
 .stfolder/
 __pycache__/
+boot/
