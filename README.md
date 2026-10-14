@@ -11,3 +11,20 @@ Nucleus is a new systems programming language. I initially conceived of it as "a
 * Lisp-style macros
 
 While it already has most of the capabilities required for serious use like hosting its own compiler, using it for anything important is risky at this stage. Breaking changes are likely to happen without warning, and it's probably buggy.
+
+building
+========
+
+You'll need LLVM, clang, and a checkout of the compiler bootstrap IR. Run
+
+    scripts/get-bootstrap.sh
+    
+then
+
+    make
+    
+and you'll have `bin/nucleusc`. You can run
+
+    sudo make install
+    
+for system-wide installation. It should compile on Windows and Mac OS too, but this is untested.
