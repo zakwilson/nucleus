@@ -3634,3 +3634,26 @@ go-ahead.
   **Net line change** (`git diff --stat`, the eleven reader-related tracked files): `examples/read-sexp.nuc` +2/−1, `lib/read.h` +/−74, `lib/read.nuc` +/−514, `lib/read.nuch` +/−53, `src/nucleusc.nuc` +/−412, **`src/reader.nuc` −1,260 (deleted)**, `src/repl.nuc` +/−86, `tests/nuctests.nuc` +/−18, `tests/readdump.nuc` −43 (deleted), `tests/suite-audits.nuc` +/−163, `tests/suite-refusals.nuc` +/−12 — **777 insertions, 1,860 deletions** across those eleven files. Plus the new, previously-untracked `src/diagnostics.nuc` (181 lines) and 394 lines of new test surface (`tests/suite-s21.nuc` and the four `s21-*` fixtures/transcripts).
 
   **The one pending step — delete `mint-collection-gensyms` so `emit-collection-lit` mints the gensym itself — landed 2026-09-18 with item 1's boot refresh**, folding the `__gs_N` renumbering into that one refresh; see "Boot refresh for Stage 21" above. PK-1 (the sibling `pointer-kind-spellings.md` item) landed the same day, after this entry — see the Stage 21 item 1 PK-1 section above.
+
+## `ref` on any expression, built (2026-10-15)
+
+[address-of-expressions.md](address-of-expressions.md) §7. 1-argument `ref`
+(`&x`, `&(…)`) now takes any operand, classified after macro expansion. A place
+(`(deref p)`, `(aref p i)`, a literal-selector field, nested or on a temporary
+receiver) gives its own address. A value goes into an entry-block slot owned by
+a hidden `Sym`, so `binding-address-val` keeps escape taint in one place:
+returning `&(f)` is the frame escape, and a `with` taint is kept. Indexing and a
+custom `get` (`&(v 0)`) are refused with a note to bind the element (Q1). The
+2-argument `(ref (mk) 'f)` takes a temporary receiver (Q2). The implicit
+address-of is unchanged (Q3 deferred, see [deferred/overview.md](deferred/overview.md)).
+`ref-cell-is-address` reads `&(expr)` at a callable value's argument as a value
+unless the operand is a template application or a pointer-kind head. `gcheck`
+checks a value operand. Both `charge.nuc` shapes compile:
+`(string-as-cstr &(str item))` and `(-> … (str "Selected: " _ " mA") ref string-as-cstr)`.
+
+Gates: `make test` 1463 passed / 5 failed (the five known `suite-target`
+datalayout units, as before the change), `make bootstrap` byte-identical with no
+boot refresh, `make check-headers` clean. Every existing example's IR is
+unchanged. New: `examples/address-of-expressions.nuc` and eight `aoe-*` manifest
+rows; the s16 unit that pinned `(ref (mk 1) 'x)`'s refusal now pins its escape.
+

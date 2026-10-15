@@ -1,0 +1,4 @@
+; A field store into a temporary would be lost, so `_get` as a place refuses it.
+(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n n)))
+(defn main ():i32 (set! (_get (mk 1) 'x) 5) (return 0))

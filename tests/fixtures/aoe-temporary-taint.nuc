@@ -1,0 +1,7 @@
+; The temporary adopts the stored value's `with` taint, so it is not laundered
+; into a plain frame address.
+(import-use "stdlib.h")
+(defn leak ():&ptr
+  (with (buf:ptr (malloc 16))
+    (return &(do buf))))
+(defn main ():i32 (return 0))

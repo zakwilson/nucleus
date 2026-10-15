@@ -1,0 +1,4 @@
+; A generic body is checked inside `&(…)`: the operand is an expression, not a type.
+(defn read (p:&i32):i32 (return (deref p)))
+(defn wrap (x:T :where (Any T)):i32 (return (read &(no-such-fn x))))
+(defn main ():i32 (return 0))

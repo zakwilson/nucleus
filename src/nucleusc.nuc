@@ -6870,10 +6870,10 @@
         (return (tc3-materialize p (as ?&Type rt) (as ?&Type pt)
                                  scope line))))))
 
-; SV-1's other half. A member place and `ref` need the receiver's own STORAGE, not a
-; copy, so they take exactly what `ref` takes — a binding, whose slot is
-; used directly. A temporary stays an error: the store would land in something
-; about to be discarded.
+; SV-1's other half. A member place needs the receiver's own STORAGE, not a copy,
+; so it takes a binding, whose slot is used directly. A temporary stays an error:
+; the store would land in something about to be discarded. (`ref` materializes
+; one instead: emit-place-receiver.)
 (defn emit-lvalue-receiver (rnode:?&Node scope:&Scope what:StrView line:i32):&Val
   (let (rn:?&Node rnode)
     (when (and (!= rn null) (= (rn 'kind) NODE-SYM))
@@ -7342,7 +7342,7 @@
       (let (m:&Method (generic-resolve g argtypes arg-nodes total line null scope))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
 
-; Is `a` a `(ref …)` cell that is a VALUE address — `&x` on a binding, or the
+; Is `a` a `(ref …)` cell that is a VALUE address — `&x`, `&(expr)`, or the
 ; 2-argument field form — rather than the `(ref T)` type a fused `q:(ref T)`
 ; leaves in argument position? An unbound operand that names no type is treated
 ; as a value too, so its error is `undefined 'x'` and not the annotation hint.
@@ -7352,7 +7352,9 @@
     (when (= (node-len (as ptr a)) 3) (return 1))
     (when (!= (node-len (as ptr a)) 2) (return 0))
     (let (op:?&Node (node-at (as ptr a) 1))
-      (when (or (= op null) (!= (op 'kind) NODE-SYM)) (return 0))
+      (when (= op null) (return 0))
+      (when (= (op 'kind) NODE-LIST) (return (if (ref-operand-type-spelling? op) 0 1)))
+      (when (!= (op 'kind) NODE-SYM) (return 1))
       (when (!= (as ptr (scope-lookup scope (op 's))) null) (return 1))
       (when (!= (tyname-resolvable (op 's)) 0) (return 0))
       (return 1))))
@@ -7623,37 +7625,139 @@
 
 (defn emit-ref (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
-    ; An arity overload, not a new dispatch: 1-arg is a binding's address, 2-arg
-    ; is a field's. The two cannot collide -- a binding address takes a bare
-    ; symbol and a field address takes a receiver plus a selector
-    ; (dot-forms.md §3). `node-type-ref` splits on the same arity.
+    ; An arity overload, not a new dispatch: 1-arg is an operand's address, 2-arg
+    ; is a field's (dot-forms.md §3). `node-type-ref` splits on the same arity.
     (when (= (node-len cc) 3) (return (emit-field-addr call scope)))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "ref expects 1 or 2 args"))
-    (let (target:(ptr Node) (node-at cc 1))
-      (when (!= (target 'kind) NODE-SYM)
-        (die-at (node-line (as ptr target) (cc 'line)) "ref: target must be symbol"))
-      (let (sym:?&Sym (scope-lookup scope (target 's)))
-        (when (= sym null)
-          (die-at (node-line (as ptr target) (cc 'line)) (fstr "ref: undefined '"
-                                                               (target 's) "'")))
-        (when (!= (sym 'is-const) 0)
-          (die-at (node-line (as ptr target) (cc 'line))
-            (fstr "ref: constant '" (target 's)
-                  "' has no storage -- bind it with let or defvar to take its address")))
-        (reject-ct-only sym (node-line (as ptr target) (cc 'line)))
-        ; CE-3 (closure-enhancements.md §CE-3): a moved-out binding is consumed,
-        ; so taking its address is a use-after-move just like reading it
-        ; (emit-symbol-ref). Newly reachable now that struct-VALUE with-bindings
-        ; can be moved (owns=1) and the only way to read a struct value's field
-        ; is through its address — so an unchecked `&x` would silently revive a
-        ; moved struct value.
-        (when (!= (sym 'moved) 0)
-          (die-at (node-line (as ptr target) (cc 'line)) (fstr "use after move: '" (target 's)
-                                                               "'")))
-        (when (= ((sym 'type) 'kind) TY-FN)
-          (die-at (node-line (as ptr target) (cc 'line)) (fstr "ref: cannot take address of function '"
-                                                               (target 's) "'")))
-        (return (binding-address-val sym))))))
+    (let (line:i32 (node-line (node-at cc 1) (cc 'line))
+          target:&Node (unsafe/cast &Node (ref-operand-expand (node-at cc 1))))
+      (when (= (target 'kind) NODE-SYM) (return (emit-binding-address target scope line)))
+      (when-some (pv (emit-place-address target scope line)) (return pv))
+      (return (emit-ref-temporary (emit-node (as ptr target) scope) scope line)))))
+
+; A `ref` operand with its head macros expanded, exactly as emit-list would.
+(defn ref-operand-expand (n:ptr):ptr
+  (let (cur:ptr n)
+    (while (and (!= cur null) (= (node-kind cur) NODE-LIST) (> (node-len cur) 0)
+                (= (node-kind (node-at cur 0)) NODE-SYM))
+      (if-some (mdef (find-macro (-> (node-at cur 0) (unsafe/cast &Node _) (_ 's))))
+        (set! cur (desugar (expand-macro-call cur mdef)))
+        (return cur)))
+    (return cur)))
+
+(defn emit-binding-address (target:&Node scope:&Scope line:i32):&Val
+  (let (sym:?&Sym (scope-lookup scope (target 's)))
+    (when (= sym null)
+      (die-at line (fstr "ref: undefined '" (target 's) "'")))
+    (when (!= (sym 'is-const) 0)
+      (die-at line
+        (fstr "ref: constant '" (target 's)
+              "' has no storage -- bind it with let or defvar to take its address")))
+    (reject-ct-only sym line)
+    ; CE-3: a moved-out binding is consumed, so `&x` is a use-after-move.
+    (when (!= (sym 'moved) 0)
+      (die-at line (fstr "use after move: '" (target 's) "'")))
+    (when (= ((sym 'type) 'kind) TY-FN)
+      (die-at line (fstr "ref: cannot take address of function '" (target 's) "'")))
+    (return (binding-address-val sym))))
+
+; The address of a PLACE operand (`(deref p)`, `(aref p i)`, a literal-selector
+; field), or null when `x` is a value to materialize. A callable-value form that
+; routes to `invoke` or a custom `get` returns a copy, so it is refused rather
+; than materialized (design/address-of-expressions.md §4 Q1).
+(defn emit-place-address (x:&Node scope:&Scope line:i32):?&Val
+  (when (!= (x 'kind) NODE-LIST) (return null))
+  (when (= (node-len (as ptr x)) 0) (return null))
+  (let (h:&Node (unsafe/cast &Node (node-at (as ptr x) 0))
+        n:i32 (node-len (as ptr x)))
+    (when (!= (h 'kind) NODE-SYM)
+      (when (or (!= (as ptr (node-template-of h)) null)
+                (!= (as ptr (node-union-template-of h)) null))
+        (return null))
+      (return (emit-callable-place x h 1 scope line)))
+    (when (and (= h 'deref) (= n 2))
+      (let (p:&Val (emit-node (node-at (as ptr x) 1) scope))
+        (when (or (!= ((p 'type) 'kind) TY-PTR) (= ((p 'type) 'elem) null))
+          (die-at line "ref: (deref p) operand must be a typed pointer"))
+        (require-derefable (p 'type) line "ref")
+        (let (rv:&Val (alloc-val (as ptr (ref-type-of ((p 'type) 'elem))) (p 'val)))
+          (val-copy-taint (as ptr rv) (as ptr p))
+          (return rv))))
+    (when (and (= h 'aref) (= n 3))
+      (let (p:&Val (emit-node (node-at (as ptr x) 1) scope))
+        (when (or (!= ((p 'type) 'kind) TY-PTR) (= ((p 'type) 'elem) null))
+          (die-at line "ref: (aref p i) operand must be a typed pointer"))
+        (require-derefable (p 'type) line "ref")
+        (let (idx:&Val (emit-node (node-at (as ptr x) 2) scope))
+          (when (= (is-int-type (idx 'type)) 0)
+            (die-at line "ref: (aref p i) index must be integer"))
+          (let (idxp:StrView (gep-index-ir idx)
+                elem:?&Type ((p 'type) 'elem)
+                gep:StrView (new-tmp))
+            (emit g-body-stream "  " gep " = getelementptr inbounds " (type-to-ir elem) ", ptr "
+                  (p 'val) ", " (ptr-int-ir) " " idxp "\n")
+            (let (rv:&Val (alloc-val (as ptr (ref-type-of (as ptr elem))) gep))
+              (val-copy-taint (as ptr rv) (as ptr p))
+              (return rv))))))
+    (when (and (= h '_get) (= n 3))
+      (return (emit-member-address (emit-place-receiver (node-at (as ptr x) 1) scope line null)
+                                   (node-at (as ptr x) 2) line)))
+    (when (and (= h 'get) (= n 3))
+      (return (emit-callable-place x (node-at (as ptr x) 1) 2 scope line)))
+    (when (!= (as ptr (callable-value-head-sym h scope)) null)
+      (return (emit-callable-place x h 1 scope line)))
+    (return null)))
+
+; `&(recv sel)` / `&(get recv sel)`: route on the receiver's type before emitting
+; anything, as emit-callable-value does. A receiver node-type cannot type is
+; emitted first and routed on its Val, which then finishes as an ordinary call.
+(defn emit-callable-place (x:&Node recv:ptr sel-at:i32 scope:&Scope line:i32):?&Val
+  (let (sel:?&Node (node-at (as ptr x) sel-at)
+        nargs:i32 (- (node-len (as ptr x)) sel-at)
+        ct:ptr (node-type recv scope)
+        pre:?&Val null)
+    (when (= ct null)
+      (let (v:&Val (emit-node recv scope))
+        (set! pre v)
+        (set! ct (v 'type))))
+    (let (route:i32 (callable-place-route (as ?&Type ct) nargs sel))
+      (when (= route PLACE-FIELD)
+        (return (emit-member-address (emit-place-receiver recv scope line pre) sel line)))
+      (when (or (= route PLACE-INVOKE) (= route PLACE-GET))
+        (die-at line
+          (fstr "ref: this form calls `" (if (= route PLACE-INVOKE) "invoke" "get")
+                "`, which returns a copy, so it is a value and not a place\n  note: bind the element to a name first, then take that name's address")))
+      (when-some (pv pre)
+        (let (v:&Val (if (= sel-at 1)
+                       (emit-callable-value (as ptr x) scope pv)
+                       (emit-get-with-callee (as ptr x) scope pv (as ptr sel))))
+          (return (emit-ref-temporary v scope line))))
+      (return null))))
+
+; Store a VALUE in a fresh entry-block slot owned by a hidden binding of the
+; current scope, so `binding-address-val` stays the one owner of its escape taint.
+(defn emit-ref-temporary (v:&Val scope:&Scope line:i32):&Val
+  (let (ty:?&Type (v 'type))
+    (when (or (= ty null) (= (ty 'kind) TY-VOID))
+      (die-at line "ref: the operand has no value (it is void), so it has no address"))
+    (when (= (scope 'parent) null)
+      (die-at line "ref: a temporary's address needs a function body to hold it"))
+    (let (slot:StrView (fstr "%ref.tmp." g-tmp)
+          align:i32 (abi-slot-align ty)
+          coerced:ptr (coerce-int-val v ty line))
+      (inc! g-tmp)
+      (when (= coerced null)
+        (die-at line (fstr "ref: cannot store a value of type " (value-type-display v))))
+      (emit g-entry-stream "  " slot " = alloca " (type-to-ir ty) ", align " align "\n")
+      (emit g-body-stream "  store " (type-to-ir ty) " " ((unsafe/cast &Val coerced) 'val)
+            ", ptr " slot ", align " align "\n")
+      (let (sym:&Sym (scope-define scope (symbol-intern "#ref-tmp") ty slot 1))
+        (sym-adopt-taint sym v ty)
+        (let (rv:&Val (binding-address-val sym))
+          ; binding-address-val exempts a pointer-typed slot because its loads may
+          ; escape; nothing can load this one, and its address must not.
+          (when (= (rv 'taint) null) (val-taint-frame rv scope))
+          (return rv))))))
 
 ; The address of a binding's own storage, as a `(ref T)` Val. Shared by the
 ; explicit `&x` / `(ref x)` and by the implicit lvalue address-of at an
@@ -8946,8 +9050,8 @@
           (return node))
         ; `&cap` takes the address of the by-value local. Inside the closure that
         ; local lives as an env field. mode 0/1 (vfn/mfn): the address is
-        ; `(ref self 'cap)` (the field's address) — `ref`'s target must be a
-        ; binding name, and a field load is an rvalue. mode 2 (cfn): the field
+        ; `(ref self 'cap)` (the field's address); `&(cap 'f)` takes the generic
+        ; rewrite and stays a place. mode 2 (cfn): the field
         ; ALREADY holds the captured local's address, so `&cap` == `(_get self
         ; 'cap)` (no extra indirection). A non-capture / shadowed operand keeps
         ; the ordinary `ref`.
@@ -12287,65 +12391,85 @@
 (defn emit-field-addr (call:?&Node scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 3) (die-at (cc 'line) "ref: field address expects a receiver and a quoted selector"))
-    (let (p:&Val (emit-lvalue-receiver (node-at cc 1) scope "ref" (cc 'line))
-          pt:&Type (unsafe/cast &Type (p 'type))
-          ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
-                   (-> pt (_ 'elem) (unsafe/cast &Type _) (_ 'kind))
-                   TY-VOID))
-      (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-        (die-at (cc 'line) "ref: operand must be a struct or union, or a pointer to one"))
-      (require-derefable pt (cc 'line) "ref")
-      (let (fn-node:?&Node (selector-literal-sym (node-at cc 2)))
-        (when (= fn-node null)
-          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "ref"))
-        (let (sd:&StructDef (unsafe/cast &StructDef ((pt 'elem) 'sdef))
-              idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
-              afr:?&FieldRef null)
-          (reject-cycle-pending-sdef (as ptr sd)
-                                     (node-line (as ptr fn-node) (cc 'line))
-                                     "field address")
-          (union-field-guard (as ptr sd) (cc 'line) "ref")
-          (when (< idx 0)
-            ; AN-2: an anonymous member's own field has an address like any other.
-            (set! afr (struct-field-ref (as ptr sd) (fn-node 's)))
-            (when (= afr null)
-              (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fstr "ref: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
-            (reject-anon-ambiguous (fn-node 's) sd
-                                   (node-line (as ptr fn-node) (cc 'line)) "ref"))
-          ; BF-2: a bit-field has no address — it shares its bytes with its
-          ; neighbours. This is C's own rule (`&s.bits` is ill-formed there too),
-          ; so it is a faithful diagnostic rather than a Nucleus limitation.
-          (when (!= (if (!= afr null) (afr 'bit-width) ((field-at (sd 'fields) idx) 'bit-width)) 0)
-            (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fstr "ref: '" (fn-node 's) "' is a bit-field of '" (sdef-display sd)
-                    "', and a bit-field has no address -- read it by value")))
-          (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
-                gep:StrView (p 'val))
-            ; A union member's address is the union's address (offset 0).
-            (when (!= afr null)
-              (set! gep (emit-field-gep (p 'val) afr)))
-            (when (and (= afr null) (!= ek TY-UNION))
-              (set! gep (emit-field-gep (p 'val)
-                          (make-field-ref sd idx))))
-            ; Stage 15 W8 G-2: `.&` on an `(array T N)` field would otherwise
-            ; produce `ptr:(array T N)` — a pointer-to-array, whose only legal
-            ; uses are the ones an array type is refused in. The address is
-            ; numerically the same either way, so hand back the decayed
-            ; `ptr:T`, matching what a plain read of the field gives.
-            (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
-              (set! ftype (as ptr ((array-decay ftype) 'elem))))
-            (let (rt:&Type (as &Type (make-type TY-PTR)))
-              (set! (rt 'elem) ftype)
-              ; A field's address inside a (non-null) struct is non-null (ref T).
-              (set! (rt 'pkind) PTR-REF)
-              ; Interior address into the resource: keep the escape taint
-              ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag —
-              ; so `(ref &p 'f)` over a by-value struct param p stays
-              ; frame-tainted and is rejected if returned.
-              (let (rv:&Val (alloc-val (as ptr rt) gep))
-                (val-copy-taint (as ptr rv) (as ptr p))
-                (return rv)))))))))
+    (return (emit-member-address (emit-place-receiver (node-at cc 1) scope (cc 'line) null)
+                                 (node-at cc 2) (cc 'line)))))
+
+; The storage a field address is taken in: a struct binding's own slot, a place's
+; address, a pointer value, or a temporary's slot (address-of-expressions.md §4
+; Q2). `pre` is the receiver when the caller already had to emit it.
+(defn emit-place-receiver (rnode:ptr scope:&Scope line:i32 pre:?&Val):&Val
+  (let (rn:&Node (unsafe/cast &Node (ref-operand-expand rnode))
+        v:?&Val pre)
+    (when (= v null)
+      (when (= (rn 'kind) NODE-SYM)
+        (if-some (sym (scope-lookup scope (rn 's)))
+          (let (sk:i32 (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
+            (when (and (= (sym 'is-const) 0) (or (= sk TY-STRUCT) (= sk TY-UNION)))
+              (return (emit-binding-address rn scope (node-line (as ptr rn) line)))))
+          0))
+      (when (= (rn 'kind) NODE-LIST)
+        (let (t:ptr (node-type (as ptr rn) scope))
+          (when (and (!= t null) (or (= ((unsafe/cast &Type t) 'kind) TY-STRUCT)
+                                     (= ((unsafe/cast &Type t) 'kind) TY-UNION)))
+            (when-some (pa (emit-place-address rn scope line)) (return pa)))))
+      (set! v (emit-node (as ptr rn) scope)))
+    (let (pv:&Val (unsafe/cast &Val v)
+          pk:i32 (-> pv (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
+      (when (or (= pk TY-STRUCT) (= pk TY-UNION))
+        (return (emit-ref-temporary pv scope line)))
+      (return pv))))
+
+; The field's address within the struct `p` points to.
+(defn emit-member-address (p:&Val sel:ptr line:i32):&Val
+  (let (pt:&Type (unsafe/cast &Type (p 'type))
+        ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
+                 (-> pt (_ 'elem) (unsafe/cast &Type _) (_ 'kind))
+                 TY-VOID))
+    (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
+      (die-at line "ref: operand must be a struct or union, or a pointer to one"))
+    (require-derefable pt line "ref")
+    (let (fn-node:?&Node (selector-literal-sym sel))
+      (when (= fn-node null)
+        (die-nonliteral-selector sel (node-line sel line) "ref"))
+      (let (sd:&StructDef (unsafe/cast &StructDef ((pt 'elem) 'sdef))
+            idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
+            afr:?&FieldRef null)
+        (reject-cycle-pending-sdef (as ptr sd)
+                                   (node-line (as ptr fn-node) line)
+                                   "field address")
+        (union-field-guard (as ptr sd) line "ref")
+        (when (< idx 0)
+          ; AN-2: an anonymous member's own field has an address like any other.
+          (set! afr (struct-field-ref (as ptr sd) (fn-node 's)))
+          (when (= afr null)
+            (die-at (node-line (as ptr fn-node) line)
+              (fstr "ref: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
+          (reject-anon-ambiguous (fn-node 's) sd
+                                 (node-line (as ptr fn-node) line) "ref"))
+        ; BF-2: a bit-field has no address — it shares its bytes with its
+        ; neighbours. This is C's own rule (`&s.bits` is ill-formed there too),
+        ; so it is a faithful diagnostic rather than a Nucleus limitation.
+        (when (!= (if (!= afr null) (afr 'bit-width) ((field-at (sd 'fields) idx) 'bit-width)) 0)
+          (die-at (node-line (as ptr fn-node) line)
+            (fstr "ref: '" (fn-node 's) "' is a bit-field of '" (sdef-display sd)
+                  "', and a bit-field has no address -- read it by value")))
+        (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
+              gep:StrView (p 'val))
+          ; A union member's address is the union's address (offset 0).
+          (when (!= afr null)
+            (set! gep (emit-field-gep (p 'val) afr)))
+          (when (and (= afr null) (!= ek TY-UNION))
+            (set! gep (emit-field-gep (p 'val)
+                        (make-field-ref sd idx))))
+          ; Stage 15 W8 G-2: an `(array T N)` field's address decays to `ptr:T`,
+          ; matching what a plain read of the field gives.
+          (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
+            (set! ftype (as ptr ((array-decay ftype) 'elem))))
+          ; Interior address into the resource: keep the escape taint
+          ; (lifecycle.md §2.2) and the frame-region flag.
+          (let (rv:&Val (alloc-val (as ptr (ref-type-of ftype)) gep))
+            (val-copy-taint (as ptr rv) (as ptr p))
+            (return rv)))))))
 
 ; (array T e0 e1 ... | (idx v) ...) -> &T to a stack array of int elements.
 (defn emit-array-lit (call:?&Node scope:&Scope):&Val

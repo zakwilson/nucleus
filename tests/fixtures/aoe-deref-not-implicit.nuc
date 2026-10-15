@@ -1,0 +1,8 @@
+; The implicit address-of takes only a binding: `str` ends in `(deref ~s)`, which
+; is not one, so this stays the ordinary argument-type error.
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.allocator)
+(defn main ():i32
+  (string-as-cstr (str 1))
+  (return 0))

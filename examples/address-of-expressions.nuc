@@ -1,0 +1,58 @@
+; `ref` on any expression (design/address-of-expressions.md): a PLACE gives its
+; own address, so a write through it is visible afterwards; a VALUE is stored in
+; a fresh slot and gives that slot's address.
+(import-use "stdio.h")
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.allocator)
+
+(defstruct P x:i32 y:i32)
+(defstruct S p:P n:i32)
+
+(defn mk (n:i32):S (return (S (P n (* n 2)) n)))
+(defn twice (n:i32):i32 (return (* n 2)))
+(defn bump (p:&i32):void (set! (deref p) (+ (deref p) 100)))
+(defn bump-p (p:&P):void (set! (p 'x) (+ (p 'x) 1)))
+(defn read (p:&i32):i32 (return (deref p)))
+
+(defmacro twice-of (e) `(twice ~e))
+(defn via-temp (x:T :where (Any T)):T (return (deref &(do x))))
+
+(defn main ():i32
+  (let (s:S (mk 1)
+        sp:&S &s
+        arr:&i32 (array i32 1 2 3)
+        q:&i32 &(aref arr 2))
+    ; Places: a field of a by-value binding, a nested field, a field through a
+    ; pointer, an `aref` element, a `deref`, and `_get`/`get` spellings.
+    (bump &(s 'n))
+    (bump &((s 'p) 'x))
+    (bump &(sp 'n))
+    (bump &(aref arr 1))
+    (bump &(deref q))
+    (bump &(_get s 'n))
+    (bump &(get (s 'p) 'y))
+    (bump-p &(s 'p))
+    (bump-p &(sp 'p))
+    (printf "%d %d %d\n" (s 'n) ((s 'p) 'x) ((s 'p) 'y))
+    (printf "%d %d %d\n" (aref arr 0) (aref arr 1) (aref arr 2))
+    ; Values: a call, a literal, a block, a macro result.
+    (printf "%d %d %d %d\n" (read &(twice 21)) (read &7)
+            (read &(let (k:i32 4) (+ k 1))) (read &(twice-of 8)))
+    ; A temporary receiver, in both spellings (Q2).
+    (printf "%d %d\n" (read &((mk 3) 'n)) (read (ref (mk 4) 'n)))
+    (printf "%d\n" (read &(((mk 5) 'p) 'y)))
+    ; At a callable value's argument, `&(…)` is a value address, not a type.
+    (let (rd:(fn i32)(&i32) read)
+      (printf "%d\n" (rd &(twice 3))))
+    ; Inside a closure a captured struct becomes an env field, and stays a place.
+    (let (h:Alloc (handle heap)
+          by-ref (cfn &h ():void (bump &(s 'n)))
+          by-val (vfn ():i32 (return (read &(s 'n)))))
+      (by-ref)
+      (printf "%d %d\n" (s 'n) (by-val)))
+    (printf "%d\n" (via-temp 9))
+    ; The charge.nuc shapes.
+    (puts (string-as-cstr &(str 1)))
+    (puts (-> 42 (str "a" _ "b") ref string-as-cstr))
+    0))

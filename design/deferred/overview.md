@@ -806,3 +806,12 @@ Found in Stage 25 CL-3, 2026-10-13, and the same for `HashMap`. With
 override (dispatch never narrows) and falls to the computed-field intrinsic,
 which says "computed field access requires a homogeneous struct". The message
 should be the no-match diagnostic with its candidate note.
+
+## Implicit address-of for field, `aref` and `deref` places
+
+Ruled out 2026-10-15 ([address-of-expressions.md](../address-of-expressions.md)
+Q3), to revisit if it proves a mistake. The implicit address-of stays
+binding-reads only, so `(f (str …))` and `(f (s 'p))` against a `&T` parameter
+are argument-type errors; the idiom is `(f &(str …))`. If revisited, record the
+address at those emitters (`Val.lvalue-addr` beside `lvalue-sym`) rather than
+relax the coercion rule (borrow-conventions.md §3.4 "Not covered").

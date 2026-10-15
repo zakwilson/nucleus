@@ -1,0 +1,6 @@
+; `&(Vector i32)` at a callable value's argument is a type spelling, not a value.
+(import-use nucleus.vector)
+(defn read (p:&i32):i32 (return (deref p)))
+(defn main ():i32
+  (let (rd:(fn i32)(&i32) read)
+    (return (rd &(Vector i32)))))

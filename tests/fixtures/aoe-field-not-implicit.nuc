@@ -1,0 +1,7 @@
+; A field is not passed by address implicitly; write `&(s 'p)`.
+(defstruct P x:i32)
+(defstruct S p:P)
+(defn show (p:&P):i32 (return (p 'x)))
+(defn main ():i32
+  (let (s:S (S (P 1)))
+    (return (show (s 'p)))))

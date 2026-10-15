@@ -1,0 +1,7 @@
+; `(v 0)` on a Vector calls `invoke` and returns a copy: not a place, so `&` refuses it.
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(defn main ():i32
+  (let (v:(Vector i32) [1 2 3]
+        p:&i32 &(&v 0))
+    (return (deref p))))

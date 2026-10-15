@@ -323,7 +323,12 @@ There the reader writes `(ref X)` before anyone knows the position, and that is
 one node with one meaning per world: in a type slot `(ref T)` is the non-null
 pointer, which is why `(sizeof &Pt)`, `(link &Point)` and `(Vector &Point)`
 above are types; in a value slot `(ref x)` is the address-of, whose type is
-`(ref (type-of x))`. Since the node is the canonical one, `--emit-nuch` prints
+`(ref (type-of x))`. The operand may be any expression — `&(s 'f)`,
+`&(aref p i)`, `&(deref p)` give the place's own address, and a value such as
+`&(str x)` gets a fresh frame slot. At a callable value's argument a
+parenthesised operand is read as a type only when it is a template application
+or a pointer-kind head (`&(Vector i32)`, `&(ptr T)`); anything else is a value.
+Since the node is the canonical one, `--emit-nuch` prints
 `(ref T)` for a standalone `&T` in an exported signature — no spelling leaks
 into a header. The older value-form head `addr-of` is retired (Stage 21 PK-5b)
 and reserved: `(addr-of x)`, `(addr-of p 'f)` and `(addr-of T)` in a type slot
@@ -337,8 +342,8 @@ with `(unsafe/cast &T p)`. `as` refuses the conversion and names those two
 routes (see [Implicit Type Coercion](#implicit-type-coercion)). Widening
 (`&T`→`(ptr T)`, `&T`→`?&T`, `(ptr T)`↔`?&T`, anything→`ptr`) is always
 allowed, and `null` flows into any nullable slot. `none` is the null `?T`
-literal. Stack addresses are non-null by construction: `&x`, `(ref p 'f)` (the
-2-argument arity), `(alloca T)`, `(array T …)`, and a `(S …)` compound literal
+literal. Stack addresses are non-null by construction: `&x`, `&(expr)`,
+`(ref p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a `(S …)` compound literal
 all yield `&T`.
 
 **A global declared non-null must be initialized.** `(defvar g:&T)` with no

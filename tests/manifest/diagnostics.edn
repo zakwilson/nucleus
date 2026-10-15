@@ -1403,3 +1403,37 @@
 {:name "cl3-import-note" :expect :reject
  :file "tests/fixtures/cl3-import-note.nuc" :line 5
  :notes ["a literal is a Const, whose methods are in nucleus.const -- add (import-use nucleus.const)"]}
+
+; `ref` on any expression (design/address-of-expressions.md). A temporary lives
+; in a frame slot, so returning its address is the frame escape; a temporary
+; adopts a `with` taint rather than laundering it into a frame address.
+{:name "aoe-return-temporary" :expect :reject
+ :file "tests/fixtures/aoe-return-temporary.nuc" :line 3
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "aoe-temporary-taint" :expect :reject
+ :file "tests/fixtures/aoe-temporary-taint.nuc" :line 6
+ :messages ["resource bound by `with` escapes via return"]}
+; Q1: indexing calls `invoke` and returns a copy, so it is refused, not materialized.
+{:name "aoe-vector-index" :expect :reject
+ :file "tests/fixtures/aoe-vector-index.nuc" :line 6
+ :messages ["ref: this form calls `invoke`, which returns a copy, so it is a value and not a place"]
+ :notes ["bind the element to a name first, then take that name's address"]}
+; A template application under `&` at a callable value's argument is a type.
+{:name "aoe-type-spelling-arg" :expect :reject
+ :file "tests/fixtures/aoe-type-spelling-arg.nuc" :line 6
+ :messages ["'rd:(ref ...)' reads as a call here"]}
+; The implicit address-of still takes only a binding: not a `deref`, not a field.
+{:name "aoe-deref-not-implicit" :expect :reject
+ :file "tests/fixtures/aoe-deref-not-implicit.nuc" :line 7
+ :messages ["argument 1 has type String, which does not match parameter type &String"]}
+{:name "aoe-field-not-implicit" :expect :reject
+ :file "tests/fixtures/aoe-field-not-implicit.nuc" :line 7
+ :messages ["show: argument 1 has type P, which does not match parameter type &P"]}
+; Only `ref` materializes a temporary receiver; a field store into one is lost.
+{:name "aoe-get-place-temporary" :expect :reject
+ :file "tests/fixtures/aoe-get-place-temporary.nuc" :line 4
+ :messages [".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"]}
+; gcheck reads a value operand of `&(…)` as an expression, so it is checked.
+{:name "aoe-generic-operand-checked" :expect :reject
+ :file "tests/fixtures/aoe-generic-operand-checked.nuc" :line 3
+ :messages ["in generic body: unknown function 'no-such-fn'"]}

@@ -1,0 +1,4 @@
+; `&(f)` stores the call result in a frame slot, so returning it dangles.
+(defn twice (n:i32):i32 (return (* n 2)))
+(defn leak ():&i32 (return &(twice 1)))
+(defn main ():i32 (return 0))

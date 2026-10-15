@@ -3830,6 +3830,11 @@
         ; this the heap `-in` constructor body `(cast (ref (Vector T)) …)` dies
         ; "in generic body: unknown function 'ref'". Defer (null): a check-only
         ; type pass need not model the wrapper; stamping happens at monomorphize.
+        ; A value operand of `&(…)` is an expression, so it is checked.
+        (when (and (= hp 'ref) (= (node-len n) 2) (= (node-kind (node-at n 1)) NODE-LIST)
+                   (not (ref-operand-type-spelling? (node-at n 1))))
+          (gcheck (node-at n 1) scope m)
+          (return null))
         (when (or (= hp 'ref) (= hp 'raw) (= hp 'ptr)) (return null))
         ; Expand macros (if/when/-> …) so the body is core forms.
         (if-some (md (find-macro h))
@@ -6801,12 +6806,12 @@
 ; Lockstep with emit-ref's arity overload. Without this the 2-arg form would
 ; fall into the 1-arg path and type `(ref p 'f)` as `ptr:ptr:Point` -- the
 ; address of the BINDING, not of the field (dot-forms.md §3).
-(defn node-type-field-addr (n:?&Node scope:ref:Scope):?&Type
-  (let (t:ptr (node-type (node-at n 1) scope))
+(defn node-type-field-addr (recv:?&Node sel:?&Node scope:ref:Scope):?&Type
+  (let (t:ptr (node-type recv scope))
     (when (= t null) (return null))
     (let (sd:?&StructDef (access-receiver-sdef (as ?&Type t)))
       (when (= sd null) (return null))
-      (let (fn-node:?&Node (selector-literal-sym (node-at n 2)))
+      (let (fn-node:?&Node (selector-literal-sym sel))
         (when (= fn-node null) (return null))
         (let (fr:?&FieldRef (struct-field-ref (as ptr sd) (fn-node 's)))
           (when (= fr null) (return null))
@@ -6816,23 +6821,115 @@
             ; answer would give `ptr:ptr:elem`.
             (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
               (set! ftype (as ptr ((array-decay ftype) 'elem))))
-            (let (pt:&Type (as &Type (make-type TY-PTR)))
-              (set! (pt 'elem) ftype)
-              ; A field's address inside a non-null struct is non-null (ref T).
-              (set! (pt 'pkind) PTR-REF)
-              (return (as ptr pt)))))))))
+            (return (as ptr (ref-type-of ftype)))))))))
 
+(defn ref-type-of (t:ptr):&Type
+  (let (pt:&Type (as &Type (make-type TY-PTR)))
+    (set! (pt 'elem) t)
+    (set! (pt 'pkind) PTR-REF)
+    (return pt)))
+
+; How `&(callee arg)` treats a callable-value form, mirroring emit-callable-value's
+; routing: a field place, a value (a call through a function pointer), or a call
+; that only looks like a place (design/address-of-expressions.md §4 Q1).
+(defconst PLACE-VALUE 0)
+(defconst PLACE-FIELD 1)
+(defconst PLACE-INVOKE 2)
+(defconst PLACE-GET 3)
+
+(defn callable-place-route (ct:?&Type nargs:i32 sel:?&Node):i32
+  (when (= ct null) (return PLACE-VALUE))
+  (when (= (ct 'kind) TY-FN) (return PLACE-VALUE))
+  (when (!= (boxedfn-canonical ct) null) (return PLACE-INVOKE))
+  (when (and (= nargs 1) (!= (callee-selects-field ct sel) 0)) (return PLACE-FIELD))
+  (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) ct) 0)
+    (return PLACE-INVOKE))
+  (when (and (= nargs 1)
+             (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) ct) 0))
+    (return PLACE-GET))
+  (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
+    (return (if (= (selector-literal-sym sel) null) PLACE-GET PLACE-FIELD)))
+  ; emit-invoke-with-callee reports it.
+  (return PLACE-VALUE))
+
+; The binding a symbol head names when it is a callable VALUE, as emit-dispatch
+; resolves it; null for a special form, a function, a constructor or nothing.
+(defn callable-value-head-sym (head:?&Node scope:?&Scope):?&Sym
+  (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return null))
+  (let (h:Symbol (head 's))
+    (when (!= (special-form-named h) 0)
+      (when (and (or (= head 'fn) (= head 'vfn) (= head 'mfn) (= head 'cfn))
+                 (!= (as ptr (scope-lookup scope h)) null))
+        (return (scope-lookup scope h)))
+      (return null))
+    (if-some (hit (binding-find h scope BK-DISPATCH-FIRST BINDING-KIND-COUNT 0 NK-NONE))
+      (do
+        (when (!= (hit 'kind) BK-GLOBAL) (return null))
+        (let (sym:&Sym (unsafe/cast &Sym (hit 'payload)))
+          (when (and (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind) (= _ TY-FN))
+                     (= (sym 'is-local) 0))
+            (return null))
+          (return sym)))
+      (return null))))
+
+; A `(ref …)` operand that spells a TYPE rather than an expression: a template
+; application or a pointer-kind/type-constructor head.
+(defn ref-operand-type-spelling? (op:?&Node):bool
+  (when (or (= op null) (!= (op 'kind) NODE-LIST) (= (node-len (as ptr op)) 0)) (return false))
+  (when (!= (as ptr (node-template-of op)) null) (return true))
+  (when (!= (as ptr (node-union-template-of op)) null) (return true))
+  (let (h:?&Node (node-first op))
+    (when (or (= h null) (!= (h 'kind) NODE-SYM)) (return false))
+    (return (or (= h 'ptr) (= h 'ref) (= h 'raw) (= h 'fn) (= h 'dyn) (= h 'array)))))
+
+; Lockstep with emit-ref: a binding, a place, or a value, classified alike.
 (defn node-type-ref (n:?&Node scope:ref:Scope):?&Type
-  (when (= (node-len n) 3) (return (node-type-field-addr n scope)))
+  (when (= (node-len n) 3) (return (node-type-field-addr (node-at n 1) (node-at n 2) scope)))
   (let (target:&Node (unsafe/cast &Node (node-at n 1)))
-    (when (!= (target 'kind) NODE-SYM) (return null))
+    (when (!= (target 'kind) NODE-SYM) (return (node-type-ref-operand target scope)))
     (let (sym:?&Sym (scope-lookup scope (target 's)))
       (when (= sym null) (return null))
-      (let (pt:&Type (as &Type (make-type TY-PTR)))
-        (set! (pt 'elem) (sym 'type))
-        ; Mirror emit-ref: a binding's address is non-null (ref T).
-        (set! (pt 'pkind) PTR-REF)
-        (return (as ptr pt))))))
+      (return (as ptr (ref-type-of (sym 'type)))))))
+
+(defn node-type-ref-value (op:?&Node scope:ref:Scope):?&Type
+  (let (t:ptr (node-type op scope))
+    (when (or (= t null) (= ((unsafe/cast &Type t) 'kind) TY-VOID)) (return null))
+    (return (as ptr (ref-type-of t)))))
+
+(defn node-type-callable-place (n:?&Node recv:?&Node sel-at:i32 scope:ref:Scope):?&Type
+  (let (ct:ptr (node-type recv scope))
+    (when (= ct null) (return null))
+    (let (route:i32 (callable-place-route (as ?&Type ct) (- (node-len n) sel-at) (node-at n sel-at)))
+      (when (= route PLACE-FIELD) (return (node-type-field-addr recv (node-at n sel-at) scope)))
+      (when (= route PLACE-VALUE) (return (node-type-ref-value n scope)))
+      (return null))))
+
+(defn node-type-ref-operand (op:&Node scope:ref:Scope):?&Type
+  (when (!= (op 'kind) NODE-LIST) (return (node-type-ref-value op scope)))
+  (when (= (node-len (as ptr op)) 0) (return null))
+  (let (h:&Node (unsafe/cast &Node (node-at op 0)))
+    (when (!= (h 'kind) NODE-SYM)
+      (when (or (!= (as ptr (node-template-of h)) null)
+                (!= (as ptr (node-union-template-of h)) null))
+        (return (node-type-ref-value op scope)))
+      (return (node-type-callable-place op h 1 scope)))
+    ; emit expands the macro first; its type is emit's own.
+    (when (!= (find-macro (h 's)) null) (return null))
+    (when (and (= h 'deref) (= (node-len (as ptr op)) 2))
+      (let (pt:ptr (node-type-deref-elem op scope))
+        (when (= pt null) (return null))
+        (return (as ptr (ref-type-of pt)))))
+    (when (and (= h 'aref) (= (node-len (as ptr op)) 3))
+      (let (pt:ptr (node-type-deref-elem op scope))
+        (when (= pt null) (return null))
+        (return (as ptr (ref-type-of pt)))))
+    (when (and (= h '_get) (= (node-len (as ptr op)) 3))
+      (return (node-type-field-addr (node-at op 1) (node-at op 2) scope)))
+    (when (and (= h 'get) (= (node-len (as ptr op)) 3))
+      (return (node-type-callable-place op (node-at op 1) 2 scope)))
+    (when (!= (as ptr (callable-value-head-sym h scope)) null)
+      (return (node-type-callable-place op h 1 scope)))
+    (return (node-type-ref-value op scope))))
 
 (defn node-type-funcall (n:?&Node scope:ref:Scope):?&Type
   (let (t:ptr (node-type (node-at n 1) scope))

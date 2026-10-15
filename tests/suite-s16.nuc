@@ -3462,10 +3462,10 @@ map=2
     (drop &out))
   (return (ok)))
 
-; The other half: `.set!` and `ref` need the receiver's STORAGE, so a
-; temporary stays an error rather than a store into something about to be
-; discarded — which is also what keeps a pointer into that copy from being
-; returned. Each message is pinned WHOLE: the shell's needles stopped before
+; The other half: `.set!` needs the receiver's STORAGE, so a temporary stays
+; an error rather than a store into something about to be discarded. `ref`
+; materializes the temporary, and returning that address is the escape error.
+; Each message is pinned WHOLE: the shell's needles stopped before
 ; `-- bind it to a name first`, the half that says what to do.
 (deftest s16-sv1-lvalue-and-refusals
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
@@ -3476,7 +3476,7 @@ map=2
 (defn mk (n:i64):Pt (return (Pt n n)))
 (defn leak ():&i64 (return (ref (mk 1) 'x)))
 (defn main ():i32 (return 0))
-" 3 "ref: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
+" 3 "address of frame-local storage escapes via return"))
   ; A non-struct receiver is still refused, and the message names BOTH legal
   ; receivers now that a value is one of them.
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)

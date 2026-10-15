@@ -7626,3 +7626,13 @@ share one `nuc_` link name.
 literal's shape. A stamped template instance (`origin-template` non-null)
 duplicates its template's parameter and makes every call ambiguous, so it is
 skipped.
+
+## A `ref` operand is classified by shared helpers, before it is emitted
+
+`&(…)` is a place, a refused call, or a value (design/address-of-expressions.md
+§7). `emit-place-address` and `node-type-ref-operand` must agree, so the two
+questions that decide it are functions both CALL: `callable-place-route` (the
+`emit-callable-value` routing, asked on the receiver's TYPE) and
+`callable-value-head-sym` (the `emit-dispatch` head question). A new routing
+rule in `emit-callable-value` needs a matching arm in `callable-place-route`,
+or `&(x sel)` materializes a copy of something that is not a field.
