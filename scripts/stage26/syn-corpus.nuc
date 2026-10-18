@@ -1,0 +1,642 @@
+; The syntax-mode corpus gate (design/stage26-refactoring/overview.md §6.1).
+;
+;   build/nucleusc scripts/stage26/syn-corpus.nuc -o build/syn-corpus
+;   build/syn-corpus $(find tests/fixtures examples lib src -name '*.nuc' -o -name '*.nuch' | sort)
+;
+; For every file: read-syntax-all succeeds exactly when read-all does (same
+; error); the Syn tree corresponds to the read tree by the docs/reading.md
+; index rules; every byte is a leaf, a comment, a discard, a delimiter or
+; prefix byte of its innermost container, or whitespace/comma; and each Syn's
+; text read on its own is its node. From RF-3a: no edits reproduce the file;
+; leaf-for-itself edits reproduce it whole and per form, and a space inserted
+; after each leaf gives the text built without edits; an edit on a form and
+; one on its kid are refused, naming both; and `node-write-sugared` of every
+; form reads back as it, a fixed point, also when spliced in by edits. Prints
+; per-check counts and the failures, and exits 1 on any failure.
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(import-use nucleus.node)
+(import-use nucleus.intern)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.refactor)
+(import-use nucleus.create)
+
+(defvar g-files:i64 0)
+(defvar g-refused:i64 0)
+(defvar g-parity:i64 0)
+(defvar g-tree:i64 0)
+(defvar g-spans:i64 0)
+(defvar g-bytes:i64 0)
+(defvar g-reread:i64 0)
+(defvar g-skipped:i64 0)
+(defvar g-noedit:i64 0)
+(defvar g-leaves:i64 0)
+(defvar g-inserts:i64 0)
+(defvar g-ranges:i64 0)
+(defvar g-overlaps:i64 0)
+(defvar g-sugared:i64 0)
+(defvar g-rewritten:i64 0)
+(defvar g-sites:i64 0)
+(defvar g-sites-long:i64 0)
+(defvar g-sigils:i64 0)
+(defvar g-sigils-long:i64 0)
+(defvar g-failures:i64 0)
+(defvar g-path:StrView "")
+
+(defn fail-head (check:StrView):void
+  (set! g-failures (+ g-failures 1))
+  (eprint g-path ": " check ": "))
+
+(defn fail-loc (check:StrView s:&Syn):void
+  (fail-head check)
+  (eprint (s 'line) ":" (s 'col) " kind " (s 'kind) ": "))
+
+(defn fail-at (check:StrView s:&Syn what:StrView):void
+  (fail-loc check s)
+  (eprint what "\n"))
+
+(defn byte-at (src:StrView i:usize):i32
+  (when (>= i (src 'len)) (return 0))
+  (return (bit-and (as i32 (aref (src 'data) (as i64 i))) 255)))
+
+; The reader's whitespace: the C isspace set and the comma.
+(defn gap-byte? (c:i32):bool
+  (return (or (= c 32) (= c 44) (and (>= c 9) (<= c 13)))))
+
+(defn node-kind-ok? (kind:i32 n:?&Node):bool
+  (when (= n null) (return false))
+  (let (k:i32 (n 'kind))
+    (return (case kind
+              SYN-ATOM (or (= k NODE-SYM) (= k NODE-INT) (= k NODE-FLOAT) (= k NODE-KEYWORD))
+              SYN-STR (= k NODE-STR)
+              SYN-CHAR (= k NODE-CHAR)
+              (= k NODE-LIST)))))
+
+(defn head-name (kind:i32):StrView
+  (return (case kind SYN-VEC "vector-lit" SYN-MAP "hashmap-lit" SYN-SET "hashset-lit"
+                     SYN-TAGGED "tagged-lit" "")))
+
+; Whether `want` is `n` or sits anywhere inside it, by identity.
+(defn node-holds? (n:?&Node want:?&Node):bool
+  (when (= n want) (return true))
+  (dotimes (i (node-len n))
+    (when (node-holds? (node-at n i) want) (return true)))
+  (return false))
+
+; ---------------------------------------------------------------------------
+; Check 2: each kid is the right elem of its parent's node
+; ---------------------------------------------------------------------------
+
+(defn check-tree (s:&Syn):void
+  (set! g-tree (+ g-tree 1))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        nk:usize (count ks)
+        n:?&Node (s 'node)
+        kind:i32 (s 'kind))
+    (when (not (node-kind-ok? kind n))
+      (fail-at "tree" s "node kind does not match the Syn kind")
+      (return))
+    (let (want:usize (case kind SYN-ATOM 0 SYN-STR 0 SYN-CHAR 0 SYN-PREFIX 1 SYN-TAGGED 2
+                           SYN-LIST (as usize (node-len n))
+                           SYN-FUSE nk
+                           (as usize (- (node-len n) 1))))
+      (when (or (!= nk want) (and (= kind SYN-FUSE) (or (< nk 2) (> nk 3))))
+        (fail-loc "tree" s)
+        (eprint "kid count " nk ", want " want "\n")
+        (return)))
+    (let (hn:StrView (head-name kind))
+      (when (and (> (hn 'len) 0) (!= (symbol-as-view (node-head-sym n)) hn))
+        (fail-at "tree" s "wrong literal head")))
+    (when (and (= kind SYN-PREFIX) (!= (node-len n) 2))
+      (fail-at "tree" s "a prefix's node is not (wrap form)"))
+    (let (i:usize 0)
+      (while (< i nk)
+        (let (k:&Syn (ks i)
+              idx:i32 (syn-elem-index s k))
+          (when (!= (k 'parent) s) (fail-at "tree" k "parent is not the enclosing Syn"))
+          (cond (>= idx 0)
+                  (do (when (!= (node-at n idx) (k 'node))
+                        (fail-loc "tree" k)
+                        (eprint "is not elem " idx " of its parent's node\n"))
+                      (when (!= (syn-kid-for-elem s idx) k)
+                        (fail-at "tree" k "syn-kid-for-elem does not invert syn-elem-index")))
+                (!= kind SYN-FUSE)
+                  (fail-at "tree" k "a kid with no elem outside a fuse")
+                (= i 0)
+                  (when (!= (k 'kind) SYN-ATOM) (fail-at "tree" k "a fuse's first kid is not its atom"))
+                (not (node-holds? n (k 'node)))
+                  (fail-at "tree" k "a fuse kid whose node is not inside the fused node"))
+          (check-tree k))
+        (set! i (+ i 1))))
+    ; Every elem a kid does not span is one the rules say has no span.
+    (dotimes (j (node-len n))
+      (let (kk:?&Syn (syn-kid-for-elem s j))
+        (cond (!= kk null)
+                (when (!= (kk 'node) (node-at n j))
+                  (do (fail-loc "tree" s)
+                      (eprint "syn-kid-for-elem " j " is not that elem\n")))
+              (and (!= kind SYN-FUSE) (or (= kind SYN-LIST) (> j 0)))
+                (do (fail-loc "tree" s)
+                    (eprint "elem " j " has no kid\n")))))))
+
+; ---------------------------------------------------------------------------
+; Check 3: spans nest and are ordered, and every byte is accounted for
+; ---------------------------------------------------------------------------
+
+(defn closer-of (kind:i32):i32
+  (return (case kind SYN-LIST 41 SYN-VEC 93 SYN-MAP 125 SYN-SET 125 0)))
+
+; Bytes from `from` to `to` that no kid covers must be gap bytes or inside a
+; comment or discard (`mask`).
+(defn check-gap (src:StrView mask:&(Vector ui8) from:usize to:usize s:?&Syn):void
+  (let (i:usize from)
+    (while (< i to)
+      (set! g-bytes (+ g-bytes 1))
+      (when (and (= (mask i) 0) (not (gap-byte? (byte-at src i))))
+        (fail-head "bytes")
+        (eprint "byte " i " ('" (as Char (as ui32 (byte-at src i))) "') is in no span")
+        (when (!= s null) (eprint " inside the Syn at " (s 'line) ":" (s 'col)))
+        (eprint "\n")
+        (return))
+      (set! i (+ i 1)))))
+
+; `lines` holds the offset each line starts at; line N is entry N-1.
+(defn check-line-cols (lines:&(Vector usize) s:&Syn):void
+  (let (lo:usize 0
+        hi:usize (count lines))
+    (while (< (+ lo 1) hi)
+      (let (mid:usize (/ (+ lo hi) 2))
+        (if (<= (lines mid) (s 'start)) (set! lo mid) (set! hi mid))))
+    (when (or (!= (as i64 (s 'line)) (as i64 (+ lo 1)))
+              (!= (as i64 (s 'col)) (as i64 (+ (- (s 'start) (lines lo)) 1))))
+      (fail-loc "spans" s)
+      (eprint "wrong line or column, want " (+ lo 1) ":" (+ (- (s 'start) (lines lo)) 1) "\n")))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize 0)
+    (while (< i (count ks))
+      (check-line-cols lines (ks i))
+      (set! i (+ i 1)))))
+
+; `kids` laid out in order inside [from, to), with the gaps checked.
+(defn check-run (src:StrView mask:&(Vector ui8) ks:&(Vector &Syn) from:usize to:usize
+                 owner:?&Syn):void
+  (let (at:usize from
+        i:usize 0)
+    (while (< i (count ks))
+      (let (k:&Syn (ks i))
+        (when (or (< (k 'start) at) (> (k 'end) to) (>= (k 'start) (k 'end)))
+          (fail-loc "spans" k)
+          (eprint "span [" (k 'start) "," (k 'end) ") is not inside [" at "," to ")\n")
+          (return))
+        (check-gap src mask at (k 'start) owner)
+        (check-spans src mask k)
+        (set! at (k 'end)))
+      (set! i (+ i 1)))
+    (check-gap src mask at to owner)))
+
+(defn check-spans (src:StrView mask:&(Vector ui8) s:&Syn):void
+  (set! g-spans (+ g-spans 1))
+  (let (kind:i32 (s 'kind)
+        open:usize (as usize (s 'open))
+        cl:i32 (closer-of kind)
+        start:usize (s 'start)
+        end:usize (s 'end))
+    (let (c0:i32 (byte-at src start)
+          ok:bool (case kind
+                    SYN-LIST (= c0 40)
+                    SYN-VEC (= c0 91)
+                    SYN-MAP (= c0 123)
+                    SYN-SET (and (= c0 35) (= (byte-at src (+ start 1)) 123))
+                    SYN-TAGGED (= c0 35)
+                    SYN-STR (= (byte-at src (- end 1)) 34)
+                    SYN-CHAR (= c0 92)
+                    true))
+      (when (or (not ok) (and (!= cl 0) (!= (byte-at src (- end 1)) cl)))
+        (fail-at "spans" s "wrong delimiter")
+        (return)))
+    (when (and (= kind SYN-PREFIX) (= open 0)) (fail-at "spans" s "a prefix with no spelling"))
+    (when (not (or (= kind SYN-ATOM) (= kind SYN-STR) (= kind SYN-CHAR)))
+      (check-run src mask (ref s 'kids) (+ start open) (if (!= cl 0) (- end 1) end) s))))
+
+(defn mark-spans (mask:&(Vector ui8) spans:&(Vector SynSpan)):void
+  (let (i:usize 0)
+    (while (< i (count spans))
+      (let (sp:SynSpan (spans i)
+            j:usize (sp 'start))
+        (while (< j (sp 'end))
+          (set mask j 1)
+          (set! j (+ j 1))))
+      (set! i (+ i 1)))))
+
+(defn check-comments (src:StrView f:&SynFile):void
+  (let (cs:&(Vector SynSpan) (ref f 'comments)
+        ds:&(Vector SynSpan) (ref f 'discards)
+        prev:usize 0
+        i:usize 0)
+    (while (< i (count cs))
+      (let (sp:SynSpan (cs i)
+            e:usize (sp 'end))
+        (when (or (< (sp 'start) prev) (!= (byte-at src (sp 'start)) 59)
+                  (not (or (= e (src 'len)) (= (byte-at src e) 10))))
+          (fail-head "spans")
+          (eprint "comment span [" (sp 'start) "," e ") is not one ';' comment\n"))
+        (set! prev e))
+      (set! i (+ i 1)))
+    (set! prev 0)
+    (set! i 0)
+    (while (< i (count ds))
+      (let (sp:SynSpan (ds i))
+        (when (or (< (sp 'start) prev) (<= (sp 'end) (+ (sp 'start) 2))
+                  (!= (byte-at src (sp 'start)) 35) (!= (byte-at src (+ (sp 'start) 1)) 95))
+          (fail-head "spans")
+          (eprint "discard span [" (sp 'start) "," (sp 'end) ") is not a '#_ form'\n"))
+        (set! prev (sp 'start)))
+      (set! i (+ i 1)))))
+
+; ---------------------------------------------------------------------------
+; Check 4: a Syn's text, read on its own, is its node
+; ---------------------------------------------------------------------------
+
+; True when `s` or a Syn inside it is a prefix the built-in table lacks: its
+; text cannot be read without the file's earlier `def-rmacro`.
+(defn user-prefix? (f:&SynFile s:&Syn builtins:&(Vector RMacro)):bool
+  (when (and (= (s 'kind) SYN-PREFIX) (< (rd-macro-find builtins (syn-prefix f s)) 0))
+    (return true))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize 0)
+    (while (< i (count ks))
+      (when (user-prefix? f (ks i) builtins) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+(defn check-reread (f:&SynFile s:&Syn builtins:&(Vector RMacro)):void
+  (if (user-prefix? f s builtins)
+    (set! g-skipped (+ g-skipped 1))
+    (do (set! g-reread (+ g-reread 1))
+        (match (read-all (syn-text f s))
+          ((ok back)
+            (when (or (!= (node-len back) 1) (not (node-eq (node-at back 0) (s 'node))))
+              (do (fail-loc "reread" s)
+                  (eprint "text " (syn-text f s) " reads back differently\n"))))
+          ((err e)
+            (do (fail-loc "reread" s)
+                (eprint "text " (syn-text f s) " does not read: " (e 'msg) "\n"))))))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize 0)
+    (while (< i (count ks))
+      (check-reread f (ks i) builtins)
+      (set! i (+ i 1)))))
+
+; ---------------------------------------------------------------------------
+; Check 5 (RF-3a): edits
+; ---------------------------------------------------------------------------
+
+(defn applied-is? (check:StrView r:EditsResult want:StrView what:StrView):bool
+  (match r
+    ((ok out) (let (o:String out
+                    same:bool (= (string-as-view &o) want))
+                (drop &o)
+                (when (not same)
+                  (fail-head check)
+                  (eprint what " does not reproduce the text\n"))
+                (return same)))
+    ((err x) (do (fail-head check)
+                 (eprint what " refused: " (x 'msg) "\n")
+                 (return false)))))
+
+; Each leaf replaced by its own text, last leaf first, so the sort is exercised.
+(defn add-leaf-edits (f:&SynFile s:&Syn e:&Edits):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize (count ks))
+    (while (> i 0)
+      (set! i (- i 1))
+      (add-leaf-edits f (ks i) e)))
+  (when (or (= (s 'kind) SYN-ATOM) (= (s 'kind) SYN-STR) (= (s 'kind) SYN-CHAR))
+    (edit-replace e s (syn-text f s))))
+
+(defn same-span? (a:SynSpan b:&Syn):bool
+  (return (and (= (a 'start) (b 'start)) (= (a 'end) (b 'end)))))
+
+; The end of every leaf a space may follow without changing the tree (not a
+; fuse's atom), in source order.
+(defn leaf-ends (s:&Syn ends:&(Vector usize)):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize 0)
+    (while (< i (count ks))
+      (let (k:&Syn (ks i))
+        (when (not (and (= (s 'kind) SYN-FUSE) (= i 0)))
+          (leaf-ends k ends)))
+      (set! i (+ i 1))))
+  (when (or (= (s 'kind) SYN-ATOM) (= (s 'kind) SYN-STR) (= (s 'kind) SYN-CHAR))
+    (conj ends (s 'end))))
+
+; [start, end) of `src` with a space after each of `ends` in [start, end], built
+; without the edit layer; `from` is the first index to consider.
+(defn spaced (src:StrView start:usize end:usize ends:&(Vector usize) from:usize):String
+  (let (out:String (make String)
+        pos:usize start
+        i:usize from)
+    (while (and (< i (count ends)) (<= (ends i) end))
+      (when (>= (ends i) start)
+        (str-into &out (syn-slice-of src pos (ends i)) " ")
+        (set! pos (ends i)))
+      (set! i (+ i 1)))
+    (str-into &out (syn-slice-of src pos end))
+    (return out)))
+
+(defn syn-slice-of (src:StrView start:usize end:usize):StrView
+  (return (strview-take-bytes (strview-drop-bytes src start) (- end start))))
+
+(defn check-edits (src:StrView f:&SynFile):void
+  (let (fs:&(Vector &Syn) (ref f 'forms)
+        nf:usize (count fs))
+    (with (none:Edits (edits-new))
+      (when (applied-is? "noedit" (edits-apply src &none) src "applying no edits")
+        (set! g-noedit (+ g-noedit 1))))
+    (with (e:Edits (edits-new))
+      (let (i:usize nf)
+        (while (> i 0)
+          (set! i (- i 1))
+          (add-leaf-edits f (fs i) &e)))
+      (when (applied-is? "edits" (edits-apply src &e) src "every leaf replaced by its own text")
+        (set! g-leaves (+ g-leaves (as i64 (edits-count &e)))))
+      (let (i:usize 0)
+        (while (< i nf)
+          (let (s:&Syn (fs i))
+            (when (applied-is? "edits" (edits-apply-range src &e (s 'start) (s 'end)) (syn-text f s)
+                               "a form's range with its leaves replaced")
+              (set! g-ranges (+ g-ranges 1))))
+          (set! i (+ i 1)))))
+    ; Insertions, added last to first: the text must be the independently
+    ; spaced one, whole and per form, and still read as the same tree.
+    (with (e:Edits (edits-new)
+           ends:(Vector usize) (make (Vector usize)))
+      (let (i:usize 0)
+        (while (< i nf)
+          (leaf-ends (fs i) &ends)
+          (set! i (+ i 1))))
+      (let (i:usize (count &ends))
+        (while (> i 0)
+          (set! i (- i 1))
+          (edit-span &e (invoke &ends i) (invoke &ends i) " ")))
+      (let (want:String (spaced src 0 (src 'len) &ends 0))
+        (when (applied-is? "edits" (edits-apply src &e) (string-as-view &want)
+                           "a space after every leaf")
+          (match (read-all (string-as-view &want))
+            ((ok t) (if (node-eq t (f 'tree))
+                      (set! g-inserts (+ g-inserts (as i64 (count &ends))))
+                      (do (fail-head "edits")
+                          (eprint "spacing the leaves changed the tree\n"))))
+            ((err x) (do (fail-head "edits")
+                         (eprint "the spaced text does not read: " (x 'msg) "\n")))))
+        (drop &want))
+      (let (i:usize 0
+            from:usize 0)
+        (while (< i nf)
+          (let (s:&Syn (fs i))
+            (while (and (< from (count &ends)) (< (invoke &ends from) (s 'start)))
+              (set! from (+ from 1)))
+            (let (want:String (spaced src (s 'start) (s 'end) &ends from))
+              (when (applied-is? "edits" (edits-apply-range src &e (s 'start) (s 'end))
+                                 (string-as-view &want) "a form's range with its leaves spaced")
+                (set! g-ranges (+ g-ranges 1)))
+              (drop &want)))
+          (set! i (+ i 1)))))
+    ; A form and its first kid, the kid's edit added first.
+    (let (i:usize 0)
+      (while (< i nf)
+        (let (s:&Syn (fs i))
+          (when (> (count (ref s 'kids)) 0)
+            (let (k:&Syn ((ref s 'kids) 0))
+              (with (e:Edits (edits-new))
+                (edit-replace &e k "k")
+                (edit-replace &e s "s")
+                (match (edits-apply src &e)
+                  ((ok out) (let (o:String out)
+                              (drop &o)
+                              (fail-at "overlap" s "an edit and one on its kid both applied")))
+                  ((err x)
+                    (if (and (= (strview-from-cstr (err-name (x 'code))) "edit-overlap")
+                             (or (and (same-span? (x 'first) s) (same-span? (x 'second) k))
+                                 (and (same-span? (x 'first) k) (same-span? (x 'second) s))))
+                      (set! g-overlaps (+ g-overlaps 1))
+                      (fail-at "overlap" s (x 'msg)))))))))
+        (set! i (+ i 1))))))
+
+; ---------------------------------------------------------------------------
+; Check 6 (RF-3a): the sugared printer
+; ---------------------------------------------------------------------------
+
+; `n` printed sugared reads back as one form `node-eq` to it, and printing that
+; prints the same text.
+(defn check-sugared (n:?&Node):void
+  (let (t:String (node-str-sugared n))
+    (match (read-all (string-as-view &t))
+      ((ok back)
+        (if (and (= (node-len back) 1) (node-eq (node-at back 0) n))
+          (let (t2:String (node-str-sugared (node-at back 0)))
+            (if (= (string-as-view &t2) (string-as-view &t))
+              (set! g-sugared (+ g-sugared 1))
+              (do (fail-head "sugared")
+                  (eprint "not a fixed point: " (string-as-view &t) "\n")))
+            (drop &t2))
+          (do (fail-head "sugared")
+              (eprint "reads back differently: " (string-as-view &t) "\n"))))
+      ((err e) (do (fail-head "sugared")
+                   (eprint "does not read: " (e 'msg) ": " (string-as-view &t) "\n"))))
+    (drop &t)))
+
+(defn sugar-site? (n:&Node builtins:&(Vector RMacro)):bool
+  (let (h:?&Node (node-first n)
+        len:i32 (node-len n))
+    (when (or (= h null) (!= (h 'kind) NODE-SYM)) (return false))
+    (let (hs:Symbol (h 's))
+      (return (or (and (= len 2) (> ((rd-macro-prefix-for builtins hs) 'len) 0))
+                  (= hs "vector-lit") (= hs "hashmap-lit") (= hs "hashset-lit")
+                  (and (= len 3) (= hs "tagged-lit")))))))
+
+; How many sugar sites there are, and how many print long because the sugar
+; would not read back.
+(defn count-sites (n:?&Node builtins:&(Vector RMacro)):void
+  (when (= n null) (return))
+  (when (and (or (= (n 'kind) NODE-SYM) (= (n 'kind) NODE-KEYWORD))
+             (rd-has-ref-segment? (symbol-as-view (n 's))))
+    (set! g-sigils (+ g-sigils 1))
+    (let (t:String (node-str-sugared n))
+      (when (contains-ref? (string-as-view &t)) (set! g-sigils-long (+ g-sigils-long 1)))
+      (drop &t)))
+  (when (!= (n 'kind) NODE-LIST) (return))
+  (when (sugar-site? n builtins)
+    (set! g-sites (+ g-sites 1))
+    (let (t:String (node-str-sugared n)
+          v:StrView (string-as-view &t))
+      (when (strview-has-prefix v "(")
+        (set! g-sites-long (+ g-sites-long 1))
+        (when (<= g-sites-long 10) (print "  long: " g-path ": " v "\n")))
+      (drop &t)))
+  (dotimes (i (node-len n))
+    (count-sites (node-at n i) builtins)))
+
+(defn contains-ref? (v:StrView):bool
+  (match (strview-find &v &"ref:")
+    ((some at) (return true))
+    (none (return false))))
+
+; Every form replaced by its sugared text, by edits: the file reads back as the
+; same tree, its comments and the bytes between forms kept.
+(defn check-rewrite (src:StrView f:&SynFile):void
+  (let (fs:&(Vector &Syn) (ref f 'forms)
+        i:usize 0)
+    (with (e:Edits (edits-new))
+      (while (< i (count fs))
+        (let (s:&Syn (fs i)
+              t:String (node-str-sugared (s 'node)))
+          (edit-replace &e s (string-as-view &t))
+          (drop &t))
+        (set! i (+ i 1)))
+      (match (edits-apply src &e)
+        ((ok out)
+          (let (o:String out)
+            (match (read-syntax-all (string-as-view &o))
+              ((ok g)
+                (if (and (node-eq (g 'tree) (f 'tree)) (comments-kept? f g))
+                  (set! g-rewritten (+ g-rewritten 1))
+                  (do (fail-head "rewrite")
+                      (eprint "the sugared rewrite is not the same tree and comments\n"))))
+              ((err x) (do (fail-head "rewrite")
+                           (eprint "the sugared rewrite does not read: line " (x 'line) ": " (x 'msg) "\n"))))
+            (drop &o)))
+        ((err x) (do (fail-head "rewrite")
+                     (eprint "the sugared rewrite refused: " (x 'msg) "\n")))))))
+
+; The comments outside every form, which a whole-form rewrite keeps, in order.
+(defn comments-kept? (f:&SynFile g:&SynFile):bool
+  (let (a:&(Vector SynSpan) (ref f 'comments)
+        b:&(Vector SynSpan) (ref g 'comments)
+        fs:&(Vector &Syn) (ref f 'forms)
+        i:usize 0
+        j:usize 0
+        k:usize 0)
+    (while (< i (count a))
+      (let (x:SynSpan (a i))
+        (while (and (< k (count fs)) (<= ((fs k) 'end) (x 'start)))
+          (set! k (+ k 1)))
+        (when (not (and (< k (count fs)) (>= (x 'start) ((fs k) 'start))))
+          (when (>= j (count b)) (return false))
+          (let (y:SynSpan (b j))
+            (when (!= (syn-slice f (x 'start) (x 'end)) (syn-slice g (y 'start) (y 'end)))
+              (return false)))
+          (set! j (+ j 1))))
+      (set! i (+ i 1)))
+    (return (= j (count b)))))
+
+; ---------------------------------------------------------------------------
+; Per file
+; ---------------------------------------------------------------------------
+
+(defn check-file (src:StrView builtins:&(Vector RMacro)):void
+  (match (read-all src)
+    ((ok tree)
+      (match (read-syntax-all src)
+        ((ok f)
+          (set! g-parity (+ g-parity 1))
+          (let (fs:&(Vector &Syn) (ref f 'forms)
+                nf:usize (count fs))
+            (when (or (not (node-eq tree (f 'tree))) (!= (as i64 nf) (as i64 (node-len tree))))
+              (fail-head "tree")
+              (eprint "read-syntax-all's tree is not read-all's\n")
+              (return))
+            (dotimes (k (node-len tree))
+              (let (s:&Syn (fs (as usize k)))
+                (when (!= (s 'node) (node-at (f 'tree) k))
+                  (fail-at "tree" s "a top-level Syn's node is not its tree elem"))
+                (when (!= (s 'parent) null) (fail-at "tree" s "a top-level Syn has a parent"))
+                (check-tree s)))
+            (let (mask:&(Vector ui8) (alloca (Vector ui8)))
+              (init mask (handle heap))
+              (dotimes (k (as i64 (src 'len))) (conj mask 0))
+              (mark-spans mask (ref f 'comments))
+              (mark-spans mask (ref f 'discards))
+              (check-comments src f)
+              (check-run src mask fs 0 (src 'len) null)
+              (drop mask))
+            (let (lines:&(Vector usize) (alloca (Vector usize))
+                  i:usize 0)
+              (init lines (handle heap))
+              (conj lines 0)
+              (while (< i (src 'len))
+                (when (= (byte-at src i) 10) (conj lines (+ i 1)))
+                (set! i (+ i 1)))
+              (set! i 0)
+              (while (< i nf)
+                (check-line-cols lines (fs i))
+                (set! i (+ i 1)))
+              (drop lines))
+            (let (i:usize 0)
+              (while (< i nf)
+                (check-reread f (fs i) builtins)
+                (check-sugared (node-at tree (as i64 i)))
+                (count-sites (node-at tree (as i64 i)) builtins)
+                (set! i (+ i 1))))
+            (check-edits src f)
+            (check-rewrite src f)))
+        ((err e)
+          (fail-head "parity")
+          (eprint "read-syntax-all refuses what read-all reads: line " (e 'line) ": " (e 'msg) "\n"))))
+    ((err ea)
+      (set! g-refused (+ g-refused 1))
+      (match (read-syntax-all src)
+        ((ok f)
+          (fail-head "parity")
+          (eprint "read-syntax-all reads what read-all refuses\n"))
+        ((err es)
+          (if (and (= (ea 'line) (es 'line)) (= (ea 'msg) (es 'msg))
+                   (= (strview-from-cstr (err-name (ea 'code))) (strview-from-cstr (err-name (es 'code)))))
+            (set! g-parity (+ g-parity 1))
+            (do (fail-head "parity")
+                (eprint "different errors: " (err-name (ea 'code)) " line " (ea 'line)
+                        " vs " (err-name (es 'code)) " line " (es 'line) "\n"))))))))
+
+(defn read-whole (path:StrView):!String
+  (let (fh:File (try (file-open-read &path))
+        text:String (try (file-read-to-string &fh)))
+    (drop &fh)
+    (return (ok text))))
+
+(defn main (argc:i32 argv:ptr):int
+  (let (builtins:&(Vector RMacro) (read-macro-table-new)
+        i:i32 1)
+    (while (< i argc)
+      (let (path:StrView (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i))))
+        (set! g-path path)
+        (match (read-whole path)
+          ((ok text) (do (set! g-files (+ g-files 1))
+                         (check-file (string-as-view &text) builtins)
+                         (drop &text)))
+          ((err e) (do (set! g-failures (+ g-failures 1))
+                       (eprint path ": cannot read the file\n")))))
+      (set! i (+ i 1)))
+    (print "files:   " g-files " (" g-refused " refused by the reader)\n"
+           "parity:  " g-parity " file(s) agree with read-all\n"
+           "tree:    " g-tree " Syn(s) correspond to their nodes\n"
+           "spans:   " g-spans " Syn(s) nest; " g-bytes " gap byte(s) accounted for\n"
+           "reread:  " g-reread " Syn text(s) read back as their node; "
+           g-skipped " skipped (a def-rmacro prefix inside)\n"
+           "noedit:  " g-noedit " file(s) reproduced by applying no edits\n"
+           "edits:   " g-leaves " leaf replacement(s) reproduce their files; " g-inserts
+           " insertion(s) match the spaced text and keep the tree; " g-ranges
+           " form range(s) reproduced; " g-overlaps " form/kid overlap(s) refused, naming both\n"
+           "sugared: " g-sugared " form(s) read back and are fixed points; " g-rewritten
+           " file(s) rewritten form by form read back with their comments\n"
+           "sites:   " g-sites " prefix/literal site(s), " g-sites-long " printed long; "
+           g-sigils " ref-sigil atom(s), " g-sigils-long " printed long\n"
+           "failures: " g-failures "\n")
+    (return (if (and (= g-failures 0) (> g-files 0)) 0 1))))

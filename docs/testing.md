@@ -123,7 +123,9 @@ Every predicate returns `!void` and every one renders its own failure text, so a
 | `(check-files-eq a b)` | two files have identical contents. |
 | `(check cond what)` | `cond` is true; the escape hatch for the rest. |
 
-In a glob, `*` stands for any run of bytes and `?` for any single byte. A glob
+In a glob, `*` stands for any run of bytes and `?` for any single byte. This is
+`glob-match`, the text glob from `nucleus.file` ([io.md](io.md#walking-and-globs)),
+so `*` crosses `/` here, unlike in a path glob. A glob
 matches a **whole line**, so `"define i32 @add(*)*"` is anchored at both ends —
 which is what makes it an assertion rather than a search.
 

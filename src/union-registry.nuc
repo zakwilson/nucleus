@@ -1920,19 +1920,17 @@
   (when (or (= g-ns-declared 0) (symbol-contains-byte s 40)) (return s))
   (let (sv:StrView (symbol-as-view s)
         acc:String (make String)
-        start:usize 0
-        i:usize 0
-        slen:usize (symbol-len s))
-    (while (<= i slen)
-      (when (or (= i slen) (= (as i32 (aref (sv 'data) (as i64 i))) 58))
-        (let (seg:Symbol (symbol-intern (strview-take-bytes (strview-drop-bytes sv start) (- i start)))
-              keep:bool (or (!= (builtin-type-name seg) null) (!= (pointer-kind-named seg) 0)))
-          (if-some (ft (fnty-resolve seg)) (set! keep true) 0)
-          (when (> start 0) (str-into &acc ":"))
-          (when (not keep) (str-into &acc "user/"))
-          (str-into &acc (symbol-as-view seg)))
-        (set! start (+ i 1)))
-      (set! i (+ i 1)))
+        cs:ChainSeg (chain-seg-at sv 0)
+        more:bool true)
+    (while more
+      (let (seg:Symbol (symbol-intern (chain-seg-text sv cs))
+            keep:bool (or (!= (builtin-type-name seg) null) (!= (pointer-kind-named seg) 0)))
+        (if-some (ft (fnty-resolve seg)) (set! keep true) 0)
+        (when (> (cs 'start) 0) (str-into &acc ":"))
+        (when (not keep) (str-into &acc "user/"))
+        (str-into &acc (symbol-as-view seg)))
+      (set! more (cs 'colon))
+      (when more (set! cs (chain-seg-next sv cs))))
     (return (symbol-intern (string-as-view &acc)))))
 
 ; Name the use that asked for a stamp of another file's template, for errors raised

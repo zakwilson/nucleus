@@ -185,16 +185,31 @@
 ; the declaration parser declines -- so the offset cannot be asked for. It is
 ; validated rather than trusted: see `read-dir`.
 (defconst DIRENT-D-NAME-OFFSET 19)
+; `d_type`, the byte before `d_name` in the same layouts; `.` and `..` validate it too.
+(defconst DIRENT-D-TYPE-OFFSET 18)
 
 ; One buffer of NUL-terminated names plus their offsets, the shape `Command`
 ; uses and for the same reason: `Vector`'s drop frees its array without dropping
 ; elements, so a (Vector String) would leak every name.
 (defstruct DirEntries
   buf:String
-  offs:(Vector usize))
+  offs:(Vector usize)
+  ; Each entry's `d_type`, with `DT_UNKNOWN` already resolved.
+  kinds:(Vector ui8))
+
+(defn dir-entries-new ():DirEntries
+  (let (e:&DirEntries (alloca DirEntries))
+    (init (ref e 'buf))
+    (init (ref e 'offs))
+    (init (ref e 'kinds))
+    (return @e)))
 
 (defn dir-count (self:&DirEntries):usize
   (return (count (ref self 'offs))))
+
+; A symlink is not a directory here, whatever it points at.
+(defn dir-is-dir? (self:&DirEntries i:usize):bool
+  (return (= (as i32 (invoke (ref self 'kinds) i)) DT_DIR)))
 
 ; Valid while the DirEntries is alive and unmodified.
 (defn dir-name (self:&DirEntries i:usize):StrView
@@ -206,17 +221,19 @@
 (extend DirEntries Drop)
 (defn drop (self:&DirEntries):void
   (drop (ref self 'buf))
-  (drop (ref self 'offs)))
+  (drop (ref self 'offs))
+  (drop (ref self 'kinds)))
 
 ; The terminator is a real byte of the buffer: every name but the last has more
 ; bytes after it, so `string-as-cstr`'s past-the-end NUL would not do.
-(defn dir-push-name (self:&DirEntries nm:StrView):usize
+(defn dir-push (self:&DirEntries nm:StrView kind:ui8):void
   (let (off:usize (byte-len (ref self 'buf))
         z:&ui8 (as &ui8 (alloca ui8 1)))
     (string-push-str-unchecked (ref self 'buf) &nm)
     (set! (aref z 0) 0)
     (string-push-bytes-raw (ref self 'buf) z 1)
-    (return off)))
+    (conj (ref self 'offs) off)
+    (conj (ref self 'kinds) kind)))
 
 ; Insertion sort over the OFFSETS, which is why the names never move: an
 ; offset is a usize and the buffer is untouched.
@@ -225,6 +242,7 @@
         i:usize 1)
     (while (< i n)
       (let (key:usize (invoke (ref self 'offs) i)
+            kind:ui8 (invoke (ref self 'kinds) i)
             kv:StrView (dir-name self i)
             j:i64 (- (as i64 i) 1)
             placed:i32 0)
@@ -235,9 +253,24 @@
               (do
                 (set (ref self 'offs) (as usize (+ j 1))
                      (invoke (ref self 'offs) (as usize j)))
+                (set (ref self 'kinds) (as usize (+ j 1))
+                     (invoke (ref self 'kinds) (as usize j)))
                 (set! j (- j 1))))))
-        (set (ref self 'offs) (as usize (+ j 1)) key))
+        (set (ref self 'offs) (as usize (+ j 1)) key)
+        (set (ref self 'kinds) (as usize (+ j 1)) kind))
       (set! i (+ i 1)))))
+
+; Where `d_type` is unknown, `readlink` finds a symlink first, because `opendir`
+; would follow it and a walk would enter a link cycle.
+(defn dir-resolve-kind (dir:StrView nm:StrView kind:ui8):ui8
+  (when (!= (as i32 kind) DT_UNKNOWN) (return kind))
+  (let (p:String (str dir "/" nm)
+        one:&i8 (alloca i8)
+        k:i32 (cond (>= (readlink (string-as-cstr &p) one 1) 0) DT_LNK
+                    (dir-exists? (string-as-view &p)) DT_DIR
+                    true DT_REG))
+    (drop &p)
+    (return (unsafe/cast ui8 k))))
 
 ; Every entry in `path` except `.` and `..`, sorted by name.
 ;
@@ -258,14 +291,15 @@
           ent:ptr (readdir d))
       (init (ref e 'buf))
       (init (ref e 'offs))
+      (init (ref e 'kinds))
       (while (!= ent null)
         (let (nm:StrView (strview-from-cstr
-                           (as CStr (unsafe/ptr+ (unsafe/cast &i8 ent) DIRENT-D-NAME-OFFSET))))
-          (if (= nm ".")
-            (set! seen (bit-or seen 1))
-            (if (= nm "..")
-              (set! seen (bit-or seen 2))
-              (conj (ref e 'offs) (dir-push-name e nm)))))
+                           (as CStr (unsafe/ptr+ (unsafe/cast &i8 ent) DIRENT-D-NAME-OFFSET)))
+              kind:ui8 (aref (unsafe/cast &ui8 ent) DIRENT-D-TYPE-OFFSET)
+              dir-ok:bool (or (= (as i32 kind) DT_DIR) (= (as i32 kind) DT_UNKNOWN)))
+          (cond (= nm ".") (when dir-ok (set! seen (bit-or seen 1)))
+                (= nm "..") (when dir-ok (set! seen (bit-or seen 2)))
+                true (dir-push e nm (dir-resolve-kind path nm kind))))
         (set! ent (readdir d)))
       (closedir d)
       (when (!= seen 3)
@@ -298,3 +332,197 @@
     (when (= rc 0) (return (ok))))
   (when (dir-exists? path) (return (ok)))
   (return (err! io-open-failed)))
+
+; ---------------------------------------------------------------------------
+; Globs and the recursive walk (design/stage26-refactoring/overview.md §8 RF-3a)
+; ---------------------------------------------------------------------------
+
+; Unchecked: every caller has just bounds-checked `i`.
+(defn glob-byte-at (v:&StrView i:usize):ui8
+  (return (aref (v 'data) i)))
+
+; A text glob: `*` matches any run of bytes, `/` included, and `?` any single
+; byte. Backtracking rather than recursive: one remembered `*` is enough, since a
+; second supersedes the first.
+(defn glob-match (pat:&StrView s:&StrView):bool
+  (let (pn:usize (strview-byte-len pat)
+        sn:usize (strview-byte-len s)
+        pi:usize 0
+        si:usize 0
+        star:i64 -1
+        mark:usize 0)
+    (while (< si sn)
+      (let (starred:bool false
+            matched:bool false)
+        (when (< pi pn)
+          (let (pc:ui8 (glob-byte-at pat pi))
+            (set! starred (= pc 42))
+            (set! matched (or (= pc 63) (= pc (glob-byte-at s si))))))
+        (cond starred
+                (do (set! star (as i64 pi))
+                    (set! mark si)
+                    (set! pi (+ pi 1)))
+              matched
+                (do (set! pi (+ pi 1))
+                    (set! si (+ si 1)))
+              (>= star 0)
+                (do (set! pi (+ (as usize star) 1))
+                    (set! mark (+ mark 1))
+                    (set! si mark))
+              true
+                (return false))))
+    (while (and (< pi pn) (= (glob-byte-at pat pi) 42))
+      (set! pi (+ pi 1)))
+    (return (= pi pn))))
+
+; The end of the `/`-separated component that starts at byte `at`.
+(defn path-comp-end (s:&StrView at:usize):usize
+  (let (i:usize at
+        n:usize (s 'len))
+    (while (and (< i n) (!= (glob-byte-at s i) 47))
+      (set! i (+ i 1)))
+    (return i)))
+
+(defn path-comp (s:&StrView at:usize end:usize):StrView
+  (return (strview-take-bytes (strview-drop-bytes @s at) (- end at))))
+
+; A component's leading `.` is matched only by a literal `.`.
+(defn path-comp-match (pc:&StrView sc:&StrView):bool
+  (when (and (> (sc 'len) 0) (= (glob-byte-at sc 0) 46)
+             (or (= (pc 'len) 0) (!= (glob-byte-at pc 0) 46)))
+    (return false))
+  (return (glob-match pc sc)))
+
+; The components of `pat` from byte `pi` against those of `path` from byte
+; `si`. A position past the end means no components are left.
+(defn path-glob-from (pat:&StrView pi:usize path:&StrView si:usize):bool
+  (when (> pi (pat 'len)) (return (> si (path 'len))))
+  (let (pe:usize (path-comp-end pat pi)
+        pc:StrView (path-comp pat pi pe))
+    (when (= pc "**")
+      ; Only a `**` with a component after it matches zero: a trailing one names what is below.
+      (when (and (< pe (pat 'len)) (path-glob-from pat (+ pe 1) path si)) (return true))
+      (let (s:usize si)
+        (while (<= s (path 'len))
+          (when (and (< s (path 'len)) (= (glob-byte-at path s) 46)) (return false))
+          (set! s (+ (path-comp-end path s) 1))
+          (when (path-glob-from pat (+ pe 1) path s) (return true))))
+      (return false))
+    (when (> si (path 'len)) (return false))
+    (let (se:usize (path-comp-end path si)
+          sc:StrView (path-comp path si se))
+      (return (and (path-comp-match &pc &sc)
+                   (path-glob-from pat (+ pe 1) path (+ se 1)))))))
+
+; A path glob, as bash's with `globstar`: `*` and `?` match within one
+; `/`-separated component, a component that is exactly `**` matches any number
+; of whole components, and only a literal `.` matches a component's leading `.`.
+(defn path-glob-match (pat:&StrView path:&StrView):bool
+  (return (path-glob-from pat 0 path 0)))
+
+; Within one directory a subdirectory sorts as its name plus `/`, which makes
+; the preorder walk the bytewise order of the whole paths.
+(defn walk-key-tail (nm:&StrView k:usize dir:bool):i32
+  (cond (< k (nm 'len)) (return (as i32 (glob-byte-at nm k)))
+        dir (return 47)
+        true (return -1)))
+
+(defn walk-less? (d:&DirEntries a:usize b:usize):bool
+  (let (x:StrView (dir-name d a)
+        y:StrView (dir-name d b)
+        k:usize 0)
+    (while (and (< k (x 'len)) (< k (y 'len)))
+      (let (cx:ui8 (glob-byte-at &x k)
+            cy:ui8 (glob-byte-at &y k))
+        (when (!= cx cy) (return (< cx cy))))
+      (set! k (+ k 1)))
+    (return (< (walk-key-tail &x k (dir-is-dir? d a)) (walk-key-tail &y k (dir-is-dir? d b))))))
+
+(defn walk-order (d:&DirEntries):(Vector usize)
+  (let (v:&(Vector usize) (alloca (Vector usize))
+        n:usize (dir-count d)
+        i:usize 0)
+    (init v)
+    (while (< i n)
+      (let (j:usize i)
+        (while (and (> j 0) (walk-less? d i (invoke v (- j 1))))
+          (set! j (- j 1)))
+        (insert v j i))
+      (set! i (+ i 1)))
+    (return @v)))
+
+; `dir`'s entries in walk order, each subdirectory's in its place. A path is
+; `prefix` plus the name; `filter` keeps only paths matching `pat`, and without
+; `hidden` no `.`-name is listed or entered.
+(defn walk-into (out:&DirEntries dir:StrView prefix:StrView filter:bool pat:StrView
+                 hidden:bool):!void
+  (with (d:DirEntries (try (read-dir dir))
+         order:(Vector usize) (walk-order &d))
+    (let (i:usize 0)
+      (while (< i (count &order))
+        (let (k:usize (invoke &order i)
+              nm:StrView (dir-name &d k))
+          (when (or hidden (not (strview-has-prefix nm ".")))
+            (with (path:String (str prefix nm))
+              (let (pv:StrView (string-as-view &path))
+                (if (dir-is-dir? &d k)
+                  (with (sub:String (str prefix nm "/"))
+                    (try (walk-into out pv (string-as-view &sub) filter pat hidden)))
+                  (when (or (not filter) (path-glob-match &pat &pv))
+                    (dir-push out pv (invoke (ref d 'kinds) k))))))))
+        (set! i (+ i 1)))))
+  (return (ok)))
+
+; Every non-directory under `root`, as `root/…` paths in bytewise order (what
+; `LC_ALL=C sort` gives). A symlink is listed and never entered.
+(defn walk-dir (root:StrView):!DirEntries
+  (with (out:DirEntries (dir-entries-new)
+         prefix:String (str root (if (strview-has-suffix root "/") "" "/")))
+    (try (walk-into &out root (string-as-view &prefix) false "" true))
+    (return (ok (move out)))))
+
+; Whether a component of `pat` from byte `at` on starts with `.`.
+(defn glob-names-hidden? (pat:&StrView at:usize):bool
+  (let (i:usize at)
+    (while (<= i (pat 'len))
+      (when (and (< i (pat 'len)) (= (glob-byte-at pat i) 46)) (return true))
+      (set! i (+ (path-comp-end pat i) 1)))
+    (return false)))
+
+; Where `pat`'s first component holding a `*` or `?` starts, or past the end.
+(defn glob-literal-end (pat:&StrView):usize
+  (let (i:usize 0)
+    (while (<= i (pat 'len))
+      (let (e:usize (path-comp-end pat i)
+            j:usize i)
+        (while (< j e)
+          (let (c:ui8 (glob-byte-at pat j))
+            (when (or (= c 42) (= c 63)) (return i)))
+          (set! j (+ j 1)))
+        (set! i (+ e 1))))
+    (return i)))
+
+(defn path-readable? (path:StrView):bool
+  (match (file-open-read &path)
+    ((ok f) (let (fh:File f)
+              (drop &fh)
+              (return true)))
+    ((err e) (return false))))
+
+; The non-directories matching the path glob `pat`, in bytewise order. The walk
+; starts below `pat`'s literal leading components (`lib` for `lib/**/*.nuc`); a
+; missing start matches nothing, and a pattern with no wildcard names one path.
+(defn glob-files (pat:StrView):!DirEntries
+  (with (out:DirEntries (dir-entries-new))
+    (let (lit:usize (glob-literal-end &pat))
+      (cond (> lit (pat 'len))
+              (when (and (not (dir-exists? pat)) (path-readable? pat))
+                (dir-push &out pat (unsafe/cast ui8 DT_REG)))
+            (= lit 0)
+              (try (walk-into &out "." "" true pat (glob-names-hidden? &pat 0)))
+            true
+              (let (prefix:StrView (strview-take-bytes pat lit)
+                    dir:StrView (if (= lit 1) "/" (strview-take-bytes pat (- lit 1))))
+                (when (dir-exists? dir)
+                  (try (walk-into &out dir prefix true pat (glob-names-hidden? &pat lit)))))))
+    (return (ok (move out)))))

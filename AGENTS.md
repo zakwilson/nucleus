@@ -47,6 +47,7 @@ Two habits produce a long comment with no decision ever taken to write one:
 - [context/build.md](context/build.md) - build flow and bootstrap artifacts
 - [context/macros-jit.md](context/macros-jit.md) - macros and JIT
 - [context/repl.md](context/repl.md) - when (and when not) to use `nucleusc -i` during development
+- [context/refactoring.md](context/refactoring.md) - rewriting `.nuc`/`.nuch` source with `defrewrite` tools: when, how to run, refusal discipline (not for Markdown/EDN)
 - [context](context) directory - create additional files here as appropriate
 
 ## Self-Improving Context

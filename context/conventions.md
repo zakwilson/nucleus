@@ -387,7 +387,8 @@ byte-identical across the flip — verify with a before/after `--emit-llvm` diff
 
 `desugar` only rewrites **binding positions** of known forms: the `defn` name and
 param list, `defvar`/`extern`/`declare` names, `defstruct` fields, and `let`/`with`
-binding *names*. The `-` definers (`defn-`/`defvar-`/`defstruct-`) are
+binding *names* — the rows of `lib/nucleus/slots.nuc` marked `desugared` (see
+"Adding a special form" below). The `-` definers (`defn-`/`defvar-`/`defstruct-`) are
 desugared too (before 2026-09-25 they were not, so a private template's `x:T` never
 split). A `declare`'s params are **not**: `ptr:FILE` must stay one symbol there. A `defn`'s **body is left untouched**, so a colon-typed symbol in
 the body (`r:T`, `x:ptr:Node`, `(cast i32 …)`) stays a single `NODE-SYM` —
@@ -2538,6 +2539,37 @@ Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in
 - **After a leading `(ns …)` the loop walks a different list header.** `apply-leading-ns` returns a `node-rest` view, and `node-splice-at` gives that view a fresh array, so a `(do …)` splice never reaches the caller's list. The header writers read `g-root-forms` (the walked list) for that reason; anything else that reads the unit's forms after compilation must do the same.
 
 The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `SPECIAL-FORM-NAMES` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/nucleus/test.nuc`) is.
+
+## Adding a special form: give it a row in the slot table
+
+`lib/nucleus/slots.nuc` (`nucleus.slots`, Stage 26 RF-6) says what each operand of
+every built-in form is: `SLOT-BINDER`, `SLOT-TYPE`, `SLOT-VALUE`, `SLOT-NAME`, ….
+Two consumers read it: the compiler's `desugar-form` (a row with `desugared`
+splits its `BINDER`/`FIELD`/`PARAMS`/`BINDINGS` operands; `INLINE` recurses) and
+nucleus.refactor's `slot-kind`, which every refactoring rule that cares about
+position asks. So a new special form — or a new operand shape of an old one —
+is one more edit beside the `emit-list` arm and `node-type` lockstep:
+
+- **No row means `SLOT-UNKNOWN` throughout**, which is right for a function or
+  a macro and wrong for a built-in: a rewrite rule then refuses inside the form,
+  and a binder there is never desugared. A pure-expression form joins the
+  all-`SLOT-VALUE` row; a form with a type operand, a binder or a body needs
+  its own row (`a`, `b`, `c` for elems 1-3, `rest` after).
+- **Marking a row `desugared` changes the compiler's output** for every file
+  that uses the form: run the IR snapshot (snapshot with the old compiler,
+  verify with the new) and expect the `.nuch` of a form with a newly split
+  binder to change spelling.
+- `attrs` skips leading keyword operands (`defvar :volatile x:i32 0`): the
+  binder is the first non-keyword, for desugar too (before RF-6 the compiler
+  split only elem 1, so an attribute left the binder sugared).
+- The table is not the only per-head knowledge. `qq-binder-slot` /
+  `qq-report-binders` / `qq-ret-index` (quasiquote hygiene, which also knows
+  the library macros `dotimes`, `doseq`, `for`), `GCHECK-SPECIAL-FORMS`
+  (`src/generics.nuc`) and `SPECIAL-FORM-NAMES` are separate lists; a new form
+  may need each (design/stage26-refactoring/overview.md §8 RF-6).
+- The compiler imports `nucleus.slots`, so the file is in the bootstrap: it
+  may import only what `src/nucleusc.nuc` already does (`strview`, `intern`,
+  `node`), and nucleus.refactor imports it, not the other way round.
 
 ## A macro-body form that calls into the compiler is six edits
 
@@ -6377,7 +6409,9 @@ at the parser and each of those needs its own arm — and the one that bites is
 `collect-pattern-tyvars`, which collects any **unresolvable** symbol as a tyvar:
 a bare `&T` in `(Vector &T)` would have been registered as a type *variable*
 rather than reported, the same silent class as the `x:ref:Vector:ref:Node`
-mis-parse container-type-sugar.md found.
+mis-parse container-type-sugar.md found. Since Stage 26 RF-2 the first two
+(and the `&` expansion) segment through one function, `chain-seg-at` in
+`lib/nucleus/read.nuc`; a new segment sigil goes in its `chain-sigil?`.
 
 The rule: if the sugar is a pure rewriting of one spelling into another, do it
 in `lex-atom` (`expand-ref-sigil`) so every consumer downstream sees the
@@ -6955,6 +6989,19 @@ emit, so `__gs_N` numbering is emission order and a `--dump-ast` tree carries
 none. Nothing may rely on the second element of a `*-lit` cell being anything
 but the first element.
 
+## A syntax-mode hook on the reader's hot path: re-enter, don't wrap
+
+`read.nuc`'s syntax mode (Stage 26 RF-1) hooks `rd-form`, the reader's
+per-form recursion. Splitting it into a wrapper that tested the mode and a
+body function cost about 5% on `--dump-ast`. The cause was the extra call and
+the by-value `ReadResult` copy on every form, not the test. The shape that
+costs nothing keeps the body inline: the mode's `rd-syn-form` sets a one-shot
+`framed` flag and calls `rd-form` again. Keep any hook out of a hot inner
+loop the same way (`rd-skip-ws`'s `;` loop): branch to a copy. Wall-clock
+differences under about 2% on a 35 ms run are code placement, not work.
+Reverting single hooks moved timings both ways, and the container has no
+`perf`; design/stage26-refactoring/overview.md §8.
+
 ## `readdir` order is not an ordering — `lib/nucleus/file.nuc`'s `read-dir` sorts
 
 `read-dir` returns entries **sorted by name**, and the compiler's
@@ -6972,7 +7019,11 @@ The `d_name` offset lives in `lib/nucleus/file.nuc` **once**. Do not re-declare
 `struct dirent` opaque (its `char d_name[256]` is a shape the declaration parser
 declines), so the offset is a hardcoded 19, and two copies is two things to be
 wrong. It is validated, not trusted — `.` and `..` exist in every POSIX
-directory, so `read-dir` fails when they do not appear.
+directory, so `read-dir` fails when they do not appear. The `d_type` offset
+(18) lives beside it and is checked the same way: `.` and `..` must read as
+`DT_DIR` or `DT_UNKNOWN`. `DT_UNKNOWN` is resolved by `readlink` and then
+`opendir`. `opendir` alone follows links, so a walk would enter a symlink
+cycle on a filesystem without `d_type`.
 
 ## `str-into` re-evaluates its target once per piece
 
@@ -7524,6 +7575,15 @@ fine, as long as the boot never expands it.
 A stamp drained into a later REPL module that reads a library `defvar` (`heap`)
 needs the declaration. `repl-backfill-progglobal-decls` adds it after each
 import, as `repl-backfill-progdefn-decls` does for functions.
+
+## In the REPL, a `lib/` global the compiler defines is the compiler's
+
+`emit-global-def` declares it `external` under `-i` (`repl-host-global?`), so
+the session and the compiler share one intern table and one arena. A second
+table meant a macro module materialised after a `nucleus.node` import minted
+heads the compiler's pointer compares miss (stage26 overview §8 RF-4). A new
+stateful `lib/` global the compiler links is shared automatically; a lib
+*function* is still the session's own copy.
 
 ## A library template's overloaded protocol call: spell the PROTOCOL's namespace
 

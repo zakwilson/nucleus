@@ -2177,7 +2177,7 @@
                 (set! found 1)))))
         (when (= found 0) (set! tried (repl-tried-add tried fv)))))
     (when (!= (repl-library-loaded? chosen) 0)
-      (emit stderr "  " chosen " already loaded\n")
+      (when (!= g-interactive 0) (emit stderr "  " chosen " already loaded\n"))
       (return ""))
     ; Non-zero is FAILURE (llvm.nuch).
     (when (!= (LLVMLoadLibraryPermanently (symbol-as-cstr chosen)) 0)
@@ -2187,7 +2187,8 @@
     ; no longer exists; the handle (`g-host-lib-loaded`) is still open.
     (repl-vec-truncate g-host-export-names 0)
     (repl-vec-truncate g-host-export-answers 0)
-    (emit stderr "  loaded " chosen "\n")
+    ; Prompt chatter; a `--run` program's stderr is its own.
+    (when (!= g-interactive 0) (emit stderr "  loaded " chosen "\n"))
     (return "")))
 
 (defn repl-load-library (name:Symbol line:i32):i32

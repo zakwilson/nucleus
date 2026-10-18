@@ -268,3 +268,22 @@ Stage 21 item 7 classified 2,294 pointer declarations this way (ptr-is-unchecked
 - **The invariant these three targets assert is "every `lib/*.nuc` compiles as its own entry file", in all three emit modes.** Stage 15 W9 item 1 made that true and pinned it (the three `w9-lib-emit-*` units in `tests/suite-linking.nuc`). Two things it needed: the unit's ROOT file had to join `g-prescan-sigs` / `g-importing` (the auto-prelude reaches `node`/`arena`/`macros`, so compiling one of them imported the entry file itself — see conventions.md), and `--emit-nuch` stopped being exempt from the prelude, since an exported signature names imported types. A new file under `lib/` that touches compiler-private globals belongs in `src/` instead.
 - Self-contained libraries (e.g. `mathlib.nuc`, `arena.nuc`, `node.nuc`) can be compiled to standalone `.o` files. `arena.nuc` declares its own global `Arena` `g-arena`, zero-filled, whose first allocation makes its first block; `node.nuc` imports `arena` and uses the prelude-provided `Node` struct (the type; since Stage 16 the prelude no longer imports `node` itself).
 - To use a header-only import: generate `lib/foo.nuch` and `build/lib/foo.o`, then programs using `(import foo)` will find the `.nuch` and emit `declare` statements. Link the program's `.ll` against `foo.o` with clang.
+
+## Tools and the bootstrap
+
+- **Build a refactoring tool before the migration that breaks it.** A change to
+  the reader (or any syntax the tool's own source uses) can stop
+  `tool.nuc` compiling midway through the run. `nucleusc --run` recompiles the
+  tool with the *current* reader each time, so for a migration like that build
+  once and keep the binary: `build/nucleusc tool.nuc -o build/tool`, then run
+  `build/tool --apply …`. Rules that match on spelling guards are unaffected by
+  a change in what the reader produces (Stage 26 §4.8,
+  [context/refactoring.md](refactoring.md)).
+- **`lib/nucleus/slots.nuc` is in the compiler's import closure** (`desugar-form`
+  reads it), so editing it is a compiler change: bootstrap to a fixed point
+  and take the IR snapshot (snapshot with the old compiler, verify with the
+  new). A `desugared` row also changes generated `.nuch` spelling. See
+  "Adding a special form: give it a row in the slot table" in
+  [conventions.md](conventions.md). `nucleus.syntax` is inside the closure too,
+  since `nucleus.read` imports it. Only `nucleus.refactor` is outside, and
+  changing it needs only `make test` and the header check.

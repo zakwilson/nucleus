@@ -144,6 +144,11 @@ handed.
 | `read-dir` | `(path:StrView):!DirEntries` — every entry but `.` and `..`, sorted by name |
 | `dir-count` | `((self (ref DirEntries))):usize` |
 | `dir-name` | `((self (ref DirEntries)) i:usize):StrView` |
+| `dir-is-dir?` | `((self (ref DirEntries)) i:usize):bool` — entry `i` is a directory; a symlink never is |
+| `walk-dir` | `(root:StrView):!DirEntries` — every non-directory below `root`, recursively, as `root/…` paths |
+| `glob-files` | `(pat:StrView):!DirEntries` — the non-directories matching the path glob `pat` |
+| `path-glob-match` | `(pat:&StrView path:&StrView):bool` — the path glob (below) |
+| `glob-match` | `(pat:&StrView s:&StrView):bool` — the text glob: `*` any run of bytes, `/` included, `?` any one byte |
 | `make-dir` | `(path:StrView):!void` — one level, mode 0755 |
 | `dir-exists?` | `(path:StrView):bool` |
 
@@ -165,6 +170,52 @@ that wants raw order does not exist yet.
 
 `make-dir` is **idempotent**: an existing directory is success. It makes one
 level, not a path — there is no `mkdir -p`.
+
+### Walking and globs
+
+```lisp
+(with (d (try (glob-files "lib/**/*.nuc")))
+  (let (i:usize 0)
+    (while (< i (dir-count d))
+      (println (dir-name d i))       ; lib/nucleus/allocator.nuc, …
+      (set! i (+ i 1)))))
+```
+
+`walk-dir` and `glob-files` return a `DirEntries` whose names are whole paths.
+**The order is bytewise over the whole path**, which is what `LC_ALL=C sort`
+and a C-locale shell glob give: `a-b.nuc` and `a.nuc` come before `a/x.nuc`.
+Within a directory a subdirectory sorts as its name plus `/`, which is how
+a depth-first walk produces that order without sorting at the end.
+
+Neither lists a directory, so an empty directory contributes nothing. A
+symlink is listed as an entry and is never entered, so a link cycle cannot
+loop. That holds on a filesystem that does not report entry types
+(`DT_UNKNOWN`) too: there `read-dir` asks `readlink` before it tries to open
+the entry as a directory.
+`walk-dir` lists hidden (`.`) names. A walk that cannot read a directory
+fails with that directory's error rather than skipping it.
+
+**The path glob** is bash's, with `globstar` on:
+
+- `*` matches any run of bytes and `?` any one byte, both within one
+  `/`-separated component.
+- A component that is exactly `**` matches any number of whole components,
+  so `lib/**/*.nuc` matches `lib/a.nuc` and `lib/x/y/a.nuc`. A trailing `**`
+  needs at least one, so `lib/**` matches what is below `lib`, not `lib`
+  itself. Elsewhere `**` is just two `*`s.
+- A component's leading `.` is matched only by a literal `.`, so `*` and
+  `**` never reach `.git/…`; `.*/x` does.
+- There are no `[…]` classes and no escapes.
+
+`glob-files` starts its walk at the pattern's leading literal components
+(`lib` for `lib/**/*.nuc`) and does not enter hidden directories unless the
+pattern spells a leading `.`. A start that does not exist matches nothing,
+which is not an error. A pattern with no `*` or `?` names one path, and
+matches it when it is a readable non-directory.
+
+`glob-match` is the **text** glob, the one the test framework's
+`check-match` uses on lines: there `*` crosses `/`. Use `path-glob-match`
+for paths.
 
 `read-dir` fails with `dir-layout-unknown` when the platform's `struct dirent`
 is not the layout it reads names at. It knows because `.` and `..` exist in

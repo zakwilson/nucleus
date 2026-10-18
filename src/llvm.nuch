@@ -92,3 +92,15 @@
 (declare LLVMSetSection (g:ptr section:ptr) :void)
 (declare LLVMGetInitializer (g:ptr) :ptr)
 (declare LLVMIsNull (v:ptr) :i32)
+; `--run`: ORC's C API runs no `llvm.global_ctors`, so the driver calls them itself.
+(declare LLVMGetNamedGlobal (mod:ptr name:ptr) :ptr)
+(declare LLVMGetNumOperands (v:ptr) :i32)
+(declare LLVMGetOperand (v:ptr index:ui32) :ptr)
+(declare LLVMConstIntGetZExtValue (v:ptr) :ui64)
+(declare LLVMSetLinkage (g:ptr linkage:i32) :void)
+(declare LLVMSetValueName2 (v:ptr name:ptr len:usize) :void)
+(declare LLVMDeleteGlobal (g:ptr) :void)
+; `--run` sets the JIT's codegen level, whose default is CodeGenOpt::Default.
+(declare LLVMOrcCreateLLJITBuilder () :ptr)
+(declare LLVMOrcLLJITBuilderSetJITTargetMachineBuilder (builder:ptr jtmb:ptr) :void)
+(declare LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine (tm:ptr) :ptr)

@@ -46,7 +46,6 @@ size_t nuc_test_failure_len(void) asm("nuc_test-failure-len");
 #define SHOW_LIMIT 400
 struct nuc_StrView nuc_test_show(struct nuc_StrView s) asm("nuc_test-show");
 uint8_t nuc_test_byte_at(struct nuc_StrView* v, size_t i) asm("nuc_test-byte-at");
-bool nuc_glob_match(struct nuc_StrView* pat, struct nuc_StrView* s) asm("nuc_glob-match");
 bool nuc_contains_QMARK_nuc_StrView_nuc_StrView(struct nuc_StrView hay, struct nuc_StrView needle) asm("nuc_contains_QMARK.nuc_StrView.nuc_StrView");
 bool nuc_has_line_QMARK(struct nuc_StrView hay, struct nuc_StrView want) asm("nuc_has-line_QMARK");
 bool nuc_has_matching_line_QMARK(struct nuc_StrView hay, struct nuc_StrView pat) asm("nuc_has-matching-line_QMARK");

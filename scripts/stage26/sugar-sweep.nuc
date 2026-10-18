@@ -1,0 +1,94 @@
+; Adopt the `&` pointer-kind sugar: rules R3-R5 of scripts/stage21/sugar-sweep.py,
+; ported in Stage 26 (design/stage26-refactoring/overview.md §8 RF-6).
+;
+;   build/nucleusc --run scripts/stage26/sugar-sweep.nuc -- \
+;     [--apply] [--strict] FILE|DIR|GLOB...
+;
+;   R3  (ref X)          -> &X   where the list is code: not a pattern, a name or data
+;   R4  (ptr X)          -> &X   in a type slot; refused where the list is a value
+;   R5  ref:T…, ?ptr:T…  -> &T…  except quoted, in a pattern or a name; refused as a
+;                                binder, where `ref:T` names a binding `ref`
+;
+; As in the Python, a quasiquote template is code for R3 and R5 whatever its
+; slots, and R4 leaves it alone.
+
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+(import-use nucleus.refactor)
+
+(defn role (s:&Syn):i32
+  (cond (in-quote? s) (return SLOT-QUOTED)
+        (in-quasiquote? s) (return SLOT-TEMPLATE))
+  (return (slot-kind s)))
+
+(defn value? (r:i32):bool
+  (return (or (= r SLOT-TOP) (= r SLOT-HEAD) (= r SLOT-VALUE) (= r SLOT-PLACE) (= r SLOT-UNKNOWN))))
+
+(defn type? (r:i32):bool
+  (return (or (= r SLOT-TYPE) (= r SLOT-RETURN))))
+
+; `(ref X)` or `(ptr X)` written as a list, X no keyword: R3 rewrites it where
+; the list is code, and R4 where it is a type.
+(defn site? (s:&Syn x:&Syn):bool
+  (let (t:StrView (src-text x))
+    (return (and (= (s 'kind) SYN-LIST) (not (and (strview-has-prefix t ":") (> (t 'len) 1)))))))
+
+(defn literal? (x:&Syn):bool
+  (return (or (= (x 'kind) SYN-STR) (= (x 'kind) SYN-CHAR))))
+
+(defn r3? (s:&Syn x:&Syn):bool
+  (let (r:i32 (role s))
+    (return (and (site? s x) (or (value? r) (type? r) (= r SLOT-TEMPLATE))))))
+
+(defn r4? (s:&Syn x:&Syn):bool
+  (return (and (site? s x) (not (literal? x)))))
+
+(defn marker? (x:&Syn):bool
+  (let (t:StrView (src-text x))
+    (return (or (= t "rest") (= t "where") (= t "optional") (= t "repr")))))
+
+; How many `ref:`/`ptr:` segments start atom `s`, after its `?`/`!` run (0: none).
+; On a fuse's atom they must be all of it: `ptr:(T)`, never `ptr:?(T)`.
+(defn prefix-run (s:&Syn):usize
+  (when (!= (s 'kind) SYN-ATOM) (return 0))
+  (let (c:&Chain (chain-segments (src-text s))
+        k:usize 0)
+    (while (and (< k (count (ref c 'segs))) ((chain-seg c k) 'colon)
+                (or (= (chain-body c k) "ref") (= (chain-body c k) "ptr"))
+                (if (= k 0)
+                  (not (strview-contains (chain-sigils c 0) "&"))
+                  (= ((chain-sigils c k) 'len) 0)))
+      (set! k (+ k 1)))
+    (when-some (p (s 'parent))
+      (when (and (> k 0) (= (p 'kind) SYN-FUSE)
+                 (< ((chain-seg c k) 'start) ((src-text s) 'len)))
+        (return 0)))
+    (return k)))
+
+(defn put-amps (out:&RwMatch s:&Syn):void
+  (let (c:&Chain (chain-segments (src-text s))
+        k:usize (prefix-run s))
+    (rw-put out (src-slice (s 'start) (+ (s 'start) ((chain-seg c 0) 'body))))
+    (dotimes (i (as i64 k)) (rw-put out "&"))
+    (rw-put out (src-slice (+ (s 'start) ((chain-seg c k) 'start)) (s 'end)))))
+
+(defrewrite sugar
+  (rule (ref ~x) :refuse "R3: splice operand" :when (and (r3? self x) (spelled? x "~@")))
+  (rule (ref ~x) :refuse "R3: `&` reads as the legacy marker" :when (and (r3? self x) (marker? x)))
+  (rule (ref ~x) :refuse "R3: literal operand" :when (and (r3? self x) (literal? x)))
+  (rule (ref ~x) `&~x :multiline :when (r3? self x))
+  (rule (ptr ~x) :refuse "R4: (ptr X) outside a type slot" :when (and (r4? self x) (value? (role self))))
+  (rule (ptr ~x) `&~x :multiline :when (and (r4? self x) (type? (role self))))
+  (rule ~a :refuse "R5: binding named by a pointer-kind prefix"
+        :when (and (> (prefix-run a) 0) (or (= (role a) SLOT-BINDER) (= (role a) SLOT-FIELD))))
+  (rule ~a :emit (put-amps out a)
+        :when (and (> (prefix-run a) 0)
+                   (not (or (= (role a) SLOT-QUOTED) (= (role a) SLOT-PATTERN) (= (role a) SLOT-NAME))))))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (sugar))))

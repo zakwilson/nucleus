@@ -2096,10 +2096,10 @@
       (return (+ 1 (+ (count-pattern-nodes (node-first n)) (count-pattern-nodes (node-rest n))))))
     ; A colon spelling is collected as its split list, one leaf per segment.
     (when (= (n 'kind) NODE-SYM)
-      (let (k:i32 1 i:usize 0 s:Symbol (n 's))
-        (while (< i (symbol-len s))
-          (when (= (symbol-byte-at s i) 58) (inc! k))
-          (set! i (+ i 1)))
+      (let (k:i32 1 sv:StrView (symbol-as-view (n 's)) cs:ChainSeg (chain-seg-at sv 0))
+        (while (cs 'colon)
+          (inc! k)
+          (set! cs (chain-seg-next sv cs)))
         (return k)))
     (return 1)))
 

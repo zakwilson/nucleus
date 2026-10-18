@@ -3657,3 +3657,286 @@ boot refresh, `make check-headers` clean. Every existing example's IR is
 unchanged. New: `examples/address-of-expressions.nuc` and eight `aoe-*` manifest
 rows; the s16 unit that pinned `(ref (mk 1) 'x)`'s refusal now pins its escape.
 
+
+## Stage 26 — Nucleus refactors Nucleus, designed (2026-10-15)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md). Not
+ruled; Q1–Q8 are open with recommendations, and no code has changed. It asks
+why the Stage 17/20/21 sweeps (seven Python scripts, about 1,800 lines) were
+not written in Nucleus. The decisive finding: symbols are interned singletons,
+so a source position cannot live on a symbol `Node`. Spans therefore go on a
+source-shaped `Syn` tree built by a mode of the one reader (Q1). Phases
+RF-0 … RF-8; acceptance is ports of `list-api-sweep.py` and `ptr-sweep.py`
+that replay the originals exactly.
+
+## Stage 26 — rulings (2026-10-15)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §7. The
+rulings:
+
+- Q1: spans come from a reader mode.
+- Q2: patterns match the read tree, with spelling guards.
+- Q3: templates are quasiquotes, printed in the preferred spelling with a
+  read-back fallback.
+- Q4: tools run with `nucleusc --run`, for now.
+- Q5: tools live in `scripts/stageN/*.nuc`, the library in
+  `lib/nucleus/refactor.nuc`.
+- Q6: a Python script is deleted once ported, but only ported when it tests
+  a capability of the library.
+- Q7: `context/refactoring.md` plus a line in `AGENTS.md`, written in RF-8.
+- Q8: `glob-match` and a recursive walk move into `lib/nucleus/file.nuc`.
+
+Not started.
+
+## Stage 26 RF-1 — syntax mode, built (2026-10-15)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-1.
+`read-syntax-all` reads with the one reader and builds a source-shaped `Syn`
+tree beside the nodes. Each `Syn` has a byte span, a line and column, the
+very node the read produced, and source-shaped kids. A `SynFile` adds the
+comment and `#_` discard spans. The types and queries are in the new
+`lib/nucleus/syntax.nuc`; the reader keeps a `syn` field, one test per form
+when it is off. Gates: bootstrap fixed point; `make test` 1469/5 (the known
+5); `check-headers` clean; `--dump-ast` and the IR snapshot byte-identical
+against HEAD's compiler; `scripts/stage26/syn-corpus.nuc` clean over 652
+files and 371,535 Syns. The first build split `rd-form` and cost about 5%
+on `--dump-ast`. Re-entering `rd-form` for the frame instead, and keeping
+`rd-skip-ws`'s comment loop free of the hook, leaves +1.7% (34.9 vs
+34.3 ms over 21 runs). That residual does not bisect to any one hook, so it
+is read as code placement. `docs/reading.md` has a "Syntax mode" section.
+
+## Stage 26 RF-2 — chain segments, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-2.
+`lib/nucleus/read.nuc` has one colon-chain splitter, `chain-seg-at`. Each
+segment records its sigil run, its body, and whether a `:` follows, all as
+byte offsets. `chain-segments` gives tools the whole chain, with a keyword
+flag and `chain-open?`. The sigil expansion, the fuse gate, the fuse's
+split, `split-colon-segments`, `spelling-as-key` and `count-pattern-nodes`
+all step through it, and `rd-seg-next` is gone. Gates: bootstrap fixed
+point; `make test` 1475/5 (the known 5); `check-headers` clean; the IR
+snapshot and `--dump-ast` corpus byte-identical against RF-1's compiler;
+`syn-corpus` clean over the same 652 files; `--dump-ast` read time level
+with RF-1. `docs/reading.md` has a "Colon chains" section.
+
+## Stage 26 RF-3a — edits, sugared printer, glob and walk, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-3a.
+`lib/nucleus/refactor.nuc` (new) holds span edits: `edits-new`, `edit-span`,
+`edit-replace`, `edits-apply`. `edits-apply` returns `EditsResult`, whose
+`EditError` names both overlapping edits. `edits-apply-range` and
+`edits-drop-within` support composing rewrites from the inside out.
+`node-write-sugared` in `lib/nucleus/read.nuc` prints the house spelling and
+falls back to the long form wherever the short one would not read back
+`node-eq`. `glob-match` moved from `nucleus.test` to `nucleus.file`, which also
+gains `read-dir` entry kinds, `walk-dir`, `glob-files` and `path-glob-match`
+(bash `globstar`). Gates: bootstrap fixed point; `make test` 1485/5 (the
+known 5); `check-headers` clean; the IR snapshot and `--dump-ast` corpus
+byte-identical against RF-2's compiler; `syn-corpus` clean over the same 652
+files, with the new no-edit, identity, insertion, overlap and sugared
+round-trip checks. Every new check was shown to fail under a deliberate
+breakage. RF-3b (`defrewrite`, `refactor-main`, the `list-api-sweep.py` port)
+is next. Docs: `docs/refactoring.md` (new), `docs/reading.md`, `docs/io.md`
+and `docs/testing.md`.
+
+## Stage 26 RF-3b — defrewrite, driver, list-api port, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-3b.
+`lib/nucleus/refactor.nuc` now has `defrewrite`, with these rule kinds:
+
+- templates: v1 unquotes holes only;
+- `:refuse`;
+- `:emit` with an output builder.
+
+The options are `:when`, `:multiline` (verbatim), `:reindent` and `:flag`.
+The guard helpers are `same-text?`, `spelled?`, `prefix-form?`,
+`has-comment?`, `has-discard?`, `operand-of?` and the quote-context
+predicates. Also new: `rewrite-source`, `refactor-main` (dry run by default,
+`--apply`, `--strict`, `--in-strings` reserved for RF-5) and
+`edits-apply-outermost`. Edits from one pass now nest, so a hole inside a
+form that was already rewritten is read through its outermost edit.
+
+`scripts/stage26/list-api-sweep.nuc` (94 lines) replaces
+`scripts/stage21/list-api-sweep.py`, which is deleted. Its last content is
+recoverable as `95df57b7:scripts/stage21/list-api-sweep.py`, the revision
+named in `replay.sh`'s header.
+
+Gates:
+- bootstrap fixed point;
+- `make test` 1494/5, the known 5;
+- `check-headers` clean;
+- IR snapshot and `--dump-ast` corpus byte-identical against RF-3a's
+  compiler;
+- `syn-corpus` clean over 654 files;
+- **replay PASS** at `e1952ea3`: 21 files and 71 refusal sites, identical.
+
+Each new unit and the replay were shown to fail under a breakage.
+
+Found, not fixed: at the REPL, a macro expanding to a top-level `defn` fails
+("unknown: defn"). This already happens at base. Also at the REPL,
+importing `nucleus.read` and then `nucleus.file` fails; that started in
+RF-1…RF-3a.
+
+Docs: `docs/refactoring.md`. RF-4 (`nucleusc --run`) is next.
+
+## Stage 26 RF-4 — `nucleusc --run`, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-4.
+
+**The REPL regression first.** "undefined: __gs_61" after `(import-use
+nucleus.read)` then `(import-use nucleus.file)` was a latent bug, and Stage
+26 only reached it. Any import that reaches `nucleus.node` gave the session a
+second intern table. A macro JIT module materialised after that interned
+into it, and the compiler compares symbols by pointer. This was
+repl-jit-symbol-precedence.md §5's pinned residual, and `base` fails the same
+way with `str`. The fix is in `emit-global-def`: in the REPL, a `lib/` global
+that the compiler binary defines (`repl-host-global?`) is declared `external`,
+so the process has one intern table, one Symbol table and one arena. That is
+L6's rule for macro bodies, extended to the session. `host-runtime.in` now
+answers 111 where it pinned the failure, and `tests/repl/rf4-host-state.in`
+is new.
+
+**`--run`.** `nucleusc --run FILE -- ARGS…` compiles the whole unit as `-o`
+does. It then JITs the module in an LLJIT of its own, runs its constructors
+(ORC's C API does not, so `run-take-ctors` lifts them out of
+`llvm.global_ctors`) and exits with `main`'s value. The default is `-O0`,
+and the JIT's backend follows `-O`: at `CodeGenOpt::None` it is about 3×
+faster to JIT than LLJIT's own default.
+
+On the list-api tool, `--run` costs the same as building with `-o` and
+running the binary. On a trivial program it is slightly faster. The front end
+is most of the time. `replay.sh`'s header now runs the port with `--run`, and
+the list-api replay PASSes that way.
+
+Gates:
+- bootstrap fixed point;
+- `make test` 1497/5, the known 5;
+- `check-headers` clean;
+- IR snapshot and `--dump-ast` corpus byte-identical against RF-3b's
+  compiler;
+- replay PASS.
+
+Docs: `docs/compiler.md` ("Running a program without linking"),
+`docs/refactoring.md`, `docs/index.md`. Context: `context/repl.md`.
+
+## Stage 26 RF-5 — programs inside strings, `ptr-sweep` port, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-5.
+
+**Strings as source.** `syn-string-source` decodes a string literal through
+the reader's own escape decoder (`rd-string-escape`, moved out of
+`rd-string`). It returns the value plus a map from each value byte to the
+file byte that spells it. `--in-strings` (`rewrite-source-in-strings`) runs
+the rules over each string's value in a nested pass. The nested edits are
+mapped back through the map and escaped (`"`, `\`, NUL). Reports land on the
+file's line and column. Strings nested inside those values are handled the
+same way.
+
+**Fragments, a deviation from §4.6.** Tests build programs from `str`
+pieces, and four of the Python's rewrites sat in pieces that do not read
+alone. `read-syntax-fragment` handles them three ways:
+- it skips a closer with no opener;
+- it keeps a form the text ends inside, with a null node and the kids it read;
+- it can start inside a string, which is used when the previous string in
+  the same form ended inside one.
+
+Any other read error still skips the string and counts it.
+
+**The driver.** A file that does not read is reported and counted, and
+fails the run only under `--strict`. The ptr-sweep set includes eight
+fixtures that are malformed on purpose.
+
+**The port.** `scripts/stage26/ptr-sweep.nuc` is 86 lines, against the
+Python's 142. Its replay at `294e4ac2` PASSes: 519 files, 77 changed on each
+side, 0 refusals. `scripts/stage21/ptr-sweep.py` is deleted (Q6). Its last
+content is `6910d81d:scripts/stage21/ptr-sweep.py`, and `raw-sweep.py` keeps
+a copy of the `split` it imported.
+
+Gates:
+- bootstrap fixed point;
+- `make test` 1502/5, the known 5;
+- `check-headers` clean;
+- IR snapshot (3286) and `--dump-ast` corpus (1812) byte-identical against
+  RF-4's compiler;
+- syn-corpus 0 failures over 654 files;
+- list-api replay still PASSes (247/21/71).
+
+Docs: `docs/refactoring.md`, `docs/reading.md`, `docs/index.md`.
+
+## Stage 26 RF-6 — slot table, `slot-kind`, sugar R3–R5 port, built (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-6.
+
+**One table.** `lib/nucleus/slots.nuc` (`nucleus.slots`) says what each
+operand of every built-in form is (`SlotKind`: binder, type, value, name,
+params, …), one `FormSlots` row per head. The compiler's `desugar-form` now
+reads it: a row marked `desugar` has its operands split by slot, and the
+per-head rebuilds are gone. `(slot-kind s)` in `nucleus.refactor` reads the
+same table. A call, whether to a function or a macro, is `SLOT-UNKNOWN`; a
+fragment's unfinished form gives `SLOT-UNKNOWN` too.
+
+**One deliberate output change.** Desugar now splits a binder after
+attribute keywords (`(defvar :volatile x:i32 0)`), which the old code left
+sugared. The only artefact that changes is `examples/logic.nuc`'s `.nuch`,
+which now prints the binder as `(trap-zero i32)` like every other generated
+`.nuch`; IR, bootstrap and `--dump-ast` are byte-identical.
+
+**The port.** `scripts/stage26/sugar-sweep.nuc` (94 lines) ports R3–R5 of
+`sugar-sweep.py` (739 lines; 652 trimmed to R3–R5 and their skeleton). Its
+replay at `0fc4fa9e` PASSes: 223 files, 128 changed each side, 2 refusal
+sites each. The `.py` stays (Q6: a partial port). The survey of where the
+compiler decides roles, and eight disagreements with the Python's table, are
+in §8.
+
+Gates:
+- bootstrap fixed point;
+- `make test` 1508/5, the known 5;
+- `check-headers` clean (99);
+- IR snapshot against RF-5's compiler: 3285 of 3286 identical, the `logic.nuch` above;
+- `--dump-ast` corpus (1815) byte-identical;
+- syn-corpus 0 failures over 656 files;
+- list-api (247/21/71) and ptr (519/77/0) replays still PASS.
+
+Docs: `docs/refactoring.md` ("Operand slots"), `docs/index.md`;
+`context/conventions.md` (adding a special form).
+
+## Stage 26 RF-7 — resolution findings (2026-10-16)
+
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-7.
+This was an investigation and changed no code.
+
+- **No resolution pass.** Names are resolved while code is emitted and in
+  `node-type`. Locals live in the emitter's scope chain, globals go through
+  `resolve-spelling`, overloads and fields are chosen by types, and
+  templates go through `qq-resolve`. The `#hN/` tags are gone since AN-4.
+- **Little list identity survives.** Only 48% of the lists the compiler
+  resolves were made by the reader when it compiles itself; for the
+  examples it is 73%.
+- **A `desugar` defect.** Its "unchanged" test compares against a fresh
+  `node-rest` view, so all 28,565 expansions in the self-compile are
+  copied.
+- **Recommendation:** a compiler report mode, `nucleusc --resolve`, that
+  writes one EDN record per occurrence with its span, role and target. A
+  rename tool joins those records to its `Syn` tree.
+- **Phases:** RR-0 fixes the `desugar` defect; RR-1 … RR-5 go to a later
+  stage.
+- **Open:** six questions for the user, listed in §8.
+
+## Stage 26 RF-8 — docs and agent context (2026-10-16)
+
+- `docs/refactoring.md` was reviewed against the code, and every example
+  ran.
+- `context/refactoring.md` is new. It covers `.nuc` and `.nuch` only (Q7),
+  and `AGENTS.md` lists it.
+- `context/build.md` gained "Tools and the bootstrap".
+
+With RF-8, Stage 26 is built through RF-8.
+- **Last full gates (RF-6):** `make test` 1508/5 (the known 5),
+  bootstrap fixed point, `--dump-ast` corpus byte-identical.
+- **IR snapshot:** 3285/3286 byte-identical. The one artifact that differs
+  is the `.nuch` for `examples/logic.nuc`, where an extern binder is now
+  spelled as a split list; this is awaiting the user's review.
+- **Replays:** list-api, ptr and sugar R3–R5 all pass.
+- **Python scripts:** `list-api-sweep.py` and `ptr-sweep.py` are deleted;
+  `sugar-sweep.py` stays (Q6).
+

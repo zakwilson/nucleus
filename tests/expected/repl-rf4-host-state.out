@@ -1,0 +1,10 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc>   imported nucleus.read
+nuc>   imported nucleus.file
+nuc>   nucleus.string already imported
+nuc>   nucleus.fmt already imported
+nuc> ...> ...> ...> ...>   defined
+nuc>   6
+nuc>   defined
+nuc>   222
+nuc> 

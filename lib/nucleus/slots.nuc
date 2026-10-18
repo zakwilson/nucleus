@@ -1,0 +1,257 @@
+; What each operand of a built-in form is. The compiler's `desugar` and nucleus.refactor's
+; `slot-kind` read this one table (design/stage26-refactoring/overview.md §4.7, §8 RF-6).
+
+(ns nucleus.slots)
+
+(import-use nucleus.strview)
+(import-use nucleus.intern)
+(import-use nucleus.node)
+
+(defenum SlotKind
+  SLOT-UNKNOWN      ; an operand of a call whose head is no built-in form: a function's or a macro's
+  SLOT-TOP          ; a top-level form
+  SLOT-HEAD         ; elem 0 of a form in code
+  SLOT-VALUE        ; an expression
+  SLOT-PLACE        ; what set!/inc!/dec! write
+  SLOT-INLINE       ; table only: an operand at its form's own level (do, compile-time)
+  SLOT-NAME         ; a name that is no expression: a definer's, a binder's, a module's
+  SLOT-BINDER       ; one binding: x, x:T or (x T)
+  SLOT-FIELD        ; one struct or union member, spelled as a binder
+  SLOT-ATTR         ; an attribute or marker keyword: :volatile, :rest, :where
+  SLOT-BINDINGS     ; let's list: binder value …
+  SLOT-PARAMS       ; a parameter list
+  SLOT-DECL-PARAMS  ; a declare's parameters: binders, or bare types
+  SLOT-OPTIONAL     ; (name default) after :optional
+  SLOT-RETURN       ; a return type
+  SLOT-TYPE
+  SLOT-TYPES        ; a list of parameter types
+  SLOT-SIG          ; a protocol method: (name (params) ret)
+  SLOT-ARM          ; a union arm: (name field …)
+  SLOT-CLAUSE       ; a match clause: (pattern body …)
+  SLOT-PATTERN
+  SLOT-QUOTED
+  SLOT-TEMPLATE)    ; a quasiquote's operand
+
+; Elems 1-3 of one built-in form, then `rest` for each later elem. `attrs`:
+; leading keyword operands are attributes and the slots start after them.
+; `desugar`: the compiler splits this form's binders as it reads a top level.
+(defstruct FormSlots a:i32 b:i32 c:i32 rest:i32 attrs:bool desugar:bool)
+
+(defn- slots (a:i32 b:i32 c:i32 rest:i32):FormSlots
+  (return (FormSlots a b c rest false false)))
+
+(defn- slots-all (rest:i32):FormSlots
+  (return (slots rest rest rest rest)))
+
+(defn- desugared (r:FormSlots):FormSlots
+  (return (FormSlots (r 'a) (r 'b) (r 'c) (r 'rest) (r 'attrs) true)))
+
+(defn- with-attrs (r:FormSlots):FormSlots
+  (return (FormSlots (r 'a) (r 'b) (r 'c) (r 'rest) true (r 'desugar))))
+
+; The table. A head with no row is a call: SLOT-UNKNOWN throughout.
+(defn form-slots-of (h:StrView):FormSlots
+  (cond
+    (or (= h "defn") (= h "defn-"))
+      (return (desugared (slots SLOT-BINDER SLOT-PARAMS SLOT-RETURN SLOT-VALUE)))
+    (= h "declare")
+      (return (desugared (slots SLOT-BINDER SLOT-DECL-PARAMS SLOT-RETURN SLOT-ATTR)))
+    (or (= h "defvar") (= h "defvar-"))
+      (return (desugared (with-attrs (slots SLOT-BINDER SLOT-VALUE SLOT-VALUE SLOT-VALUE))))
+    (= h "extern")
+      (return (desugared (with-attrs (slots SLOT-BINDER SLOT-UNKNOWN SLOT-UNKNOWN SLOT-UNKNOWN))))
+    (or (= h "defstruct") (= h "defstruct-"))
+      (return (desugared (slots SLOT-NAME SLOT-FIELD SLOT-FIELD SLOT-FIELD)))
+    (or (= h "let") (= h "with"))
+      (return (desugared (slots SLOT-BINDINGS SLOT-VALUE SLOT-VALUE SLOT-VALUE)))
+    (or (= h "do") (= h "compile-time"))
+      (return (desugared (slots-all SLOT-INLINE)))
+    (or (= h "defconst") (= h "defconst-"))
+      (return (slots SLOT-BINDER SLOT-VALUE SLOT-VALUE SLOT-VALUE))
+    (or (= h "defunion") (= h "defunion-"))
+      (return (slots SLOT-NAME SLOT-ARM SLOT-ARM SLOT-ARM))
+    (or (= h "defprotocol") (= h "defprotocol-"))
+      (return (slots SLOT-NAME SLOT-SIG SLOT-SIG SLOT-SIG))
+    (or (= h "deftype") (= h "deftype-"))
+      (return (slots SLOT-NAME SLOT-TYPE SLOT-UNKNOWN SLOT-UNKNOWN))
+    (or (= h "defenum") (= h "defenum-"))
+      (return (slots-all SLOT-NAME))
+    (= h "deferror")
+      (return (slots SLOT-NAME SLOT-VALUE SLOT-VALUE SLOT-VALUE))
+    (or (= h "defmacro") (= h "defmacro-"))
+      (return (slots SLOT-NAME SLOT-PARAMS SLOT-VALUE SLOT-VALUE))
+    (= h "defcast")
+      (return (slots SLOT-TYPE SLOT-TYPE SLOT-VALUE SLOT-UNKNOWN))
+    (= h "extend")
+      (return (slots SLOT-TYPE SLOT-TYPE SLOT-UNKNOWN SLOT-UNKNOWN))
+    (or (= h "if-some") (= h "when-some"))
+      (return (slots SLOT-BINDINGS SLOT-VALUE SLOT-VALUE SLOT-VALUE))
+    (or (= h "fn") (= h "vfn") (= h "mfn"))
+      (return (slots SLOT-PARAMS SLOT-RETURN SLOT-VALUE SLOT-VALUE))
+    (= h "cfn")
+      (return (slots SLOT-VALUE SLOT-PARAMS SLOT-RETURN SLOT-VALUE))
+    (or (= h "as") (= h "unsafe/cast") (= h "cast") (= h "alloca") (= h "array")
+        (= h "sizeof") (= h "alignof") (= h "type-token"))
+      (return (slots SLOT-TYPE SLOT-VALUE SLOT-VALUE SLOT-VALUE))
+    (or (= h "set!") (= h "inc!") (= h "dec!"))
+      (return (slots SLOT-PLACE SLOT-VALUE SLOT-VALUE SLOT-VALUE))
+    (= h "match")
+      (return (slots SLOT-VALUE SLOT-CLAUSE SLOT-CLAUSE SLOT-CLAUSE))
+    (or (= h "quote") (= h "tagged-lit"))
+      (return (slots-all SLOT-QUOTED))
+    (= h "quasiquote")
+      (return (slots-all SLOT-TEMPLATE))
+    (or (= h "ns") (= h "import") (= h "import-use") (= h "import-only")
+        (= h "import-prefixed") (= h "require") (= h "require-ct") (= h "export")
+        (= h "set-ir-prefix") (= h "unsafe/import-private"))
+      (return (slots-all SLOT-NAME))
+    (or (= h "cond") (= h "return") (= h "while") (= h "ref") (= h "deref")
+        (= h "not") (= h "_and") (= h "_or") (= h "funcall") (= h "funcall-void")
+        (= h "unsafe/ptr+") (= h "_get") (= h "get") (= h "invoke") (= h "aref")
+        (= h "some") (= h "as-ref") (= h "unwrap") (= h "unwrap-or") (= h "try")
+        (= h "err!") (= h "err-name") (= h "err-message") (= h "signal")
+        (= h "defer") (= h "move") (= h "label") (= h "goto") (= h "label-addr")
+        (= h "goto-ptr") (= h "gensym") (= h "macro-error") (= h "struct-fields")
+        (= h "type-name") (= h "conforms?") (= h "source-file") (= h "source-line")
+        (= h "char") (= h "vector-lit") (= h "hashset-lit") (= h "hashmap-lit")
+        (= h "ast-first") (= h "ast-rest") (= h "ast-at") (= h "ast-len")
+        (= h "unquote") (= h "unquote-splice"))
+      (return (slots-all SLOT-VALUE)))
+  (return (slots-all SLOT-UNKNOWN)))
+
+; The spelling of `n`'s head symbol, or "" when its elem 0 is no symbol.
+(defn slot-head (n:?&Node):StrView
+  (let (h:?&Node (node-first n))
+    (when (!= (node-kind h) NODE-SYM) (return ""))
+    (return (symbol-as-view ((unsafe/cast &Node h) 's)))))
+
+; The head's row: a form whose elem 0 is no symbol is a call.
+(defn form-slots (n:?&Node):FormSlots
+  (return (form-slots-of (slot-head n))))
+
+(defn- slot-keyword? (n:?&Node):bool
+  (return (= (node-kind n) NODE-KEYWORD)))
+
+(defn- slot-keyword-is? (n:?&Node name:StrView):bool
+  (return (and (slot-keyword? n) (= (symbol-as-view ((unsafe/cast &Node n) 's)) name))))
+
+; Elem `i` of `n`, a built-in form in code whose own slot is `own`.
+(defn- slot-in-form (own:i32 n:?&Node i:i32):i32
+  (when (= i 0) (return SLOT-HEAD))
+  (let (r:FormSlots (form-slots n)
+        j:i32 i)
+    (when (r 'attrs)
+      (let (k:i32 1)
+        (while (and (< k (node-len n)) (slot-keyword? (node-at n k)))
+          (set! k (+ k 1)))
+        (when (< i k) (return SLOT-ATTR))
+        (set! j (+ (- i k) 1))))
+    (let (s:i32 (cond (= j 1) (r 'a) (= j 2) (r 'b) (= j 3) (r 'c) true (r 'rest)))
+      (when (= s SLOT-INLINE) (return (if (= own SLOT-TOP) SLOT-TOP SLOT-VALUE)))
+      (return s))))
+
+; Elem `i` of a type: a constructor's operands are types, but an anonymous
+; struct's members are fields and a function type's parameters a list of types.
+(defn- slot-in-type (n:?&Node i:i32):i32
+  (let (hs:StrView (slot-head n))
+    (cond (= (node-kind (node-first n)) NODE-LIST)
+            (when (= (slot-head (node-first n)) "fn")
+              (return (if (= i 0) SLOT-TYPE SLOT-TYPES)))
+          (or (= hs "struct") (= hs "union"))
+            (return (if (= i 0) SLOT-HEAD SLOT-FIELD))
+          (= hs "fn")
+            (return (if (= i 0) SLOT-HEAD SLOT-TYPE))
+          (= hs "BoxedFn")
+            (return (cond (= i 0) SLOT-HEAD (= i 1) SLOT-TYPES true SLOT-TYPE)))
+    (return SLOT-TYPE)))
+
+; Elem `i` of one binder or field written as a list: attributes, then the name,
+; then its type; `(f (fn R) (P…))` is the old function-pointer spelling.
+(defn- slot-in-binder (n:?&Node i:i32 own:i32):i32
+  (let (k:i32 0)
+    (while (and (< k (node-len n)) (slot-keyword? (node-at n k)))
+      (set! k (+ k 1)))
+    (cond (< i k) (return SLOT-ATTR)
+          (= (- (node-len n) k) 1) (return own)
+          (= i k) (return SLOT-NAME)
+          (and (> i (+ k 1)) (= (slot-head (node-at n (- i 1))) "fn"))
+            (return SLOT-TYPES))
+    (return SLOT-TYPE)))
+
+; Elem `i` of a let list: an attribute keyword stays at its binder's position.
+(defn- slot-in-bindings (n:?&Node i:i32):i32
+  (let (k:i32 0
+        binder:bool true)
+    (while (< k i)
+      (when (not (and binder (slot-keyword? (node-at n k))))
+        (set! binder (not binder)))
+      (set! k (+ k 1)))
+    (cond (and binder (slot-keyword? (node-at n i))) (return SLOT-ATTR)
+          binder (return SLOT-BINDER))
+    (return SLOT-VALUE)))
+
+; Elem `i` of a parameter list: binders, then `:where` constraints, and
+; `(name default)` after `:optional`.
+(defn- slot-in-params (n:?&Node i:i32):i32
+  (let (mode:i32 SLOT-BINDER
+        k:i32 0)
+    (while (< k i)
+      (cond (slot-keyword-is? (node-at n k) "where") (set! mode SLOT-TYPE)
+            (slot-keyword-is? (node-at n k) "optional") (set! mode SLOT-OPTIONAL))
+      (set! k (+ k 1)))
+    (when (slot-keyword? (node-at n i)) (return SLOT-ATTR))
+    (return mode)))
+
+; A declare's parameter is named when it is annotated, `p:T` or `(p T)`;
+; otherwise it is the parameter's bare type.
+(defn- slot-in-decl-params (n:?&Node i:i32):i32
+  (let (e:?&Node (node-at n i))
+    (cond (slot-keyword? e) (return SLOT-ATTR)
+          (= (node-kind e) NODE-LIST) (return SLOT-BINDER)
+          (and (= (node-kind e) NODE-SYM) (symbol-contains-byte ((unsafe/cast &Node e) 's) 58))
+            (return SLOT-BINDER))
+    (return SLOT-TYPE)))
+
+(defn- slot-in-arm (n:?&Node i:i32):i32
+  (when (= i 0) (return SLOT-NAME))
+  (when (slot-keyword? (node-at n i)) (return SLOT-ATTR))
+  (when (slot-keyword? (node-at n (- i 1))) (return SLOT-VALUE))
+  (return SLOT-FIELD))
+
+; The slot of elem `i` of list `n`, whose own slot is `own`. This is the one
+; question the table answers: desugar asks it of top-level forms, `slot-kind`
+; of each Syn's parent.
+(defn slot-of-elem (own:i32 n:?&Node i:i32):i32
+  (case own
+    SLOT-QUOTED (return SLOT-QUOTED)
+    SLOT-PATTERN (return SLOT-PATTERN)
+    SLOT-NAME (return SLOT-NAME)
+    SLOT-TYPE (return (slot-in-type n i))
+    SLOT-RETURN (return (slot-in-type n i))
+    SLOT-TYPES (return SLOT-TYPE)
+    SLOT-BINDER (return (slot-in-binder n i SLOT-BINDER))
+    SLOT-FIELD (return (slot-in-binder n i SLOT-FIELD))
+    SLOT-BINDINGS (return (slot-in-bindings n i))
+    SLOT-PARAMS (return (slot-in-params n i))
+    SLOT-DECL-PARAMS (return (slot-in-decl-params n i))
+    SLOT-OPTIONAL (return (if (= i 0) SLOT-BINDER SLOT-VALUE))
+    SLOT-SIG (return (cond (= i 0) SLOT-NAME (= i 1) SLOT-PARAMS (= i 2) SLOT-RETURN true SLOT-VALUE))
+    SLOT-ARM (return (slot-in-arm n i))
+    SLOT-CLAUSE (return (if (= i 0) SLOT-PATTERN SLOT-VALUE))
+    0)
+  (return (slot-in-form own n i)))
+
+; Whether the compiler splits the binders of top-level form `n` as it reads it.
+(defn slots-desugared? (n:?&Node):bool
+  (return ((form-slots n) 'desugar)))
+
+(defn slot-name (k:i32):StrView
+  (return (case k
+            SLOT-TOP "top" SLOT-HEAD "head" SLOT-VALUE "value" SLOT-PLACE "place"
+            SLOT-INLINE "inline" SLOT-NAME "name" SLOT-BINDER "binder" SLOT-FIELD "field"
+            SLOT-ATTR "attr" SLOT-BINDINGS "bindings" SLOT-PARAMS "params"
+            SLOT-DECL-PARAMS "decl-params" SLOT-OPTIONAL "optional" SLOT-RETURN "return"
+            SLOT-TYPE "type" SLOT-TYPES "types" SLOT-SIG "sig" SLOT-ARM "arm"
+            SLOT-CLAUSE "clause" SLOT-PATTERN "pattern" SLOT-QUOTED "quoted"
+            SLOT-TEMPLATE "template"
+            "unknown")))

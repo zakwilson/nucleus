@@ -729,6 +729,9 @@
 ; measures it firing zero times across lib/, src/ and examples/.
 (defvar g-warn-ct-shadow:i32 1)
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
+(defvar g-run:i32 0)          ; --run: JIT the unit and call its `main`; -O0 by default (stage26 §8 RF-4)
+(defvar g-run-argc:i32 0)     ; the program's argc/argv: its path, then what follows `--`
+(defvar g-run-argv:ptr null)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; drives the middle-end pipeline and LLVMCodeGenOptLevel (None=0, Less=1, Default=2, Aggressive=3)
 (defvar g-fast-math:i32 0)    ; -ffast-math / -Ofast: fast-math flags on the OUTPUT module's FP instructions
@@ -1197,6 +1200,7 @@
 (import-use diagnostics)
 (import-use ct-fault)
 (import-use nucleus.read)
+(import-use nucleus.slots)
 
 ; Stage 10 C3: condition class for recoverable malformed top-level forms that
 ; the compiler validates at definition time (e.g. a malformed `(deferror …)`).
@@ -16293,6 +16297,14 @@
             (if (= init-cell null) null (node-first (unsafe/cast &Node init-cell)))
             attr-flags))))))
 
+; A REPL session's copy of a lib/ global the compiler links is the compiler's, as
+; a macro body's is (L6 §3.2): one intern table per process (stage26 overview §8 RF-4).
+(defn repl-host-global? (irn:Symbol):bool
+  (when (= g-interactive 0) (return false))
+  (when (!= (in-jit-module) 0) (return false))
+  (when (= (path-under-ct-lib-root g-source-path) 0) (return false))
+  (return (!= (host-exports? irn) 0)))
+
 ; The storage half of `defvar`, shared with an aggregate `defconst` (DECL-ATTR-CONST).
 (defn emit-global-def (cc:&Node name:Symbol ty:ptr init-node:?&Node attr-flags:i32):void
   (guard-name-kind name (cc 'line) NK-VALUE)
@@ -16319,6 +16331,15 @@
     (check-ir-name-legal (cc 'line) name ir-name)
     (global-link-check name (symbol-intern ir-name) (as ?&Type ty) (cc 'line))
     (set! g-repl-retype-suffix "")
+    (when (repl-host-global? (symbol-intern ir-name))
+      (let (is-const:i32 (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)
+            pg:?&ProgGlobal (program-global-record (symbol-intern ir-name) is-const))
+        (emit g-out ir-name " = external " (if (!= is-const 0) "constant " "global ")
+              (type-to-ir ty) "\n\n")
+        ; The preamble backfill declares it to later modules from this record.
+        (program-global-note-end pg (type-to-ir ty)))
+      (global-def-define-sym cc name ty ir-name attr-flags)
+      (return))
     ; Stage 20 L6 (§5.7): open the span here, above the array-backing
     ; global, so `@g.data` is inside the text a mirror copies.
     (let (pg:?&ProgGlobal
@@ -16401,18 +16422,21 @@
           ir-name))
       (emit g-out ", align " align "\n\n"))
     (program-global-note-end pg (type-to-ir ty)))
-    (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
-      (sym-record-src vsym (cc 'line))
-      (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
-      (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
-      (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-        (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
-      ; G-4: the `@g = global` line is out, so this global's `defvar` has
-      ; now been REACHED — every initializer emitted after this point may
-      ; read its value. A later `scope-lookup` finds this Sym rather than
-      ; the prescan's (backwards scan), which is the whole mechanism.
-      (set! ((unsafe/cast &Sym vsym) 'defvar-state) DEFVAR-REACHED)
-      (sym-set-src-loc (as ptr vsym) (cc 'line)))))
+    (global-def-define-sym cc name ty ir-name attr-flags)))
+
+(defn global-def-define-sym (cc:&Node name:Symbol ty:ptr ir-name:StrView attr-flags:i32):void
+  (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
+    (sym-record-src vsym (cc 'line))
+    (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
+    (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
+    (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+      (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
+    ; G-4: the `@g = global` line is out, so this global's `defvar` has
+    ; now been REACHED — every initializer emitted after this point may
+    ; read its value. A later `scope-lookup` finds this Sym rather than
+    ; the prescan's (backwards scan), which is the whole mechanism.
+    (set! ((unsafe/cast &Sym vsym) 'defvar-state) DEFVAR-REACHED)
+    (sym-set-src-loc (as ptr vsym) (cc 'line))))
 
 ; A `defconst` takes `defvar`'s constant grammar. A value that folds to one
 ; literal is substituted at each use; an aggregate or address gets read-only
@@ -19142,27 +19166,22 @@
 ; Desugar pass — split colon-typed symbols into lists
 ; ============================================================
 
-; Split a symbol string containing : into a list of symbol nodes.
-; Split a colon-separated symbol string into a flat list of SYM nodes.
-; "ptr:Node" → (ptr Node), "ptr:ptr:Node" → (ptr ptr Node).
+; Split a colon-separated symbol string into a flat list of SYM nodes, one per
+; `chain-seg-at` segment: "ptr:Node" → (ptr Node), "ptr:ptr:Node" → (ptr ptr Node).
 (defn split-colon-segments (s:Symbol line:i32):ptr
   (let (sv:StrView (symbol-as-view s)
-        result:&Node (node-list-new line)
-        start:usize 0
-        i:usize 0
-        slen:usize (symbol-len s))
+        result:&Node (node-list-new line))
     ; CP-3: a binding name ending in ':' is a whitespace near-miss (e.g. `x: (T)`) —
     ; reject here instead of letting the empty final segment produce a remote error.
     (when (strview-has-suffix sv ":")
       (die-at line (fstr "binding name ends in ':' (" s
                          ") -- write name:(Type) with no space, or (name Type)")))
-    (while (<= i slen)
-      (when (or (= i slen) (= (as i32 (aref (sv 'data) (as i64 i))) 58))
-         (let (seg:StrView (strview-take-bytes (strview-drop-bytes sv start) (- i start))
-               n:ptr (as ptr (intern-node (symbol-intern seg))))
-              (node-push result n))
-            (set! start (+ i 1)))
-      (set! i (+ i 1)))
+    (let (seg:ChainSeg (chain-seg-at sv 0)
+          more:bool true)
+      (while more
+        (node-push result (as ptr (intern-node (symbol-intern (chain-seg-text sv seg)))))
+        (set! more (seg 'colon))
+        (when more (set! seg (chain-seg-next sv seg)))))
     (return (as ptr (node-list-done result)))))
 
 ; Desugar a colon-typed symbol into a binding list:
@@ -19255,100 +19274,40 @@
   (when (= forms null) (return null))
   (let (n:&Node (unsafe/cast &Node forms))
     (when (!= (n 'kind) NODE-LIST) (return forms))
-    (let (new-car:ptr (desugar-form (node-first n))
-          new-cdr:ptr (desugar (node-rest n)))
-      (when (and (= new-car (node-first n)) (= new-cdr (node-rest n)))
+    ; `node-rest` makes a new view on each call, so compare against the one passed down.
+    (let (rest:ptr (node-rest n)
+          new-car:ptr (desugar-form (node-first n))
+          new-cdr:ptr (desugar rest))
+      (when (and (= new-car (node-first n)) (= new-cdr rest))
         (return forms))
       (return (as ptr (node-cons new-car new-cdr (n 'line)))))))
 
-; Desugar a single form.  Only touches binding positions of known forms.
+; A top-level form with its binder slots split, for the forms whose emitters
+; expect them split; lib/nucleus/slots.nuc says which forms and which elems.
 (defn desugar-form (form:?&Node):ptr
-  (when (= form null) (return null))
-  (let (f:&Node (unsafe/cast &Node form))
-    (when (!= (f 'kind) NODE-LIST) (return form))
-    (when (= (node-len form) 0) (return form))
-    (let (head:&Node (unsafe/cast &Node (node-at form 0)))
-      (when (!= (head 'kind) NODE-SYM) (return form))
-      (let (h:Symbol (head 's))
-        ; (defn name:type (params...) body...)
-        (when (or (= h "defn") (= h "defn-"))
-          (when (>= (node-len form) 3)
-            (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line))
-                  new-params:ptr (desugar-params (node-at form 2) (f 'line)))
-              (when (and (= new-name (node-at form 1))
-                         (= new-params (node-at form 2)))
-                (return form))
-              ; Rebuild: (defn new-name new-params body...)
-              (return (node-cons head
-                        (node-cons new-name
-                         (node-cons new-params
-                           (node-rest (unsafe/cast &Node (node-rest (unsafe/cast &Node (node-rest f))))) (f 'line)) (f 'line)) (f 'line))))))
-        ; (defvar name:type [init])
-        (when (or (= h "defvar") (= h "defvar-"))
-          (when (>= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
-              (when (= new-name (node-at form 1)) (return form))
-              (return (node-cons head
-                        (node-cons new-name
-                         (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)) (f 'line))))))
-        ; (defstruct name field:type ...)
-        (when (or (= h "defstruct") (= h "defstruct-"))
-          (when (>= (node-len form) 2)
-            ; Desugar fields (positions 2+)
-            (let (new-rest:ptr (desugar-params (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)))
-              (when (= new-rest (node-rest (unsafe/cast &Node (node-rest f))))
-                (return form))
-              (return (node-cons head
-                        (node-cons (node-at form 1)
-                         new-rest (f 'line)) (f 'line))))))
-        ; (extern name:type)
-        (when (= h "extern")
-          (when (= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
-              (when (= new-name (node-at form 1)) (return form))
-              (return (node-list2 head
-                        new-name (f 'line))))))
-        ; (declare name:type (params...))            — legacy
-        ; (declare name (params...) ret)             — new style (S1)
-        ; Desugar the name (index 1) and, when present, the param list (index 2);
-        ; everything from index 3 onward (a new-style return operand and/or a
-        ; trailing Stage 10 `noreturn`) rides through verbatim, so emit-nuch-
-        ; declare-import still sees the return type and can mark the symbol. The
-        ; param list is at index 2 in both shapes. This is byte-identical to the
-        ; former legacy-only rebuild for every legacy shape (len 2/3 ± noreturn).
-        (when (= h "declare")
-          (when (>= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
-              (if (>= (node-len form) 3)
-                ; Params stay as written: `ptr:FILE` desugared is `(ptr FILE)`, which
-                ; declare-param-types must read as a type, not a name.
-                (let (new-params:ptr (declare-params-checked (node-at form 2) (f 'line))
-                      tail3:ptr (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _)
-                                      (unsafe/cast &Node _) (node-rest _)))
-                  (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
-                    (return form))
-                  (return (node-cons head
-                            (node-cons new-name
-                             (node-cons new-params tail3 (f 'line)) (f 'line)) (f 'line))))
-                (do
-                  (when (= new-name (node-at form 1)) (return form))
-                  (return (node-list2 head
-                            new-name (f 'line))))))))
-        ; (let (bindings...) body...) — desugar binding names
-        ; (with (bindings...) body...) — same shape; auto-frees libc-alloc'd bindings
-        (when (or (= h "let") (= h "with"))
-          (when (>= (node-len form) 2)
-            (let (new-binds:ptr (desugar-let-bindings (node-at form 1) (f 'line)))
-              (when (= new-binds (node-at form 1)) (return form))
-              (return (node-cons head
-                        (node-cons new-binds
-                         (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)) (f 'line))))))
-        ; Recurse into body of compile-time and do blocks
-        (when (or (= h "compile-time") (= h "do"))
-          (let (new-body:ptr (desugar (node-rest f)))
-            (when (= new-body (node-rest f)) (return form))
-            (return (node-cons head new-body (f 'line)))))
-        (return form)))))
+  (when (or (= (node-len form) 0) (not (slots-desugared? form))) (return form))
+  (let (f:&Node (unsafe/cast &Node form)
+        out:&Node (node-list-new (f 'line))
+        changed:bool false)
+    (dotimes (i (node-len form))
+      (let (e:?&Node (node-at form i)
+            d:ptr (if (= i 0) (as ptr e) (desugar-slot (slot-of-elem SLOT-TOP form i) e (f 'line))))
+        (when (!= d (as ptr e)) (set! changed true))
+        (node-push out (as ?&Node d))))
+    (when changed (return (as ptr out)))
+    (return form)))
+
+(defn desugar-slot (kind:i32 e:?&Node line:i32):ptr
+  (case kind
+    SLOT-BINDER (return (desugar-typed e line))
+    SLOT-FIELD (do (reject-legacy-marker e line)
+                   (return (desugar-typed e line)))
+    SLOT-PARAMS (return (desugar-params e line))
+    SLOT-DECL-PARAMS (return (declare-params-checked e line))
+    SLOT-BINDINGS (return (desugar-let-bindings e line))
+    SLOT-TOP (return (desugar-form e))
+    0)
+  (return e))
 
 ; Pre-register the names of all top-level structs so that defn signatures
 ; mentioning a struct type (e.g. a param typed &Circle) resolve during
@@ -22126,13 +22085,9 @@
                 (LLVMSetSection g (symbol-as-cstr moved)))))))
       (set! g (LLVMGetNextGlobal g)))))
 
-; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
-; to link a final binary. Exits with a non-zero status on failure.
-(defn compile-and-link (ir:ptr ir-len:i64 source-file:Symbol):void
-  ; Backends are already registered process-wide by targets-init-all (called from
-  ; target-init, which runs before this on every batch code path),
-  ; so no per-call target init is needed here.
-  ; LLVM prefixes its errors with the buffer name, and a line there is an IR line.
+; The generated IR as an LLVM module. LLVM prefixes its errors with the buffer
+; name, and a line there is an IR line.
+(defn output-module (ir:ptr ir-len:i64 source-file:Symbol):ptr
   (let (ctx:ptr (LLVMContextCreate)
         bufname:Symbol (symbol-intern (fstr "<generated IR for " source-file ">"))
         mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len (symbol-as-cstr bufname))
@@ -22145,30 +22100,41 @@
       (LLVMDisposeMessage parse-err)
       (exit 1))
     (LLVMContextSetDiagnosticHandler ctx llvm-diag-handler null)
+    (return mod)))
 
-    (let (target:ptr null
-          terr:ptr null
-          tres:i32 (LLVMGetTargetFromTriple (symbol-as-cstr g-target-triple)
-                                          &target &terr))
-      (when (!= tres 0)
-        (eprint "nucleusc: target lookup failed: " (as CStr terr) "\n")
-        (LLVMDisposeMessage terr)
-        (exit 1))
-      ; CodeGenLevel = g-opt-level (raised for AVR), Reloc keyed on triple (Static(0) for AVR,
-      ; PIC(2) otherwise), CodeModel = Default(0). CPU and features from the Target
-      ; descriptor (empty "" for host targets; the effective --mcpu / triple-keyed
-      ; features for a cross-target, e.g. generic-rv64 / +m,+a,+f,+d,+c for riscv64).
-      (let (cpu:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'cpu))
-            features:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'features)))
-        (when (!= g-march-native 0)
-          (set! cpu (LLVMGetHostCPUName))
-          (set! features (LLVMGetHostCPUFeatures)))
+; Backends are already registered process-wide by targets-init-all (called from
+; target-init, which runs before this on every batch code path).
+(defn output-target-machine ():ptr
+  (let (target:ptr null
+        terr:ptr null
+        tres:i32 (LLVMGetTargetFromTriple (symbol-as-cstr g-target-triple)
+                                        &target &terr))
+    (when (!= tres 0)
+      (eprint "nucleusc: target lookup failed: " (as CStr terr) "\n")
+      (LLVMDisposeMessage terr)
+      (exit 1))
+    ; CodeGenLevel = g-opt-level (raised for AVR), Reloc keyed on triple (Static(0) for AVR,
+    ; PIC(2) otherwise), CodeModel = Default(0). CPU and features from the Target
+    ; descriptor (empty "" for host targets; the effective --mcpu / triple-keyed
+    ; features for a cross-target, e.g. generic-rv64 / +m,+a,+f,+d,+c for riscv64).
+    (let (cpu:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'cpu))
+          features:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'features)))
+      (when (!= g-march-native 0)
+        (set! cpu (LLVMGetHostCPUName))
+        (set! features (LLVMGetHostCPUFeatures)))
       (let (tm:ptr (LLVMCreateTargetMachine target (symbol-as-cstr g-target-triple)
                      cpu features (codegen-level-for-triple g-target-triple g-opt-level)
                      (reloc-for-triple g-target-triple) 0))
         (when (!= g-march-native 0)
           (LLVMDisposeMessage cpu)
           (LLVMDisposeMessage features))
+        (return tm)))))
+
+; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
+; to link a final binary. Exits with a non-zero status on failure.
+(defn compile-and-link (ir:ptr ir-len:i64 source-file:Symbol):void
+  (let (mod:ptr (output-module ir ir-len source-file))
+      (let (tm:ptr (output-target-machine))
         (when (!= g-fast-math 0) (set-module-fast-math mod))
         (when (> g-opt-level 0) (run-opt-pipeline mod tm))
         (let (out-path:Symbol g-output-path
@@ -22251,16 +22217,96 @@
                   (when (!= rc2 0)
                     (eprint "nucleusc: link step failed (" driver " exit " rc2 ")\n")
                     (exit 1)))))
-            (unlink (symbol-as-cstr obj-path)))))))))
+            (unlink (symbol-as-cstr obj-path)))))))
 
-; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
+; ORC's C API runs no `llvm.global_ctors`, so `--run` calls them itself: each
+; becomes an external `__nucleus_run_ctor_N`, numbered in priority order.
+(defn run-take-ctors (mod:ptr):i32
+  (let (g:ptr (LLVMGetNamedGlobal mod "llvm.global_ctors"))
+    (when (= g null) (return 0))
+    (let (arr:ptr (LLVMGetInitializer g)
+          n:i32 (LLVMGetNumOperands arr)
+          (fns (Vector ptr)) (make (Vector ptr))
+          (prios (Vector ui64)) (make (Vector ui64)))
+      (dotimes (k n)
+        (let (entry:ptr (LLVMGetOperand arr (unsafe/cast ui32 k))
+              p:ui64 (LLVMConstIntGetZExtValue (LLVMGetOperand entry 0))
+              at:usize (count &prios))
+          ; Insertion after every equal priority keeps registration order.
+          (while (and (> at 0) (> (invoke &prios (- at 1)) p)) (set! at (- at 1)))
+          (insert &prios at p)
+          (insert &fns at (LLVMGetOperand entry 1))))
+      (dotimes (k n)
+        (let (nm:Symbol (symbol-intern (fstr "__nucleus_run_ctor_" k)))
+          (LLVMSetValueName2 (invoke &fns k:usize) (symbol-as-cstr nm) (symbol-len nm))
+          (LLVMSetLinkage (invoke &fns k:usize) 0)))
+      (LLVMDeleteGlobal g)
+      (drop &fns)
+      (drop &prios)
+      (return n))))
+
+; An `LLVMErrorRef` from an ORC call ends the run.
+(defn run-check (err:ptr):void
+  (when (!= err null)
+    (eprint "nucleusc: --run: " (as CStr (LLVMGetErrorMessage err)) "\n")
+    (exit 1)))
+
+(defn run-lookup (jit:ptr name:Symbol):ptr
+  (let (addr:i64 0)
+    (run-check (LLVMOrcLLJITLookup jit (as ptr &addr) (symbol-as-cstr name)))
+    (return (unsafe/cast ptr addr))))
+
+; `--run`: the module `-o` would link, JIT'd in a session of its own (the
+; compile-time one holds mirror copies of program functions), entered at `main`.
+(defn run-module (ir:ptr ir-len:i64 source-file:Symbol):i32
+  (let (main-ret:?&Type null)
+    (if-some (s (scope-lookup g-globals (symbol-intern "main")))
+      (when (= ((unsafe/cast &Type (s 'type)) 'kind) TY-FN)
+        (set! main-ret ((unsafe/cast &Type (s 'type)) 'ret)))
+      0)
+    (when (= main-ret null)
+      (eprint "nucleusc: --run: " source-file " defines no 'main' function\n")
+      (exit 1))
+    (let (mod:ptr (output-module ir ir-len source-file))
+      (when (!= g-fast-math 0) (set-module-fast-math mod))
+      (when (> g-opt-level 0)
+        (let (tm:ptr (output-target-machine))
+          (run-opt-pipeline mod tm)
+          (LLVMDisposeTargetMachine tm)))
+      ; The backend follows -O, as `-o`'s does; at -O0 that is 3x faster to JIT.
+      (let (nctors:i32 (run-take-ctors mod)
+            bld:ptr (LLVMOrcCreateLLJITBuilder)
+            jit:ptr null)
+        (LLVMOrcLLJITBuilderSetJITTargetMachineBuilder bld
+          (LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine (output-target-machine)))
+        (run-check (LLVMOrcCreateLLJIT &jit bld))
+        (let (tsctx:ptr (LLVMOrcCreateNewThreadSafeContext)
+              tsmod:ptr (LLVMOrcCreateNewThreadSafeModule mod tsctx))
+          (LLVMOrcDisposeThreadSafeContext tsctx)
+          (run-check (LLVMOrcLLJITAddLLVMIRModule jit (LLVMOrcLLJITGetMainJITDylib jit) tsmod)))
+        ; `-l` libraries must be in the process before the first lookup links.
+        (repl-load-link-args)
+        (dotimes (k nctors)
+          (funcall-void (run-lookup jit (symbol-intern (fstr "__nucleus_run_ctor_" k)))))
+        (let (addr:ptr (run-lookup jit (symbol-intern "main")))
+          (when (= ((unsafe/cast &Type main-ret) 'kind) TY-VOID)
+            (funcall-void addr)
+            (return 0))
+          ; A nullary `main` ignores the two arguments, as under the C runtime.
+          (let (mf:(fn i32)(i32 ptr) (unsafe/cast ((fn i32)(i32 ptr)) addr))
+            (return (mf g-run-argc g-run-argv))))))))
+
+; Close module streams; emit textual IR (--emit-llvm), an object/binary, or run it.
 (defn flush-module-ir (source-file:Symbol):void
   (drain-pending-union-irs)
   (let ((ir String) (assemble-module-ir source-file)
         v:StrView (string-as-view ir))
-    (if (!= g-emit-llvm 0)
-      (emit stdout v)
-      (compile-and-link (as ptr (v 'data)) (as i64 (v 'len)) source-file))
+    (cond (!= g-emit-llvm 0)
+            (emit stdout v)
+          (!= g-run 0)
+            (exit (run-module (as ptr (v 'data)) (as i64 (v 'len)) source-file))
+          true
+            (compile-and-link (as ptr (v 'data)) (as i64 (v 'len)) source-file))
     (drop &ir)))
 
 
@@ -22333,8 +22379,19 @@
 (defn add-cflag (arg:Symbol):void
   (conj g-cflags arg))
 
+; `--run`'s argv: the source path as argv[0], the words after `--`, and a null.
+(defn run-program-argv (path:Symbol argv:ptr from:i32 argc:i32):ptr
+  (let (n:i32 (- argc from)
+        out:&ptr (unsafe/cast &ptr (malloc (* (sizeof ptr) (as i64 (+ n 2))))))
+    (set! (aref out 0) (as ptr (symbol-as-cstr path)))
+    (dotimes (k n)
+      (set! (aref out (+ k 1)) (aref (unsafe/cast &ptr argv) (+ from k))))
+    (set! (aref out (+ n 1)) null)
+    (return (as ptr out))))
+
 (defn main (argc:i32 argv:ptr):int
   (let (source-file:Symbol (symbol-none)
+        run-from:i32 argc
         i:i32 1)
     (while (< i argc)
       ; `argv` stays a C string (overview.md §2.7), but the flag scanning below
@@ -22360,6 +22417,12 @@
                       (symbol-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
               (or (= argview "-i") (= argview "--interactive"))
                 (set! g-interactive 1)
+              (= argview "--run")
+                (set! g-run 1)
+              ; Everything after `--` is the `--run` program's.
+              (= argview "--")
+                (do (set! run-from (+ i 1))
+                    (set! i argc))
               (= argview "--diagnostics=text")
                 (set! g-diag-edn 0)
               (= argview "--diagnostics=edn")
@@ -22426,6 +22489,27 @@
     (when (and (!= g-march-native 0) (not (symbol-none? g-target-triple-override)))
       (eprint "nucleusc: -march=native describes the host and cannot be combined with --target=\n")
       (return 2))
+    (when (and (= g-run 0) (< run-from argc))
+      (eprint "nucleusc: '--' passes arguments to a --run program; there is no --run\n")
+      (return 2))
+    (when (!= g-run 0)
+      (let (clash:StrView "")
+        (cond (!= g-interactive 0) (set! clash "-i")
+              (!= g-emit-llvm 0) (set! clash "--emit-llvm")
+              (!= g-emit-obj 0) (set! clash "-c")
+              (not (symbol-none? g-output-path)) (set! clash "-o")
+              (!= g-header-request 0) (set! clash "--emit-nuch/--emit-cheader")
+              (!= g-dump-ast 0) (set! clash "--dump-ast")
+              (not (symbol-none? g-target-triple-override)) (set! clash "--target=")
+              true 0)
+        (when (not (str-empty? &clash))
+          (eprint "nucleusc: --run cannot be combined with " clash "\n")
+          (return 2)))
+      (when (symbol-none? source-file)
+        (eprint "usage: nucleusc --run [options] <file.nuc> [-- args...]\n")
+        (return 2))
+      (set! g-run-argc (+ (- argc run-from) 1))
+      (set! g-run-argv (run-program-argv source-file argv run-from argc)))
 
     ; REPL mode
     (when (!= g-interactive 0)
@@ -22433,7 +22517,7 @@
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
     (set! g-source-path source-file)
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built

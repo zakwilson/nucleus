@@ -1,0 +1,95 @@
+; Rewrite cons-cell AST access onto lib/nucleus/node.nuc's list API: the Stage 26
+; port of the Stage 21 script (design/stage26-refactoring/overview.md §8 RF-3b).
+;
+;   build/nucleusc --run scripts/stage26/list-api-sweep.nuc -- \
+;     [--apply] [--strict] FILE|DIR|GLOB...
+;
+;   (X 'car)                              -> (node-first X)
+;   (X 'cdr)                              -> (node-rest X)
+;   (make-cell A null L)                  -> (node-list1 A L)
+;   (make-cell A (make-cell B null L) L)  -> (node-list2 A B L)    [up to node-list5]
+;   (make-cell A D L)                     -> (node-cons A D L)
+;
+; A chain flattens only while every cell carries the same line text, since
+; node-listN gives all of them one line, and through `(as raw:Node …)` or
+; `(as ptr …)` around a cell. A chain of two or more cells onto a tail is
+; rewritten as nested node-cons and flagged. The place of a `set!` of 'car or
+; 'cdr is refused: the list is built in place, and which builder replaces that
+; is the author's call.
+
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.fmt)
+(import-use nucleus.node)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+(import-use nucleus.refactor)
+
+(defn kid (s:&Syn i:usize):&Syn
+  (return ((ref s 'kids) i)))
+
+; A list of `n` forms whose head is written `head`.
+(defn call? (s:&Syn head:StrView n:usize):bool
+  (return (and (= (s 'kind) SYN-LIST) (= (count (ref s 'kids)) n) (= (src-text (kid s 0)) head))))
+
+; The cell after `c` in its chain: its cdr, bare or cast, if that is a make-cell
+; on the same line.
+(defn next-cell (c:&Syn line:StrView):?&Syn
+  (let (d:&Syn (kid c 2)
+        x:&Syn (if (and (call? d "as" 3) (or (= (src-text (kid d 1)) "raw:Node")
+                                              (= (src-text (kid d 1)) "ptr")))
+                 (kid d 2)
+                 d))
+    (when (and (call? x "make-cell" 4) (= (src-text (kid x 3)) line)) (return x))
+    (return null)))
+
+; The chain `m` starts, at most five cells: n cells ending in `null`, or -n
+; cells onto a tail.
+(defn chain-len (m:&Syn):i32
+  (let (c:&Syn m
+        n:i32 1
+        line:StrView (src-text (kid m 3)))
+    (while (!= (src-text (kid c 2)) "null")
+      (if-some (x (next-cell c line))
+        (if (< n 5)
+          (do (set! c x)
+              (set! n (+ n 1)))
+          (return (- 0 n)))
+        (return (- 0 n))))
+    (return n)))
+
+; `(node-listN A … L)` or `(node-cons A D L)`. Each operand keeps the source
+; gap before its cell; one that breaks the line is indented as this form's body.
+(defn flatten (out:&RwMatch m:&Syn):void
+  (let (n:i32 (chain-len m)
+        indent:i32 (+ (rw-form-col out) 2)
+        line:StrView (src-text (kid m 3))
+        c:&Syn m
+        head:String (if (> n 0) (str "(node-list" n) (str "(node-cons")))
+    (rw-put out (string-as-view &head))
+    (drop &head)
+    (rw-put-gap out ((kid m 0) 'end) ((kid m 1) 'start) indent)
+    (rw-put-syn out (kid m 1))
+    (dotimes (i (- n 1))
+      (rw-put-gap out ((kid c 1) 'end) ((kid c 2) 'start) indent)
+      (set! c (unsafe/cast &Syn (next-cell c line)))
+      (rw-put-syn out (kid c 1)))
+    (when (< n 0)
+      (rw-put-gap out ((kid m 1) 'end) ((kid m 2) 'start) indent)
+      (rw-put-syn out (kid m 2)))
+    (rw-put out " ")
+    (rw-put-syn out (kid m 3))
+    (rw-put out ")")))
+
+(defrewrite list-api
+  (rule (~x 'car) :refuse "set! of a cell field" :when (= (slot-kind self) SLOT-PLACE))
+  (rule (~x 'cdr) :refuse "set! of a cell field" :when (= (slot-kind self) SLOT-PLACE))
+  (rule (~x 'car) `(node-first ~x))
+  (rule (~x 'cdr) `(node-rest ~x))
+  (rule (make-cell ~a ~d ~l) :emit (flatten out self) :multiline
+        :flag "make-cell chain onto a tail, made nested node-cons" :when (< (chain-len self) -1))
+  (rule (make-cell ~a ~d ~l) :emit (flatten out self) :reindent))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (list-api))))

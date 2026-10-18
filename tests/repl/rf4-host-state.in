@@ -1,0 +1,17 @@
+; Stage 26 RF-4 (design/stage26-refactoring/overview.md §8 RF-4). Importing
+; `nucleus.read` gives the session its own lib/nucleus/node.nuc, and a macro JIT
+; module materialised after that interned into the session's second table:
+; file.nuc's first `str` died "undefined: __gs_N", and a `cond` head was unknown.
+; A lib global the compiler links is now the compiler's, so there is one table.
+(import-use nucleus.read)
+(import-use nucleus.file)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(defn rf4-join (a:StrView b:StrView):i32
+  (let (p:String (str a "/" b)
+        n:i32 (unsafe/cast i32 (byte-len &p)))
+    (drop &p)
+    (return n)))
+(rf4-join "ab" "cde")
+(defmacro rf4-pick (a) `(cond (> ~a 5) 111 true 222))
+(rf4-pick 1)

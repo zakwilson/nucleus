@@ -1,0 +1,1212 @@
+; Stage 26 — Nucleus refactors Nucleus (design/stage26-refactoring/overview.md).
+;
+; RF-1: the reader's syntax mode; RF-2: colon chains as data; RF-3a: edits, the
+; sugared printer, path globs and the directory walk; RF-3b: `defrewrite`;
+; RF-4: `nucleusc --run`; RF-6: operand slots. Every unit but the expansion
+; errors and RF-4's runs in process: a syntax read is a library call, and its
+; answer is a value to compare against `read-all`'s. The whole-corpus claims are
+; scripts/stage26/syn-corpus.nuc's, and the rules' are the sweep replays'.
+
+(import-use "unistd.h")
+(import-use "dirent.h")
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.fmt)
+(import-use nucleus.test)
+(import-use nucleus.node)
+(import-use nucleus.intern)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+(import-use nucleus.refactor)
+(import-use nucleus.file)
+(import-use nucleus.create)
+(import-use nucleus.process)
+
+(defn rf-read (src:StrView):!&SynFile
+  (match (read-syntax-all src)
+    ((ok f) (return (ok f)))
+    ((err e) (fail! "read-syntax-all refused " (quoted src) ": line " (e 'line) ": " (e 'msg)))))
+
+(defn rf-form (f:&SynFile i:usize):&Syn
+  (return ((ref f 'forms) i)))
+
+(defn rf-kid (s:&Syn i:usize):&Syn
+  (return ((ref s 'kids) i)))
+
+; Kind, text, line and column of one Syn.
+(defn rf-check-syn (f:&SynFile s:&Syn kind:i32 text:StrView line:i32 col:i32):!void
+  (try (check-eq (syn-text f s) text))
+  (try (check-eq-int (as i64 (s 'kind)) (as i64 kind) "kind"))
+  (try (check-eq-int (as i64 (s 'line)) (as i64 line) "line"))
+  (try (check-eq-int (as i64 (s 'col)) (as i64 col) "col"))
+  (return (ok)))
+
+; `check-eq` copies its message out before the text is dropped.
+(defn rf-check-node (n:?&Node want:StrView):!void
+  (let (t:String (node-str n)
+        r:!void (check-eq (string-as-view &t) want))
+    (drop &t)
+    (return r)))
+
+; ---------------------------------------------------------------------------
+; Every SynKind, and the spans and columns around comments and `#_`
+; ---------------------------------------------------------------------------
+
+(deftest rf1-syn-kinds
+  (let (f:&SynFile (try (rf-read "a \"s\" c\"c\" \\x (l m) [v] {k 1} #{s} 'q #tag w x:(T)")))
+    (try (check-eq-int (as i64 (count (ref f 'forms))) 11 "top-level Syns"))
+    (try (rf-check-syn f (rf-form f 0) SYN-ATOM "a" 1 1))
+    (try (rf-check-syn f (rf-form f 1) SYN-STR "\"s\"" 1 3))
+    (try (rf-check-syn f (rf-form f 2) SYN-STR "c\"c\"" 1 7))
+    (try (rf-check-syn f (rf-form f 3) SYN-CHAR "\\x" 1 12))
+    (try (rf-check-syn f (rf-form f 4) SYN-LIST "(l m)" 1 15))
+    (try (rf-check-syn f (rf-form f 5) SYN-VEC "[v]" 1 21))
+    (try (rf-check-syn f (rf-form f 6) SYN-MAP "{k 1}" 1 25))
+    (try (rf-check-syn f (rf-form f 7) SYN-SET "#{s}" 1 31))
+    (try (rf-check-syn f (rf-form f 8) SYN-PREFIX "'q" 1 36))
+    (try (rf-check-syn f (rf-form f 9) SYN-TAGGED "#tag w" 1 39))
+    (try (rf-check-syn f (rf-form f 10) SYN-FUSE "x:(T)" 1 46))
+    ; The tagged literal's tag is its first kid, so kid i is elem i+1 as for
+    ; the other literals.
+    (let (t:&Syn (rf-form f 9))
+      (try (rf-check-syn f (rf-kid t 0) SYN-ATOM "tag" 1 40))
+      (try (check-eq-int (as i64 (syn-elem-index t (rf-kid t 1))) 2 "the value's elem"))
+      (try (check-eq-int (as i64 ((rf-kid t 0) 'open)) 0 "a tag's open")))
+    (try (check-eq-int (as i64 ((rf-form f 7) 'open)) 2 "#{'s delimiter length"))
+    (try (rf-check-node ((rf-form f 5) 'node) "(vector-lit v)"))
+    (try (check (= (syn-kid-for-elem (rf-form f 5) 0) null) "no Syn for vector-lit")))
+  (return (ok)))
+
+(deftest rf1-syn-spans
+  (let (src:StrView "; head
+(defn f (x)   ; trailing
+  #_ (old x)
+  [x
+   y])
+#_ #_ a b
+"
+        f:&SynFile (try (rf-read src))
+        d:&Syn (rf-form f 0)
+        v:&Syn (rf-kid d 3))
+    (try (check-eq-int (as i64 (count (ref f 'forms))) 1 "top-level Syns: the discards are not forms"))
+    (try (rf-check-syn f d SYN-LIST "(defn f (x)   ; trailing\n  #_ (old x)\n  [x\n   y])" 2 1))
+    (try (check-eq-int (as i64 (count (ref d 'kids))) 4 "kids of the defn"))
+    (try (rf-check-syn f v SYN-VEC "[x\n   y]" 4 3))
+    (try (rf-check-syn f (rf-kid v 1) SYN-ATOM "y" 5 4))
+    (try (check (= (v 'parent) d) "the vector's parent"))
+    (let (cs:&(Vector SynSpan) (ref f 'comments)
+          ds:&(Vector SynSpan) (ref f 'discards))
+      (try (check-eq-int (as i64 (count cs)) 2 "comments"))
+      (try (check-eq (syn-slice f ((cs 0) 'start) ((cs 0) 'end)) "; head"))
+      (try (check-eq (syn-slice f ((cs 1) 'start) ((cs 1) 'end)) "; trailing"))
+      ; `#_ #_ a b` is one discard holding another, in order of their starts.
+      (try (check-eq-int (as i64 (count ds)) 3 "discards"))
+      (try (check-eq (syn-slice f ((ds 0) 'start) ((ds 0) 'end)) "#_ (old x)"))
+      (try (check-eq (syn-slice f ((ds 1) 'start) ((ds 1) 'end)) "#_ #_ a b"))
+      (try (check-eq (syn-slice f ((ds 2) 'start) ((ds 2) 'end)) "#_ a")))
+    (try (check (syn-has-comment? f d) "a comment inside the defn"))
+    (try (check (not (syn-has-comment? f v)) "no comment inside the vector"))
+    (try (check (syn-has-discard? f d) "a discard inside the defn"))
+    (try (check (not (syn-has-discard? f v)) "no discard inside the vector")))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The fuse correspondences, and a def-rmacro prefix
+; ---------------------------------------------------------------------------
+
+(deftest rf1-syn-fuse
+  (let (f:&SynFile (try (rf-read "x:(T) x:ptr:(T) f:(fn i32)(i32) :(ref T) :(fn i32)(i32)"))
+        a:&Syn (rf-form f 0)
+        b:&Syn (rf-form f 1)
+        c:&Syn (rf-form f 2)
+        d:&Syn (rf-form f 3)
+        e:&Syn (rf-form f 4))
+    ; x:(T) -> (x (T)): the atom has no elem, the list is elem 1.
+    (try (rf-check-syn f (rf-kid a 0) SYN-ATOM "x:" 1 1))
+    (try (rf-check-syn f (rf-kid a 1) SYN-LIST "(T)" 1 3))
+    (try (check-eq-int (as i64 (syn-elem-index a (rf-kid a 0))) -1 "the atom's elem"))
+    (try (check-eq-int (as i64 (syn-elem-index a (rf-kid a 1))) 1 "the list's elem"))
+    (try (check (= (syn-kid-for-elem a 0) null) "no Syn for the name"))
+    (try (check (= (syn-kid-for-elem a 1) (rf-kid a 1)) "elem 1 is the list"))
+    (try (rf-check-node ((rf-kid a 0) 'node) "x:"))
+    ; x:ptr:(T) -> (x (ptr (T))): elem 1 is a synthesized wrapper with no span;
+    ; the list is found by identity under it.
+    (try (rf-check-node (b 'node) "(x (ptr (T)))"))
+    (try (check (= (syn-kid-for-elem b 1) null) "no Syn for the (ptr …) wrapper"))
+    (try (check-eq-int (as i64 (syn-elem-index b (rf-kid b 1))) -1 "the list sits under a wrapper"))
+    (try (check (= (syn-kid-for-node b (node-at (node-at (b 'node) 1) 1)) (rf-kid b 1))
+                "syn-kid-for-node finds the list"))
+    ; f:(fn i32)(i32): three kids, the atom and both groups.
+    (try (check-eq-int (as i64 (count (ref c 'kids))) 3 "fn-params fuse kids"))
+    (try (rf-check-syn f (rf-kid c 1) SYN-LIST "(fn i32)" 1 19))
+    (try (rf-check-syn f (rf-kid c 2) SYN-LIST "(i32)" 1 27))
+    (try (rf-check-node (c 'node) "(f ((fn i32) (i32)))"))
+    ; :(ref T) -> (ref T) itself: the fuse's elems are its list kid's.
+    (try (check (= (d 'node) ((rf-kid d 1) 'node)) "a lone ':' returns the list"))
+    (try (check (= (syn-kid-for-elem d 1) (rf-kid (rf-kid d 1) 1)) "elem 1 is T"))
+    (try (check-eq-int (as i64 (syn-elem-index d (rf-kid d 1))) -1 "the list is the node, not an elem"))
+    ; :(fn i32)(i32) -> ((fn i32) (i32)): both groups are elems.
+    (try (check-eq-int (as i64 (syn-elem-index e (rf-kid e 1))) 0 "the fn group"))
+    (try (check-eq-int (as i64 (syn-elem-index e (rf-kid e 2))) 1 "the param group")))
+  (return (ok)))
+
+(deftest rf1-syn-prefix
+  (let (f:&SynFile (try (rf-read "(def-rmacro \"$\" interp) $y 'z &w ~@v ' spaced")))
+    (let (p:&Syn (rf-form f 1))
+      (try (rf-check-syn f p SYN-PREFIX "$y" 1 25))
+      (try (check-eq (syn-prefix f p) "$"))
+      (try (rf-check-node (p 'node) "(interp y)"))
+      (try (check-eq-int (as i64 (syn-elem-index p (rf-kid p 0))) 1 "the operand's elem")))
+    (try (check-eq (syn-prefix f (rf-form f 2)) "'"))
+    (try (check-eq (syn-prefix f (rf-form f 3)) "&"))
+    (try (rf-check-node ((rf-form f 3) 'node) "(ref w)"))
+    (try (check-eq (syn-prefix f (rf-form f 4)) "~@"))
+    ; The operand may sit apart from its prefix; the spelling is still one byte.
+    (let (s:&Syn (rf-form f 5))
+      (try (check-eq (syn-prefix f s) "'"))
+      (try (rf-check-syn f (rf-kid s 0) SYN-ATOM "spaced" 1 40)))
+    (try (check-eq (syn-prefix f (rf-form f 0)) "")))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Error parity, and read-all unchanged
+; ---------------------------------------------------------------------------
+
+(defn rf-check-same-error (src:StrView):!void
+  (match (read-all src)
+    ((ok t) (fail! "read-all accepted " (quoted src)))
+    ((err ea)
+      (match (read-syntax-all src)
+        ((ok f) (fail! "read-syntax-all accepted " (quoted src)))
+        ((err es)
+          (when (or (!= (ea 'line) (es 'line)) (!= (ea 'msg) (es 'msg)) (!= (ea 'note) (es 'note))
+                    (!= (strview-from-cstr (err-name (ea 'code)))
+                        (strview-from-cstr (err-name (es 'code)))))
+            (fail! (quoted src) ": read-all says line " (ea 'line) " " (ea 'msg)
+                   ", read-syntax-all says line " (es 'line) " " (es 'msg)))))))
+  (return (ok)))
+
+(deftest rf1-syn-error-parity
+  (try (rf-check-same-error "(a\n  (b"))
+  (try (rf-check-same-error "(a)\n)"))
+  (try (rf-check-same-error "[1\n )"))
+  (try (rf-check-same-error "\"abc"))
+  (try (rf-check-same-error "(f \"\\q\")"))
+  (try (rf-check-same-error "\\u{110000}"))
+  (try (rf-check-same-error "x::(T)"))
+  (try (rf-check-same-error "{1}"))
+  (try (rf-check-same-error "(a #_)"))
+  (try (rf-check-same-error "#_ #_ a"))
+  (try (rf-check-same-error "# x"))
+  (try (rf-check-same-error "(def-rmacro \"m\" w)"))
+  (try (rf-check-same-error "99999999999999999999"))
+  ; One form at a time: the reader's own error, at the same place.
+  (let (r:Reader (reader-syntax "(ok) ; c\n(bad"))
+    (match (read-syntax-one &r)
+      ((ok s) (try (check-eq-int (as i64 (s 'line)) 1 "first form's line")))
+      ((err e) (fail! "the first form refused: " (e 'msg))))
+    (match (read-syntax-one &r)
+      ((ok s) (fail! "the unterminated form read"))
+      ((err e) (try (check-eq-int (as i64 (e 'line)) 2 "the error's line"))))
+    (if-some (f (reader-syn-file &r))
+      (try (check-eq-int (as i64 (count (ref f 'comments))) 1 "comments seen one form at a time"))
+      (fail! "a syntax reader with no file")))
+  (let (o:Reader (reader "x"))
+    (try (check (= (reader-syn-file &o) null) "an ordinary reader has no file")))
+  (return (ok)))
+
+(deftest rf1-read-all-unchanged
+  (let (src:StrView "; c\n(defn f (x:&T) #_ gone [x 'y] {:k c\"z\"} #{\\a})\nx:(ref T) &w ; tail\n"
+        want:StrView "((defn f (x:ref:T) (vector-lit x (quote y)) (hashmap-lit :k c\"z\") (hashset-lit \\u{61})) (x (ref T)) (ref w))")
+    (match (read-all src)
+      ((ok t) (try (rf-check-node t want)))
+      ((err e) (fail! "read-all refused it: " (e 'msg))))
+    (let (f:&SynFile (try (rf-read src))
+          t:&Node (f 'tree))
+      (try (rf-check-node t want))
+      ; The Syns point into the very tree the read returned.
+      (dotimes (i (node-len t))
+        (when (!= ((rf-form f (as usize i)) 'node) (node-at t i))
+          (fail! "form " i "'s Syn does not point at the tree's elem")))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-2: colon chains as data
+; ---------------------------------------------------------------------------
+
+(defn rf-chain (text:StrView n:i64 keyword:bool open:bool):!&Chain
+  (let (c:&Chain (chain-segments text))
+    (try (check-eq-int (as i64 (count (ref c 'segs))) n "segments"))
+    (try (check (= (c 'keyword) keyword) "keyword"))
+    (try (check (= (chain-open? c) open) "open"))
+    (return (ok c))))
+
+; Segment `i`'s sigil run and body, its span in the atom, and whether a `:` follows.
+(defn rf-check-seg (c:&Chain i:usize sigils:StrView body:StrView start:i64 end:i64 colon:bool):!void
+  (let (seg:ChainSeg (chain-seg c i))
+    (try (check-eq (chain-sigils c i) sigils))
+    (try (check-eq (chain-body c i) body))
+    (try (check-eq-int (as i64 (seg 'start)) start "segment start"))
+    (try (check-eq-int (as i64 (seg 'end)) end "segment end"))
+    (try (check (= (seg 'colon) colon) "segment colon"))
+    (return (ok))))
+
+(deftest rf2-chain-sigils
+  (let (c:&Chain (try (rf-chain "?&Node" 1 false false))
+        d:&Chain (try (rf-chain "x:ptr:T" 3 false false))
+        e:&Chain (try (rf-chain "?ptr:!T" 2 false false)))
+    (try (rf-check-seg c 0 "?&" "Node" 0 6 false))
+    (try (rf-check-seg d 0 "" "x" 0 1 true))
+    (try (rf-check-seg d 1 "" "ptr" 2 5 true))
+    (try (rf-check-seg d 2 "" "T" 6 7 false))
+    (try (rf-check-seg e 0 "?" "ptr" 0 4 true))
+    (try (rf-check-seg e 1 "!" "T" 5 7 false))
+    (try (check-eq-int (as i64 ((chain-seg e 1) 'body)) 6 "the body starts after the sigils")))
+  ; A sigil byte past a segment's start is part of its body.
+  (try (rf-check-seg (try (rf-chain "foo?" 1 false false)) 0 "" "foo?" 0 4 false))
+  (try (rf-check-seg (try (rf-chain "a&b" 1 false false)) 0 "" "a&b" 0 3 false))
+  (try (rf-check-seg (try (rf-chain "!=" 1 false false)) 0 "!" "=" 0 2 false))
+  (return (ok)))
+
+(deftest rf2-chain-keyword
+  ; A keyword's leading `:` separates nothing, so no segment is a name.
+  (try (rf-check-seg (try (rf-chain ":k" 1 true false)) 0 "" "k" 1 2 false))
+  (let (c:&Chain (try (rf-chain ":k:ptr:T" 3 true false)))
+    (try (rf-check-seg c 0 "" "k" 1 2 true))
+    (try (rf-check-seg c 2 "" "T" 7 8 false)))
+  (let (c:&Chain (try (rf-chain ":k:" 2 true true)))
+    (try (rf-check-seg c 1 "" "" 3 3 false)))
+  (let (c:&Chain (try (rf-chain "::" 2 true true)))
+    (try (rf-check-seg c 0 "" "" 1 1 true))
+    (try (rf-check-seg c 1 "" "" 2 2 false)))
+  (return (ok)))
+
+(deftest rf2-chain-lone-colon
+  ; Two empty segments; a `:` alone is a symbol, not a keyword.
+  (let (c:&Chain (try (rf-chain ":" 2 false true)))
+    (try (rf-check-seg c 0 "" "" 0 0 true))
+    (try (rf-check-seg c 1 "" "" 1 1 false)))
+  (let (c:&Chain (try (rf-chain "" 1 false true)))
+    (try (rf-check-seg c 0 "" "" 0 0 false)))
+  (return (ok)))
+
+(deftest rf2-chain-trailing
+  ; A trailing `:` leaves an empty last segment; a trailing sigil run is a
+  ; segment with sigils and no body. Both are open.
+  (let (c:&Chain (try (rf-chain "x:ptr:" 3 false true)))
+    (try (rf-check-seg c 1 "" "ptr" 2 5 true))
+    (try (rf-check-seg c 2 "" "" 6 6 false)))
+  (try (rf-check-seg (try (rf-chain "x:?" 2 false true)) 1 "?" "" 2 3 false))
+  (try (rf-check-seg (try (rf-chain "x:&" 2 false true)) 1 "&" "" 2 3 false))
+  (try (rf-check-seg (try (rf-chain "x:?&" 2 false true)) 1 "?&" "" 2 4 false))
+  (try (rf-check-seg (try (rf-chain "?!" 1 false true)) 0 "?!" "" 0 2 false))
+  (return (ok)))
+
+; `text` glued to `(T)` reads as one fused form exactly when its chain is open.
+(defn rf-check-open (text:StrView):!void
+  (let (src:String (str text "(T)")
+        open:bool (chain-open? (chain-segments text))
+        forms:i64 0)
+    (match (read-all (string-as-view &src))
+      ((ok t) (set! forms (as i64 (node-len t))))
+      ((err e) (do)))
+    (drop &src)
+    (when (!= open (= forms 1))
+      (fail! (quoted text) ": chain-open? says " (if open "open" "closed")
+             " but the read made " forms " forms"))
+    (return (ok))))
+
+; The reader's sigil expansion, re-derived from the segments: a sigil `&` is `ref:`.
+(defn rf-check-expansion (text:StrView):!void
+  (let (c:&Chain (chain-segments text)
+        want:String (make String)
+        i:usize 0)
+    (while (< i (count (ref c 'segs)))
+      (let (sg:StrView (chain-sigils c i)
+            j:usize 0)
+        (while (< j (sg 'len))
+          (if (= (aref (sg 'data) (as i64 j)) 38)
+            (str-into &want "ref:")
+            (str-into &want (strview-take-bytes (strview-drop-bytes sg j) 1)))
+          (set! j (+ j 1))))
+      (str-into &want (chain-body c i))
+      (when ((chain-seg c i) 'colon) (str-into &want ":"))
+      (set! i (+ i 1)))
+    (match (read-all text)
+      ((ok t) (let (r:!void (rf-check-node (node-at t 0) (string-as-view &want)))
+                (drop &want)
+                (return r)))
+      ((err e) (do (drop &want)
+                   (fail! (quoted text) " refused: " (e 'msg)))))
+    (return (ok))))
+
+(deftest rf2-chain-agrees-with-reader
+  (try (rf-check-open "x:"))
+  (try (rf-check-open "x:ptr:"))
+  (try (rf-check-open "x:?"))
+  (try (rf-check-open "x:&"))
+  (try (rf-check-open "?&"))
+  (try (rf-check-open "?"))
+  (try (rf-check-open ":k:"))
+  (try (rf-check-open ":"))
+  (try (rf-check-open "x"))
+  (try (rf-check-open "foo?"))
+  (try (rf-check-open "!="))
+  (try (rf-check-open "a&b"))
+  (try (rf-check-open "x:ptr:T"))
+  (try (rf-check-expansion "?&Node"))
+  (try (rf-check-expansion "x:&T"))
+  (try (rf-check-expansion "x:?&?&T"))
+  (try (rf-check-expansion "a&b:&c"))
+  (try (rf-check-expansion "x:ptr:T"))
+  (return (ok)))
+
+(deftest rf2-chain-spans
+  ; A fuse's atom kid keeps its trailing colon; a segment's span plus the
+  ; atom's start is a file span, which is what a `ptr:` -> `&` edit replaces.
+  (let (src:StrView "(defn f (p:ptr:(T) q:?&Node))"
+        f:&SynFile (try (rf-read src))
+        params:&Syn (rf-kid (rf-form f 0) 2)
+        fuse:&Syn (rf-kid params 0)
+        atom:&Syn (rf-kid fuse 0)
+        c:&Chain (chain-segments (syn-text f atom))
+        seg:ChainSeg (chain-seg c 1)
+        at:usize (+ (atom 'start) (seg 'body)))
+    (try (check-eq-int (as i64 (fuse 'kind)) (as i64 SYN-FUSE) "the fuse"))
+    (try (check-eq (syn-text f atom) "p:ptr:"))
+    (try (check (chain-open? c) "a fuse's atom is open"))
+    (try (check-eq (syn-slice f at (+ (atom 'start) (seg 'end))) "ptr"))
+    (let (out:String (str (syn-slice f 0 at) "&" (syn-slice f (+ (atom 'start) (+ (seg 'end) 1)) (src 'len)))
+          r:!void (check-eq (string-as-view &out) "(defn f (p:&(T) q:?&Node))"))
+      (drop &out)
+      (try r))
+    ; An atom's span is its raw text; its node is the expanded symbol.
+    (let (q:&Syn (rf-kid params 1)
+          d:&Chain (chain-segments (syn-text f q)))
+      (try (check-eq-int (as i64 (q 'kind)) (as i64 SYN-ATOM) "q's kind"))
+      (try (rf-check-seg d 1 "?&" "Node" 2 8 false))
+      (try (rf-check-node (q 'node) "q:?ref:Node"))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-3a: edits
+; ---------------------------------------------------------------------------
+
+(defn rf3-check-applied (r:EditsResult want:StrView):!void
+  (match r
+    ((ok out) (let (o:String out
+                    c:!void (check-eq (string-as-view &o) want))
+                (drop &o)
+                (return c)))
+    ((err x) (fail! "edits refused: " (x 'msg)))))
+
+; Refused with `code`, naming exactly the spans [a0,a1) and [b0,b1).
+(defn rf3-check-refused (r:EditsResult code:StrView a0:i64 a1:i64 b0:i64 b1:i64):!void
+  (match r
+    ((ok out) (let (o:String out)
+                (drop &o)
+                (fail! "edits applied; want a refusal naming [" a0 "," a1 ") and [" b0 "," b1 ")")))
+    ((err x)
+      (try (check-eq (strview-from-cstr (err-name (x 'code))) code))
+      (try (check-eq-int (as i64 ((x 'first) 'start)) a0 "first start"))
+      (try (check-eq-int (as i64 ((x 'first) 'end)) a1 "first end"))
+      (try (check-eq-int (as i64 ((x 'second) 'start)) b0 "second start"))
+      (try (check-eq-int (as i64 ((x 'second) 'end)) b1 "second end"))))
+  (return (ok)))
+
+(deftest rf3-edit-positions
+  (let (src:StrView "(alpha beta gamma)")
+    ; Start, middle and end, added out of order; untouched bytes stay.
+    (with (e:Edits (edits-new))
+      (edit-span &e 12 17 "G")
+      (edit-span &e 0 1 "[")
+      (edit-span &e 7 11 "b")
+      (edit-span &e 17 18 "]")
+      (try (check-eq-int (as i64 (edits-count &e)) 4 "edits"))
+      (try (rf3-check-applied (edits-apply src &e) "[alpha b G]")))
+    ; Insertions at the very start and end, and a deletion.
+    (with (e:Edits (edits-new))
+      (edit-span &e 18 18 " ; tail")
+      (edit-span &e 0 0 "#_ ")
+      (edit-span &e 6 11 "")
+      (try (rf3-check-applied (edits-apply src &e) "#_ (alpha gamma) ; tail")))
+    (with (none:Edits (edits-new))
+      (try (rf3-check-applied (edits-apply src &none) src))
+      (try (rf3-check-applied (edits-apply "" &none) ""))))
+  (return (ok)))
+
+(deftest rf3-edit-adjacent
+  (let (src:StrView "abcdef")
+    ; [1,3) and [3,5) touch without sharing a byte.
+    (with (e:Edits (edits-new))
+      (edit-span &e 3 5 "Y")
+      (edit-span &e 1 3 "X")
+      (try (rf3-check-applied (edits-apply src &e) "aXYf")))
+    ; An insertion where one replacement ends and another starts goes between
+    ; them; one at a replacement's start goes before it.
+    (with (e:Edits (edits-new))
+      (edit-span &e 3 5 "Y")
+      (edit-span &e 3 3 "+")
+      (edit-span &e 1 3 "X")
+      (edit-span &e 1 1 "<")
+      (try (rf3-check-applied (edits-apply src &e) "a<X+Yf"))))
+  (return (ok)))
+
+(deftest rf3-edit-overlap
+  (let (src:StrView "(a\n  (b c))")
+    ; Sharing bytes: both are named, earlier start first, with line:col.
+    (with (e:Edits (edits-new))
+      (edit-span &e 6 9 "x")
+      (edit-span &e 5 10 "y")
+      (try (rf3-check-refused (edits-apply src &e) "edit-overlap" 5 10 6 9))
+      (match (edits-apply src &e)
+        ((ok out) (let (o:String out) (drop &o) (fail! "applied")))
+        ((err x) (try (check-eq (x 'msg) "edit at 2:3 [5,10) overlaps the edit at 2:4 [6,9)")))))
+    ; An insertion inside a replacement, and two insertions at one byte.
+    (with (e:Edits (edits-new))
+      (edit-span &e 1 4 "x")
+      (edit-span &e 2 2 "y")
+      (try (rf3-check-refused (edits-apply src &e) "edit-overlap" 1 4 2 2)))
+    (with (e:Edits (edits-new))
+      (edit-span &e 2 2 "x")
+      (edit-span &e 2 2 "y")
+      (try (rf3-check-refused (edits-apply src &e) "edit-overlap" 2 2 2 2)))
+    ; Past the end, and backwards.
+    (with (e:Edits (edits-new))
+      (edit-span &e 10 12 "x")
+      (try (rf3-check-refused (edits-apply src &e) "edit-out-of-range" 10 12 0 11)))
+    (with (e:Edits (edits-new))
+      (edit-span &e 4 3 "x")
+      (try (rf3-check-refused (edits-apply src &e) "edit-out-of-range" 4 3 0 11)))
+    ; The refusal converts to `Err`, so `try` passes it up a `!T` function.
+    (with (e:Edits (edits-new))
+      (edit-span &e 1 4 "x")
+      (edit-span &e 3 5 "y")
+      (match (rf3-apply-or-err src &e)
+        ((ok n) (fail! "applied"))
+        ((err code) (try (check-eq (strview-from-cstr (err-name code)) "edit-overlap"))))))
+  (return (ok)))
+
+(defn rf3-apply-or-err (src:StrView e:&Edits):!i64
+  (let (out:String (try (edits-apply src e))
+        n:i64 (as i64 (byte-len &out)))
+    (drop &out)
+    (return (ok n))))
+
+; A rule rewrites bottom-up: a form's new text splices its holes' already-edited
+; text, then its own edit replaces those inside it.
+(deftest rf3-edit-syn-compose
+  (let (src:StrView "; keep\n(f (g x) ; note\n   'y)\n"
+        f:&SynFile (try (rf-read src))
+        call:&Syn (rf-form f 0)
+        inner:&Syn (rf-kid call 1))
+    (with (e:Edits (edits-new))
+      (edit-replace &e (rf-kid inner 0) "h")
+      (try (rf3-check-applied (edits-apply-range src &e (inner 'start) (inner 'end)) "(h x)"))
+      (try (rf3-check-applied (edits-apply src &e) "; keep\n(f (h x) ; note\n   'y)\n"))
+      ; The form's range keeps its comment and layout, with the inner edit applied.
+      (match (edits-apply-range src &e (call 'start) (call 'end))
+        ((ok whole)
+          (let (w:String whole)
+            (try (check-eq (string-as-view &w) "(f (h x) ; note\n   'y)"))
+            (try (check-eq-int (as i64 (edits-drop-within &e (call 'start) (call 'end))) 1 "dropped"))
+            (let (wrapped:String (str "(wrap " (string-as-view &w) ")"))
+              (edit-replace &e call (string-as-view &wrapped))
+              (drop &wrapped))
+            (drop &w)))
+        ((err x) (fail! "range refused: " (x 'msg))))
+      (try (rf3-check-applied (edits-apply src &e) "; keep\n(wrap (f (h x) ; note\n   'y))\n"))
+      ; A range that cuts an edit in two is refused, naming the edit and the range.
+      (try (rf3-check-refused (edits-apply-range src &e (+ (call 'start) 1) (src 'len))
+                              "edit-out-of-range" (as i64 (call 'start)) (as i64 (call 'end))
+                              (as i64 (+ (call 'start) 1)) (as i64 (src 'len))))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-3a: the sugared printer
+; ---------------------------------------------------------------------------
+
+; `text` read, printed sugared, is `want`, which reads back as the same tree;
+; `node-write` still prints `long`.
+(defn rf3-check-sugared (text:StrView want:StrView long:StrView):!void
+  (match (read-all text)
+    ((ok t)
+      (let (n:?&Node (node-at t 0)
+            s:String (node-str-sugared n)
+            c:!void (check-eq (string-as-view &s) want))
+        (drop &s)
+        (try c)
+        (try (rf-check-node n long))
+        (match (read-all want)
+          ((ok b) (try (check (node-eq (node-at b 0) n) "the sugared text reads back as the tree")))
+          ((err e) (fail! (quoted want) " does not read: " (e 'msg))))))
+    ((err e) (fail! (quoted text) " does not read: " (e 'msg))))
+  (return (ok)))
+
+(deftest rf3-sugared-prefixes
+  (try (rf3-check-sugared "(quote x)" "'x" "(quote x)"))
+  (try (rf3-check-sugared "(quasiquote (f (unquote x) (unquote-splice ys)))" "`(f ~x ~@ys)"
+                          "(quasiquote (f (unquote x) (unquote-splice ys)))"))
+  (try (rf3-check-sugared "(deref p)" "@p" "(deref p)"))
+  (try (rf3-check-sugared "(ref x)" "&x" "(ref x)"))
+  (try (rf3-check-sugared "(ref (Vector T))" "&(Vector T)" "(ref (Vector T))"))
+  (try (rf3-check-sugared "''x" "''x" "(quote (quote x))"))
+  ; Fallbacks: `&rest` is the retired marker, `~@x` the splice, and a wrong
+  ; arity has no prefix spelling.
+  (try (rf3-check-sugared "(ref rest)" "(ref rest)" "(ref rest)"))
+  (try (rf3-check-sugared "(ref where)" "(ref where)" "(ref where)"))
+  (try (rf3-check-sugared "(unquote (deref x))" "(unquote @x)" "(unquote (deref x))"))
+  (try (rf3-check-sugared "(ref s 'f)" "(ref s 'f)" "(ref s (quote f))"))
+  (try (rf3-check-sugared "(quote)" "(quote)" "(quote)"))
+  ; A caller's table adds its own prefixes.
+  (let (tbl:&(Vector RMacro) (read-macro-table-new)
+        out:String (make String))
+    (rd-macro-add tbl "$" (symbol-intern "interp"))
+    (match (read-all "(interp (ref y))")
+      ((ok t) (node-write-sugared-with &out (node-at t 0) tbl))
+      ((err e) (do)))
+    (let (c:!void (check-eq (string-as-view &out) "$&y"))
+      (drop &out)
+      (try c)))
+  (return (ok)))
+
+(deftest rf3-sugared-literals
+  (try (rf3-check-sugared "(vector-lit a (hashset-lit 1))" "[a #{1}]" "(vector-lit a (hashset-lit 1))"))
+  (try (rf3-check-sugared "{:k [1 2]}" "{:k [1 2]}" "(hashmap-lit :k (vector-lit 1 2))"))
+  (try (rf3-check-sugared "(vector-lit)" "[]" "(vector-lit)"))
+  (try (rf3-check-sugared "#inst \"z\"" "#inst \"z\"" "(tagged-lit inst \"z\")"))
+  (try (rf3-check-sugared "(hashmap-lit a)" "(hashmap-lit a)" "(hashmap-lit a)"))
+  (try (rf3-check-sugared "(tagged-lit 1 x)" "(tagged-lit 1 x)" "(tagged-lit 1 x)"))
+  (return (ok)))
+
+(deftest rf3-sugared-atoms
+  (try (rf3-check-sugared "x:ref:T" "x:&T" "x:ref:T"))
+  (try (rf3-check-sugared "?ref:Node" "?&Node" "?ref:Node"))
+  (try (rf3-check-sugared "x:ref:ref:T" "x:&&T" "x:ref:ref:T"))
+  (try (rf3-check-sugared ":k:ref:T" ":k:&T" ":k:ref:T"))
+  ; `&T` starting a token is the reader macro, and `&rest` the marker.
+  (try (rf3-check-sugared "ref:T" "ref:T" "ref:T"))
+  (try (rf3-check-sugared "ref:rest" "ref:rest" "ref:rest"))
+  (try (rf3-check-sugared "x:ptr:T" "x:ptr:T" "x:ptr:T"))
+  (try (rf3-check-sugared "\\a" "\\a" "\\u{61}"))
+  (try (rf3-check-sugared "\\(" "\\(" "\\u{28}"))
+  (try (rf3-check-sugared "\\space" "\\space" "\\u{20}"))
+  (try (rf3-check-sugared "\\newline" "\\newline" "\\u{a}"))
+  (try (rf3-check-sugared "\\u{e9}" "\\u{e9}" "\\u{e9}"))
+  (try (rf3-check-sugared "(f c\"z\" 0x1F 1.5)" "(f c\"z\" 31 1.5)" "(f c\"z\" 31 1.5)"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-3a: globs and the walk
+; ---------------------------------------------------------------------------
+
+(defn rf3-glob (pat:StrView path:StrView want:bool):!void
+  (when (!= (path-glob-match &pat &path) want)
+    (fail! (quoted pat) (if want " should match " " should not match ") (quoted path)))
+  (return (ok)))
+
+(deftest rf3-glob-match
+  ; The text glob: `*` crosses `/`.
+  (try (check (glob-match &"a*c" &"a/b/c") "text * crosses /"))
+  (try (check (glob-match &"a?c" &"abc") "text ?"))
+  (try (check (not (glob-match &"a?c" &"ac")) "text ? is one byte"))
+  ; The path glob: `*` and `?` stay in a component.
+  (try (rf3-glob "lib/*.nuc" "lib/a.nuc" true))
+  (try (rf3-glob "lib/*.nuc" "lib/x/a.nuc" false))
+  (try (rf3-glob "lib/?.nuc" "lib/a.nuc" true))
+  (try (rf3-glob "lib/?.nuc" "lib//.nuc" false))
+  ; `**` is zero or more components when another follows, one or more at the end.
+  (try (rf3-glob "lib/**/*.nuc" "lib/a.nuc" true))
+  (try (rf3-glob "lib/**/*.nuc" "lib/x/y/a.nuc" true))
+  (try (rf3-glob "lib/**/*.nuc" "lib/x/y/a.nuch" false))
+  (try (rf3-glob "**/*.nuc" "a.nuc" true))
+  (try (rf3-glob "lib/**" "lib/x/a" true))
+  (try (rf3-glob "lib/**" "lib" false))
+  (try (rf3-glob "lib/**/x/**/*.nuc" "lib/x/a.nuc" true))
+  (try (rf3-glob "lib/**/x/**/*.nuc" "lib/p/q/x/r/a.nuc" true))
+  (try (rf3-glob "lib/a**b" "lib/a/b" false))
+  ; A leading `.` needs a literal `.`, in any component.
+  (try (rf3-glob "*" ".hidden" false))
+  (try (rf3-glob ".*" ".hidden" true))
+  (try (rf3-glob "lib/**/*.nuc" "lib/.git/a.nuc" false))
+  (try (rf3-glob "lib/.git/*.nuc" "lib/.git/a.nuc" true))
+  (try (rf3-glob "src/nucleusc.nuc" "src/nucleusc.nuc" true))
+  (return (ok)))
+
+; The DirEntries' names, after `strip` bytes, space-separated.
+(defn rf3-names (d:&DirEntries strip:usize):String
+  (let (out:String (make String)
+        i:usize 0)
+    (while (< i (dir-count d))
+      (when (> i 0) (str-into &out " "))
+      (str-into &out (strview-drop-bytes (dir-name d i) strip))
+      (set! i (+ i 1)))
+    (return out)))
+
+(defn rf3-check-names (r:!DirEntries strip:usize want:StrView):!void
+  (let (d:DirEntries (try r)
+        got:String (rf3-names &d strip)
+        c:!void (check-eq (string-as-view &got) want))
+    (drop &got)
+    (drop &d)
+    (return c)))
+
+(deftest rf3-walk
+  (let (root:String (try (test-scratch-sub "tree"))
+        rv:StrView (string-as-view &root)
+        n:usize (+ (rv 'len) 1)
+        pat:String (make String))
+    (dotimes (i 6)
+      (let (p:String (str rv "/" (case i 0 "a" 1 "b" 2 "b/c" 3 ".hid" 4 "a-dir" "e")))
+        (try (make-dir (string-as-view &p)))
+        (drop &p)))
+    (dotimes (i 8)
+      (let (p:String (str rv "/" (case i 0 "a.nuc" 1 "a/x.nuc" 2 "a-b.nuc" 3 "b/c/deep.nuc"
+                                        4 ".hid/h.nuc" 5 ".z.nuc" 6 "a-dir/y.nuch" "top.txt"))
+            pv:StrView (string-as-view &p)
+            fh:File (try (file-create &pv)))
+        (try (file-close &fh))
+        (drop &p)))
+    ; Bytewise order of whole paths: `a-b.nuc` and `a.nuc` before `a/x.nuc`,
+    ; hidden names included, the empty directory `e` contributing nothing.
+    (try (rf3-check-names (walk-dir rv) n
+                          ".hid/h.nuc .z.nuc a-b.nuc a-dir/y.nuch a.nuc a/x.nuc b/c/deep.nuc top.txt"))
+    (str-into &pat rv "/**/*.nuc")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n "a-b.nuc a.nuc a/x.nuc b/c/deep.nuc"))
+    (string-clear &pat)
+    (str-into &pat rv "/*.nuc*")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n "a-b.nuc a.nuc"))
+    (string-clear &pat)
+    (str-into &pat rv "/.*/*.nuc")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n ".hid/h.nuc"))
+    (string-clear &pat)
+    (str-into &pat rv "/a/x.nuc")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n "a/x.nuc"))
+    (string-clear &pat)
+    (str-into &pat rv "/missing/**/*.nuc")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n ""))
+    (string-clear &pat)
+    (str-into &pat rv "/a")
+    (try (rf3-check-names (glob-files (string-as-view &pat)) n ""))
+    ; read-dir now says which entries are directories.
+    (let (d:DirEntries (try (read-dir rv))
+          kinds:String (make String)
+          i:usize 0)
+      (while (< i (dir-count &d))
+        (str-into &kinds (if (dir-is-dir? &d i) "d" "f"))
+        (set! i (+ i 1)))
+      (let (c:!void (check-eq (string-as-view &kinds) "dfdfdfddf"))
+        (drop &kinds)
+        (drop &d)
+        (try c)))
+    (drop &pat)
+    (drop &root))
+  (return (ok)))
+
+(defn rf3-kind-of (dir:StrView nm:StrView):i64
+  (return (as i64 (dir-resolve-kind dir nm (unsafe/cast ui8 DT_UNKNOWN)))))
+
+; Symlinks are listed and never entered, so a cycle ends; that holds where
+; `d_type` is unknown too.
+(deftest rf3-walk-links
+  (let (root:String (try (test-scratch-sub "links"))
+        rv:StrView (string-as-view &root)
+        d:String (str rv "/d")
+        f:String (str rv "/d/x.nuc")
+        loop:String (str rv "/loop")
+        ld:String (str rv "/ld"))
+    (try (make-dir (string-as-view &d)))
+    (let (fv:StrView (string-as-view &f)
+          fh:File (try (file-create &fv)))
+      (try (file-close &fh)))
+    (symlink "." (string-as-cstr &loop))
+    (symlink "d" (string-as-cstr &ld))
+    (try (rf3-check-names (walk-dir rv) (+ (rv 'len) 1) "d/x.nuc ld loop"))
+    (try (check-eq-int (rf3-kind-of rv "loop") (as i64 DT_LNK) "loop"))
+    (try (check-eq-int (rf3-kind-of rv "ld") (as i64 DT_LNK) "ld"))
+    (try (check-eq-int (rf3-kind-of rv "d") (as i64 DT_DIR) "d"))
+    (try (check-eq-int (rf3-kind-of rv "d/x.nuc") (as i64 DT_REG) "x.nuc"))
+    (drop &ld)
+    (drop &loop)
+    (drop &f)
+    (drop &d)
+    (drop &root))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-3b: defrewrite
+; ---------------------------------------------------------------------------
+
+; `src` rewritten by `rules` is `want`, and its reports, one `line:col kind
+; reason` line each, are `reports`. One comparison: a failure keeps only the
+; last message.
+(defn rf3b-check (rules:&Rules src:StrView want:StrView reports:StrView):!void
+  (match (rewrite-source rules src)
+    ((err e) (fail! "rewrite-source refused " (quoted src) ": " (e 'msg)))
+    ((ok r)
+      (let (rr:Rewrite r
+            got:String (str (string-as-view (ref rr 'text)) "\n--\n")
+            exp:String (str want "\n--\n" reports)
+            ps:&(Vector RwReport) (rr 'reports)
+            i:usize 0)
+        (while (< i (count ps))
+          (let (p:RwReport (ps i))
+            (str-into &got (p 'line) ":" (p 'col) (if (p 'flagged) " flag " " refuse ") (p 'reason) "\n"))
+          (set! i (+ i 1)))
+        (let (c:!void (check-eq (string-as-view &got) (string-as-view &exp)))
+          (drop &got)
+          (drop &exp)
+          (drop &rr)
+          (return c))))))
+
+(defrewrite rf3b-holes
+  (rule (f ~a ~@rest) `(g ~@rest ~a) :multiline)
+  (rule (h ~@xs) `[~@xs])
+  (rule (pair (p ~x) ~y) `{~y ~x}))
+
+(deftest rf3b-match-holes
+  (try (rf3b-check (rf3b-holes) "(f 1 2 3) (f 1) (h) (h a  b) (pair (p 1) 2) (pair (q 1) 2)"
+                   "(g 2 3 1) (g 1) [] [a  b] {2 1} (pair (q 1) 2)" ""))
+  ; A `~@` keeps what lies between its forms; a comment in a gap the template
+  ; drops refuses the rewrite.
+  (try (rf3b-check (rf3b-holes) "(f a b ; keep\n   c)\n(f (x) ; gone\n  y)"
+                   "(g b ; keep\n   c a)\n(f (x) ; gone\n  y)"
+                   "3:1 refuse the rewrite would drop a comment\n"))
+  ; A pattern matches the tree as read: `[x]` is `(vector-lit x)`.
+  (try (rf3b-check (rf3b-holes) "(f [1 2] 'q)" "(g 'q [1 2])" ""))
+  (return (ok)))
+
+; A hole inside a form another rule rewrote first is spliced with its own
+; rewrites, and nested matches compose inside out.
+(defrewrite rf3b-nest
+  (rule (g ~y) `(G ~y))
+  (rule (f (g ~x)) `(F ~x))
+  (rule (wrap ~x) `(W ~x)))
+
+(deftest rf3b-compose
+  (try (rf3b-check (rf3b-nest) "(f (g (g 1)))" "(F (G 1))" ""))
+  (try (rf3b-check (rf3b-nest) "(wrap (wrap (g 2)))  ; c\n(f (h 3))" "(W (W (G 2)))  ; c\n(f (h 3))" ""))
+  ; A hole's current text decides whether it spans lines.
+  (try (rf3b-check (rf3b-nest) "(f (g (wrap\n 1)))" "(F (W 1))" ""))
+  (return (ok)))
+
+; Guards see holes as Syns and the form as `self`; spelling is a guard.
+(defrewrite rf3b-spell
+  (rule (quote ~x) `(never ~x) :when (spelled? self "&"))
+  (rule (ref ~x) `(ref ~x) :when (not (spelled? self "&")))
+  (rule (quote ~x) `(Q ~x) :when (prefix-form? self))
+  (rule (same ~a ~b) `(one ~a) :when (same-text? a b))
+  (rule (note ~@xs) :refuse "a comment inside" :when (has-comment? self)))
+
+(deftest rf3b-guards
+  ; `(ref rest)` prints long: `&rest` would read back as the retired marker.
+  (try (rf3b-check (rf3b-spell) "(ref a) &b (ref rest) (ref (f x)) 'z (quote w)"
+                   "&a &b (ref rest) &(f x) (Q z) (quote w)" ""))
+  (try (rf3b-check (rf3b-spell) "(same x x) (same x y) (same (a 1) (a  1))"
+                   "(one x) (same x y) (same (a 1) (a  1))" ""))
+  (try (rf3b-check (rf3b-spell) "(note a)\n(note ; c\n b)" "(note a)\n(note ; c\n b)"
+                   "2:1 refuse a comment inside\n"))
+  (return (ok)))
+
+(defrewrite rf3b-context
+  (rule (probe) `quoted :when (in-quote? self))
+  (rule (probe) `templated :when (in-quasiquote? self))
+  (rule (probe) `unquoted :when (in-unquote? self))
+  (rule (probe) `(code) :when (operand-of? self 'set! 2)))
+
+(deftest rf3b-quote-context
+  (try (rf3b-check (rf3b-context)
+                   "(probe) '(a (probe)) `(b (probe) ~(c (probe)) ``(d ~(probe))) (quote (probe)) (set! x (probe))"
+                   "(probe) '(a quoted) `(b templated ~(c unquoted) ``(d ~templated)) (quote quoted) (set! x (code))"
+                   ""))
+  (return (ok)))
+
+; A refusal leaves the form as written, its rewritten insides included; a flag
+; rewrites and reports.
+(defrewrite rf3b-refuse
+  (rule (inner) `(INNER))
+  (rule (keep ~x) :refuse "kept as written")
+  (rule (place ~x) :refuse "a place" :when (operand-of? self 'set! 1))
+  (rule (place ~x) `(P ~x))
+  (rule (wide ~x) `(narrow ~x) :flag "check this one"))
+
+(deftest rf3b-refusal
+  (try (rf3b-check (rf3b-refuse)
+                   "(keep (inner))\n(set! (place (inner)) (place (inner)))\n(wide (inner))"
+                   "(keep (inner))\n(set! (place (inner)) (P (INNER)))\n(narrow (INNER))"
+                   "1:1 refuse kept as written\n2:7 refuse a place\n3:1 flag check this one\n"))
+  (return (ok)))
+
+; A fuse's name has no span of its own, so a hole on it is refused.
+(defrewrite rf3b-span
+  (rule (~n (T)) `(~n U)))
+
+(deftest rf3b-no-span
+  (try (rf3b-check (rf3b-span) "x:(T) (y (T))" "x:(T) (y U)"
+                   "1:1 refuse ~n has no source span of its own\n"))
+  (return (ok)))
+
+(defrewrite rf3b-lines
+  (rule (w ~x) `(wrapped ~x)))
+(defrewrite rf3b-lines-keep
+  (rule (w ~x) `(wrapped ~x) :multiline))
+(defrewrite rf3b-lines-shift
+  (rule (w ~x) `(wrapped ~x) :reindent)
+  (rule (longname ~x) `(s ~x) :reindent))
+
+(deftest rf3b-multiline
+  (let (src:StrView "(w (f a\n     b))\n(w \"s\n  t\")")
+    (try (rf3b-check (rf3b-lines) src src
+                     "1:1 refuse a hole spans lines; the rule needs :multiline or :reindent
+3:1 refuse a hole spans lines; the rule needs :multiline or :reindent\n"))
+    (try (rf3b-check (rf3b-lines-keep) src "(wrapped (f a\n     b))\n(wrapped \"s\n  t\")" ""))
+    ; Continuation lines move with the first line, except inside a string.
+    (try (rf3b-check (rf3b-lines-shift) src "(wrapped (f a\n           b))\n(wrapped \"s\n  t\")" ""))
+    (try (rf3b-check (rf3b-lines-shift) "(longname (f a\n            b\n\n  c))" "(s (f a\n     b\n\nc))" "")))
+  (return (ok)))
+
+; An :emit expression writes the text itself: here the operands swap, each
+; keeping the gap before its slot, a line break re-indented as the form's body.
+(defn rf3b-swap (out:&RwMatch s:&Syn a:&Syn b:&Syn):void
+  (rw-put out "(swapped")
+  (rw-put-gap out (((ref s 'kids) 0) 'end) (a 'start) (+ (rw-form-col out) 2))
+  (rw-put-syn out b)
+  (rw-put-gap out (a 'end) (b 'start) (+ (rw-form-col out) 2))
+  (rw-put-syn out a)
+  (rw-put out ")"))
+
+(defrewrite rf3b-emit
+  (rule (swap ~a ~b) :emit (rf3b-swap out self a b)))
+
+(deftest rf3b-emit-gaps
+  (try (rf3b-check (rf3b-emit) "  (swap x\n        (y 1))\n(swap p ; c\n q)"
+                   "  (swapped (y 1)\n    x)\n(swapped q ; c\n p)" ""))
+  (return (ok)))
+
+; The expansion refuses a template it cannot print, at the rule.
+(defn rf3b-refused-rule (rule:StrView msg:StrView):!void
+  (let (src:String (str "(import-use nucleus.node)\n(import-use nucleus.syntax)\n(import-use nucleus.refactor)\n"
+                        "(defrewrite bad\n  " rule ")\n(defn main ():i32 (return 0))\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path pv)))
+    (when (c 'ok?)
+      (fail! "expected a refusal of " rule))
+    (try (check-error-at (ref c 'diags) pv 5 msg))
+    (drop &c)
+    (drop &p)
+    (drop &src))
+  (return (ok)))
+
+(deftest rf3b-expand-errors
+  (try (rf3b-refused-rule "(rule (f ~x) `(g ~y))" "defrewrite: the template's ~y is not a hole of the pattern"))
+  (try (rf3b-refused-rule "(rule (f ~x) `(g ~(h x)))" "defrewrite: a template may unquote only a hole of the pattern"))
+  (try (rf3b-refused-rule "(rule (f ~@xs) `(g ~xs))" "defrewrite: ~@xs is a splice hole"))
+  (try (rf3b-refused-rule "(rule (f ~@xs ~y) `(g))" "defrewrite: ~@xs must be the last element of its list"))
+  (try (rf3b-refused-rule "(rule (f ~x ~x) `(g))" "defrewrite: ~x is bound twice in the pattern"))
+  (try (rf3b-refused-rule "(rule (f ~self) `(g))" "defrewrite: ~self cannot be a hole"))
+  (try (rf3b-refused-rule "(rule (f ~x) (g ~x))" "defrewrite: a rule's third part is a quasiquote template"))
+  (try (rf3b-refused-rule "(rule (f ~x) :refuse \"r\" :flag \"x\")" "defrewrite: a rule option is"))
+  (return (ok)))
+
+; RF-4: `nucleusc ARGS…`, both streams and the status kept apart. An empty
+; word adds nothing.
+(defn rf4-nucleusc (a:StrView b:StrView c:StrView d:StrView):!Output
+  (let (cmd:Command (command (compiler-path)))
+    (when (not (= a "")) (command-arg &cmd a))
+    (when (not (= b "")) (command-arg &cmd b))
+    (when (not (= c "")) (command-arg &cmd c))
+    (when (not (= d "")) (command-arg &cmd d))
+    (command-capture &cmd true)
+    (let (o:Output (try (run &cmd)))
+      (drop &cmd)
+      (return (ok o)))))
+
+; `--run` compiles the whole unit, so a macro may define a top-level `defn` (the
+; REPL's per-form path cannot); it runs the constructors, hands `main` the words
+; after `--` with the source path as argv[0], and exits with `main`'s value.
+(deftest rf4-run-argv-status
+  (let (p:String (try (test-write-file "run.nuc" "(import-use nucleus.io)
+(defvar g-base:i32 (+ 40 (unsafe/cast i32 (strlen \"ab\"))))
+(defmacro rf4-def (n) `(defn ~n (k:i32):i32 (return (+ g-base k))))
+(rf4-def rf4-status)
+(defn main (argc:i32 argv:ptr):i32
+  (dotimes (k argc)
+    (print k \"=[\" (as CStr (aref (unsafe/cast &ptr argv) k)) \"]\\n\"))
+  (return (rf4-status argc)))
+"))
+        cmd:Command (command (compiler-path)))
+    (command-arg &cmd "--run")
+    (command-arg &cmd (string-as-view &p))
+    (command-arg &cmd "--")
+    (command-arg &cmd "a b")
+    (command-arg &cmd "")
+    (command-arg &cmd "--apply")
+    (command-capture &cmd true)
+    (let (o:Output (try (run &cmd))
+          want:String (str "0=[" (string-as-view &p) "]\n1=[a b]\n2=[]\n3=[--apply]\n"))
+      (try (check-eq (string-as-view (ref o 'out)) (string-as-view &want)))
+      (try (check-eq (string-as-view (ref o 'err)) ""))
+      (try (check-eq-int (as i64 (exit-code (ref o 'status))) 46 "exit status"))
+      (drop &want)
+      (drop &o))
+    (drop &cmd)
+    (drop &p))
+  (return (ok)))
+
+; A nullary `main`'s value is the status too, and the flags `--run` cannot mean.
+(deftest rf4-run-refusals
+  (let (p:String (try (test-write-file "run0.nuc" "(defn main ():i32 (return 7))\n"))
+        pv:StrView (string-as-view &p)
+        o:Output (try (rf4-nucleusc "--run" pv "" "")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 7 "nullary main"))
+    (drop &o)
+    (set! o (try (rf4-nucleusc pv "--" "x" "")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "-- without --run"))
+    (try (check-contains (string-as-view (ref o 'err)) "there is no --run"))
+    (drop &o)
+    (set! o (try (rf4-nucleusc "--run" pv "-o" "x.bin")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "--run with -o"))
+    (try (check-contains (string-as-view (ref o 'err)) "--run cannot be combined with -o"))
+    (drop &o)
+    (drop &p))
+  (let (p:String (try (test-write-file "run1.nuc" "(defn helper ():i32 (return 1))\n"))
+        o:Output (try (rf4-nucleusc "--run" (string-as-view &p) "" "")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 1 "no main"))
+    (try (check-contains (string-as-view (ref o 'err)) "defines no 'main' function"))
+    (drop &o)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-5: programs inside string literals
+; ---------------------------------------------------------------------------
+
+; Each element of `v`, decimal, space-separated.
+(defn rf5-ints (v:&(Vector usize)):String
+  (let (out:String (str ""))
+    (dotimes (i (as i64 (count v)))
+      (str-into &out (if (= i 0) "" " ") (v (as usize i))))
+    (return out)))
+
+(defn rf5-bytes (t:StrView):String
+  (let (out:String (str ""))
+    (dotimes (i (as i64 (t 'len)))
+      (str-into &out (if (= i 0) "" " ") (as usize (aref (t 'data) i))))
+    (return out)))
+
+(defn rf5-source (f:&SynFile s:&Syn):!&StrSource
+  (if-some (ss (syn-string-source f s))
+    (return (ok ss))
+    (fail! "no string source for " (quoted (syn-text f s)))))
+
+(defn rf5-check-text (got:String want:StrView):!void
+  (let (g:String got
+        r:!void (check-eq (string-as-view &g) want))
+    (drop &g)
+    (return r)))
+
+; Every escape the reader decodes, against byte values written as numbers, so
+; the check does not lean on the decoder it tests.
+(deftest rf5-string-source
+  (let (f:&SynFile (try (rf-read "\"a\\nb\\x41\\x7g\\u00e9\\0\\\\\\\"\\t\\r\" c\"q\\n\" x"))
+        ss:&StrSource (try (rf5-source f (rf-form f 0)))
+        cs:&StrSource (try (rf5-source f (rf-form f 1)))
+        out:String (str ""))
+    (try (rf5-check-text (rf5-bytes (ss 'text)) "97 10 98 65 7 103 195 169 0 92 34 9 13"))
+    (try (rf5-check-text (rf5-ints (ref ss 'map)) "1 2 4 5 9 12 13 13 19 21 23 25 27 29"))
+    (try (rf5-check-text (rf5-bytes (cs 'text)) "113 10"))
+    (try (rf5-check-text (rf5-ints (ref cs 'map)) "33 34 36"))
+    ; Only the second byte of the `\u00e9` has no source offset of its own.
+    (dotimes (i 14)
+      (try (check (= (str-source-split? ss (as usize i)) (= i 7)) "split")))
+    (try (check (= (syn-string-source f (rf-form f 2)) null) "an atom has no string source"))
+    ; Escaped back, only `\`, `"` and NUL are spelled; the rest is kept, and it
+    ; reads back as the same value.
+    (str-source-escape &out (ss 'text))
+    (try (rf5-check-text (rf5-bytes (string-as-view &out)) "97 10 98 65 7 103 195 169 92 48 92 92 92 34 9 13"))
+    (let (lit:String (str "\"" (string-as-view &out) "\"")
+          g:&SynFile (try (rf-read (string-as-view &lit)))
+          back:&StrSource (try (rf5-source g (rf-form g 0))))
+      (try (check-eq (back 'text) (ss 'text)))
+      (drop &lit))
+    (drop &out))
+  (return (ok)))
+
+; `src` rewritten with --in-strings is `want`, with `reports` as rf3b-check
+; prints them, and the strings read as programs, as fragments, and skipped.
+(defn rf5-check (rules:&Rules src:StrView want:StrView reports:StrView counts:StrView):!void
+  (match (rewrite-source-in-strings rules src)
+    ((err e) (fail! "rewrite-source-in-strings refused " (quoted src) ": " (e 'msg)))
+    ((ok r)
+      (let (rr:Rewrite r
+            got:String (str (string-as-view (ref rr 'text)) "\n--\n")
+            exp:String (str want "\n--\n" reports "--\n" counts)
+            ps:&(Vector RwReport) (rr 'reports)
+            i:usize 0)
+        (while (< i (count ps))
+          (let (p:RwReport (ps i))
+            (str-into &got (p 'line) ":" (p 'col) (if (p 'flagged) " flag " " refuse ") (p 'reason) "\n"))
+          (set! i (+ i 1)))
+        (str-into &got "--\n" (rr 'strings) " " (rr 'fragments) " " (rr 'skipped))
+        (let (c:!void (check-eq (string-as-view &got) (string-as-view &exp)))
+          (drop &got)
+          (drop &exp)
+          (drop &rr)
+          (return c))))))
+
+(defrewrite rf5-q
+  (rule (q ~x) `(quoted "s\"t" ~x))
+  (rule (bad ~x) :refuse "refused here"))
+
+; An edit inside a string is mapped back and escaped, through two levels.
+(deftest rf5-in-strings-escape
+  (try (rf5-check (rf5-q) "(q 0) \"(q \\\"in\\\")\" \"(f \\\"(q 1)\\\")\""
+                  "(quoted \"s\\\"t\" 0) \"(quoted \\\"s\\\\\\\"t\\\" \\\"in\\\")\" \"(f \\\"(quoted \\\\\\\"s\\\\\\\\\\\\\\\"t\\\\\\\" 1)\\\")\""
+                  "" "4 0 0"))
+  ; Without --in-strings a string is data.
+  (try (rf3b-check (rf5-q) "(q 0) \"(q 1)\"" "(quoted \"s\\\"t\" 0) \"(q 1)\"" ""))
+  (return (ok)))
+
+; A refusal inside a string is reported where the file writes it: past escapes,
+; across a line break the string holds, and at an escape that spells its `(`.
+(deftest rf5-in-strings-reports
+  (let (src:StrView "(x \"line1\\n  (bad 2)\" (bad 3))\n\"a\n (bad 4)\" \"\\x28bad 5)\"")
+    (try (rf5-check (rf5-q) src src
+                    "1:14 refuse refused here\n1:23 refuse refused here\n3:2 refuse refused here\n3:12 refuse refused here\n"
+                    "3 0 0")))
+  (return (ok)))
+
+; A string that does not read is counted and left, even where a rule would
+; match; a piece of a program is read as a fragment, inside a string when the
+; string before it in its form left one open.
+(deftest rf5-in-strings-skipped
+  (try (rf5-check (rf5-q)
+                  "\"#! (q 1)\" \"(q 2) (open\" (str \"(g \\\"\" x \"\\\") (q 3)\") \"plain words\""
+                  "\"#! (q 1)\" \"(quoted \\\"s\\\\\\\"t\\\" 2) (open\" (str \"(g \\\"\" x \"\\\") (quoted \\\"s\\\\\\\"t\\\" 3)\") \"plain words\""
+                  "" "1 3 1"))
+  (return (ok)))
+
+(defn rf5-fragment (src:StrView inside:bool):!&SynFile
+  (match (read-syntax-fragment src inside)
+    ((ok f) (return (ok f)))
+    ((err e) (fail! "read-syntax-fragment refused " (quoted src) ": " (e 'msg)))))
+
+; `(c (d`, which the text ends inside: no nodes, and the kids read so far.
+(defn rf5-fragment-open (f:&SynFile c:&Syn):!void
+  (try (rf-check-syn f c SYN-LIST "(c (d" 1 9))
+  (try (check (= (c 'node) null) "an open form has no node"))
+  (try (check-eq-int (as i64 (count (ref c 'kids))) 2 "kids of (c (d"))
+  (try (rf-check-syn f (rf-kid c 0) SYN-ATOM "c" 1 10))
+  (try (rf-check-syn f (rf-kid (rf-kid c 1) 0) SYN-ATOM "d" 1 13))
+  (return (ok)))
+
+; A closer with no opener is skipped, a form the text ends inside keeps what it
+; read under a null node, and a piece may start inside a string.
+(deftest rf5-fragment-read
+  (let (f:&SynFile (try (rf5-fragment ") (a b) (c (d" false)))
+    (try (check-eq-int (as i64 (count (ref f 'forms))) 2 "forms"))
+    (try (rf5-fragment-open f (rf-form f 1)))
+    (try (rf-check-syn f (rf-form f 0) SYN-LIST "(a b)" 1 3))
+    (try (rf-check-node ((rf-form f 0) 'node) "(a b)"))
+    (try (check-eq-int (as i64 (node-len (f 'tree))) 1 "tree elems"))
+    (try (check (and (f 'fragment) (not (f 'ends-in-string))) "a fragment, not in a string")))
+  (let (f:&SynFile (try (rf5-fragment "(e \"str" false)))
+    (try (check (f 'ends-in-string) "ends in a string")))
+  (let (f:&SynFile (try (rf5-fragment "x\\\" y\" (z)" true)))
+    (try (check-eq-int (as i64 (count (ref f 'forms))) 1 "forms after the string"))
+    (try (rf-check-syn f (rf-form f 0) SYN-LIST "(z)" 1 8))
+    (try (check (f 'fragment) "a fragment")))
+  (let (f:&SynFile (try (rf5-fragment "(a)" false)))
+    (try (check (not (f 'fragment)) "a whole program")))
+  (match (read-syntax-fragment "#! (a)" false)
+    ((ok f) (fail! "read-syntax-fragment read '#!'"))
+    ((err e) (try (check-eq (e 'msg) "'#' must be followed by '{', '_' or a tag that starts with a letter"))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RF-6: what each operand of a built-in form is (`slot-kind`)
+; ---------------------------------------------------------------------------
+
+; `s` as `text=slot` for a leaf and `slot(kids)` for a form.
+(defn rf6-tree (f:&SynFile s:&Syn out:&String):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        k:StrView (slot-name (slot-kind s)))
+    (if (= (count ks) 0)
+      (str-into out (syn-text f s) "=" k)
+      (do (str-into out k "(")
+          (dotimes (i (as i64 (count ks)))
+            (when (> i 0) (str-into out " "))
+            (rf6-tree f (ks (as usize i)) out))
+          (str-into out ")")))))
+
+(defn rf6-trees (f:&SynFile):String
+  (let (got:String (str "")
+        i:usize 0)
+    (while (< i (count (ref f 'forms)))
+      (when (> i 0) (str-into &got "\n"))
+      (rf6-tree f (rf-form f i) &got)
+      (set! i (+ i 1)))
+    (return got)))
+
+(defn rf6-check (src:StrView want:StrView):!void
+  (let (got:String (rf6-trees (try (rf-read src)))
+        c:!void (check-eq (string-as-view &got) want))
+    (drop &got)
+    (return c)))
+
+; Each definer's operands: names, binders, fields, parameters, types.
+(deftest rf6-slot-definers
+  (try (rf6-check "(defn f (x:i32 (p &T)) i32 x)\n(declare g (x:i32 i64 (y u8)) :void :noreturn)\n(defvar :volatile v:i32 0)\n(extern :const (E Pt))\n(defconst K:i32 2)\n(defstruct S a:i32 (b T) (:volatile c:u8))\n(defunion (U T) (some v:T :repr x) none)\n(defprotocol P (m (self) i32))\n(deftype A (Vector i32))\n(defenum E X Y)\n(deferror bad \"m\")\n(defmacro mac (a :rest b) a)\n(defcast A B conv)\n(extend S P)"
+                  "top(defn=head f=binder params(x:i32=binder binder(p=name type(T=type))) i32=return x=value)\ntop(declare=head g=binder decl-params(x:i32=binder i64=type binder(y=name u8=type)) :void=return :noreturn=attr)\ntop(defvar=head :volatile=attr v:i32=binder 0=value)\ntop(extern=head :const=attr binder(E=name Pt=type))\ntop(defconst=head K:i32=binder 2=value)\ntop(defstruct=head S=name a:i32=field field(b=name T=type) field(:volatile=attr c:u8=field))\ntop(defunion=head name(U=name T=name) arm(some=name v:T=field :repr=attr x=value) none=arm)\ntop(defprotocol=head P=name sig(m=name params(self=binder) i32=return))\ntop(deftype=head A=name type(Vector=type i32=type))\ntop(defenum=head E=name X=name Y=name)\ntop(deferror=head bad=name \"m\"=value)\ntop(defmacro=head mac=name params(a=binder :rest=attr b=binder) a=value)\ntop(defcast=head A=type B=type conv=value)\ntop(extend=head S=type P=type)"))
+  (return (ok)))
+
+; Code: bindings, places, clauses and patterns, quoted data and templates;
+; a `do` at the top level holds top-level forms, and a call's operands are unknown.
+(deftest rf6-slot-code
+  (try (rf6-check "(let (:volatile x:i32 0 (y T) (f)) (set! (y 'a) x) (inc! x))\n(if-some (p (g)) (as &T p) (sizeof T))\n(fn (a b:i32):i32 (alloca T 4))\n(cfn &h (c) void (c))\n(match v ((some x) x) (none 0))\n(do (defn h () void) (do (x)))\n(compile-time (defvar w 1))\n(f 'g `(a ~(as T b) ~@c) (quote d) [e (ref f)])\n(when (ok) (as T y))"
+                  "top(let=head bindings(:volatile=attr x:i32=binder 0=value binder(y=name T=type) value(f=head)) value(set!=head place(y=head unknown(a=quoted)) x=value) value(inc!=head x=place))\ntop(if-some=head bindings(p=binder value(g=head)) value(as=head type(T=type) p=value) value(sizeof=head T=type))\ntop(fn=head params(a=binder b:i32=binder) :i32=return value(alloca=head T=type 4=value))\ntop(cfn=head value(h=value) params(c=binder) void=return value(c=head))\ntop(match=head v=value clause(pattern(some=pattern x=pattern) x=value) clause(none=pattern 0=value))\ntop(do=head top(defn=head h=binder ()=params void=return) top(do=head top(x=head)))\ntop(compile-time=head top(defvar=head w=binder 1=value))\ntop(f=head unknown(g=quoted) unknown(template(a=head unknown(value(as=head T=type b=value)) unknown(c=value))) unknown(quote=head d=quoted) unknown(e=value value(ref=head f=value)))\ntop(when=head unknown(ok=head) unknown(as=head T=type y=value))"))
+  (return (ok)))
+
+; Inside a type: a function type's parameters are a list of types, an anonymous
+; struct's members are fields, and a fuse's lists sit under its chain.
+(deftest rf6-slot-types
+  (try (rf6-check "(defn f (cb:(fn i32)(ptr i32) (g (fn i32) (ptr i64)) (h (BoxedFn (A B) R)) (s (struct a:i32 (b (ptr T))))) ((fn void) (i32)) 0)\n(defn g (x:ptr:(Vector T) y:(T) :where (Ord T) :optional (z 3)):(Maybe T) 0)\n(defvar v:?(T) 1)\n(as ptr:(Vector T) q)"
+                  "top(defn=head f=binder params(binder(cb:=binder type(fn=head i32=type) types(ptr=type i32=type)) binder(g=name type(fn=head i32=type) types(ptr=type i64=type)) binder(h=name type(BoxedFn=head types(A=type B=type) R=type)) binder(s=name type(struct=head a:i32=field field(b=name type(ptr=type T=type))))) return(type(fn=head void=type) types(i32=type)) 0=value)\ntop(defn=head g=binder params(binder(x:ptr:=binder type(Vector=type T=type)) binder(y:=binder type(T=type)) :where=attr type(Ord=type T=type) :optional=attr optional(z=binder 3=value)) return(:=return return(Maybe=type T=type)) 0=value)\ntop(defvar=head binder(v:?=binder type(T=type)) 1=value)\ntop(as=head type(ptr:=type type(Vector=type T=type)) q=value)"))
+  (return (ok)))
+
+; A form the fragment ends inside has no node, so its operands are unknown;
+; a complete form inside it still knows its own.
+(deftest rf6-slot-fragment
+  (let (f:&SynFile (try (rf5-fragment "(defn f (x:ref:T (as (ptr T) y)" false))
+        got:String (rf6-trees f)
+        c:!void (check-eq (string-as-view &got)
+                          "top(defn=unknown f=unknown unknown(x:ref:T=unknown unknown(as=head type(ptr=type T=type) y=value)))"))
+    (drop &got)
+    (try c))
+  (return (ok)))
+
+; A rule that needs a slot asks `slot-kind`, and refuses where it is unknown.
+(defrewrite rf6-ptr
+  (rule (ptr ~x) `&~x :when (= (slot-kind self) SLOT-TYPE))
+  (rule (ptr ~x) :refuse "no slot" :when (= (slot-kind self) SLOT-UNKNOWN)))
+
+(deftest rf6-slot-guard
+  (try (rf3b-check (rf6-ptr) "(defn f (p:(ptr T)) (ptr U) (as (ptr V) (g (ptr W))))"
+                   "(defn f (p:&T) (ptr U) (as &V (g (ptr W))))" "1:44 refuse no slot\n"))
+  (return (ok)))
+
+; The forms the compiler's desugar splits are the table's `desugar` rows.
+(deftest rf6-desugar-rows
+  (match (read-all "(defn f) (defn- f) (declare f) (defvar v) (defvar- v) (extern e) (defstruct S) (defstruct- S) (let ()) (with ()) (do) (compile-time) (defmacro m) (defconst K) (fn ()) (f x) ()")
+    ((err e) (fail! "read-all refused: " (e 'msg)))
+    ((ok t)
+      (let (got:String (str ""))
+        (dotimes (i (node-len t))
+          (str-into &got (if (slots-desugared? (node-at t (as i32 i))) "1" "0")))
+        (let (c:!void (check-eq (string-as-view &got) "11111111111100000"))
+          (drop &got)
+          (try c)))))
+  (return (ok)))

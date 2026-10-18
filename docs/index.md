@@ -15,7 +15,7 @@ Nucleus is a compiled systems programming language with Lisp-style syntax, a str
 nucleusc hello.nuc -o hello && ./hello
 ```
 
-Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `main:i32 ()` function is the entry point. The interactive REPL is available via `nucleusc -i`.
+Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `main:i32 ()` function is the entry point. The interactive REPL is available via `nucleusc -i`, and `nucleusc --run file.nuc -- args…` runs a program without linking it ([Running a program without linking](compiler.md#running-a-program-without-linking)).
 
 ## Hello, world
 
@@ -102,10 +102,11 @@ they are ordinary address-of: `&rest` is `(ref rest)`.
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/nucleus/coll.nuc`, `lib/nucleus/hash.nuc`, `lib/nucleus/vector.nuc`, `lib/nucleus/hashmap.nuc`, `lib/nucleus/hashset.nuc`) |
 | [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/nucleus/char.nuc`, `lib/nucleus/strview.nuc`, `lib/nucleus/string.nuc`, `lib/nucleus/parse.nuc`, `lib/nucleus/string-split.nuc`, `lib/nucleus/fmt.nuc`) |
 | [Processes](process.md) | Starting other programs: `Command` as an argv (never a shell command line), `run`, `spawn`/`wait-any` for a job pool, typed `ExitStatus` (`lib/nucleus/process.nuc`) |
-| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader; EDN mode (`lib/nucleus/read.nuc`) |
+| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader; EDN mode; syntax mode, a source-shaped `Syn` tree with spans and comments for rewriting tools; `node-write-sugared`, the house-spelling printer (`lib/nucleus/read.nuc`, `lib/nucleus/syntax.nuc`) |
+| [Refactoring](refactoring.md) | Rewrite tools: `defrewrite` rules (patterns with `~x`/`~@xs` holes, quasiquote templates, guards, `:emit`) and the `refactor-main` driver, `--in-strings` for programs inside string literals, `slot-kind` for what an operand of a built-in form is (`lib/nucleus/slots.nuc`); underneath, span edits over a syntax-mode read: `Edits`, `edit-replace`/`edit-span`, `edits-apply` (refuses overlapping edits, naming both), inside-out composition with `edits-apply-range` (`lib/nucleus/refactor.nuc`) |
 | [EDN](edn.md) | EDN data as a typed view over the reader's `Node`: `edn-parse`, `edn-kind` and accessors, `edn-write`, range-checked `edn-read` conversions, the `EdnCodec` protocol over collections, and `derive-edn` struct codecs (`lib/nucleus/edn.nuc`) |
 | [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the EDN result records a suite prints (`lib/nucleus/test.nuc`) |
-| [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/nucleus/io.nuc`, `lib/nucleus/file.nuc`) |
+| [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter`; directories, the sorted recursive walk and `**` globs (`lib/nucleus/io.nuc`, `lib/nucleus/file.nuc`) |
 | [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/nucleus/avr.nuc`, `lib/nucleus/avr/*.nuc`) |
 
 ## Standard library overview

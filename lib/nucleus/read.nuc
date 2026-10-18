@@ -28,6 +28,7 @@
 (import-use nucleus.arena)
 (import-use nucleus.intern)
 (import-use nucleus.node)
+(import-use nucleus.syntax)
 
 (deferror read-eof "unexpected end of input")
 (deferror read-unterminated-list "unterminated list")
@@ -141,7 +142,9 @@
   macros:&(Vector RMacro)
   ; EDN data, not Nucleus source: no reader macros, `&` sigil, colon-paren
   ; fuse, `def-rmacro` or `c"…"`; `N`/`M` number suffixes.
-  edn:bool)
+  edn:bool
+  ; Syntax mode (docs/reading.md): null for an ordinary read.
+  syn:?&SynBuilder)
 
 ; A reader over `src` whose reader-macro table is `table`, which the caller
 ; owns and may share with the readers it builds next.
@@ -156,6 +159,7 @@
     (set! (r 'col0-open-depth) 0)
     (set! (r 'macros) table)
     (set! (r 'edn) false)
+    (set! (r 'syn) null)
     (return @r)))
 
 (defn reader (src:StrView):Reader
@@ -232,15 +236,25 @@
                 (and (>= c 65) (<= c 70)) (+ (- c 65) 10)
                 true -1)))
 
+(defn rd-syn-comment (self:&Reader sb:&SynBuilder):void
+  (let (at:usize (self 'pos))
+    (while (and (!= (rd-peek self) 0) (!= (rd-peek self) 10))
+      (rd-next self))
+    (syn-comment sb at (self 'pos))))
+
 (defn rd-skip-ws (self:&Reader):void
   (while true
     (let (c:i32 (rd-peek self))
       (when (= c 0) (return))
       (cond (or (rd-space? c) (= c 44))
               (rd-next self)
+            ; Syntax mode scans its own copy so this loop stays hook-free (overview.md §8).
             (= c 59)                       ; ';' to end of line
-              (while (and (!= (rd-peek self) 0) (!= (rd-peek self) 10))
-                (rd-next self))
+              (let (sb:?&SynBuilder (self 'syn))
+                (if (= sb null)
+                  (while (and (!= (rd-peek self) 0) (!= (rd-peek self) 10))
+                    (rd-next self))
+                  (rd-syn-comment self sb)))
             true
               (return)))))
 
@@ -376,14 +390,140 @@
     (return (err! read-int-range))))
 
 ; ---------------------------------------------------------------------------
+; Colon chains. `chain-seg-at` is the one splitter: the sigil expansion, the
+; fuse, the compiler's desugar and refactoring tools all segment through it
+; (design/stage26-refactoring/overview.md §4.2).
+; ---------------------------------------------------------------------------
+
+; A segment's byte offsets in its chain's text: the sigil run [start, body),
+; the body [body, end), and `colon` when a `:` follows at `end`.
+(defstruct ChainSeg start:usize body:usize end:usize colon:bool)
+
+; A segment starts with its run of `?`, `!` and `&`; anywhere else they are body bytes.
+(defn chain-sigil? (c:i32):bool
+  (return (or (= c 63) (= c 33) (= c 38))))
+
+; The segment starting at `at`: 0, or one past a segment's `colon`.
+(defn chain-seg-at (text:StrView at:usize):ChainSeg
+  (let (tp:&StrView &text
+        n:usize (text 'len)
+        i:usize at)
+    (while (and (< i n) (chain-sigil? (rd-tv-at tp i)))
+      (set! i (+ i 1)))
+    (let (body:usize i)
+      (while (and (< i n) (!= (rd-tv-at tp i) 58))
+        (set! i (+ i 1)))
+      (return (ChainSeg at body i (< i n))))))
+
+(defn chain-seg-next (text:StrView seg:ChainSeg):ChainSeg
+  (return (chain-seg-at text (+ (seg 'end) 1))))
+
+; The segment's text, its sigils included and its `:` not.
+(defn chain-seg-text (text:StrView seg:ChainSeg):StrView
+  (return (strview-take-bytes (strview-drop-bytes text (seg 'start)) (- (seg 'end) (seg 'start)))))
+
+(defstruct Chain text:StrView keyword:bool segs:(Vector ChainSeg))
+
+; A raw atom's segments, arena-allocated. A keyword's leading `:` separates
+; nothing, so its segments start at byte 1 and none of them is a name.
+(defn chain-segments (text:StrView):&Chain
+  (let (c:&Chain (unsafe/cast &Chain (arena-alloc (sizeof Chain)))
+        kw:bool (and (> (text 'len) 1) (= (rd-tv-at &text 0) 58))
+        from:usize 0)
+    (when kw (set! from 1))
+    (set! (c 'text) text)
+    (set! (c 'keyword) kw)
+    (init (ref c 'segs) (handle g-arena))
+    (let (seg:ChainSeg (chain-seg-at text from)
+          more:bool true)
+      (while more
+        (conj (ref c 'segs) seg)
+        (set! more (seg 'colon))
+        (when more (set! seg (chain-seg-next text seg))))
+      (return c))))
+
+(defn chain-seg (c:&Chain i:usize):ChainSeg
+  (return ((ref c 'segs) i)))
+
+(defn chain-sigils (c:&Chain i:usize):StrView
+  (let (seg:ChainSeg (chain-seg c i))
+    (return (strview-take-bytes (strview-drop-bytes (c 'text) (seg 'start))
+                                (- (seg 'body) (seg 'start))))))
+
+(defn chain-body (c:&Chain i:usize):StrView
+  (let (seg:ChainSeg (chain-seg c i))
+    (return (strview-take-bytes (strview-drop-bytes (c 'text) (seg 'body))
+                                (- (seg 'end) (seg 'body))))))
+
+; The last segment has no body (`x:`, `x:?`, `?&`), so the reader fuses the
+; atom with a `(` that follows it.
+(defn chain-open? (c:&Chain):bool
+  (let (seg:ChainSeg (chain-seg c (- (count (ref c 'segs)) 1)))
+    (return (= (seg 'body) (seg 'end)))))
+
+; ---------------------------------------------------------------------------
+; A string literal as source: its value, and where each byte of it is written
+; (design/stage26-refactoring/overview.md §4.6).
+; ---------------------------------------------------------------------------
+
+; `map` has an entry per byte of `text`, the source offset its spelling starts
+; at (an escape's `\`), plus one for the end: the closing quote's offset.
+(defstruct StrSource text:StrView map:(Vector usize))
+
+; `s`'s value decoded as the reader decodes it, arena-allocated; null unless
+; `s` is a string literal.
+(defn syn-string-source (f:&SynFile s:&Syn):?&StrSource
+  (when (!= (s 'kind) SYN-STR) (return null))
+  (let (src:StrView (f 'src)
+        end:usize (- (s 'end) 1)
+        r:Reader (reader (strview-take-bytes src end))
+        buf:&String (alloca String)
+        ss:&StrSource (unsafe/cast &StrSource (arena-alloc (sizeof StrSource))))
+    (init buf)
+    (init (ref ss 'map) (handle g-arena))
+    ; Past the opening quote, and the `c` of a `c"…"`.
+    (set! (r 'pos) (if (= (rd-tv-at &src (s 'start)) 99) (+ (s 'start) 2) (+ (s 'start) 1)))
+    (while (< (r 'pos) end)
+      (let (at:usize (r 'pos)
+            c:i32 (rd-next &r))
+        (when (= c 0)
+          (drop buf)
+          (return null))
+        (if (= c 92)
+          (match (rd-string-escape &r buf)
+            ((err e) (do (drop buf)
+                         (return null)))
+            ((ok x) (do)))
+          (rd-push-byte buf c))
+        (while (< (count (ref ss 'map)) (byte-len buf))
+          (conj (ref ss 'map) at))))
+    (conj (ref ss 'map) end)
+    (set! (ss 'text) (rd-arena-str buf))
+    (return ss)))
+
+; The source offset of value byte `i`; `i` may be the value's length.
+(defn str-source-at (ss:&StrSource i:usize):usize
+  (return ((ref ss 'map) i)))
+
+; Whether value offset `i` falls inside one escape's bytes (a `\uXXXX` that
+; decodes to several), where no source offset corresponds to it.
+(defn str-source-split? (ss:&StrSource i:usize):bool
+  (return (and (> i 0) (< i ((ss 'text) 'len)) (= (str-source-at ss i) (str-source-at ss (- i 1))))))
+
+; `text` spelled for the inside of a string literal: the bytes a literal
+; decodes or ends at are escaped; the rest, line breaks included, are kept.
+(defn str-source-escape (out:&String text:StrView):void
+  (dotimes (i (as i64 (text 'len)))
+    (let (c:i32 (rd-tv-at &text (as usize i)))
+      (cond (= c 34) (write-str out "\\\"")
+            (= c 92) (write-str out "\\\\")
+            (= c 0) (write-str out "\\0")
+            true (rd-push-byte out c)))))
+
+; ---------------------------------------------------------------------------
 ; `&T` is sugar for `ref:T`, expanded before the parser so every reader of a
 ; type spelling sees the colon chain (design/stage16-ergonomics/ref-sigil.md).
 ; ---------------------------------------------------------------------------
-
-(defn rd-seg-next (c:i32 seg:i32):i32
-  (when (and (= c 38) (!= seg 0)) (return 1))
-  (when (or (= c 63) (= c 33)) (return seg))
-  (return (if (= c 58) 1 0)))
 
 ; A retired `&x` marker stays unexpanded so the compiler's own check can name
 ; its keyword replacement instead of failing as `unknown type: rest`.
@@ -392,35 +532,48 @@
   (let (tail:StrView (strview-drop-bytes sv 1))
     (return (or (= tail "rest") (= tail "where") (= tail "optional") (= tail "repr")))))
 
+; Whether any segment's sigil run holds a `&`.
+(defn rd-has-ref-sigil? (tv:StrView):bool
+  (let (tp:&StrView &tv
+        seg:ChainSeg (chain-seg-at tv 0)
+        more:bool true)
+    (while more
+      (let (i:usize (seg 'start))
+        (while (< i (seg 'body))
+          (when (= (rd-tv-at tp i) 38) (return true))
+          (set! i (+ i 1))))
+      (set! more (seg 'colon))
+      (when more (set! seg (chain-seg-next tv seg))))
+    (return false)))
+
 (defn rd-expand-sigil (tv:StrView):Symbol
-  (let (n:usize (tv 'len)
-        i:usize 0
-        count:i32 0
-        seg:i32 1
-        tp:&StrView &tv)
-    (while (< i n)
-      (let (c:i32 (rd-tv-at tp i))
-        (when (and (= c 38) (!= seg 0)) (set! count (+ count 1)))
-        (set! seg (rd-seg-next c seg)))
-      (set! i (+ i 1)))
-    (when (= count 0) (return (symbol-intern tv)))
-    (when (rd-legacy-marker? tv) (return (symbol-intern tv)))
-    (let (out:&String (alloca String)
-          j:usize 0
-          seg2:i32 1
-          ref-colon:StrView "ref:")
-      (init out)
-      (while (< j n)
-        (let (c:i32 (rd-tv-at tp j))
-          (if (and (= c 38) (!= seg2 0))
+  (when (not (rd-has-ref-sigil? tv)) (return (symbol-intern tv)))
+  (when (rd-legacy-marker? tv) (return (symbol-intern tv)))
+  (let (out:&String (alloca String)
+        tp:&StrView &tv
+        seg:ChainSeg (chain-seg-at tv 0)
+        more:bool true
+        ref-colon:StrView "ref:"
+        colon:StrView ":")
+    (init out)
+    (while more
+      (let (i:usize (seg 'start))
+        (while (< i (seg 'body))
+          (if (= (rd-tv-at tp i) 38)
             (string-push-str-unchecked out &ref-colon)
-            (let (one:StrView (strview (unsafe/ptr+ (tp 'data) (as i64 j)) 1))
+            (let (one:StrView (strview (unsafe/ptr+ (tp 'data) (as i64 i)) 1))
               (string-push-str-unchecked out &one)))
-          (set! seg2 (rd-seg-next c seg2)))
-        (set! j (+ j 1)))
-      (let (s:Symbol (symbol-intern (string-as-view out)))
-        (drop out)
-        (return s)))))
+          (set! i (+ i 1))))
+      (let (body:StrView (strview (unsafe/ptr+ (tp 'data) (as i64 (seg 'body)))
+                                  (- (seg 'end) (seg 'body))))
+        (string-push-str-unchecked out &body))
+      (set! more (seg 'colon))
+      (when more
+        (string-push-str-unchecked out &colon)
+        (set! seg (chain-seg-next tv seg))))
+    (let (s:Symbol (symbol-intern (string-as-view out)))
+      (drop out)
+      (return s))))
 
 ; The `&` reader macro must not swallow a retired marker.
 (defn rd-at-legacy-marker (self:&Reader):bool
@@ -462,6 +615,46 @@
 (defn rd-surrogate? (cp:i32):bool
   (return (and (>= cp 55296) (<= cp 57343))))
 
+; The escape after a string literal's `\`, its value appended to `buf`. The one
+; decoder: `syn-string-source` maps a literal's bytes through it too.
+(defn rd-string-escape (self:&Reader buf:&String):ReadResult
+  (let (e:i32 (rd-next self)
+        c:i32 (case e 110 10 116 9 114 13 48 0 92 92 34 34 -1))
+    (cond (>= c 0) (do)
+          ; `\xHH`: one or two hex digits, deliberately not C's greedy run.
+          (= e 120)
+            (let (h1:i32 (rd-hex-val (rd-peek self)))
+              (when (< h1 0)
+                (return (err (rd-error read-bad-escape (self 'line)
+                                       "\\x escape needs at least one hex digit" ""))))
+              (rd-next self)
+              (set! c h1)
+              (let (h2:i32 (rd-hex-val (rd-peek self)))
+                (when (>= h2 0)
+                  (rd-next self)
+                  (set! c (+ (* c 16) h2)))))
+          ; `\uXXXX`, EDN's (and Java's) spelling: exactly four digits.
+          (= e 117)
+            (let (cp:i32 (rd-hex4 self))
+              (when (< cp 0)
+                (return (err (rd-error read-bad-escape (self 'line)
+                                       "\\u escape needs exactly four hex digits" ""))))
+              (when (rd-surrogate? cp)
+                (return (err (rd-error read-bad-escape (self 'line)
+                                       "\\u escape names a surrogate, which is not a character" ""))))
+              (string-push-char buf (as Char (as ui32 cp)))
+              (return (ok null)))
+          true
+            (let (m:String (str "unknown escape \\" (as Char (as ui32 e))))
+              (return (err (rd-error read-bad-escape (self 'line) (rd-arena-str &m) "")))))
+    (rd-push-byte buf c)
+    (return (ok null))))
+
+(defn rd-push-byte (buf:&String c:i32):void
+  (let (one:&ui8 (as &ui8 (alloca ui8 1)))
+    (set! (aref one 0) (unsafe/cast ui8 c))
+    (string-push-bytes-raw buf one 1)))
+
 ; No length ceiling: the buffer grows.
 (defn rd-string (self:&Reader open-line:i32 is-cstr:bool):ReadResult
   (let (buf:&String (alloca String)
@@ -481,45 +674,10 @@
               (drop buf)
               (return (ok n)))
           (= c 92)
-            (let (e:i32 (rd-next self)
-                  handled:bool true)
-              (cond (= e 110) (set! c 10)
-                    (= e 116) (set! c 9)
-                    (= e 114) (set! c 13)
-                    (= e 48)  (set! c 0)
-                    (= e 92)  (set! c 92)
-                    (= e 34)  (set! c 34)
-                    ; `\xHH`: one or two hex digits, deliberately not C's greedy run.
-                    (= e 120)
-                      (let (h1:i32 (rd-hex-val (rd-peek self)))
-                        (when (< h1 0)
-                          (drop buf)
-                          (return (err (rd-error read-bad-escape (self 'line)
-                                                 "\\x escape needs at least one hex digit" ""))))
-                        (rd-next self)
-                        (set! c h1)
-                        (let (h2:i32 (rd-hex-val (rd-peek self)))
-                          (when (>= h2 0)
-                            (rd-next self)
-                            (set! c (+ (* c 16) h2)))))
-                    ; `\uXXXX`, EDN's (and Java's) spelling: exactly four digits.
-                    (= e 117)
-                      (let (cp:i32 (rd-hex4 self))
-                        (when (< cp 0)
-                          (drop buf)
-                          (return (err (rd-error read-bad-escape (self 'line)
-                                                 "\\u escape needs exactly four hex digits" ""))))
-                        (when (rd-surrogate? cp)
-                          (drop buf)
-                          (return (err (rd-error read-bad-escape (self 'line)
-                                                 "\\u escape names a surrogate, which is not a character" ""))))
-                        (string-push-char buf (as Char (as ui32 cp)))
-                        (set! c -1))
-                    true (set! handled false))
-              (when (not handled)
-                (drop buf)
-                (let (m:String (str "unknown escape \\" (as Char (as ui32 e))))
-                  (return (err (rd-error read-bad-escape (self 'line) (rd-arena-str &m) "")))))))
+            (match (rd-string-escape self buf)
+              ((err e) (do (drop buf)
+                           (return (err e))))
+              ((ok x) (set! c -1))))
         (when (>= c 0)
           (set! (aref one 0) (unsafe/cast ui8 c))
           (string-push-bytes-raw buf one 1))))
@@ -758,15 +916,13 @@
                                plist line))))))
 
 ; The final chain segment is still open (`x:`, `?`, `x:?`, `?!` -- not `foo?`,
-; `!=`): the fuse gate of pointer-kind-spellings.md §4, on the `&`-sigil machine.
+; `!=`): the fuse gate of pointer-kind-spellings.md §4. `chain-open?` without
+; the arena, since every symbol the reader reads asks.
 (defn rd-open-segment? (sv:StrView):bool
-  (let (n:usize (sv 'len)
-        i:usize 0
-        seg:i32 1)
-    (while (< i n)
-      (set! seg (rd-seg-next (rd-tv-at &sv i) seg))
-      (set! i (+ i 1)))
-    (return (= seg 1))))
+  (let (seg:ChainSeg (chain-seg-at sv 0))
+    (while (seg 'colon)
+      (set! seg (chain-seg-next sv seg)))
+    (return (= (seg 'body) (seg 'end)))))
 
 ; Colon-paren binding sugar (design/stage11/cleanup.md §1). The colon is an
 ; ordinary symbol char, so `name:(ref (Vector T))` lexes as the atom `name:`
@@ -790,28 +946,22 @@
       ; only a trailing ':' is stripped before the split.
       (when (strview-has-suffix sv ":")
         (set! body (strview-take-bytes sv (- len 1))))
-      ; Split the body on ':'. The first segment is the binding name for a
-      ; symbol (empty for a keyword, whose colon the lexer already stripped);
-      ; the rest wrap the paren form right-to-left as unary constructors.
+      ; The first segment is the binding name for a symbol (a keyword, whose
+      ; colon the lexer already stripped, has none); the rest wrap the paren
+      ; form right-to-left as unary constructors.
       (let (segs:&(Vector Symbol) (alloca (Vector Symbol))
-            cur:StrView body
-            done:bool false)
+            seg:ChainSeg (chain-seg-at body 0)
+            more:bool true)
         (init segs)
-        (while (not done)
-          (let (seg-len:usize (cur 'len)
-                more:bool false)
-            (match (strview-find-byte &cur 58)
-              ((some at) (do (set! seg-len at) (set! more true)))
-              (none (do)))
-            (when (= seg-len 0)
-              (drop segs)
-              (let (m:String (str "empty segment in colon-chain '" sv
-                                  "' -- write name:k1:(Type) with no '::'"))
-                (return (err (rd-error read-empty-segment line (rd-arena-str &m) "")))))
-            (conj segs (symbol-intern (strview-take-bytes cur seg-len)))
-            (if more
-              (set! cur (strview-drop-bytes cur (+ seg-len 1)))
-              (set! done true))))
+        (while more
+          (when (= (seg 'start) (seg 'end))
+            (drop segs)
+            (let (m:String (str "empty segment in colon-chain '" sv
+                                "' -- write name:k1:(Type) with no '::'"))
+              (return (err (rd-error read-empty-segment line (rd-arena-str &m) "")))))
+          (conj segs (symbol-intern (chain-seg-text body seg)))
+          (set! more (seg 'colon))
+          (when more (set! seg (chain-seg-next body seg))))
         (let (n:usize (count segs)
               start:usize 0
               name:Symbol (symbol-none)
@@ -842,14 +992,25 @@
       (rd-skip-ws self)
       (when (or (!= (rd-peek self) 35) (!= (rd-peek1 self) 95))
         (return (ok none)))
-      (let (line:i32 (self 'line))
+      (let (line:i32 (self 'line)
+            at:usize (self 'pos))
         (rd-next self) (rd-next self)
         (rd-skip-ws self)
         (let (c:i32 (rd-peek self))
           (when (or (= c 0) (= c 41) (= c 93) (= c 125))
             (return (err (rd-error read-bad-discard line "#_ must be followed by a form to discard" "")))))
-        (try (rd-form self))))
+        (try (rd-discard-form self at))))
     (return (ok none))))
+
+; The form a `#_` at `at` drops. In syntax mode its span is recorded and its
+; frames are kept out of the tree.
+(defn rd-discard-form (self:&Reader at:usize):ReadResult
+  (let (sb:?&SynBuilder (self 'syn))
+    (when (= sb null) (return (rd-form self)))
+    (let (saved:?&Syn (syn-discard-begin sb at)
+          r:ReadResult (rd-form self))
+      (syn-discard-end sb saved (self 'pos))
+      (return r))))
 
 (defn rd-list (self:&Reader open-line:i32):ReadResult
   (let (b:&Node (node-list-new open-line))
@@ -919,6 +1080,13 @@
 
 (defn rd-form (self:&Reader):ReadResult
   (try (rd-skip-discard self))
+  ; Syntax mode re-enters here to read the frame it opened, which keeps this
+  ; body inline for the ordinary read (stage26-refactoring/overview.md §8).
+  (let (sb:?&SynBuilder (self 'syn))
+    (when (!= sb null)
+      (if (sb 'framed)
+        (set! (sb 'framed) false)
+        (return (rd-syn-form self sb)))))
   (let (line:i32 (self 'line)
         c:i32 (rd-peek self))
     (cond
@@ -1004,6 +1172,71 @@
     (return (rd-atom-form self line))))
 
 ; ---------------------------------------------------------------------------
+; Syntax mode: the same read, building a `Syn` per form beside its node
+; (lib/nucleus/syntax.nuc, design/stage26-refactoring/overview.md §4.1).
+; ---------------------------------------------------------------------------
+
+; The kind `rd-form` is about to read, by its tests in its order. A fuse is
+; told from an atom once its kids are read.
+(defn rd-syn-kind (self:&Reader):i32
+  (let (c:i32 (rd-peek self)
+        c1:i32 (rd-peek1 self))
+    (return (cond (= c 40) SYN-LIST
+                  (= c 91) SYN-VEC
+                  (and (= c 35) (= c1 123)) SYN-SET
+                  (= c 35) SYN-TAGGED
+                  (= c 123) SYN-MAP
+                  (and (= c 38) (rd-at-legacy-marker self)) SYN-ATOM
+                  (>= (rd-macro-match self) 0) SYN-PREFIX
+                  (or (= c 34) (and (= c 99) (= c1 34) (not (self 'edn)))) SYN-STR
+                  (= c 92) SYN-CHAR
+                  true SYN-ATOM))))
+
+(defn rd-syn-open (self:&Reader kind:i32):i32
+  (when (= kind SYN-PREFIX)
+    (let (rm:RMacro (invoke (self 'macros) (as usize (rd-macro-match self)))
+          p:StrView (rm 'prefix))
+      (return (unsafe/cast i32 (p 'len)))))
+  (return (case kind SYN-LIST 1 SYN-VEC 1 SYN-MAP 1 SYN-SET 2 SYN-TAGGED 1 0)))
+
+; A fuse's atom and a tagged literal's tag are read without a frame. The fused
+; tree has no elem for the atom, so its node is the atom read on its own.
+(defn rd-syn-head-kid (self:&Reader s:&Syn n:?&Node):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        start:usize (s 'start))
+    (cond (and (= (s 'kind) SYN-ATOM) (> (count ks) 0))
+            (let (k0:&Syn (ks 0)
+                  end:usize (k0 'start)
+                  text:StrView (strview-take-bytes (strview-drop-bytes (self 'src) start)
+                                                   (- end start))
+                  sub:Reader (reader-with-macros text (self 'macros))
+                  atom:?&Node null)
+              (set! (s 'kind) SYN-FUSE)
+              (set! (sub 'line) (s 'line))
+              (match (rd-atom &sub)
+                ((ok a) (set! atom a))
+                ((err e) (do)))
+              (syn-add-head-kid s start end atom))
+          (= (s 'kind) SYN-TAGGED)
+            (let (end:usize (+ start 1))
+              (while (rd-sym-char? (rd-at self end))
+                (set! end (+ end 1)))
+              (syn-add-head-kid s (+ start 1) end (node-at n 1))))))
+
+(defn rd-syn-form (self:&Reader sb:&SynBuilder):ReadResult
+  (let (kind:i32 (rd-syn-kind self)
+        s:&Syn (syn-open sb kind (rd-syn-open self kind) (self 'pos) (self 'line)))
+    (set! (sb 'framed) true)
+    (let (r:ReadResult (rd-form self))
+      (match r
+        ((ok n) (do (rd-syn-head-kid self s n)
+                    (syn-close sb s (self 'pos) n)))
+        ((err e) (if (and (sb 'recover) (= (rd-peek self) 0) (!= (e 'code) read-unexpected-close))
+                   (syn-close sb s (self 'pos) null)
+                   (syn-abandon sb s))))
+      (return r))))
+
+; ---------------------------------------------------------------------------
 ; Public entry points
 ; ---------------------------------------------------------------------------
 
@@ -1042,18 +1275,87 @@
   (let (r:Reader (reader-with-macros src table)
         b:&Node (node-list-new 0))
     (while (not (reader-eof? &r))
-      (let (start-line:i32 (r 'line)
-            form:?&Node (try (read-one &r))
-            line:i32 start-line)
-        (when (!= form null)
-          (let (fl:i32 (form 'line))
-            (when (!= fl 0) (set! line fl))))
-        (node-push-line b form line)))
+      (try (rd-read-into &r b)))
     (return (ok (node-list-done b)))))
+
+; The next form, pushed on `spine` carrying the line it started on.
+(defn rd-read-into (r:&Reader spine:&Node):ReadResult
+  (let (start-line:i32 (r 'line)
+        form:?&Node (try (read-one r))
+        line:i32 start-line)
+    (when (!= form null)
+      (let (fl:i32 (form 'line))
+        (when (!= fl 0) (set! line fl))))
+    (node-push-line spine form line)
+    (return (ok form))))
 
 ; The same over a fresh table: a `def-rmacro` in `src` is scoped to `src`.
 (defn read-all (src:StrView):ReadResult
   (return (read-all-with-macros src (read-macro-table-new))))
+
+; Same arms as `ReadResult`, for the same reason (docs/reading.md).
+(defunion SynFileResult (ok v:&SynFile) (err e:ReadError))
+(defunion SynResult (ok v:&Syn) (err e:ReadError))
+
+(defn rd-syn-builder (r:&Reader):&SynBuilder
+  (let (sb:?&SynBuilder (r 'syn))
+    (when (!= sb null) (return sb))
+    (let (fresh:&SynBuilder (syn-builder-new (r 'src)))
+      (set! (r 'syn) fresh)
+      (return fresh))))
+
+; A reader in syntax mode over `src`, with a fresh built-in macro table.
+(defn reader-syntax (src:StrView):Reader
+  (let (r:Reader (reader src))
+    (rd-syn-builder &r)
+    (return r)))
+
+; The file a syntax-mode reader is building; null for an ordinary reader.
+(defn reader-syn-file (r:&Reader):?&SynFile
+  (let (sb:?&SynBuilder (r 'syn))
+    (when (= sb null) (return null))
+    (return (sb 'file))))
+
+; The next form's `Syn`, its node also pushed on the file's `tree`. A reader not
+; yet in syntax mode is switched into it here.
+(defn read-syntax-one (r:&Reader):SynResult
+  (let (f:&SynFile ((rd-syn-builder r) 'file))
+    (try (rd-read-into r (f 'tree)))
+    (let (fs:&(Vector &Syn) (ref f 'forms))
+      (return (ok (fs (- (count fs) 1)))))))
+
+; `read-all` in syntax mode: the same tree, as `(f 'tree)`, plus a `Syn` per form.
+(defn read-syntax-all (src:StrView):SynFileResult
+  (let (r:Reader (reader-syntax src))
+    (while (not (reader-eof? &r))
+      (try (read-syntax-one &r)))
+    (return (ok ((rd-syn-builder &r) 'file)))))
+
+; `read-syntax-all` over a piece of a program, as a test builds one from string
+; literals: a closer with no opener is skipped, and a form the text ends inside
+; keeps the kids it read, with a null `node` and no elem in `tree`. A piece that
+; `starts-in-string` is read from past the quote that ends that string. Any
+; other error is returned. `fragment` says whether any of this happened.
+(defn read-syntax-fragment (src:StrView starts-in-string:bool):SynFileResult
+  (let (r:Reader (reader-syntax src)
+        sb:&SynBuilder (rd-syn-builder &r)
+        f:&SynFile (sb 'file)
+        c:i32 (if starts-in-string 92 0))
+    (set! (sb 'recover) true)
+    (set! (f 'fragment) starts-in-string)
+    (while (and starts-in-string (!= c 0) (!= c 34))
+      (set! c (rd-next &r))
+      (when (= c 92)
+        (rd-next &r)))
+    (while (not (reader-eof? &r))
+      (match (read-syntax-one &r)
+        ((ok s) (do))
+        ((err e)
+          (do (when (and (!= (e 'code) read-unexpected-close) (!= (rd-peek &r) 0))
+                (return (err e)))
+              (set! (f 'fragment) true)
+              (set! (f 'ends-in-string) (= (e 'code) read-unterminated-string))))))
+    (return (ok f))))
 
 ; Every form in EDN text `src`, as a list.
 (defn read-all-edn (src:StrView):ReadResult
@@ -1147,6 +1449,151 @@
   (let (s:&String (alloca String))
     (init s)
     (node-write s n)
+    (return @s)))
+
+; ---------------------------------------------------------------------------
+; Writing in the preferred spelling (design/stage26-refactoring/overview.md
+; §4.4.1). Each sugared spelling is kept only if it reads back as the same
+; tree, so the exceptions (`&rest`, `~@x` for `(unquote @x)`) need no list.
+; ---------------------------------------------------------------------------
+
+; Whether `text` reads as exactly one form, `node-eq` to `n`.
+(defn rd-reads-back? (text:StrView n:?&Node table:&(Vector RMacro)):bool
+  (let (r:Reader (reader-with-macros text table))
+    (match (rd-form &r)
+      ((ok m) (return (and (reader-eof? &r) (node-eq m n))))
+      ((err e) (return false)))))
+
+; The prefix of the first row that wraps a form in `head`, or "".
+(defn rd-macro-prefix-for (table:&(Vector RMacro) head:Symbol):StrView
+  (let (n:usize (count table)
+        i:usize 0)
+    (while (< i n)
+      (let (rm:RMacro (invoke table i))
+        (when (= (rm 'wrap) head) (return (rm 'prefix))))
+      (set! i (+ i 1)))
+    (return "")))
+
+(defn rd-view-from (out:&String mark:usize):StrView
+  (return (strview-drop-bytes (string-as-view out) mark)))
+
+; Whether a segment of the chain is a `ref` with a `:` after it, which `&` spells.
+(defn rd-has-ref-segment? (tv:StrView):bool
+  (let (seg:ChainSeg (chain-seg-at tv 0)
+        more:bool true)
+    (while more
+      (when (and (seg 'colon) (= (strview-take-bytes (strview-drop-bytes tv (seg 'body))
+                                                      (- (seg 'end) (seg 'body)))
+                                 "ref"))
+        (return true))
+      (set! more (seg 'colon))
+      (when more (set! seg (chain-seg-next tv seg))))
+    (return false)))
+
+; `x:ref:T` as `x:&T`: the reader's sigil expansion, inverted.
+(defn rd-write-ref-sigils (out:&String tv:StrView):void
+  (let (seg:ChainSeg (chain-seg-at tv 0)
+        more:bool true)
+    (while more
+      (let (sig:StrView (strview-take-bytes (strview-drop-bytes tv (seg 'start))
+                                            (- (seg 'body) (seg 'start)))
+            body:StrView (strview-take-bytes (strview-drop-bytes tv (seg 'body))
+                                             (- (seg 'end) (seg 'body))))
+        (write-str out sig)
+        (if (and (seg 'colon) (= body "ref"))
+          (write-str out "&")
+          (do (write-str out body)
+              (when (seg 'colon) (write-str out ":")))))
+      (set! more (seg 'colon))
+      (when more (set! seg (chain-seg-next tv seg))))))
+
+(defn rd-write-atom-sugared (out:&String n:&Node table:&(Vector RMacro)):void
+  (let (k:i32 (n 'kind)
+        mark:usize (byte-len out))
+    (cond (and (or (= k NODE-SYM) (= k NODE-KEYWORD))
+               (rd-has-ref-segment? (symbol-as-view (n 's))))
+            (do (when (= k NODE-KEYWORD) (write-str out ":"))
+                (rd-write-ref-sigils out (symbol-as-view (n 's))))
+          (= k NODE-CHAR)
+            (let (cp:i64 (n 'i)
+                  named:StrView (case cp 10 "newline" 13 "return" 9 "tab" 32 "space" 0 "nul"
+                                      27 "escape" 8 "backspace" 127 "delete" ""))
+              (cond (> (named 'len) 0) (str-into out "\\" named)
+                    (and (> cp 32) (< cp 127)) (str-into out "\\" (as Char (unsafe/cast ui32 cp)))
+                    true (do))))
+    (when (or (= (byte-len out) mark) (not (rd-reads-back? (rd-view-from out mark) n table)))
+      (string-truncate-unchecked out mark)
+      (node-write out n))))
+
+; A prefix form, a literal cell or a tagged literal: `open`, the elems from
+; `from` on, `close`. The elems' text is reused if the long form is needed.
+(defn rd-write-sugared-cell (out:&String n:&Node table:&(Vector RMacro)
+                             open:StrView from:i32 close:StrView):void
+  (let (mark:usize (byte-len out)
+        len:i32 (node-len n))
+    (write-str out open)
+    (let (inner:usize (byte-len out))
+      (dotimes (i (- len from))
+        (when (> i 0) (write-str out " "))
+        (node-write-sugared-with out (node-at n (+ i from)) table))
+      (write-str out close)
+      (when (rd-reads-back? (rd-view-from out mark) n table) (return))
+      (let (body:&String (alloca String)
+            v:StrView (strview-take-bytes (rd-view-from out inner)
+                                          (- (- (byte-len out) inner) (close 'len))))
+        (init body)
+        (string-push-str-unchecked body &v)
+        (string-truncate-unchecked out mark)
+        (write-str out "(")
+        (node-write out (node-first n))
+        (when (> (byte-len body) 0)
+          (write-str out " ")
+          (write-str out (string-as-view body)))
+        (write-str out ")")
+        (drop body)))))
+
+; `node-write` in the house spelling: reader-macro prefixes (`&x`, `'x`, `~@x`
+; …) through `table`, `[…]` `{…}` `#{…}` `#tag v`, `&` sigils in atoms (`x:&T`)
+; and named or printable chars (`\space`, `\a`). Any spelling that would not
+; read back as the same tree falls back to `node-write`'s long form.
+(defn node-write-sugared-with (out:&String n:?&Node table:&(Vector RMacro)):void
+  (when (= n null)
+    (write-str out "()")
+    (return))
+  (when (!= (n 'kind) NODE-LIST)
+    (rd-write-atom-sugared out n table)
+    (return))
+  (let (len:i32 (node-len n)
+        h:?&Node (node-first n))
+    (when (and (!= h null) (= (h 'kind) NODE-SYM))
+      (let (hs:Symbol (h 's)
+            p:StrView (rd-macro-prefix-for table hs))
+        (let (open:StrView (cond (and (> (p 'len) 0) (= len 2)) p
+                                 (= hs "vector-lit") "["
+                                 (= hs "hashmap-lit") "{"
+                                 (= hs "hashset-lit") "#{"
+                                 (and (= hs "tagged-lit") (= len 3)) "#"
+                                 true "")
+              close:StrView (cond (= hs "vector-lit") "]"
+                                  (or (= hs "hashmap-lit") (= hs "hashset-lit")) "}"
+                                  true ""))
+          (when (> (open 'len) 0)
+            (rd-write-sugared-cell out n table open 1 close)
+            (return)))))
+    (write-str out "(")
+    (dotimes (i len)
+      (when (> i 0) (write-str out " "))
+      (node-write-sugared-with out (node-at n i) table))
+    (write-str out ")")))
+
+; The same through the six built-in reader macros.
+(defn node-write-sugared (out:&String n:?&Node):void
+  (node-write-sugared-with out n (read-macro-table-new)))
+
+(defn node-str-sugared (n:?&Node):String
+  (let (s:&String (alloca String))
+    (init s)
+    (node-write-sugared s n)
     (return @s)))
 
 ; Structural equality: same shape, same kinds, same values. Symbols compare by

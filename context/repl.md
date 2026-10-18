@@ -153,27 +153,25 @@ prompt gives you the session's copy of `lib/nucleus/vector.nuc`, not the one ins
 function rather than the compiler's, and the prelude preload has relied on it
 since R2. For a stateless library the two copies are indistinguishable.
 
-**`node` is the one library where it shows.** Its state — the intern table — is
-the compiler's own identity mechanism, and `emit-node` dispatches special forms
-by **pointer** identity on interned symbols (conventions.md, "Symbol nodes are
-interned singletons"). After `(import-use nucleus.node)`, a macro whose JIT module is
-*first expanded after* the import calls the session's `intern-symbol`, so its
-`cond`/`let`/`while` heads come from a second table and are not recognised:
+**Except its globals: a `lib/` global the host binary defines is the host's**
+(Stage 26 RF-4, `repl-host-global?` in `emit-global-def`). The session emits
+`@g = external global` for it, so `g-arena`, `heap` and the two intern tables
+(`lib/nucleus/intern.nuc`'s Symbol table, `lib/nucleus/node.nuc`'s node table)
+are one per process. Before that, any import reaching `nucleus.node` (`read`,
+`syntax`, `refactor`) gave the session a second table, and a macro JIT module
+materialised afterwards bound the session's `intern-symbol`: its heads were
+not the compiler's pointers (`unknown: cond`), and a gensym re-interned through
+a nested quasiquote did not match its binder (`undefined: __gs_N`). It is the
+L6 provenance rule for a macro body's globals, extended to the session. The
+cost: a session that edits such a global's type or an intern routine in `lib/`
+runs against the old compiler's state until the compiler is rebuilt.
+`tests/repl/host-runtime.in` and `tests/repl/rf4-host-state.in` pin it.
 
-```
-nuc> (import-use nucleus.node)
-nuc> (defmacro mc (a) `(cond (> ~a 5) 111 true 222))
-nuc> (mc 9)
-<repl>:1: error: unknown: cond — not defined anywhere in this compilation unit
-```
-
-Bounds worth knowing while probing: it is always **loud** (never a silent
-misexpansion); it does **not** affect a macro whose expansion has a function
-head, which resolves by spelling; and a macro **already expanded before** the
-import keeps working, because ORC materialisation is lazy and one-shot. So if
-you need both `node` and macros at the prompt, exercise the macros first.
-`design/stage16-ergonomics/repl-jit-symbol-precedence.md` §5 has the three
-candidate fixes.
+**A whole program is `--run`, not the REPL.** `nucleusc --run tool.nuc -- args`
+compiles the unit as `-o` would and calls `main` in a JIT of its own, so a macro
+that expands to a top-level `defn` (`defrewrite`) works there and not at the
+prompt (`unknown: defn`, pre-existing). See docs/compiler.md, "Running a program
+without linking".
 
 ## Where a REPL module's types come from (for compiler work)
 

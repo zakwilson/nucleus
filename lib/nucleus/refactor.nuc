@@ -1,0 +1,1401 @@
+; refactor.nuc: rewriting Nucleus source as span edits over a syntax-mode read.
+;
+; Design: design/stage26-refactoring/overview.md §4.3–4.5, §8 RF-3a/RF-3b. The
+; tree and its spans are lib/nucleus/syntax.nuc's; the house-spelling printer is
+; `node-write-sugared` in lib/nucleus/read.nuc. See docs/refactoring.md.
+
+(ns nucleus.refactor)
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(import-use nucleus.allocator)
+(import-use nucleus.arena)
+(import-use nucleus.intern)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+
+(deferror edit-overlap "two edits overlap")
+(deferror edit-out-of-range "an edit lies outside the text it applies to")
+
+; ---------------------------------------------------------------------------
+; Edits
+; ---------------------------------------------------------------------------
+
+; Source bytes [start, end) become the replacement at `buf` bytes [at, at+len).
+(defstruct Edit start:usize end:usize at:usize len:usize)
+
+; Replacements are copied into one buffer, so a caller's text need not outlive
+; its edit and dropping frees one block (`Vector` does not drop its elements).
+(defstruct Edits
+  buf:String
+  list:(Vector Edit)
+  sorted:bool
+  ; 1 + the length of the text the edits last passed `edits-check` for; 0 once changed.
+  checked:usize)
+
+; What a refusal names: the edit, and the edit or range it collides with.
+(defstruct EditError code:Err msg:StrView first:SynSpan second:SynSpan)
+
+(defn edit-error-code (e:EditError):Err (return (e 'code)))
+(defcast EditError Err edit-error-code)
+
+; Same arms as `Result`, so `try`/`match` treat it as one (docs/reading.md's `ReadResult`).
+(defunion EditsResult (ok v:String) (err e:EditError))
+
+(defn edits-new ():Edits
+  (let (e:&Edits (alloca Edits))
+    (init (ref e 'buf))
+    (init (ref e 'list))
+    (set! (e 'sorted) true)
+    (set! (e 'checked) 0)
+    (return @e)))
+
+(extend Edits Drop)
+(defn drop (self:&Edits):void
+  (drop (ref self 'buf))
+  (drop (ref self 'list)))
+
+(defn edits-count (e:&Edits):usize
+  (return (count (ref e 'list))))
+
+; By start, then end, so an insertion sorts before a replacement starting at
+; the same byte.
+(defn edit-before? (a:Edit b:Edit):bool
+  (return (or (< (a 'start) (b 'start))
+              (and (= (a 'start) (b 'start)) (< (a 'end) (b 'end))))))
+
+; Replace source bytes [start, end) with `text`; start = end inserts.
+(defn edit-span (e:&Edits start:usize end:usize text:StrView):void
+  (let (l:&(Vector Edit) (ref e 'list)
+        n:usize (count l)
+        ed:Edit (Edit start end (byte-len (ref e 'buf)) (text 'len)))
+    (string-push-str-unchecked (ref e 'buf) &text)
+    (when (and (> n 0) (edit-before? ed (l (- n 1))))
+      (set! (e 'sorted) false))
+    (set! (e 'checked) 0)
+    (conj l ed)))
+
+(defn edit-replace (e:&Edits s:&Syn text:StrView):void
+  (edit-span e (s 'start) (s 'end) text))
+
+(defn edit-text (e:&Edits ed:Edit):StrView
+  (return (strview-take-bytes (strview-drop-bytes (string-as-view (ref e 'buf)) (ed 'at))
+                              (ed 'len))))
+
+; Stable merge sort of [lo, hi) through `tmp`, which is as long as `a`.
+(defn edits-merge-sort (a:&(Vector Edit) tmp:&(Vector Edit) lo:usize hi:usize):void
+  (when (< (- hi lo) 2) (return))
+  (let (mid:usize (/ (+ lo hi) 2)
+        i:usize lo
+        j:usize 0
+        k:usize lo)
+    (edits-merge-sort a tmp lo mid)
+    (edits-merge-sort a tmp mid hi)
+    (set! j mid)
+    (while (< k hi)
+      (if (and (< i mid) (or (>= j hi) (not (edit-before? (a j) (a i)))))
+        (do (set tmp k (a i))
+            (set! i (+ i 1)))
+        (do (set tmp k (a j))
+            (set! j (+ j 1))))
+      (set! k (+ k 1)))
+    (set! k lo)
+    (while (< k hi)
+      (set a k (tmp k))
+      (set! k (+ k 1)))))
+
+(defn edits-sort (e:&Edits):void
+  (when (e 'sorted) (return))
+  (let (l:&(Vector Edit) (ref e 'list)
+        tmp:&(Vector Edit) (alloca (Vector Edit))
+        n:usize (count l))
+    (init tmp)
+    (reserve tmp n)
+    (dotimes (i (as i64 n)) (conj tmp (l (as usize i))))
+    (edits-merge-sort l tmp 0 n)
+    (drop tmp))
+  (set! (e 'sorted) true))
+
+; Remove every edit inside [start, end), as a refusal or a rewrite of the
+; enclosing form must; the count removed.
+(defn edits-drop-within (e:&Edits start:usize end:usize):usize
+  (let (l:&(Vector Edit) (ref e 'list)
+        n:usize (count l)
+        kept:usize 0
+        i:usize 0)
+    (while (< i n)
+      (let (ed:Edit (l i))
+        (when (not (and (<= start (ed 'start)) (<= (ed 'end) end)))
+          (set l kept ed)
+          (set! kept (+ kept 1))))
+      (set! i (+ i 1)))
+    (while (> (count l) kept)
+      (remove-at l (- (count l) 1)))
+    (return (- n kept))))
+
+; ---------------------------------------------------------------------------
+; Applying
+; ---------------------------------------------------------------------------
+
+(defn edit-slice (src:StrView start:usize end:usize):StrView
+  (return (strview-take-bytes (strview-drop-bytes src start) (- end start))))
+
+(defn edit-arena-str (s:&String):StrView
+  (let (v:StrView (string-as-view s)
+        p:ptr (arena-bytes (v 'data) (as i64 (v 'len))))
+    (drop s)
+    (return (strview (unsafe/cast &ui8 p) (v 'len)))))
+
+; `line:col [start,end)` of a span of `src`, 1-based like a `Syn`'s.
+(defn edit-describe (out:&String src:StrView sp:SynSpan):void
+  (let (at:usize (if (< (sp 'start) (src 'len)) (sp 'start) (src 'len))
+        line:usize 1
+        i:usize 0)
+    (while (< i at)
+      (when (= (aref (src 'data) (as i64 i)) 10) (set! line (+ line 1)))
+      (set! i (+ i 1)))
+    (str-into out line ":" (syn-col src at) " [" (sp 'start) "," (sp 'end) ")")))
+
+(defn edit-error (code:Err src:StrView what:StrView a:SynSpan rel:StrView b:SynSpan):EditError
+  (let (m:&String (alloca String))
+    (init m)
+    (str-into m what " at ")
+    (edit-describe m src a)
+    (str-into m " " rel " ")
+    (edit-describe m src b)
+    (return (EditError code (edit-arena-str m) a b))))
+
+(defn edit-span-of (ed:Edit):SynSpan
+  (return (SynSpan (ed 'start) (ed 'end))))
+
+; Sorts the edits and checks each lies inside `src` and no two overlap: they
+; share a byte, one is empty inside the other, or both are empty at one byte
+; (whose text would come first is a guess).
+(defn edits-check (src:StrView e:&Edits out:&EditError):bool
+  (when (= (e 'checked) (+ (src 'len) 1)) (return true))
+  (edits-sort e)
+  (let (l:&(Vector Edit) (ref e 'list)
+        whole:SynSpan (SynSpan 0 (src 'len))
+        i:usize 0)
+    (while (< i (count l))
+      (let (ed:Edit (l i))
+        (when (or (> (ed 'start) (ed 'end)) (> (ed 'end) (src 'len)))
+          (set! @out (edit-error edit-out-of-range src "edit" (edit-span-of ed)
+                                 "lies outside the text" whole))
+          (return false))
+        (when (> i 0)
+          (let (pv:Edit (l (- i 1)))
+            (when (or (< (ed 'start) (pv 'end))
+                      (and (= (pv 'start) (pv 'end)) (= (ed 'start) (ed 'end))
+                           (= (pv 'start) (ed 'start))))
+              (set! @out (edit-error edit-overlap src "edit" (edit-span-of pv)
+                                     "overlaps the edit at" (edit-span-of ed)))
+              (return false)))))
+      (set! i (+ i 1))))
+  (set! (e 'checked) (+ (src 'len) 1))
+  (return true))
+
+; The first edit not wholly before `start`. Checked edits are sorted and
+; disjoint, so their ends ascend too.
+(defn edits-first-from (l:&(Vector Edit) start:usize):usize
+  (let (lo:usize 0
+        hi:usize (count l))
+    (while (< lo hi)
+      (let (mid:usize (/ (+ lo hi) 2)
+            ed:Edit (l mid))
+        (if (or (< (ed 'end) start) (and (= (ed 'end) start) (< (ed 'start) start)))
+          (set! lo (+ mid 1))
+          (set! hi mid))))
+    (return lo)))
+
+; Source bytes [start, end) with the edits inside them applied: the text a
+; rewritten form's hole splices back. An edit straddling a bound is refused,
+; one wholly outside is ignored, and an insertion at either bound is inside.
+(defn edits-apply-range (src:StrView e:&Edits start:usize end:usize):EditsResult
+  (let (fail:&EditError (alloca EditError)
+        range:SynSpan (SynSpan start end))
+    (when (or (> start end) (> end (src 'len)))
+      (return (err (edit-error edit-out-of-range src "range" range
+                               "lies outside the text" (SynSpan 0 (src 'len))))))
+    (when (not (edits-check src e fail)) (return (err @fail)))
+    (let (out:&String (alloca String)
+          l:&(Vector Edit) (ref e 'list)
+          pos:usize start
+          i:usize (edits-first-from l start)
+          more:bool true)
+      (init out)
+      (string-reserve out (- end start))
+      (while (and more (< i (count l)))
+        (let (ed:Edit (l i))
+          (cond (or (> (ed 'start) end) (and (= (ed 'start) end) (> (ed 'end) end)))
+                  (set! more false)
+                (and (<= start (ed 'start)) (<= (ed 'end) end))
+                  (let (keep:StrView (edit-slice src pos (ed 'start))
+                        rep:StrView (edit-text e ed))
+                    (string-push-str-unchecked out &keep)
+                    (string-push-str-unchecked out &rep)
+                    (set! pos (ed 'end)))
+                true
+                  (do (drop out)
+                      (return (err (edit-error edit-out-of-range src "edit" (edit-span-of ed)
+                                               "straddles the range at" range))))))
+        (set! i (+ i 1)))
+      (let (tail:StrView (edit-slice src pos end))
+        (string-push-str-unchecked out &tail))
+      (return (ok @out)))))
+
+; The first edit of the sorted `l` that starts at or after `start`.
+(defn edits-first-at (l:&(Vector Edit) start:usize):usize
+  (let (lo:usize 0
+        hi:usize (count l))
+    (while (< lo hi)
+      (let (mid:usize (/ (+ lo hi) 2))
+        (if (< ((l mid) 'start) start)
+          (set! lo (+ mid 1))
+          (set! hi mid))))
+    (return lo)))
+
+; Source bytes [start, end) with the outermost edits inside them applied: an
+; edit inside another is the earlier rewrite of a form the outer one consumed,
+; and one enclosing the range is a rewrite the caller is reaching inside. Edits
+; may nest; one that crosses another or a bound is refused.
+(defn edits-apply-outermost (src:StrView e:&Edits start:usize end:usize):EditsResult
+  (let (l:&(Vector Edit) (ref e 'list)
+        out:&String (alloca String)
+        pos:usize start
+        i:usize 0)
+    (init out)
+    (edits-sort e)
+    (set! i (edits-first-at l start))
+    (dotimes (k (as i64 i))
+      (let (ed:Edit (l (as usize k)))
+        (when (and (> (ed 'end) start) (< (ed 'end) end))
+          (drop out)
+          (return (err (edit-error edit-overlap src "edit" (edit-span-of ed) "crosses the range"
+                                   (SynSpan start end)))))))
+    (while (and (< i (count l)) (< ((l i) 'start) end))
+      (let (ed:Edit (l i))
+        (when (or (> (ed 'end) end) (and (< (ed 'start) pos) (> (ed 'end) pos)))
+          (drop out)
+          (return (err (edit-error edit-overlap src "edit" (edit-span-of ed) "crosses the range"
+                                   (SynSpan (if (< (ed 'start) pos) pos start) end)))))
+        (when (>= (ed 'start) pos)
+          ; The widest of the edits starting here; they sort by end.
+          (while (and (< (+ i 1) (count l)) (= ((l (+ i 1)) 'start) (ed 'start))
+                      (<= ((l (+ i 1)) 'end) end))
+            (set! i (+ i 1))
+            (set! ed (l i)))
+          (let (keep:StrView (edit-slice src pos (ed 'start))
+                rep:StrView (edit-text e ed))
+            (string-push-str-unchecked out &keep)
+            (string-push-str-unchecked out &rep)
+            (set! pos (ed 'end)))))
+      (set! i (+ i 1)))
+    (let (tail:StrView (edit-slice src pos end))
+      (string-push-str-unchecked out &tail))
+    (return (ok @out))))
+
+; `src` with every edit applied; the bytes between edits are copied unchanged.
+(defn edits-apply (src:StrView e:&Edits):EditsResult
+  (return (edits-apply-range src e 0 (src 'len))))
+
+; ---------------------------------------------------------------------------
+; Rules (§4.4): patterns matched against the read tree, applied bottom-up
+; ---------------------------------------------------------------------------
+
+(defenum RuleKind RULE-TEMPLATE RULE-REFUSE RULE-EMIT)
+
+; What a rule does with a hole whose text spans lines: refuse it (the default),
+; splice it as it is (`:multiline`), or move its continuation lines with its
+; first line (`:reindent`).
+(defenum HoleLines LINES-REFUSE LINES-KEEP LINES-SHIFT)
+
+; One hole's binding: `syn` for `~x`; for `~@xs`, the elems of `list`'s node
+; from `from` on. A null Syn is a node with no span of its own.
+(defstruct RwHole syn:?&Syn list:?&Syn from:i32 splice:bool)
+
+; A match, and the replacement text being built for it: `out` in an `:emit`.
+(defstruct RwMatch
+  form:?&Syn
+  names:?&Node
+  holes:(Vector RwHole)
+  lines:i32
+  text:String
+  ; The source ranges the text has copied, which keep their comments.
+  kept:(Vector SynSpan)
+  col0:i32
+  refusal:StrView)
+
+(defstruct Rule
+  kind:i32
+  pat:?&Node
+  tmpl:?&Node
+  reason:StrView
+  flag:StrView
+  lines:i32
+  names:?&Node
+  guard:(fn bool)(&RwMatch)
+  emit:(fn void)(&RwMatch)
+  hits:usize
+  refused:usize)
+
+(defstruct Rules name:StrView rules:(Vector Rule))
+
+(defn rw-rules-new (name:StrView):&Rules
+  (let (rs:&Rules (unsafe/cast &Rules (arena-alloc (sizeof Rules))))
+    (set! (rs 'name) name)
+    (init (ref rs 'rules) (handle g-arena))
+    (return rs)))
+
+; What a `defrewrite` expansion calls once per rule.
+(defn rw-add (rs:&Rules kind:i32 pat:?&Node tmpl:?&Node reason:StrView flag:StrView
+              lines:i32 names:?&Node guard:(fn bool)(&RwMatch) emit:(fn void)(&RwMatch)):void
+  (let (r:&Rule (alloca Rule))
+    (set! (r 'kind) kind)
+    (set! (r 'pat) pat)
+    (set! (r 'tmpl) tmpl)
+    (set! (r 'reason) reason)
+    (set! (r 'flag) flag)
+    (set! (r 'lines) lines)
+    (set! (r 'names) names)
+    (set! (r 'guard) guard)
+    (set! (r 'emit) emit)
+    (set! (r 'hits) 0)
+    (set! (r 'refused) 0)
+    (conj (ref rs 'rules) @r)))
+
+; `X` when `p` is `(head X)`.
+(defn rw-wrapped (p:?&Node head:StrView):?&Node
+  (when (or (!= (node-len p) 2) (!= (node-kind (node-at p 0)) NODE-SYM)) (return null))
+  (let (h:&Node (unsafe/cast &Node (node-at p 0)))
+    (when (!= (symbol-as-view (h 's)) head) (return null))
+    (return (node-at p 1))))
+
+(defn rw-name-index (names:?&Node x:?&Node):i32
+  (dotimes (i (node-len names))
+    (when (= (node-at names i) x) (return i)))
+  (return -1))
+
+(defn rw-bind (m:&RwMatch name:?&Node h:RwHole):void
+  (set (ref m 'holes) (as usize (rw-name-index (m 'names) name)) h))
+
+(defn rw-kid (s:?&Syn i:i32):?&Syn
+  (when-some (k s) (return (syn-kid-for-elem k i)))
+  (return null))
+
+; Whether `n`, which `s` spans (null: no span), matches the pattern `p`,
+; binding holes in `m`. Symbols compare by interned identity.
+(defn rw-match (m:&RwMatch p:?&Node n:?&Node s:?&Syn):bool
+  (let (x:?&Node (rw-wrapped p "unquote"))
+    (when (!= x null)
+      (rw-bind m x (RwHole s null 0 false))
+      (return true)))
+  (when (or (!= (node-kind p) NODE-LIST) (!= (node-kind n) NODE-LIST))
+    (return (node-eq p n)))
+  (let (pl:i32 (node-len p)
+        nl:i32 (node-len n)
+        rest:?&Node (rw-wrapped (node-at p (- pl 1)) "unquote-splice")
+        fixed:i32 (if (= rest null) pl (- pl 1)))
+    (when (or (< nl fixed) (and (= rest null) (!= nl pl))) (return false))
+    (dotimes (i fixed)
+      (when (not (rw-match m (node-at p i) (node-at n i) (rw-kid s i)))
+        (return false)))
+    (when (!= rest null) (rw-bind m rest (RwHole s s fixed true)))
+    (return true)))
+
+; The name of a hole that has no span: its node, or one of a `~@`'s, has none.
+(defn rw-unspanned (m:&RwMatch):?&Node
+  (let (hs:&(Vector RwHole) (ref m 'holes)
+        i:usize 0)
+    (while (< i (count hs))
+      (let (h:RwHole (hs i)
+            ok:bool (!= (h 'syn) null))
+        (when (and (h 'splice) ok)
+          (let (l:&Syn (unsafe/cast &Syn (h 'syn))
+                j:i32 (h 'from))
+            (while (< j (node-len (l 'node)))
+              (when (= (syn-kid-for-elem l j) null) (set! ok false))
+              (set! j (+ j 1)))))
+        (when (not ok) (return (node-at (m 'names) (unsafe/cast i32 i)))))
+      (set! i (+ i 1)))
+    (return null)))
+
+; A hole's Syn, in a guard or an `:emit`; only spanned holes reach them.
+(defn rw-hole (m:&RwMatch i:i32):&Syn
+  (let (h:RwHole ((ref m 'holes) (as usize i)))
+    (return (unsafe/cast &Syn (h 'syn)))))
+
+(defn rw-splice (m:&RwMatch i:i32):&(Vector &Syn)
+  (let (h:RwHole ((ref m 'holes) (as usize i))
+        l:&Syn (unsafe/cast &Syn (h 'syn))
+        v:&(Vector &Syn) (unsafe/cast &(Vector &Syn) (arena-alloc (sizeof (Vector &Syn))))
+        j:i32 (h 'from))
+    (init v (handle g-arena))
+    (while (< j (node-len (l 'node)))
+      (conj v (unsafe/cast &Syn (syn-kid-for-elem l j)))
+      (set! j (+ j 1)))
+    (return v)))
+
+(defn rw-self (m:&RwMatch):&Syn
+  (return (unsafe/cast &Syn (m 'form))))
+
+; ---------------------------------------------------------------------------
+; The pass over one file, and the text a rule writes
+; ---------------------------------------------------------------------------
+
+; A refused or flagged site, at its form's Syn.
+(defstruct RwReport start:usize line:i32 col:i32 rule:i32 flagged:bool reason:StrView)
+
+(defstruct Rewriter
+  src:StrView
+  file:?&SynFile
+  edits:?&Edits
+  table:&(Vector RMacro)
+  rules:&Rules
+  reports:&(Vector RwReport)
+  rewrites:usize
+  in-strings:bool
+  ; How many string literals the text being read is nested in: 0 for a file.
+  depth:i32
+  ; String literals read as programs, as fragments of one, and not at all.
+  strings:usize
+  fragments:usize
+  skipped:usize
+  ; Whether the string literal just read left a string open, for the next
+  ; string in the same form.
+  carry:bool)
+
+; The pass in progress, which the guard helpers read: a guard sees only Syns.
+(defvar g-rw:?&Rewriter null)
+
+(defn rw-cur ():&Rewriter
+  (return (unsafe/cast &Rewriter g-rw)))
+
+; The column of byte `at`, 0-based in code points; `base` is added when no line
+; break precedes it in `text`.
+(defn rw-column (text:StrView at:usize base:i32):i32
+  (let (i:usize at
+        n:i32 0)
+    (while (and (> i 0) (!= (aref (text 'data) (as i64 (- i 1))) 10))
+      (set! i (- i 1))
+      (when (!= (bit-and (as i32 (aref (text 'data) (as i64 i))) 192) 128)
+        (set! n (+ n 1))))
+    (return (if (= i 0) (+ base n) n))))
+
+; The column the next byte of `out` lands at.
+(defn rw-col (out:&RwMatch):i32
+  (let (v:StrView (string-as-view (ref out 'text)))
+    (return (rw-column v (v 'len) (out 'col0)))))
+
+; The column the rewritten form starts at.
+(defn rw-form-col (out:&RwMatch):i32
+  (return (out 'col0)))
+
+(defn rw-put (out:&RwMatch text:StrView):void
+  (write-str (ref out 'text) text))
+
+(defn rw-refuse-text (out:&RwMatch why:StrView):void
+  (when (= ((out 'refusal) 'len) 0) (set! (out 'refusal) why)))
+
+; Source bytes [from, to), which lie between Syns. One that breaks the line and
+; holds only whitespace becomes its line breaks plus `indent` spaces.
+(defn rw-put-gap (out:&RwMatch from:usize to:usize indent:i32):void
+  (let (g:StrView (edit-slice ((rw-cur) 'src) from to)
+        lines:i32 0
+        blank:bool true)
+    (dotimes (i (as i64 (g 'len)))
+      (let (c:i32 (as i32 (aref (g 'data) i)))
+        (cond (= c 10) (set! lines (+ lines 1))
+              (not (or (= c 32) (= c 9) (= c 13))) (set! blank false))))
+    (when (or (= lines 0) (not blank))
+      (conj (ref out 'kept) (SynSpan from to))
+      (rw-put out g)
+      (return))
+    (dotimes (i lines) (rw-put out "\n"))
+    (dotimes (i indent) (rw-put out " "))))
+
+; Whether byte `at` of a form's text lies inside one of its string literals.
+(defn rw-in-string? (s:&Syn at:usize):bool
+  (when (or (< at (s 'start)) (>= at (s 'end))) (return false))
+  (when (= (s 'kind) SYN-STR) (return true))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        i:usize 0)
+    (while (< i (count ks))
+      (when (rw-in-string? (ks i) at) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+; `text` with each continuation line moved `delta` columns, except a line that
+; starts inside a string literal (whose bytes are its value) or is empty.
+(defn rw-put-shifted (out:&RwMatch text:StrView delta:i32):void
+  (let (f:?&SynFile (match (read-syntax-all text) ((ok v) v) ((err e) null))
+        i:usize 0
+        n:usize (text 'len))
+    (while (< i n)
+      (let (c:ui8 (aref (text 'data) (as i64 i)))
+        (string-push-bytes-raw (ref out 'text) (as &ui8 (unsafe/ptr+ (text 'data) (as i64 i))) 1)
+        (set! i (+ i 1))
+        (when (and (= c 10) (!= f null) (< i n)
+                   (!= (aref (text 'data) (as i64 i)) 10)
+                   (not (rw-in-file-string? (unsafe/cast &SynFile f) i)))
+          (if (> delta 0)
+            (dotimes (k delta) (rw-put out " "))
+            (let (k:i32 0)
+              (while (and (< k (- 0 delta)) (< i n) (= (aref (text 'data) (as i64 i)) 32))
+                (set! i (+ i 1))
+                (set! k (+ k 1))))))))))
+
+(defn rw-in-file-string? (f:&SynFile at:usize):bool
+  (let (fs:&(Vector &Syn) (ref f 'forms)
+        i:usize 0)
+    (while (< i (count fs))
+      (when (rw-in-string? (fs i) at) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+(defn rw-multiline? (v:StrView):bool
+  (dotimes (i (as i64 (v 'len)))
+    (when (= (aref (v 'data) i) 10) (return true)))
+  (return false))
+
+; Source bytes [start, end) as rewritten so far; text spanning lines is placed
+; as the rule's `lines` says.
+(defn rw-put-range (out:&RwMatch start:usize end:usize):void
+  (let (rw:&Rewriter (rw-cur))
+    (conj (ref out 'kept) (SynSpan start end))
+    (match (edits-apply-outermost (rw 'src) (unsafe/cast &Edits (rw 'edits)) start end)
+      ((err e) (rw-refuse-text out (e 'msg)))
+      ((ok t)
+        (let (tx:String t
+              tv:StrView (string-as-view &tx))
+          (cond (not (rw-multiline? tv)) (rw-put out tv)
+                (= (out 'lines) LINES-KEEP) (rw-put out tv)
+                (= (out 'lines) LINES-SHIFT)
+                  (rw-put-shifted out tv (- (rw-col out) (rw-column (rw 'src) start 0)))
+                true
+                  (rw-refuse-text out "a hole spans lines; the rule needs :multiline or :reindent"))
+          (drop &tx))))))
+
+; The current text of `s`: its source with its own rewrites applied.
+(defn rw-put-syn (out:&RwMatch s:&Syn):void
+  (rw-put-range out (s 'start) (s 'end)))
+
+; Whether a `~@` binds no forms.
+(defn rw-splice-empty? (h:RwHole):bool
+  (return (>= (h 'from) (node-len ((unsafe/cast &Syn (h 'syn)) 'node)))))
+
+; `~@xs`'s text: its first form through its last, as written between them.
+(defn rw-put-splice (out:&RwMatch h:RwHole):void
+  (let (l:&Syn (unsafe/cast &Syn (h 'syn))
+        a:&Syn (unsafe/cast &Syn (syn-kid-for-elem l (h 'from)))
+        b:&Syn (unsafe/cast &Syn (syn-kid-for-elem l (- (node-len (l 'node)) 1))))
+    (rw-put-range out (a 'start) (b 'end))))
+
+(defn rw-hole-of (out:&RwMatch name:?&Node):RwHole
+  (return ((ref out 'holes) (as usize (rw-name-index (out 'names) name)))))
+
+; Whether `t`, a template part at quasiquote depth `level`, holds a hole.
+(defn rw-has-hole? (t:?&Node level:i32):bool
+  (when (and (= level 1) (or (!= (rw-wrapped t "unquote") null)
+                             (!= (rw-wrapped t "unquote-splice") null)))
+    (return true))
+  (dotimes (i (node-len t))
+    (when (rw-has-hole? (node-at t i) (rw-elem-level t i level)) (return true)))
+  (return false))
+
+; The quasiquote depth of elem `i` of `t`, which is at `level`.
+(defn rw-elem-level (t:?&Node i:i32 level:i32):i32
+  (cond (= i 0) (return level)
+        (!= (rw-wrapped t "quasiquote") null) (return (+ level 1))
+        (and (> level 1) (or (!= (rw-wrapped t "unquote") null)
+                             (!= (rw-wrapped t "unquote-splice") null)))
+          (return (- level 1)))
+  (return level))
+
+; A template part as text: a hole is its form's current text, single spaces
+; separate elems, and the rest is printed in the house spelling. A prefix
+; around a hole is kept only if it reads back as the long form would.
+(defn rw-put-node (out:&RwMatch t:?&Node level:i32):void
+  (when (= level 1)
+    (let (x:?&Node (rw-wrapped t "unquote"))
+      (when (!= x null)
+        (rw-put-syn out (unsafe/cast &Syn ((rw-hole-of out x) 'syn)))
+        (return))))
+  (when (not (rw-has-hole? t level))
+    (node-write-sugared-with (ref out 'text) t ((rw-cur) 'table))
+    (return))
+  (let (len:i32 (node-len t)
+        hs:StrView (if (= (node-kind (node-at t 0)) NODE-SYM)
+                     (symbol-as-view ((unsafe/cast &Node (node-at t 0)) 's)) "")
+        p:StrView (if (= len 2) (rd-macro-prefix-for ((rw-cur) 'table) (symbol-intern hs)) "")
+        mark:usize (byte-len (ref out 'text)))
+    (when (> (p 'len) 0)
+      (rw-put out p)
+      (let (inner:usize (byte-len (ref out 'text)))
+        (rw-put-node out (node-at t 1) (rw-elem-level t 1 level))
+        (when (rw-prefix-reads-back? out mark inner t) (return))
+        (let (body:String (str (strview-drop-bytes (string-as-view (ref out 'text)) inner)))
+          (string-truncate-unchecked (ref out 'text) mark)
+          (rw-put out "(")
+          (rw-put out hs)
+          (rw-put out " ")
+          (rw-put out (string-as-view &body))
+          (rw-put out ")")
+          (drop &body)
+          (return))))
+    (let (open:StrView (cond (= hs "vector-lit") "[" (= hs "hashmap-lit") "{" (= hs "hashset-lit") "#{" true "(")
+          from:i32 (if (= open "(") 0 1)
+          first:bool true)
+      (rw-put out open)
+      (dotimes (k (- len from))
+        (let (i:i32 (+ k from)
+              e:?&Node (node-at t i)
+              sp:?&Node (if (= level 1) (rw-wrapped e "unquote-splice") null))
+          (when (or (= sp null) (not (rw-splice-empty? (rw-hole-of out sp))))
+            (when (not first) (rw-put out " "))
+            (set! first false)
+            (if (= sp null)
+              (rw-put-node out e (rw-elem-level t i level))
+              (rw-put-splice out (rw-hole-of out sp))))))
+      (rw-put out (cond (= open "(") ")" (= open "[") "]" true "}")))))
+
+; Whether `prefix operand`, written at [mark, end) with the operand from
+; `inner`, reads back as `(head operand)`.
+(defn rw-prefix-reads-back? (out:&RwMatch mark:usize inner:usize t:?&Node):bool
+  (let (all:StrView (strview-drop-bytes (string-as-view (ref out 'text)) mark)
+        op:StrView (strview-drop-bytes (string-as-view (ref out 'text)) inner)
+        tbl:&(Vector RMacro) ((rw-cur) 'table))
+    (match (read-all-with-macros op tbl)
+      ((ok o) (return (and (= (node-len o) 1)
+                           (rd-reads-back? all (node-list2 (node-at t 0) (node-at o 0) 0) tbl))))
+      ((err e) (return false)))))
+
+; ---------------------------------------------------------------------------
+; Guard helpers. A guard sees each hole as a `&Syn` and the matched form as
+; `self`; these answer about the file the pass is reading.
+; ---------------------------------------------------------------------------
+
+; `s` as written in the source.
+(defn src-text (s:&Syn):StrView
+  (return (edit-slice ((rw-cur) 'src) (s 'start) (s 'end))))
+
+(defn same-text? (a:&Syn b:&Syn):bool
+  (return (= (src-text a) (src-text b))))
+
+; Bytes [start, end) of the text the pass reads, clamped to it: what lies
+; around a Syn.
+(defn src-slice (start:usize end:usize):StrView
+  (let (src:StrView ((rw-cur) 'src)
+        e:usize (if (< end (src 'len)) end (src 'len))
+        b:usize (if (< start e) start e))
+    (return (edit-slice src b e))))
+
+; Inside a program inside a string literal (`--in-strings`).
+(defn in-string? (s:&Syn):bool
+  (return (> ((rw-cur) 'depth) 0)))
+
+; Written with a reader-macro prefix (`&x`, `'x`), not as the long form.
+(defn prefix-form? (s:&Syn):bool
+  (return (= (s 'kind) SYN-PREFIX)))
+
+(defn spelled? (s:&Syn prefix:StrView):bool
+  (return (and (prefix-form? s)
+               (= (edit-slice ((rw-cur) 'src) (s 'start) (+ (s 'start) (as usize (s 'open)))) prefix))))
+
+(defn has-comment? (s:&Syn):bool
+  (return (syn-has-comment? (unsafe/cast &SynFile ((rw-cur) 'file)) s)))
+
+(defn has-discard? (s:&Syn):bool
+  (return (syn-has-discard? (unsafe/cast &SynFile ((rw-cur) 'file)) s)))
+
+; Whether `s` is elem `i` of a list headed by the symbol `head`. For a built-in
+; form, `slot-kind` says what the elem is; this is for a macro's operands.
+(defn operand-of? (s:&Syn head:&Node i:i32):bool
+  (when-some (p (s 'parent))
+    (return (and (= (node-at (p 'node) 0) head) (= (syn-elem-index p s) i))))
+  (return false))
+
+; The role of `s` in its form, from the compiler's slot table: SLOT-TOP for a
+; top-level form, SLOT-UNKNOWN under a macro call or a fragment's unread form.
+(defn slot-kind (s:&Syn):i32
+  (when-some (p (s 'parent))
+    (let (own:i32 (slot-kind p)
+          i:i32 (syn-elem-index p s))
+      (cond (= (p 'node) null) (return SLOT-UNKNOWN)
+            (>= i 0) (return (slot-of-elem own (p 'node) i))
+            (!= (p 'kind) SYN-FUSE) (return SLOT-UNKNOWN)
+            ; A fuse's atom spells the fuse's head; its lists may sit under wrappers.
+            (= s ((ref p 'kids) 0)) (return own))
+      (let (r:i32 (rw-slot-path own (p 'node) (s 'node)))
+        (return (if (< r 0) SLOT-UNKNOWN r)))))
+  (return SLOT-TOP))
+
+; The slot of node `target` inside `n`, whose slot is `own`; -1 if it is not there.
+(defn rw-slot-path (own:i32 n:?&Node target:?&Node):i32
+  (when (= n target) (return own))
+  (dotimes (i (node-len n))
+    (let (r:i32 (rw-slot-path (slot-of-elem own n i) (node-at n i) target))
+      (when (>= r 0) (return r))))
+  (return -1))
+
+; The reader-macro head `p`'s node applies to its kid `k`, or "".
+(defn rw-wrapper (p:&Syn k:&Syn):StrView
+  (let (h:?&Node (node-at (p 'node) 0))
+    (when (or (!= (node-kind h) NODE-SYM) (< (syn-elem-index p k) 1)) (return ""))
+    (return (symbol-as-view ((unsafe/cast &Node h) 's)))))
+
+; The quasiquote depth at `s`: each enclosing quasiquote opens one level and
+; each unquote inside one closes it, as the compiler counts them.
+(defn rw-qq-level (s:&Syn):i32
+  (when-some (p (s 'parent))
+    (let (lv:i32 (rw-qq-level p)
+          w:StrView (rw-wrapper p s))
+      (return (cond (= w "quasiquote") (+ lv 1)
+                    (and (> lv 0) (or (= w "unquote") (= w "unquote-splice"))) (- lv 1)
+                    true lv))))
+  (return 0))
+
+(defn rw-under? (s:&Syn head:StrView):bool
+  (let (k:&Syn s)
+    (while true
+      (if-some (p (k 'parent))
+        (do (when (= (rw-wrapper p k) head) (return true))
+            (set! k p))
+        (return false))))
+  (return false))
+
+; Data inside a `quote`.
+(defn in-quote? (s:&Syn):bool
+  (return (rw-under? s "quote")))
+
+; Data inside a quasiquote template.
+(defn in-quasiquote? (s:&Syn):bool
+  (return (> (rw-qq-level s) 0)))
+
+; Code again: inside a template's unquote.
+(defn in-unquote? (s:&Syn):bool
+  (return (and (= (rw-qq-level s) 0) (rw-under? s "quasiquote"))))
+
+; ---------------------------------------------------------------------------
+; One pass over a file
+; ---------------------------------------------------------------------------
+
+(defn rw-report (rw:&Rewriter s:&Syn rule:usize flagged:bool why:StrView):void
+  (conj (rw 'reports) (RwReport (s 'start) (s 'line) (s 'col) (unsafe/cast i32 rule) flagged why)))
+
+; ---------------------------------------------------------------------------
+; Programs inside string literals (§4.6)
+; ---------------------------------------------------------------------------
+
+; The edits that `edits-apply-outermost` applies over all of the text: each
+; holds the final text of what it spans.
+(defn edits-outermost (e:&Edits):&(Vector Edit)
+  (let (l:&(Vector Edit) (ref e 'list)
+        out:&(Vector Edit) (unsafe/cast &(Vector Edit) (arena-alloc (sizeof (Vector Edit))))
+        pos:usize 0
+        i:usize 0)
+    (init out (handle g-arena))
+    (edits-sort e)
+    (while (< i (count l))
+      (when (>= ((l i) 'start) pos)
+        (while (and (< (+ i 1) (count l)) (= ((l (+ i 1)) 'start) ((l i) 'start)))
+          (set! i (+ i 1)))
+        (conj out (l i))
+        (set! pos ((l i) 'end)))
+      (set! i (+ i 1)))
+    (return out)))
+
+; The string's edits `ie`, made over its value `ss`, onto the file's: mapped
+; back through `ss` and escaped. False, adding none, when one would split an escape.
+(defn rw-map-edits (e:&Edits ie:&Edits ss:&StrSource):bool
+  (let (os:&(Vector Edit) (edits-outermost ie)
+        i:usize 0)
+    (while (< i (count os))
+      (when (or (str-source-split? ss ((os i) 'start)) (str-source-split? ss ((os i) 'end)))
+        (return false))
+      (set! i (+ i 1)))
+    (set! i 0)
+    (while (< i (count os))
+      (let (ed:Edit (os i)
+            t:&String (alloca String))
+        (init t)
+        (str-source-escape t (edit-text ie ed))
+        (edit-span e (str-source-at ss (ed 'start)) (str-source-at ss (ed 'end)) (string-as-view t))
+        (drop t))
+      (set! i (+ i 1)))
+    (return true)))
+
+; A report made inside string `s`, at the file position its Syn is written at.
+(defn rw-map-report (rw:&Rewriter s:&Syn ss:&StrSource p:RwReport):RwReport
+  (let (src:StrView (rw 'src)
+        at:usize (str-source-at ss (p 'start))
+        line:i32 (s 'line)
+        i:usize (s 'start))
+    (while (< i at)
+      (when (= (aref (src 'data) (as i64 i)) 10) (set! line (+ line 1)))
+      (set! i (+ i 1)))
+    (return (RwReport at line (syn-col src at) (p 'rule) (p 'flagged) (p 'reason)))))
+
+; The program inside string literal `s`, rewritten by the same rules. A piece
+; of one is read as a fragment, inside a string when the string before it in
+; its form left one open; a string that does not read even so is counted and
+; left as written. Whether it leaves a string open is left in `carry`.
+(defn rw-string (rw:&Rewriter s:&Syn):void
+  (let (carry:bool (rw 'carry))
+    (set! (rw 'carry) false)
+    (when-some (ss (syn-string-source (unsafe/cast &SynFile (rw 'file)) s))
+      (rw-string-source rw s ss carry))))
+
+(defn rw-string-source (rw:&Rewriter s:&Syn ss:&StrSource carry:bool):void
+  (match (read-syntax-fragment (ss 'text) carry)
+    ((err x) (set! (rw 'skipped) (+ (rw 'skipped) 1)))
+    ((ok sf)
+      (let (in:&Rewriter (alloca Rewriter)
+            ie:&Edits (alloca Edits)
+            ps:&(Vector RwReport) (unsafe/cast &(Vector RwReport) (arena-alloc (sizeof (Vector RwReport))))
+            why:StrView ""
+            i:usize 0)
+        (set! @ie (edits-new))
+        (init ps (handle g-arena))
+        (rw-init in (ss 'text) sf ie (rw 'rules) ps (rw 'in-strings) (+ (rw 'depth) 1))
+        (rw-run-pass in)
+        (if (sf 'fragment)
+          (set! (rw 'fragments) (+ (rw 'fragments) 1))
+          (set! (rw 'strings) (+ (rw 'strings) 1)))
+        (set! (rw 'carry) (sf 'ends-in-string))
+        (set! (rw 'strings) (+ (rw 'strings) (in 'strings)))
+        (set! (rw 'fragments) (+ (rw 'fragments) (in 'fragments)))
+        (set! (rw 'skipped) (+ (rw 'skipped) (in 'skipped)))
+        (cond (not (edits-check-outermost (ss 'text) ie))
+                (set! why "the rewrites inside the string cross each other")
+              (not (rw-map-edits (unsafe/cast &Edits (rw 'edits)) ie ss))
+                (set! why "a rewrite inside the string splits an escape"))
+        (if (= (why 'len) 0)
+          (do (set! (rw 'rewrites) (+ (rw 'rewrites) (in 'rewrites)))
+              (while (< i (count ps))
+                (conj (rw 'reports) (rw-map-report rw s ss (ps i)))
+                (set! i (+ i 1))))
+          (conj (rw 'reports) (RwReport (s 'start) (s 'line) (s 'col) -1 false why)))
+        (drop ie)))))
+
+; Whether the edits apply as nested rewrites, as the whole-file apply needs.
+(defn edits-check-outermost (src:StrView e:&Edits):bool
+  (match (edits-apply-outermost src e 0 (src 'len))
+    ((ok t) (let (tx:String t)
+              (drop &tx)
+              (return true)))
+    ((err x) (return false))))
+
+; A refused form stays as written, its own subtree included.
+(defn rw-refuse (rw:&Rewriter s:&Syn j:usize why:StrView):void
+  (let (rules:&(Vector Rule) (ref (rw 'rules) 'rules)
+        r:Rule (rules j))
+    (set! (r 'refused) (+ (r 'refused) 1))
+    (set rules j r))
+  (edits-drop-within (unsafe/cast &Edits (rw 'edits)) (s 'start) (s 'end))
+  (rw-report rw s j false why))
+
+(defn rw-match-reset (m:&RwMatch s:&Syn r:&Rule src:StrView):void
+  (let (hs:&(Vector RwHole) (ref m 'holes))
+    (set! (m 'form) s)
+    (set! (m 'names) (r 'names))
+    (set! (m 'lines) (r 'lines))
+    (string-clear (ref m 'text))
+    (while (> (count (ref m 'kept)) 0) (remove-at (ref m 'kept) (- (count (ref m 'kept)) 1)))
+    (set! (m 'col0) (rw-column src (s 'start) 0))
+    (set! (m 'refusal) "")
+    (while (> (count hs) 0) (remove-at hs (- (count hs) 1)))
+    (dotimes (i (node-len (r 'names)))
+      (conj hs (RwHole null null 0 false)))))
+
+; Whether a span of `spans` (sorted by start) inside `s` lies in no range the
+; replacement copied.
+(defn rw-drops? (m:&RwMatch s:&Syn spans:&(Vector SynSpan)):bool
+  (let (lo:usize 0
+        hi:usize (count spans)
+        ks:&(Vector SynSpan) (ref m 'kept))
+    (while (< lo hi)
+      (let (mid:usize (/ (+ lo hi) 2))
+        (if (< ((spans mid) 'start) (s 'start))
+          (set! lo (+ mid 1))
+          (set! hi mid))))
+    (while (and (< lo (count spans)) (< ((spans lo) 'start) (s 'end)))
+      (let (c:SynSpan (spans lo)
+            in:bool false
+            k:usize 0)
+        (while (< k (count ks))
+          (when (and (<= ((ks k) 'start) (c 'start)) (<= (c 'end) ((ks k) 'end))) (set! in true))
+          (set! k (+ k 1)))
+        (when (not in) (return true)))
+      (set! lo (+ lo 1)))
+    (return false)))
+
+; Rule `j` at `s`: false when it does not apply, so the next rule is tried.
+(defn rw-try (rw:&Rewriter m:&RwMatch s:&Syn j:usize):bool
+  (let (rules:&(Vector Rule) (ref (rw 'rules) 'rules)
+        r:Rule (rules j)
+        e:&Edits (unsafe/cast &Edits (rw 'edits)))
+    (rw-match-reset m s &r (rw 'src))
+    (when (not (rw-match m (r 'pat) (s 'node) s)) (return false))
+    (when-some (bare (rw-unspanned m))
+      (let (nm:String (node-str bare)
+            msg:String (str "~" (string-as-view &nm) " has no source span of its own"))
+        (drop &nm)
+        (rw-refuse rw s j (edit-arena-str &msg))
+        (return true)))
+    (when (not (funcall (r 'guard) m)) (return false))
+    (when (= (r 'kind) RULE-REFUSE)
+      (rw-refuse rw s j (r 'reason))
+      (return true))
+    (if (= (r 'kind) RULE-EMIT)
+      (funcall (r 'emit) m)
+      (rw-put-node m (r 'tmpl) 1))
+    (when (rw-drops? m s (ref (unsafe/cast &SynFile (rw 'file)) 'comments))
+      (rw-refuse-text m "the rewrite would drop a comment"))
+    (when (rw-drops? m s (ref (unsafe/cast &SynFile (rw 'file)) 'discards))
+      (rw-refuse-text m "the rewrite would drop a #_ form"))
+    (when (> ((m 'refusal) 'len) 0)
+      (rw-refuse rw s j (m 'refusal))
+      (return true))
+    (edit-replace e s (string-as-view (ref m 'text)))
+    (set! (r 'hits) (+ (r 'hits) 1))
+    (set rules j r)
+    (set! (rw 'rewrites) (+ (rw 'rewrites) 1))
+    (when (> ((r 'flag) 'len) 0) (rw-report rw s j true (r 'flag)))
+    (return true)))
+
+; Each of `ks` in order. A string carries to the next string among them
+; whether it left a string open: `(str "(f \"" x "\")")`.
+(defn rw-visit-kids (rw:&Rewriter m:&RwMatch ks:&(Vector &Syn)):void
+  (let (carry:bool false
+        i:usize 0)
+    (while (< i (count ks))
+      (let (k:&Syn (ks i))
+        (set! (rw 'carry) carry)
+        (rw-visit rw m k)
+        (when (= (k 'kind) SYN-STR) (set! carry (rw 'carry))))
+      (set! i (+ i 1)))))
+
+; Kids first, so a form's holes are already rewritten when its rules run.
+(defn rw-visit (rw:&Rewriter m:&RwMatch s:&Syn):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        n:usize (count (ref (rw 'rules) 'rules))
+        j:usize 0)
+    (rw-visit-kids rw m ks)
+    ; A fragment's form that the text ends inside has no node to match.
+    (when (= (s 'node) null) (return))
+    (when (and (rw 'in-strings) (= (s 'kind) SYN-STR)) (rw-string rw s))
+    ; A lone `:` fuse shares its list kid's node, which was just tried.
+    (when (and (= (s 'kind) SYN-FUSE) (> (count ks) 1) (= ((ks 1) 'node) (s 'node))) (return))
+    (while (< j n)
+      (when (rw-try rw m s j) (return))
+      (set! j (+ j 1)))))
+
+(defn rw-sort-reports (v:&(Vector RwReport)):void
+  (let (i:usize 1)
+    (while (< i (count v))
+      (let (x:RwReport (v i)
+            j:usize i)
+        (while (and (> j 0) (> ((v (- j 1)) 'start) (x 'start)))
+          (set v j (v (- j 1)))
+          (set! j (- j 1)))
+        (set v j x))
+      (set! i (+ i 1)))))
+
+; A file's new text, its refused and flagged sites in source order, and with
+; `--in-strings` the string literals read as programs, as fragments, and not.
+(defstruct Rewrite text:String reports:&(Vector RwReport) rewrites:usize
+  strings:usize fragments:usize skipped:usize)
+
+(extend Rewrite Drop)
+(defn drop (self:&Rewrite):void
+  (drop (ref self 'text)))
+
+(defunion RewriteResult (ok v:Rewrite) (err e:ReadError))
+
+(defn rw-init (rw:&Rewriter src:StrView f:&SynFile e:&Edits rules:&Rules
+               reports:&(Vector RwReport) in-strings:bool depth:i32):void
+  (set! (rw 'src) src)
+  (set! (rw 'file) f)
+  (set! (rw 'edits) e)
+  (set! (rw 'table) (read-macro-table-new))
+  (set! (rw 'rules) rules)
+  (set! (rw 'reports) reports)
+  (set! (rw 'rewrites) 0)
+  (set! (rw 'in-strings) in-strings)
+  (set! (rw 'depth) depth)
+  (set! (rw 'strings) 0)
+  (set! (rw 'fragments) 0)
+  (set! (rw 'skipped) 0)
+  (set! (rw 'carry) false))
+
+; Every form of the pass's file, bottom-up; a string's pass runs inside its file's.
+(defn rw-run-pass (rw:&Rewriter):void
+  (let (m:&RwMatch (alloca RwMatch)
+        saved:?&Rewriter g-rw
+        fs:&(Vector &Syn) (ref (unsafe/cast &SynFile (rw 'file)) 'forms))
+    (init (ref m 'holes))
+    (init (ref m 'text))
+    (init (ref m 'kept))
+    (set! g-rw rw)
+    (rw-visit-kids rw m fs)
+    (set! g-rw saved)
+    (drop (ref m 'holes))
+    (drop (ref m 'text))
+    (drop (ref m 'kept))))
+
+; Every rule over `src` in one bottom-up pass.
+(defn rewrite-source (rules:&Rules src:StrView):RewriteResult
+  (return (rw-rewrite rules src false)))
+
+; The same, and over the program inside each string literal that reads as one.
+(defn rewrite-source-in-strings (rules:&Rules src:StrView):RewriteResult
+  (return (rw-rewrite rules src true)))
+
+(defn rw-rewrite (rules:&Rules src:StrView in-strings:bool):RewriteResult
+  (match (read-syntax-all src)
+    ((err x) (return (err x)))
+    ((ok f)
+      (let (rw:&Rewriter (alloca Rewriter)
+            reports:&(Vector RwReport) (unsafe/cast &(Vector RwReport)
+                                         (arena-alloc (sizeof (Vector RwReport))))
+            e:&Edits (alloca Edits))
+        (set! @e (edits-new))
+        (init reports (handle g-arena))
+        (rw-init rw src f e rules reports in-strings 0)
+        (rw-run-pass rw)
+        (rw-sort-reports reports)
+        (let (r:EditsResult (edits-apply-outermost src e 0 (src 'len)))
+          (drop e)
+          (match r
+            ((ok t) (return (ok (Rewrite t reports (rw 'rewrites) (rw 'strings) (rw 'fragments) (rw 'skipped)))))
+            ((err x) (return (err (rd-error (x 'code) 0 (x 'msg) ""))))))))))
+
+; ---------------------------------------------------------------------------
+; The driver (§4.5)
+; ---------------------------------------------------------------------------
+
+(defstruct RwRun apply:bool in-strings:bool files:usize changed:usize rewrites:usize reported:usize
+  failed:usize unread:usize strings:usize fragments:usize skipped:usize)
+
+(defn rw-read-file (path:StrView):!String
+  (let (fh:File (try (file-open-read &path))
+        text:String (try (file-read-to-string &fh)))
+    (drop &fh)
+    (return (ok text))))
+
+(defn rw-write-file (path:StrView text:StrView):!void
+  (let (fh:File (try (file-create &path)))
+    (try (write-str &fh text))
+    (try (file-close &fh))
+    (return (ok))))
+
+(defn rw-run-file (rules:&Rules run:&RwRun path:StrView):void
+  (match (rw-read-file path)
+    ((err e) (do (eprint path ": cannot read the file\n")
+                 (set! (run 'failed) (+ (run 'failed) 1))))
+    ((ok text)
+      (let (t:String text
+            before:StrView (string-as-view &t))
+        (set! (run 'files) (+ (run 'files) 1))
+        (match (rw-rewrite rules before (run 'in-strings))
+          ((err x) (do (print path ":" (x 'line) ":1: error: " (x 'msg) "\n")
+                       (set! (run 'unread) (+ (run 'unread) 1))))
+          ((ok r)
+            (let (rr:Rewrite r
+                  ps:&(Vector RwReport) (rr 'reports)
+                  after:StrView (string-as-view (ref rr 'text))
+                  i:usize 0)
+              (while (< i (count ps))
+                (let (p:RwReport (ps i))
+                  (print path ":" (p 'line) ":" (p 'col) ": " (rules 'name) ": " (p 'reason)
+                         (if (p 'flagged) " (rewritten; check it)" "") "\n"))
+                (set! i (+ i 1)))
+              (set! (run 'reported) (+ (run 'reported) (count ps)))
+              (set! (run 'rewrites) (+ (run 'rewrites) (rr 'rewrites)))
+              (set! (run 'strings) (+ (run 'strings) (rr 'strings)))
+              (set! (run 'fragments) (+ (run 'fragments) (rr 'fragments)))
+              (set! (run 'skipped) (+ (run 'skipped) (rr 'skipped)))
+              (when (!= after before)
+                (set! (run 'changed) (+ (run 'changed) 1))
+                (print path ": " (rr 'rewrites) " rewritten" (if (run 'apply) "" " (dry run)") "\n")
+                (when (run 'apply)
+                  (match (rw-write-file path after)
+                    ((err e) (do (eprint path ": cannot write the file\n")
+                                 (set! (run 'failed) (+ (run 'failed) 1))))
+                    ((ok) (do)))))
+              (drop &rr))))
+        (drop &t)))))
+
+; One argument: a directory's `.nuc` and `.nuch` files, or a path glob's matches.
+(defn rw-run-arg (rules:&Rules run:&RwRun a:StrView):void
+  (match (if (dir-exists? a) (walk-dir a) (glob-files a))
+    ((err e) (do (eprint a ": cannot list it\n")
+                 (set! (run 'failed) (+ (run 'failed) 1))))
+    ((ok d)
+      (let (ds:DirEntries d
+            n:usize 0
+            i:usize 0)
+        (while (< i (dir-count &ds))
+          (let (p:StrView (dir-name &ds i))
+            (when (or (not (dir-exists? a)) (strview-has-suffix p ".nuc") (strview-has-suffix p ".nuch"))
+              (rw-run-file rules run p)
+              (set! n (+ n 1))))
+          (set! i (+ i 1)))
+        (when (= n 0)
+          (eprint a ": matches no file\n")
+          (set! (run 'failed) (+ (run 'failed) 1)))
+        (drop &ds)))))
+
+(defn rw-arg (argv:ptr i:i32):StrView
+  (return (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
+
+; `main` for a rewrite tool: `TOOL [--apply] [--strict] [--in-strings]
+; FILE|DIR|GLOB…`. A dry run by default. Each refused or flagged site prints as
+; `path:line:col: rules: reason`, and a file the reader refuses as an error left
+; as written; exit 1 on a file that could not be read or written, with
+; `--strict` also on any reported site or refused file; 2 on a bad argument.
+(defn refactor-main (argc:i32 argv:ptr rules:&Rules):i32
+  (let (run:&RwRun (alloca RwRun)
+        strict:bool false
+        paths:i32 0
+        i:i32 1)
+    (set! (run 'apply) false)
+    (set! (run 'in-strings) false)
+    (set! (run 'strings) 0)
+    (set! (run 'fragments) 0)
+    (set! (run 'skipped) 0)
+    (set! (run 'files) 0)
+    (set! (run 'changed) 0)
+    (set! (run 'rewrites) 0)
+    (set! (run 'reported) 0)
+    (set! (run 'failed) 0)
+    (set! (run 'unread) 0)
+    (while (< i argc)
+      (let (a:StrView (rw-arg argv i))
+        (cond (= a "--apply") (set! (run 'apply) true)
+              (= a "--dry-run") (set! (run 'apply) false)
+              (= a "--strict") (set! strict true)
+              (= a "--in-strings") (set! (run 'in-strings) true)
+              (strview-has-prefix a "-")
+                (do (eprint (rules 'name) ": unknown option " a "\n")
+                    (set! paths -1000))
+              true (set! paths (+ paths 1))))
+      (set! i (+ i 1)))
+    (when (<= paths 0)
+      (eprint "usage: " (rw-arg argv 0) " [--apply] [--strict] [--in-strings] FILE|DIR|GLOB...\n")
+      (return 2))
+    (set! i 1)
+    (while (< i argc)
+      (let (a:StrView (rw-arg argv i))
+        (when (not (strview-has-prefix a "-")) (rw-run-arg rules run a)))
+      (set! i (+ i 1)))
+    (print "\n" (rules 'name) ": " (run 'rewrites) " rewritten in " (run 'changed) " of "
+           (run 'files) " files; sites reported: " (run 'reported)
+           (if (run 'apply) "" "; dry run, nothing written (--apply writes)") "\n")
+    (when (> (run 'unread) 0)
+      (print (rules 'name) ": " (run 'unread) " files did not read and are left as written\n"))
+    (when (run 'in-strings)
+      (print (rules 'name) ": string literals: " (run 'strings) " read as programs, "
+             (run 'fragments) " as fragments of one, " (run 'skipped) " skipped\n"))
+    (let (rs:&(Vector Rule) (ref rules 'rules)
+          j:usize 0)
+      (while (< j (count rs))
+        (let (r:Rule (rs j)
+              pat:String (node-str-sugared (r 'pat)))
+          (print "  rule " (+ j 1) " " (string-as-view &pat) ": " (r 'hits) " rewritten, "
+                 (r 'refused) " refused\n")
+          (drop &pat))
+        (set! j (+ j 1))))
+    (return (cond (> (run 'failed) 0) 1
+                  (and strict (> (run 'unread) 0)) 1
+                  (and strict (> (run 'reported) 0)) 1
+                  true 0))))
+
+; ---------------------------------------------------------------------------
+; defrewrite (§4.4). The helpers run inside the macro at expansion time, so
+; they build Nodes and call nothing generic: a macro body reaches no stamp.
+; ---------------------------------------------------------------------------
+
+; A rule form, checked and taken apart. `bad` is where the first error is.
+(defstruct RwForm
+  bad:?&Node
+  msg:StrView
+  kind:i32
+  pat:?&Node
+  tmpl:?&Node
+  reason:?&Node
+  flag:?&Node
+  lines:i32
+  names:&Node
+  splices:&Node
+  guard:?&Node
+  emit:?&Node)
+
+(defn rw-form-fail (f:&RwForm at:?&Node msg:String):void
+  (if (= (f 'bad) null)
+    (do (set! (f 'bad) at)
+        (set! (f 'msg) (edit-arena-str &msg)))
+    (drop &msg)))
+
+(defn rw-sym-is? (n:?&Node kind:i32 name:StrView):bool
+  (return (and (= (node-kind n) kind) (= (symbol-as-view ((unsafe/cast &Node n) 's)) name))))
+
+(defn rw-sym-text (n:?&Node):StrView
+  (when (!= (node-kind n) NODE-SYM) (return "?"))
+  (return (symbol-as-view ((unsafe/cast &Node n) 's))))
+
+(defn rw-str-node (s:Symbol):&Node
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-STR)
+    (set! (n 's) s)
+    (return n)))
+
+(defn rw-form-splice? (f:&RwForm h:?&Node):bool
+  (return (>= (rw-name-index (f 'splices) h) 0)))
+
+; Every hole of pattern part `p` into `f`'s names, a `~@` one into its splices too.
+(defn rw-pat-holes (f:&RwForm at:&Node p:?&Node last:bool):void
+  (let (x:?&Node (rw-wrapped p "unquote")
+        xs:?&Node (rw-wrapped p "unquote-splice")
+        h:?&Node (if (!= x null) x xs)
+        hn:StrView (rw-sym-text h))
+    (when (!= h null)
+      (cond (!= (node-kind h) NODE-SYM)
+              (rw-form-fail f at (str "defrewrite: a pattern hole is ~name or ~@name"))
+            (or (= hn "self") (= hn "out"))
+              (rw-form-fail f at (str "defrewrite: ~" hn " cannot be a hole: a guard and an :emit bind '" hn "'"))
+            (>= (rw-name-index (f 'names) h) 0)
+              (rw-form-fail f at (str "defrewrite: ~" hn " is bound twice in the pattern"))
+            (and (!= xs null) (not last))
+              (rw-form-fail f at (str "defrewrite: ~@" hn " must be the last element of its list"))
+            true
+              (do (node-push (f 'names) h)
+                  (when (!= xs null) (node-push (f 'splices) h))))
+      (return)))
+  (dotimes (i (node-len p))
+    (rw-pat-holes f at (node-at p i) (= i (- (node-len p) 1)))))
+
+; A v1 template unquotes holes only, each the way the pattern bound it.
+(defn rw-tmpl-check (f:&RwForm at:&Node t:?&Node level:i32 in-list:bool):void
+  (let (x:?&Node (rw-wrapped t "unquote")
+        xs:?&Node (rw-wrapped t "unquote-splice")
+        h:?&Node (if (!= x null) x xs))
+    (when (and (= level 1) (!= h null))
+      (let (hn:StrView (rw-sym-text h))
+        (cond (!= (node-kind h) NODE-SYM)
+                (rw-form-fail f at (str "defrewrite: a template may unquote only a hole of the pattern;"
+                                        " to compute text, use :emit"))
+              (< (rw-name-index (f 'names) h) 0)
+                (rw-form-fail f at (str "defrewrite: the template's ~" hn " is not a hole of the pattern"))
+              (and (!= x null) (rw-form-splice? f h))
+                (rw-form-fail f at (str "defrewrite: ~@" hn " is a splice hole; write ~@" hn))
+              (and (!= xs null) (not (rw-form-splice? f h)))
+                (rw-form-fail f at (str "defrewrite: ~" hn " binds one form; write ~" hn))
+              (and (!= xs null) (not in-list))
+                (rw-form-fail f at (str "defrewrite: ~@" hn " must be inside a list")))
+        (return))))
+  (dotimes (i (node-len t))
+    (rw-tmpl-check f at (node-at t i) (rw-elem-level t i level) true)))
+
+; `(rule PATTERN TEMPLATE opts…)`, `(rule PATTERN :refuse REASON opts…)` or
+; `(rule PATTERN :emit EXPR opts…)`; the options are `:when GUARD`,
+; `:multiline`, `:reindent` and `:flag REASON`.
+(defn rw-parse-rule (r:&Node):&RwForm
+  (let (f:&RwForm (unsafe/cast &RwForm (arena-alloc (sizeof RwForm)))
+        n:i32 (node-len r)
+        x:?&Node (node-at r 2)
+        i:i32 4)
+    (set! (f 'bad) null)
+    (set! (f 'msg) "")
+    (set! (f 'kind) RULE-TEMPLATE)
+    (set! (f 'pat) (node-at r 1))
+    (set! (f 'tmpl) (node-list-new 0))
+    (set! (f 'reason) (rw-str-node (symbol-intern "")))
+    (set! (f 'flag) (rw-str-node (symbol-intern "")))
+    (set! (f 'lines) LINES-REFUSE)
+    (set! (f 'names) (node-list-new 0))
+    (set! (f 'splices) (node-list-new 0))
+    (set! (f 'guard) (intern-node (symbol-intern "true")))
+    (set! (f 'emit) (node-list1 (intern-node (symbol-intern "do")) 0))
+    (when (or (< n 3) (not (rw-sym-is? (node-at r 0) NODE-SYM "rule")))
+      (rw-form-fail f r (str "defrewrite: a rule is (rule PATTERN `TEMPLATE …),"
+                             " (rule PATTERN :refuse REASON …) or (rule PATTERN :emit EXPR …)"))
+      (return f))
+    (rw-pat-holes f r (node-at r 1) false)
+    (cond (rw-sym-is? x NODE-KEYWORD "refuse")
+            (do (set! (f 'kind) RULE-REFUSE)
+                (set! (f 'reason) (node-at r 3))
+                (when (!= (node-kind (node-at r 3)) NODE-STR)
+                  (rw-form-fail f r (str "defrewrite: :refuse takes a reason string"))))
+          (rw-sym-is? x NODE-KEYWORD "emit")
+            (do (set! (f 'kind) RULE-EMIT)
+                (set! (f 'emit) (node-at r 3))
+                (when (= (node-at r 3) null)
+                  (rw-form-fail f r (str "defrewrite: :emit takes an expression"))))
+          (!= (rw-wrapped x "quasiquote") null)
+            (do (set! (f 'tmpl) (rw-wrapped x "quasiquote"))
+                (set! i 3))
+          true
+            (rw-form-fail f r (str "defrewrite: a rule's third part is a quasiquote template,"
+                                   " :refuse REASON or :emit EXPR")))
+    (while (and (< i n) (= (f 'bad) null))
+      (let (o:?&Node (node-at r i)
+            v:?&Node (node-at r (+ i 1)))
+        (cond (rw-sym-is? o NODE-KEYWORD "multiline")
+                (do (set! (f 'lines) LINES-KEEP)
+                    (set! i (+ i 1)))
+              (rw-sym-is? o NODE-KEYWORD "reindent")
+                (do (set! (f 'lines) LINES-SHIFT)
+                    (set! i (+ i 1)))
+              (and (rw-sym-is? o NODE-KEYWORD "when") (!= v null))
+                (do (set! (f 'guard) v)
+                    (set! i (+ i 2)))
+              (and (rw-sym-is? o NODE-KEYWORD "flag") (= (node-kind v) NODE-STR)
+                   (!= (f 'kind) RULE-REFUSE))
+                (do (set! (f 'flag) v)
+                    (set! i (+ i 2)))
+              true
+                (rw-form-fail f r (str "defrewrite: a rule option is :when GUARD, :multiline,"
+                                       " :reindent or :flag REASON (not on a :refuse rule)")))))
+    (when (and (= (f 'bad) null) (= (f 'kind) RULE-TEMPLATE))
+      (rw-tmpl-check f r (f 'tmpl) 1 false))
+    (return f)))
+
+; `(defrewrite name (rule …) …)` defines `(name)`, which returns the rule set.
+; Guards and `:emit` expressions become non-capturing `fn`s that see each hole
+; as a `&Syn` (`~@` as a `&(Vector &Syn)`), the form as `self`, and `out`.
+(defmacro defrewrite (name :rest rules)
+  (when (!= (name 'kind) NODE-SYM)
+    (macro-error name "defrewrite: the first argument is the rule set's name"))
+  (let (rs:ptr (gensym)
+        m:ptr (gensym)
+        adds:&Node (node-list-new (name 'line)))
+    (doseq (r rules NodeIter)
+      (let (f:&RwForm (rw-parse-rule r))
+        (when (!= (f 'bad) null) (macro-error (f 'bad) (f 'msg)))
+        (let (binds:&Node (node-list-new (r 'line))
+              names:&Node (f 'names))
+          (dotimes (i (ast-len names))
+            (let (h:ptr:Node (ast-at names i))
+              (node-extend binds (if (rw-form-splice? f h)
+                                   `((~h &(Vector &Syn)) (rw-splice ~m ~(node-int i)))
+                                   `((~h &Syn) (rw-hole ~m ~(node-int i)))))))
+          (node-extend binds `((~'self &Syn) (rw-self ~m) (~'out &RwMatch) ~m))
+          (node-push adds
+            `(rw-add ~rs ~(node-int (f 'kind)) '~(f 'pat) '~(f 'tmpl) ~(f 'reason) ~(f 'flag)
+                     ~(node-int (f 'lines)) '~names
+                     (fn ((~m &RwMatch)):bool (let ~binds (return ~(f 'guard))))
+                     (fn ((~m &RwMatch)):void (let ~binds ~(f 'emit)) (return)))))))
+    `(defn ~name ():&Rules
+       (let ((~rs &Rules) (rw-rules-new ~(rw-str-node (name 's))))
+         ~@adds
+         (return ~rs)))))

@@ -1,0 +1,86 @@
+; Vacate the typed `ptr` spelling: the Stage 26 port of the Stage 21 script
+; 6910d81d:scripts/stage21/ptr-sweep.py (design/stage26-refactoring/overview.md §8 RF-5).
+;
+;   build/nucleusc --run scripts/stage26/ptr-sweep.nuc -- \
+;     [--apply] [--strict] [--in-strings] FILE|DIR|GLOB...
+;
+;   cc:ptr:Node -> cc:&Node    ?ptr:T -> ?&T    ptr:ptr:T -> &&T    x:ptr:ptr -> x:&ptr
+;
+; A `ptr:` chain segment followed by more chain becomes `&`; a final bare `ptr`
+; (`p:ptr`) is the untyped pointer and is kept. `--in-strings` also rewrites the
+; programs inside string literals, and there only a two-element `(ptr X)` list
+; becomes `&X`; in code that is sugar-sweep's R4.
+
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.refactor)
+
+(defn byte-in? (v:StrView of:StrView):bool
+  (when (= (v 'len) 0) (return false))
+  (dotimes (i (as i64 (of 'len)))
+    (when (= (aref (v 'data) 0) (aref (of 'data) i)) (return true)))
+  (return false))
+
+; Segment `i` of atom `s` is `ptr:` and more chain follows: the byte after its
+; colon, which for a fuse's atom is the `(` after it, starts a type. As in the
+; Python, an atom's first segment counts only after one of its bytes, or first
+; in a file but never first in a string.
+(defn ptr-seg? (s:&Syn c:&Chain i:usize):bool
+  (let (g:ChainSeg (chain-seg c i)
+        at:usize (+ (s 'start) (+ (g 'end) 1))
+        b:usize (+ (s 'start) (g 'body)))
+    (return (and (g 'colon) (= (chain-body c i) "ptr")
+                 (byte-in? (src-slice at (+ at 1))
+                           "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_(?!&*")
+                 (if (= b 0)
+                   (not (in-string? s))
+                   (byte-in? (src-slice (- b 1) b) " \t\n\r\x0c\x0b(:?!&'`~@[{"))))))
+
+(defn ptr-atom? (s:&Syn):bool
+  (when (!= (s 'kind) SYN-ATOM) (return false))
+  (let (c:&Chain (chain-segments (src-text s)))
+    (dotimes (i (as i64 (count (ref c 'segs))))
+      (when (ptr-seg? s c (as usize i)) (return true))))
+  (return false))
+
+; Each `ptr:` segment's body and colon become `&`; its sigils stay.
+(defn put-atom (out:&RwMatch s:&Syn):void
+  (let (c:&Chain (chain-segments (src-text s))
+        from:usize (s 'start))
+    (dotimes (i (as i64 (count (ref c 'segs))))
+      (when (ptr-seg? s c (as usize i))
+        (let (g:ChainSeg (chain-seg c (as usize i)))
+          (rw-put out (src-slice from (+ (s 'start) (g 'body))))
+          (rw-put out "&")
+          (set! from (+ (s 'start) (+ (g 'end) 1))))))
+    (rw-put out (src-slice from (s 'end)))))
+
+; `(ptr X)` as the Python matched it: one space after `ptr`, X a list or a run
+; of atom bytes, holding no string or escape and not a keyword, and the `(`
+; after one of its bytes (so never first in the string).
+(defn list2? (s:&Syn x:&Syn):bool
+  (let (t:StrView (src-text x)
+        list:bool (byte-in? t "(")
+        ok:bool (and (in-string? s) (= (src-slice (s 'start) (x 'start)) "(ptr ")
+                     (= (x 'end) (- (s 'end) 1)) (not (byte-in? t ":"))
+                     (> (s 'start) 0) (byte-in? (src-slice (- (s 'start) 1) (s 'start)) " \t\n(:'`&?!")))
+    (dotimes (i (as i64 (t 'len)))
+      (let (b:StrView (strview-drop-bytes t (as usize i)))
+        (when (or (byte-in? b "\"\\") (and (not list) (byte-in? b " \t\n();")))
+          (set! ok false))))
+    (return ok)))
+
+(defn put-amp (out:&RwMatch x:&Syn):void
+  (rw-put out "&")
+  (rw-put-syn out x))
+
+(defrewrite ptr-sweep
+  (rule ~a :emit (put-atom out a) :when (ptr-atom? a))
+  (rule (ptr ~x) :emit (put-amp out x) :multiline :when (list2? self x)))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (ptr-sweep))))

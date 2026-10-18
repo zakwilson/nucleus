@@ -19,10 +19,41 @@ import argparse
 import re
 import sys
 
-sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from importlib import import_module
 
-split = import_module("ptr-sweep").split
+# Copied from ptr-sweep.py, deleted in Stage 26 RF-5 (6910d81d:scripts/stage21/ptr-sweep.py).
+def split(src):
+    """Yield (kind, text) chunks: code, str, comment, char."""
+    i, n, start = 0, len(src), 0
+    while i < n:
+        c = src[i]
+        if c == '"':
+            if i > start:
+                yield "code", src[start:i]
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            yield "str", src[i:j + 1]
+            i = start = j + 1
+        elif c == ";":
+            if i > start:
+                yield "code", src[start:i]
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            yield "comment", src[i:j]
+            i = start = j
+        elif c == "\\":
+            if i > start:
+                yield "code", src[start:i]
+            j = i + 2
+            while j < n and src[j] not in ' \t\n\r()";[]{}':
+                j += 1
+            yield "char", src[i:j]
+            i = start = j
+        else:
+            i += 1
+    if start < n:
+        yield "code", src[start:]
+
 
 B = r"(?:(?<=[\s(:?!&`~@\[{])|^)"
 RULES = [

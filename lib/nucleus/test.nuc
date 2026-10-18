@@ -137,47 +137,12 @@
   (when (<= (s 'len) SHOW-LIMIT) (return s))
   (return (strview-take-bytes s SHOW-LIMIT)))
 
-; ---------------------------------------------------------------------------
-; Glob matching (§T8.4: glob, not regex)
-; ---------------------------------------------------------------------------
-
 ; Unchecked: every caller has just bounds-checked `i`, and the checked accessor
-; yields `!ui8`, which a bool-returning matcher cannot propagate.
+; yields `!ui8`, which a bool-returning scan cannot propagate.
 (defn test-byte-at (v:&StrView i:usize):ui8
   (return (aref (v 'data) i)))
 
-; `*` matches any run of bytes, `?` any single byte. Backtracking rather than
-; recursive: one remembered `*` is enough, since a second supersedes the first.
-(defn glob-match (pat:&StrView s:&StrView):bool
-  (let (pn:usize (strview-byte-len pat)
-        sn:usize (strview-byte-len s)
-        pi:usize 0
-        si:usize 0
-        star:i64 -1
-        mark:usize 0)
-    (while (< si sn)
-      (let (starred:bool false
-            matched:bool false)
-        (when (< pi pn)
-          (let (pc:ui8 (test-byte-at pat pi))
-            (set! starred (= pc 42))
-            (set! matched (or (= pc 63) (= pc (test-byte-at s si))))))
-        (cond starred
-                (do (set! star (as i64 pi))
-                    (set! mark si)
-                    (set! pi (+ pi 1)))
-              matched
-                (do (set! pi (+ pi 1))
-                    (set! si (+ si 1)))
-              (>= star 0)
-                (do (set! pi (+ (as usize star) 1))
-                    (set! mark (+ mark 1))
-                    (set! si mark))
-              true
-                (return false))))
-    (while (and (< pi pn) (= (test-byte-at pat pi) 42))
-      (set! pi (+ pi 1)))
-    (return (= pi pn))))
+; The line assertions match with nucleus.file's `glob-match` (§T8.4: glob, not regex).
 
 ; ---------------------------------------------------------------------------
 ; The predicates (§T1.2)
