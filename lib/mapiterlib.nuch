@@ -1,2 +1,0 @@
-; .nuch header for tests/fixtures/mapiterlib.nuc
-(import-use nucleus.iterator)

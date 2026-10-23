@@ -1173,10 +1173,8 @@ one instance of this: `usize`/`ssize` (14 committed headers, W9 item 3), then
 **When you add a builtin scalar type, add it to both.** The lists are not merely
 similar, they answer the same question, and the one that is easy to forget is the
 one nothing in the build exercises — a wrong header is discovered by a C consumer,
-not by `make bootstrap` or `make test`. `scripts/check-headers.sh` only proves the
-committed headers match the compiler; it cannot tell you they are *correct*, and
-it will happily lock in a wrong spelling. The check that finds this is compiling a
-generated header with `clang -fsyntax-only`, which the `w9-cheader-*` gates do.
+not by `make bootstrap`. The check that finds this is compiling a generated
+header with `clang -fsyntax-only`, which the `w9-cheader-*` gates do.
 
 `type-node-to-c`'s pointer arm keys on the head SYMBOL, so it has to name every
 spelling of the same kind: `ptr` and `ref` (its documented synonym; until Stage 21
@@ -3608,9 +3606,7 @@ runs `prescan-file-imports` + `prescan-imported-types` for the same reason
 the C-representable subset, which cannot name a prelude type.
 
 Note `make lib-headers` / `make lib-cheaders` write their outputs **into
-`lib/`**, over the committed `lib/mathlib.nuch` and `lib/boxlib.nuch` and
-leaving ~30 untracked files behind. Regenerate and diff those two rather than
-assuming; delete the rest when you are done.
+`lib/`**, beside the sources; `.gitignore` excludes every header there.
 
 ## A C struct the importer cannot lay out is registered OPAQUE — hand-declare and validate, don't field-access
 
@@ -5220,7 +5216,7 @@ struct, because dropping only the offending field would hand C a layout that
 silently disagrees with Nucleus — the same ruling item 44 made for declarations.
 The general form: **every emitter that writes a type is a refusal site, and the
 `_BANG`/`_QMARK` tag check in `tests/suite-cheader.nuc` is the only thing that finds a missed
-one** — `check-headers.sh` does not, because an undefined tag behind a pointer is
+one** — compiling the header does not, because an undefined tag behind a pointer is
 legal C.
 
 ## `define i64 @f(...)` is not evidence that the return type is a scalar
@@ -5745,9 +5741,7 @@ Four things worth knowing before touching this:
 - **`.nuch` is a serialization format for these.** `emit-nuch-defmacro` /
   `emit-nuch-defn` (templates) / `emit-nuch-extend` print marker-bearing forms
   verbatim via `print-node`, which emits `:name` for a `NODE-KEYWORD`. Any
-  change to marker spelling must regenerate the committed headers
-  (`scripts/check-headers.sh --fix` — it reaches `lib/mapiterlib.nuch`, which
-  `$(LIB_NUCHS)` cannot).
+  change to marker spelling changes every generated `.nuch`.
 
 **The DECLARATION ATTRIBUTES are the same convention, one position further
 along**: `:noreturn` and `:returns-twice`, between a `defn`'s return operand and
@@ -6963,9 +6957,8 @@ the default byte case did `(emit out (as Char (as ui32 c)))`, widening each
 **Adding a `NodeKind` means adding a `node-write` arm** (`lib/nucleus/read.nuc`), and
 its default arm must stay unreachable rather than silently drop a node.
 
-Neither `check-headers` nor the IR snapshot catches this class: both compare the
-compiler's output against *itself*, so a lossy printer is consistently lossy and
-stays green. `print-node` is a wrapper over `lib/nucleus/read.nuc`'s `node-write`; R-4's
+The IR snapshot does not catch this class: it compares the compiler's output
+against *itself*, so a lossy printer is consistently lossy and stays green. `print-node` is a wrapper over `lib/nucleus/read.nuc`'s `node-write`; R-4's
 round-trip unit reads the output back.
 
 ## The reader is `lib/nucleus/read.nuc`; the compiler's diagnostics are `src/diagnostics.nuc`

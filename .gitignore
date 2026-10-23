@@ -9,3 +9,6 @@ bin/nucleusc
 .stfolder/
 __pycache__/
 boot/
+# `make lib-headers` / `make lib-cheaders`; every header under lib/ is generated
+/lib/**/*.nuch
+/lib/**/*.h

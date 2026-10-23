@@ -2700,7 +2700,7 @@
   sites:(Vector RgSite)
   refusal:Refusal
   refused:StrView
-  ; Committed generated headers that spell the old name.
+  ; Generated lib/ headers that spell the old name.
   headers:(Vector StrView))
 
 (defn rg-plan-ok? (p:&RgPlan):bool
@@ -3405,7 +3405,7 @@
   (when (rn-token-in? text old) (return true))
   (return (and (strview-has-suffix h ".h") (rg-c-has? text (rg-ir-sanitize (rg-ir-token old))))))
 
-; The committed generated headers (scripts/check-headers.sh) that spell the old name.
+; The generated lib/ headers that spell the old name.
 (defn rename-global-headers (p:&RgPlan):void
   (let (pats:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
     (init pats (handle g-arena))
@@ -3560,5 +3560,5 @@
             (when (> (count hs) 0)
               (dotimes (k (as i64 (count hs)))
                 (print (hs (as usize k)) ": a generated header spells '" (p 'old) "'\n"))
-              (print "regenerate the headers with scripts/check-headers.sh --fix\n")))
+              (print "regenerate the headers with make lib-headers lib-cheaders\n")))
           (return 0))))))

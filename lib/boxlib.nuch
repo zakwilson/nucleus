@@ -1,4 +1,0 @@
-; .nuch header for lib/boxlib.nuc
-(defstruct (Box T) (val T))
-(defn box-get ((b (ref (Box T)))) :T (return (b (quote val))))
-(defn box-set ((b (ref (Box T))) (v T)) :void (set! (b (quote val)) v))

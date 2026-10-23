@@ -108,7 +108,7 @@ Dry run first, then `--apply`. A file in `src/` needs `--root src/nucleusc.nuc`
 (it does not compile alone); each run resolves the whole unit, about 10 s for
 the compiler. A refusal names the blocking site. Rename there by hand, or pick
 another name; do not work around it. After renaming in a file with a generated
-`.nuch`, run `scripts/check-headers.sh --fix`. Globals, fields and macros are
+`.nuch`, run `make lib-headers lib-cheaders`. Globals, fields and macros are
 not renamed by it.
 
 ### Renaming a definition: `rename-global`

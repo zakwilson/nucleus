@@ -3807,9 +3807,8 @@
 
 ; The recorded includes, in DISCOVERY order (import-list-push prepends, so the
 ; list is walked into an array and replayed). Discovery order is emission order,
-; which is a deterministic function of the source — `make check-headers` compares
-; the committed headers byte for byte, so a stable order is required, not merely
-; tidy.
+; which is a deterministic function of the source, so headers regenerate
+; byte-identically.
 (defn cheader-emit-c-includes ():void
   (let (n:i32 0
         cur:ptr g-cheader-c-includes)

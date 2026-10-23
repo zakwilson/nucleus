@@ -1,8 +1,0 @@
-#pragma once
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
-
-/* Generated from lib/unsafe-priv-demo.nuc by nucleusc --emit-cheader */
-
-int32_t pub_double(int32_t x) asm("pub-double");

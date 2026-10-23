@@ -10,8 +10,8 @@
 ;     re-read through `lib/nucleus/read.nuc`. Both discover their inputs from the
 ;     directory, so a new file is covered with no edit here.
 ;
-;   - The spawns — the struct-ABI and struct-layout oracles, the two generated-
-;     artifact audits and the CStr residue audit. §T7 rules these stay outside
+;   - The spawns — the struct-ABI and struct-layout oracles, the generated-
+;     artifact audit and the CStr residue audit. §T7 rules these stay outside
 ;     the framework, and that outside means *not rewritten, not unrun*: their
 ;     assertion is an external tool's output, so the unit runs the script and
 ;     requires exit 0. Reimplementing them here would buy a different spelling
@@ -59,15 +59,6 @@
 ; doc claims as available no longer probes as available here.
 (deftest stdlib-table-generated
   (try (check-script-ok "python3" "scripts/gen-stdlib-table.py --check"))
-  (return (ok)))
-
-; lib/*.nuch and lib/*.h are generated and committed, and nothing in the build
-; reads the committed copies — so a change to src/nuch.nuc or src/cheader.nuc
-; leaves them describing a library that no longer exists, with no failure
-; anywhere. Byte-exact, unlike the table above: header emission is a pure
-; function of the source.
-(deftest headers-generated
-  (try (check-script-ok "./scripts/check-headers.sh" ""))
   (return (ok)))
 
 ; Stage 17 C8: what is left of CStr and libc's str* family in src/ is the FFI
@@ -269,9 +260,9 @@
 ; Stage 21 R-4: what `node-write` prints reads back as the same tree
 ; ---------------------------------------------------------------------------
 
-; `node-write` is what `--emit-nuch` and `--dump-ast` print with, and neither
-; `check-headers` nor the IR snapshot can see a lossy printer: both compare the
-; compiler's output against itself. design/stage21-cleanup/one-reader.md §6.5.
+; `node-write` is what `--emit-nuch` and `--dump-ast` print with, and the IR
+; snapshot cannot see a lossy printer: it compares the compiler's output
+; against itself. design/stage21-cleanup/one-reader.md §6.5.
 
 ; The corpus files the reader refuses, and the code it must refuse them with.
 ; A refusal anywhere else is a reader regression, not a file to skip.

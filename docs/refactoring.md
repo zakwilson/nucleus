@@ -714,8 +714,8 @@ arm spelled like the definition stays.
   outside `--edit`, or in a file the compiler found through the library path
   (an absolute path) that `--edit` does not name.
 
-After a rename, the tool lists each committed generated header that spells
-the old name. Regenerate them with `scripts/check-headers.sh --fix`.
+After a rename, the tool lists each generated `lib/` header that spells the
+old name. Regenerate them with `make lib-headers lib-cheaders`.
 
 The library entry points are `rename-global-root` (one per root's `Report`),
 `rename-global-plan` and `rename-global-apply`, which returns each edited

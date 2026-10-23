@@ -132,7 +132,9 @@ $(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/dia
 # its name, so the split needs no locking. NUCTESTS_JOBS=1 restores a serial run.
 NUCTESTS_JOBS := $(shell nproc 2>/dev/null || echo 4)
 
-run-nuctests: $(NUCTESTS)
+# The suite reads the generated C-header corpus and `examples/` imports
+# lib/mapiterlib.nuch; neither is committed.
+run-nuctests: $(NUCTESTS) lib-cheaders lib/mapiterlib.nuch
 	@n=$(NUCTESTS_JOBS); pids=; i=0; \
 	  while [ $$i -lt $$n ]; do \
 	    ./$(NUCTESTS) $(NUCTESTS_ARGS) --shard $$i/$$n > $(BUILD)/nuctests.out.$$i & \
@@ -247,6 +249,11 @@ lib/%.nuch: lib/%.nuc $(BIN)
 lib/%.h: lib/%.nuc $(BIN)
 	$(BIN) --emit-cheader $< > $@
 
+# A header-only import for examples/assoc-types-extend-cross.nuc; its source
+# lives in tests/fixtures so that `(import-use mapiterlib)` cannot find a `.nuc`.
+lib/mapiterlib.nuch: tests/fixtures/mapiterlib.nuc $(BIN)
+	$(BIN) --emit-nuch $< > $@
+
 # Compile library .nuc to .ll
 $(BUILD)/lib/%.ll: lib/%.nuc $(BIN) | $(BUILD)/lib
 	@mkdir -p $(@D)
@@ -263,20 +270,9 @@ LIB_HS    := $(LIB_NUCS:.nuc=.h)
 LIB_LLS   := $(patsubst lib/%.nuc,$(BUILD)/lib/%.ll,$(LIB_NUCS))
 LIB_OBJS  := $(patsubst lib/%.nuc,$(BUILD)/lib/%.o,$(LIB_NUCS))
 
-lib-headers: $(LIB_NUCHS)
+lib-headers: $(LIB_NUCHS) lib/mapiterlib.nuch
 lib-cheaders: $(LIB_HS)
 lib-objs: $(LIB_OBJS)
-
-# Verify the committed lib/*.nuch and lib/*.h still match what this compiler
-# emits. They are generated-and-committed, and the build never reads the
-# committed copies (the rules above overwrite them), so a change to src/nuch.nuc
-# or src/cheader.nuc invalidates them silently. Runs as part of `make test` (the
-# `headers-generated` unit in tests/suite-audits.nuc); this target is the convenience
-# entry point. `scripts/check-headers.sh --fix` regenerates -- including
-# lib/mapiterlib.nuch, which $(LIB_NUCHS) cannot reach because its source is
-# tests/fixtures/mapiterlib.nuc.
-check-headers: $(BIN)
-	NUCLEUSC=$(BIN) ./scripts/check-headers.sh
 
 # Build shared library from all library .o files
 $(BUILD)/lib/libnucleus.so: $(LIB_OBJS)
@@ -322,4 +318,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

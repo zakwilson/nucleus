@@ -79,10 +79,10 @@
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
-; The committed corpus
+; The generated corpus
 ; ---------------------------------------------------------------------------
 
-; No committed `lib/*.h` or `lib/nucleus/*.h` may contain `needle`; the failure names the file. The
+; No generated `lib/*.h` or `lib/nucleus/*.h` may contain `needle`; the failure names the file. The
 ; corpus is the real regression surface — a fixture only proves the emitter did
 ; the right thing once.
 (defn check-lib-headers-lack (needle:StrView):!void
@@ -107,7 +107,7 @@
     (drop &d)
     (return (ok))))
 
-; Each of the space-separated `stems` names a committed `lib/nucleus/<stem>.h` that a C
+; Each of the space-separated `stems` names a generated `lib/nucleus/<stem>.h` that a C
 ; program can include on its own.
 (defn check-lib-headers-compile (stems:StrView):!void
   (let (sp:StrView " "
@@ -204,7 +204,7 @@ int main(void) {
 
 ; usize/ssize map to size_t/ptrdiff_t. Before W9 item 3 they fell through the
 ; "assume struct" arm and emitted `struct usize`, which does not exist — 14 of
-; the committed lib/*.h carried it, and a `usize` GLOBAL is what turned a latent
+; the lib/*.h corpus carried it, and a `usize` GLOBAL is what turned a latent
 ; defect into a broken `extern` line.
 (deftest w9-cheader-usize-maps-to-size-t
   (let (t:String (try (c-header "sz"
@@ -406,10 +406,10 @@ int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
     (drop &base)
     (return (ok))))
 
-; The reported artifact itself: a COMMITTED header that names an imported user
+; The reported artifact itself: a `make lib-cheaders` header that names an imported user
 ; struct by value, which only compiles if the generated include chain made that
-; struct complete. Fails if the committed copies are regenerated wrong.
-(deftest w9-cheader-committed-header-usable
+; struct complete.
+(deftest w9-cheader-lib-header-usable
   (let (r:CcCheck (try (c-consumer-syntax "."
 "#include \"lib/nucleus/string.h\"
 int main(void) {
@@ -511,10 +511,10 @@ int main(void) {
     (drop &base)
     (return (ok))))
 
-; The reported artefact: 14 declarations across 5 committed headers carried the
+; The reported artefact: 14 declarations across 5 lib headers carried the
 ; undefined tag. `string-from-cstr-unchecked` returns a real `struct String` and
 ; must remain — it is the escape route a C caller is meant to take.
-(deftest w9-cheader-committed-headers-no-niche-tag
+(deftest w9-cheader-lib-headers-no-niche-tag
   (try (check-lib-headers-lack "struct _BANG"))
   (try (check-lib-headers-lack "struct _QMARK"))
   (let (t:String (try (read-file "lib/nucleus/string.h")))
@@ -592,7 +592,7 @@ int main(void) {
     (drop &l)
     (return (ok))))
 
-; No committed header may reintroduce an anonymous typedef, which is the defect
+; No lib header may reintroduce an anonymous typedef, which is the defect
 ; itself and is checkable without compiling anything.
 (deftest w9-cheader-no-anonymous-typedef
   (try (check-lib-headers-lack "typedef struct {"))

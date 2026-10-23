@@ -1,2 +1,0 @@
-; .nuch header for lib/nucleus/seq.nuc
-(ns nucleus.seq)
