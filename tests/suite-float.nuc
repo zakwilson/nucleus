@@ -17,7 +17,6 @@
 (import-use nucleus.string-split)
 (import-use nucleus.fmt)
 (import-use nucleus.strview)
-(import-use nucleus.parse)
 (import-use nucleus.test) (import-use nucleus.create)
 (defn fl-kinds ():StrView
   (return "f16|_Float16|f16
@@ -108,53 +107,10 @@ f128|__float128|q"))
           (when (= (out 'name) name) (return true))))))
   (return false))
 
-; ---------------------------------------------------------------------------
-; Comparing two constants
-; ---------------------------------------------------------------------------
-
-; `0xH…`, `0xK…` and `0xL…` are half, x86_fp80 and fp128 written as their own
-; bits; every other spelling denotes a value LLVM chose a rendering for.
-(defn fl-bit-pattern? (val:StrView):bool
-  (return (or (strview-has-prefix val "0xH")
-              (strview-has-prefix val "0xK")
-              (strview-has-prefix val "0xL"))))
-
-; Nucleus has no bitcast operator; this is its established spelling
-; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/nucleus/hash.nuc).
-(defn fl-f64-bits (d:f64):ui64
-  (let (r:f64 d
-        p:&f64 &r)
-    (return (deref (unsafe/cast &ui64 p)))))
-
-; An f32/f64 constant's 64 bits, from either spelling LLVM uses. The `0x` case
-; needs its own branch and not just `strtod`: a hex float's binary exponent is
-; optional to `strtod`, so `0x3FF0000000000000` would parse as the integer
-; 4.6e18 rather than as the 1.0 those bits are.
-(defn fl-value-bits (val:StrView):!ui64
-  (when (and (strview-has-prefix val "0x")
-             (not (strview-contains val "p"))
-             (not (strview-contains val "P")))
-    (return (ok (try (strview-parse-magnitude (strview-drop-bytes val 2) 16
-                                              18446744073709551615)))))
-  (return (ok (fl-f64-bits (try (parse f64 val))))))
-
-; LLVM prints an f32/f64 constant as a decimal when it round-trips and as the
-; f64 bit pattern when it does not, so two compilers can agree on the value and
-; disagree on the text. The three wider formats print as bits already, and
-; there the text IS the value.
-(defn fl-check-same-value (name:StrView got:StrView want:StrView):!void
-  (when (or (fl-bit-pattern? want) (fl-bit-pattern? got))
-    (when (not (= got want))
-      (fail! name ": nucleus " got ", clang " want))
-    (return (ok)))
-  (let (gb:ui64 (try (fl-value-bits got))
-        wb:ui64 (try (fl-value-bits want)))
-    (when (!= gb wb)
-      (fail! name ": nucleus " got ", clang " want)))
-  (return (ok)))
-
 ; Every `@v…` clang emitted must be in the Nucleus module under the same name,
-; with the same type and the same value. `want` is clang's module.
+; with the same type and the same value. `want` is clang's module and `got` is
+; the Nucleus module as the same clang re-prints it, so equal values are equal
+; text whatever spelling that LLVM chooses (LLVM 23 prints decimals and `f0x…`).
 (defn fl-compare-globals (want:StrView got:StrView):!i64
   (let (rows:i64 0
         w:&FlGlobal (alloca FlGlobal)
@@ -168,7 +124,8 @@ f128|__float128|q"))
             (fail! (w 'name) ": missing from the Nucleus module"))
           (when (not (= (g 'ty) (w 'ty)))
             (fail! (w 'name) ": nucleus type " (g 'ty) ", clang " (w 'ty)))
-          (try (fl-check-same-value (w 'name) (g 'val) (w 'val))))))
+          (when (not (= (g 'val) (w 'val)))
+            (fail! (w 'name) ": nucleus " (g 'val) ", clang " (w 'val))))))
     (return (ok rows))))
 
 ; ---------------------------------------------------------------------------
@@ -338,11 +295,18 @@ __attribute__((used)) static __float128 q = 1;
       (when (not (cir 'ok?))
         (fail! "clang refused the generated fixture\n     "
                (test-show (string-as-view (ref cir 'err)))))
-      (let (rows:i64 (try (fl-compare-globals (string-as-view (ref cir 'ir))
-                                              (string-as-view (ref nir 'ir)))))
-        ; 16 hex literals at five widths and 8 decimal ones at three: a
-        ; generator that quietly emitted nothing would otherwise pass.
-        (try (check-eq-int rows 104 "constants compared")))
+      (let (lp:String (try (test-write-file "lit.ll" (string-as-view (ref nir 'ir))))
+            rir:CcIr (try (cc-emit-llvm (string-as-view &lp))))
+        (when (not (rir 'ok?))
+          (fail! "clang refused the Nucleus module\n     "
+                 (test-show (string-as-view (ref rir 'err)))))
+        (let (rows:i64 (try (fl-compare-globals (string-as-view (ref cir 'ir))
+                                                (string-as-view (ref rir 'ir)))))
+          ; 16 hex literals at five widths and 8 decimal ones at three: a
+          ; generator that quietly emitted nothing would otherwise pass.
+          (try (check-eq-int rows 104 "constants compared")))
+        (drop &rir)
+        (drop &lp))
       (drop &cir)
       (drop &nir)
       (drop &cp)

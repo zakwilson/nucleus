@@ -157,21 +157,23 @@
     (do
       (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))
         (return))
-      (set! (prev 'ty) (as ?&Type ty))
-      (set! (prev 'file) file)
-      (set! (prev 'line) line)
-      (set! (prev 'hdr) g-cheader-import-header)
-      (set! (prev 'provisional) 0)
+      (set-fields! prev
+                   'ty          (as ?&Type ty)
+                   'file        file
+                   'line        line
+                   'hdr         g-cheader-import-header
+                   'provisional 0)
       (return))
     0)
   (let (e:&CTypedef (new CTypedef g-arena))
-    (set! (e 'name) name)
-    (set! (e 'ty) (as ?&Type ty))
-    (set! (e 'file) file)
-    (set! (e 'line) line)
-    (set! (e 'hdr) g-cheader-import-header)
-    (set! (e 'provisional) g-cheader-typedef-provisional)
-    (set! (e 'next) g-cheader-typedefs)
+    (set-fields! e
+                 'name        name
+                 'ty          (as ?&Type ty)
+                 'file        file
+                 'line        line
+                 'hdr         g-cheader-import-header
+                 'provisional g-cheader-typedef-provisional
+                 'next        g-cheader-typedefs)
     (set! g-cheader-typedefs e)))
 
 ; ---- Stage 15 W1d: a layout that has not been emitted yet ------------------
@@ -217,11 +219,12 @@
 
 ; Record that `sd`'s definition line was just written into `out`.
 (defn sdef-note-emitted (sd:(ptr StructDef) (out ?&String)):void
-  (set! (sd 'emitted) 1)
-  (set! (sd 'emit-epoch) g-module-epoch)
-  ; Only the type buffer is carried into the REPL preamble at module close; a
-  ; line in a def or compile-time buffer dies with its module.
-  (set! (sd 'in-type-buf) (if (= (as ptr out) (as ptr &g-type-stream)) 1 0)))
+  (set-fields! sd
+               'emitted     1
+               'emit-epoch  g-module-epoch
+               ; Only the type buffer is carried into the REPL preamble at module close; a
+               ; line in a def or compile-time buffer dies with its module.
+               'in-type-buf (if (= (as ptr out) (as ptr &g-type-stream)) 1 0)))
 
 (defn cycle-pending-sdef (t:?&Type):?&StructDef
   (when (= g-import-cycles null) (return null))
@@ -1132,18 +1135,19 @@
   (let (src:ptr:Type t)
     (when (= (src 'pkind) k) (return t))
     (let (dst:&Type (alloc-type))
-      (set! (dst 'kind) (src 'kind))
-      (set! (dst 'ret) (src 'ret))
-      (set! (dst 'params) (src 'params))
-      (set! (dst 'num-params) (src 'num-params))
-      (set! (dst 'variadic) (src 'variadic))
-      (set! (dst 'has-rest) (src 'has-rest))
-      (set! (dst 'nopt) (src 'nopt))
-      (set! (dst 'opt-defaults) (src 'opt-defaults))
-      (set! (dst 'elem) (src 'elem))
-      (set! (dst 'sdef) (src 'sdef))
-      (set! (dst 'is-volatile) (src 'is-volatile))
-      (set! (dst 'pkind) k)
+      (set-fields! dst
+                   'kind         (src 'kind)
+                   'ret          (src 'ret)
+                   'params       (src 'params)
+                   'num-params   (src 'num-params)
+                   'variadic     (src 'variadic)
+                   'has-rest     (src 'has-rest)
+                   'nopt         (src 'nopt)
+                   'opt-defaults (src 'opt-defaults)
+                   'elem         (src 'elem)
+                   'sdef         (src 'sdef)
+                   'is-volatile  (src 'is-volatile)
+                   'pkind        k)
       (return dst))))
 
 ; The conservative meet of two pointer kinds for a control-flow join (cond /

@@ -149,6 +149,13 @@ bound; `EXPR` writes the replacement into `out`:
 
 `scripts/stage26/list-api-sweep.nuc` is a whole tool built this way.
 
+A rule matches one form, so a rewrite that merges several sibling forms matches
+the list that holds them: `(rule ~x :emit … :when …)` with a guard that checks
+`x`'s kids, and an `:emit` that copies the text between merged runs with
+`rw-put-range`. `scripts/stage26/set-fields-sweep.nuc` merges runs of
+`(set! (x 'f) v)` this way. It also shows a guard that reports sites with
+`rw-report` and never applies, for sites a person should look at.
+
 ### Programs inside string literals
 
 A test writes its input program as a string literal. With `--in-strings`

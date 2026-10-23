@@ -15,6 +15,9 @@
     (modify-syntax-entry ?. "_" table)
     (modify-syntax-entry ?* "_" table)
     (modify-syntax-entry ?: "_" table)
+    ;; Reader prefixes: as punctuation, Lisp indentation aligns one column past them.
+    (dolist (c '(?' ?` ?~ ?@ ?#))
+      (modify-syntax-entry c "'" table))
     table))
 
 (defvar nucleus-toplevel-keywords

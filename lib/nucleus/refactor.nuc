@@ -364,17 +364,18 @@
 (defn rw-add (rs:&Rules kind:i32 pat:?&Node tmpl:?&Node reason:StrView flag:StrView
               lines:i32 names:?&Node guard:(fn bool)(&RwMatch) emit:(fn void)(&RwMatch)):void
   (let (r:&Rule (alloca Rule))
-    (set! (r 'kind) kind)
-    (set! (r 'pat) pat)
-    (set! (r 'tmpl) tmpl)
-    (set! (r 'reason) reason)
-    (set! (r 'flag) flag)
-    (set! (r 'lines) lines)
-    (set! (r 'names) names)
-    (set! (r 'guard) guard)
-    (set! (r 'emit) emit)
-    (set! (r 'hits) 0)
-    (set! (r 'refused) 0)
+    (set-fields! r
+                 'kind    kind
+                 'pat     pat
+                 'tmpl    tmpl
+                 'reason  reason
+                 'flag    flag
+                 'lines   lines
+                 'names   names
+                 'guard   guard
+                 'emit    emit
+                 'hits    0
+                 'refused 0)
     (conj (ref rs 'rules) @r)))
 
 ; `X` when `p` is `(head X)`.
@@ -875,10 +876,11 @@
         (if (sf 'fragment)
           (set! (rw 'fragments) (+ (rw 'fragments) 1))
           (set! (rw 'strings) (+ (rw 'strings) 1)))
-        (set! (rw 'carry) (sf 'ends-in-string))
-        (set! (rw 'strings) (+ (rw 'strings) (in 'strings)))
-        (set! (rw 'fragments) (+ (rw 'fragments) (in 'fragments)))
-        (set! (rw 'skipped) (+ (rw 'skipped) (in 'skipped)))
+        (set-fields! rw
+                     'carry     (sf 'ends-in-string)
+                     'strings   (+ (rw 'strings) (in 'strings))
+                     'fragments (+ (rw 'fragments) (in 'fragments))
+                     'skipped   (+ (rw 'skipped) (in 'skipped)))
         (cond (not (edits-check-outermost (ss 'text) ie))
                 (set! why "the rewrites inside the string cross each other")
               (not (rw-map-edits (unsafe/cast &Edits (rw 'edits)) ie ss))
@@ -910,9 +912,10 @@
 
 (defn rw-match-reset (m:&RwMatch s:&Syn r:&Rule src:StrView):void
   (let (hs:&(Vector RwHole) (ref m 'holes))
-    (set! (m 'form) s)
-    (set! (m 'names) (r 'names))
-    (set! (m 'lines) (r 'lines))
+    (set-fields! m
+                 'form  s
+                 'names (r 'names)
+                 'lines (r 'lines))
     (string-clear (ref m 'text))
     (while (> (count (ref m 'kept)) 0) (remove-at (ref m 'kept) (- (count (ref m 'kept)) 1)))
     (set! (m 'col0) (rw-column src (s 'start) 0))
@@ -1028,19 +1031,20 @@
 
 (defn rw-init (rw:&Rewriter src:StrView f:&SynFile e:&Edits rules:&Rules
                reports:&(Vector RwReport) in-strings:bool depth:i32):void
-  (set! (rw 'src) src)
-  (set! (rw 'file) f)
-  (set! (rw 'edits) e)
-  (set! (rw 'table) (read-macro-table-new))
-  (set! (rw 'rules) rules)
-  (set! (rw 'reports) reports)
-  (set! (rw 'rewrites) 0)
-  (set! (rw 'in-strings) in-strings)
-  (set! (rw 'depth) depth)
-  (set! (rw 'strings) 0)
-  (set! (rw 'fragments) 0)
-  (set! (rw 'skipped) 0)
-  (set! (rw 'carry) false))
+  (set-fields! rw
+               'src        src
+               'file       f
+               'edits      e
+               'table      (read-macro-table-new)
+               'rules      rules
+               'reports    reports
+               'rewrites   0
+               'in-strings in-strings
+               'depth      depth
+               'strings    0
+               'fragments  0
+               'skipped    0
+               'carry      false))
 
 ; Every form of the pass's file, bottom-up; a string's pass runs inside its file's.
 (defn rw-run-pass (rw:&Rewriter):void
@@ -1124,11 +1128,12 @@
                   (print path ":" (p 'line) ":" (p 'col) ": " (rules 'name) ": " (p 'reason)
                          (if (p 'flagged) " (rewritten; check it)" "") "\n"))
                 (set! i (+ i 1)))
-              (set! (run 'reported) (+ (run 'reported) (count ps)))
-              (set! (run 'rewrites) (+ (run 'rewrites) (rr 'rewrites)))
-              (set! (run 'strings) (+ (run 'strings) (rr 'strings)))
-              (set! (run 'fragments) (+ (run 'fragments) (rr 'fragments)))
-              (set! (run 'skipped) (+ (run 'skipped) (rr 'skipped)))
+              (set-fields! run
+                           'reported  (+ (run 'reported) (count ps))
+                           'rewrites  (+ (run 'rewrites) (rr 'rewrites))
+                           'strings   (+ (run 'strings) (rr 'strings))
+                           'fragments (+ (run 'fragments) (rr 'fragments))
+                           'skipped   (+ (run 'skipped) (rr 'skipped)))
               (when (!= after before)
                 (set! (run 'changed) (+ (run 'changed) 1))
                 (print path ": " (rr 'rewrites) " rewritten" (if (run 'apply) "" " (dry run)") "\n")
@@ -1173,17 +1178,18 @@
         strict:bool false
         paths:i32 0
         i:i32 1)
-    (set! (run 'apply) false)
-    (set! (run 'in-strings) false)
-    (set! (run 'strings) 0)
-    (set! (run 'fragments) 0)
-    (set! (run 'skipped) 0)
-    (set! (run 'files) 0)
-    (set! (run 'changed) 0)
-    (set! (run 'rewrites) 0)
-    (set! (run 'reported) 0)
-    (set! (run 'failed) 0)
-    (set! (run 'unread) 0)
+    (set-fields! run
+                 'apply      false
+                 'in-strings false
+                 'strings    0
+                 'fragments  0
+                 'skipped    0
+                 'files      0
+                 'changed    0
+                 'rewrites   0
+                 'reported   0
+                 'failed     0
+                 'unread     0)
     (while (< i argc)
       (let (a:StrView (rw-arg argv i))
         (cond (= a "--apply") (set! (run 'apply) true)
@@ -1319,18 +1325,19 @@
         n:i32 (node-len r)
         x:?&Node (node-at r 2)
         i:i32 4)
-    (set! (f 'bad) null)
-    (set! (f 'msg) "")
-    (set! (f 'kind) RULE-TEMPLATE)
-    (set! (f 'pat) (node-at r 1))
-    (set! (f 'tmpl) (node-list-new 0))
-    (set! (f 'reason) (rw-str-node (symbol-intern "")))
-    (set! (f 'flag) (rw-str-node (symbol-intern "")))
-    (set! (f 'lines) LINES-REFUSE)
-    (set! (f 'names) (node-list-new 0))
-    (set! (f 'splices) (node-list-new 0))
-    (set! (f 'guard) (intern-node (symbol-intern "true")))
-    (set! (f 'emit) (node-list1 (intern-node (symbol-intern "do")) 0))
+    (set-fields! f
+                 'bad     null
+                 'msg     ""
+                 'kind    RULE-TEMPLATE
+                 'pat     (node-at r 1)
+                 'tmpl    (node-list-new 0)
+                 'reason  (rw-str-node (symbol-intern ""))
+                 'flag    (rw-str-node (symbol-intern ""))
+                 'lines   LINES-REFUSE
+                 'names   (node-list-new 0)
+                 'splices (node-list-new 0)
+                 'guard   (intern-node (symbol-intern "true"))
+                 'emit    (node-list1 (intern-node (symbol-intern "do")) 0))
     (when (or (< n 3) (not (rw-sym-is? (node-at r 0) NODE-SYM "rule")))
       (rw-form-fail f r (str "defrewrite: a rule is (rule PATTERN `TEMPLATE …),"
                              " (rule PATTERN :refuse REASON …) or (rule PATTERN :emit EXPR …)"))
@@ -1695,9 +1702,10 @@
               ds:&(Vector usize) (rn-in-file rep (ref rep 'defs-by-file) path)
               cs:&(Vector usize) (rn-in-file rep (ref rep 'calls-by-file) path)
               i:usize 0)
-          (set! (f 'path) path)
-          (set! (f 'src) src)
-          (set! (f 'syn) sf)
+          (set-fields! f
+                       'path path
+                       'src  src
+                       'syn  sf)
           (init (ref f 'strays) (handle g-arena))
           (while (< i (count rs))
             (let (x:RRef ((ref rep 'refs) (rs i)))
@@ -2039,12 +2047,13 @@
   (let (rep:&Report (ctx 'rep)
         p:&RnPlan (unsafe/cast &RnPlan (arena-alloc (sizeof RnPlan)))
         hit:i64 -1)
-    (set! (p 'path) path)
-    (set! (p 'old) "")
-    (set! (p 'new) new)
-    (set! (p 'binder) (SynSpan 0 0))
+    (set-fields! p
+                 'path   path
+                 'old    ""
+                 'new    new
+                 'binder (SynSpan 0 0)
+                 'refusal (Refusal 0 ""))
     (init (ref p 'sites) (handle g-arena))
-    (set! (p 'refusal) (Refusal 0 ""))
     (when (not (or (strview-has-suffix path ".nuc") (strview-has-suffix path ".nuch")))
       (return (rn-fail p at "only .nuc and .nuch files are renamed")))
     (when (not (report-reads? rep path))
@@ -2108,12 +2117,13 @@
       (let (a:&Syn (unsafe/cast &Syn (rn-syn-at (f 'syn) bs be))
             region:&Syn (rn-region a)
             sc:&RnScan (alloca RnScan))
-        (set! (sc 'ctx) ctx)
-        (set! (sc 'f) f)
-        (set! (sc 'old) old)
-        (set! (sc 'new) (p 'new))
-        (set! (sc 'region) region)
-        (set! (sc 'refusal) (Refusal 0 ""))
+        (set-fields! sc
+                     'ctx     ctx
+                     'f       f
+                     'old     old
+                     'new     (p 'new)
+                     'region  region
+                     'refusal (Refusal 0 ""))
         (init (ref sc 'macros) (handle g-arena))
         (init (ref sc 'macro-at) (handle g-arena))
         (rn-check-sites sc p bkey)
@@ -2602,12 +2612,13 @@
       (set! i (+ i 1)))
     (when (= (count fs) 0) (return))
     (let (sc:&RnScan (alloca RnScan))
-      (set! (sc 'ctx) (r 'ctx))
-      (set! (sc 'f) f)
-      (set! (sc 'old) "")
-      (set! (sc 'new) "")
-      (set! (sc 'region) (fs 0))
-      (set! (sc 'refusal) (Refusal 0 ""))
+      (set-fields! sc
+                   'ctx     (r 'ctx)
+                   'f       f
+                   'old     ""
+                   'new     ""
+                   'region  (fs 0)
+                   'refusal (Refusal 0 ""))
       (init (ref sc 'macros) (handle g-arena))
       (init (ref sc 'macro-at) (handle g-arena))
       (set! i 0)
@@ -2652,11 +2663,12 @@
     (init (ref r 'key-defs) (handle g-arena))
     (init (ref r 'loose) (handle g-arena))
     (init (ref r 'links) (handle g-arena))
-    (set! (r 'nfiles) 0)
-    (set! (r 'ir) "")
-    (set! (r 'ir-read) false)
-    (set! (r 'refusal) (Refusal 0 ""))
-    (set! (r 'refused) "")
+    (set-fields! r
+                 'nfiles  0
+                 'ir      ""
+                 'ir-read false
+                 'refusal (Refusal 0 "")
+                 'refused "")
     (rg-index-report r)
     (let (fs:&(Vector StrView) (ref rep 'files)
           i:usize 0)
@@ -3223,13 +3235,14 @@
 
 (defn rg-plan-new (old:StrView new:StrView):&RgPlan
   (let (p:&RgPlan (unsafe/cast &RgPlan (arena-alloc (sizeof RgPlan))))
-    (set! (p 'old) old)
-    (set! (p 'new) new)
-    (set! (p 'key) "")
-    (set! (p 'kind) "")
+    (set-fields! p
+                 'old  old
+                 'new  new
+                 'key  ""
+                 'kind ""
+                 'refusal (Refusal 0 "")
+                 'refused "")
     (init (ref p 'sites) (handle g-arena))
-    (set! (p 'refusal) (Refusal 0 ""))
-    (set! (p 'refused) "")
     (init (ref p 'headers) (handle g-arena))
     (return p)))
 
@@ -3254,9 +3267,10 @@
             kind:StrView (d0 'kind)
             bad:StrView (rn-bad-name old)
             nbad:StrView (rn-bad-name new))
-        (set! (p 'old) old)
-        (set! (p 'key) key)
-        (set! (p 'kind) kind)
+        (set-fields! p
+                     'old  old
+                     'key  key
+                     'kind kind)
         (cond (not (rg-kind-in-scope? kind))
                 (return (rg-fail p (d0 'file) (as usize (if (< (d0 'start) 0) 0 (d0 'start)))
                                  (rp-arena-text (str "rename-global does not rename a " kind
@@ -3450,9 +3464,10 @@
         new:StrView ""
         words:i32 0
         i:i32 1)
-    (set! (opts 'compiler) "build/nucleusc")
-    (set! (opts 'compiler-src) "src")
-    (set! (opts 'ir-check) true)
+    (set-fields! opts
+                 'compiler     "build/nucleusc"
+                 'compiler-src "src"
+                 'ir-check     true)
     (init (ref opts 'edit) (handle g-arena))
     (init roots (handle g-arena))
     (init reports (handle g-arena))

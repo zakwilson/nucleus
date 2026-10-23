@@ -51,6 +51,15 @@ not, so the two compilers can agree on the value and disagree on the spelling.
 through; everything else is parsed to an f64 and reprinted as its 16-digit
 pattern.
 
+**Superseded 2026-10-23.** LLVM 23 prints every float type as a short decimal
+when that round-trips in the type itself, `+inf` for infinities, and otherwise
+a new `f0x…` bit pattern (fp128's halves in the opposite order to `0xL…`). So
+half, x86_fp80 and fp128 no longer print as bits, and a float's decimal is not
+its f64 value. Rather than parse each spelling, the unit now writes the Nucleus
+module to `lit.ll` and has the same clang re-print it (`clang -S -emit-llvm`).
+Both modules then come out of one printer, so equal values are equal text on
+any LLVM, and the comparator compares text.
+
 ## The rewrite
 
 The comparator is the interesting half, and it is smaller in Nucleus than it

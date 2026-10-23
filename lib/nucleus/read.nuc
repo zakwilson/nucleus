@@ -29,6 +29,7 @@
 (import-use nucleus.intern)
 (import-use nucleus.node)
 (import-use nucleus.syntax)
+(import-use nucleus.const)
 
 (deferror read-eof "unexpected end of input")
 (deferror read-unterminated-list "unterminated list")
@@ -150,16 +151,17 @@
 ; owns and may share with the readers it builds next.
 (defn reader-with-macros (src:StrView table:&(Vector RMacro)):Reader
   (let (r:&Reader (alloca Reader))
-    (set! (r 'src) src)
-    (set! (r 'pos) 0)
-    (set! (r 'line) 1)
-    (set! (r 'paren-depth) 0)
-    (set! (r 'form-open-line) 0)
-    (set! (r 'col0-open-line) 0)
-    (set! (r 'col0-open-depth) 0)
-    (set! (r 'macros) table)
-    (set! (r 'edn) false)
-    (set! (r 'syn) null)
+    (set-fields! r
+                 'src             src
+                 'pos             0
+                 'line            1
+                 'paren-depth     0
+                 'form-open-line  0
+                 'col0-open-line  0
+                 'col0-open-depth 0
+                 'macros          table
+                 'edn             false
+                 'syn             null)
     (return @r)))
 
 (defn reader (src:StrView):Reader
@@ -260,8 +262,8 @@
 
 ; Not NUL, whitespace, `,` or one of `( ) " ; [ ] { }`.
 (defn rd-sym-char? (c:i32):bool
-  (return (not (or (= c 0) (rd-space? c) (= c 44) (= c 40) (= c 41) (= c 34)
-                   (= c 59) (= c 91) (= c 93) (= c 123) (= c 125)))))
+  (return (not (or (contains? #{0 34 40 41 44 59 91 93 123 125} c)
+                   (rd-space? c)))))
 
 ; The slice from `start` to the current position.
 (defn rd-slice (self:&Reader start:usize):StrView
@@ -1252,12 +1254,13 @@
     (match (rd-skip-discard self)
       ((ok v) (return (= (rd-peek self) 0)))
       ((err e)
-        (set! (self 'pos) pos)
-        (set! (self 'line) line)
-        (set! (self 'paren-depth) depth)
-        (set! (self 'form-open-line) fo)
-        (set! (self 'col0-open-line) c0)
-        (set! (self 'col0-open-depth) c0d)
+       (set-fields! self
+                    'pos pos
+                    'line line
+                    'paren-depth depth
+                    'form-open-line fo
+                    'col0-open-line c0
+                    'col0-open-depth c0d)
         (return false)))))
 
 ; The next form. Check `reader-eof?` first. A top-level `def-rmacro` takes

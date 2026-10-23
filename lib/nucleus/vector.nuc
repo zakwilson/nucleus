@@ -67,10 +67,11 @@
 
 ; Init: an empty Vector whose buffer will come from `a`.
 (defn init (self:&(Vector T) a:Alloc):void
-  (set! (self 'data) null)
-  (set! (self 'len) 0)
-  (set! (self 'cap) 0)
-  (set! (self 'alloc) a))
+  (set-fields! self
+               'data  null
+               'len   0
+               'cap   0
+               'alloc a))
 
 ; ---------------------------------------------------------------------------
 ; Internal: grow the buffer. Doubles capacity (or seeds 4 when empty),
@@ -233,9 +234,10 @@
                        (_get self 'data)
                        (* (_get self 'cap) (as usize (sizeof T)))
                        (as usize (alignof T))))
-  (set! (self 'data) null)
-  (set! (self 'len) 0)
-  (set! (self 'cap) 0))
+  (set-fields! self
+               'data null
+               'len  0
+               'cap  0))
 
 ; ---------------------------------------------------------------------------
 ; VecIter T — a forward cursor over a Vector's elements. Iterator T conformance
@@ -271,9 +273,10 @@
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init (it:&(VecIter T) v:&(Vector T)):void
-  (set! (it 'data) (as ptr (_get v 'data)))
-  (set! (it 'pos) 0)
-  (set! (it 'len) (_get v 'len)))
+  (set-fields! it
+               'data (as ptr (_get v 'data))
+               'pos  0
+               'len  (_get v 'len)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE

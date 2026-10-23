@@ -86,10 +86,11 @@
             (allocate (ref s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
-        (set! (s 'keys) kbuf)
-        (set! (s 'states) sbuf)
-        (set! (s 'count) 0)
-        (set! (s 'cap) init-cap)))))
+        (set-fields! s
+                     'keys   kbuf
+                     'states sbuf
+                     'count  0
+                     'cap    init-cap)))))
 
 ; ---------------------------------------------------------------------------
 ; hashset-resize: internal. Allocate new arrays of new-cap slots, rehash all
@@ -141,9 +142,10 @@
                              (s 'states)
                              old-cap
                              1)
-          (set! (s 'keys) new-keys)
-          (set! (s 'states) new-states)
-          (set! (s 'cap) new-cap))))))
+          (set-fields! s
+                       'keys   new-keys
+                       'states new-states
+                       'cap    new-cap))))))
 
 ; reserve: room for n members with no resize, i.e. n*4 < cap*3.
 (defn reserve (self:&(HashSet T) n:usize):void
@@ -333,10 +335,11 @@
                        (self 'states)
                        (self 'cap)
                        1))
-  (set! (self 'keys) null)
-  (set! (self 'states) null)
-  (set! (self 'count) 0)
-  (set! (self 'cap) 0))
+  (set-fields! self
+               'keys   null
+               'states null
+               'count  0
+               'cap    0))
 
 ; ---------------------------------------------------------------------------
 ; HashSetIter T — a forward cursor over the occupied members of a HashSet.
@@ -378,10 +381,11 @@
 ; hashset-iter: configure `it` to scan `s` from the start (borrowing buffers).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn hashset-iter (it:&(HashSetIter T) s:&(HashSet T)):void
-  (set! (it 'kbuf) (as ptr (s 'keys)))
-  (set! (it 'sbuf) (as ptr (s 'states)))
-  (set! (it 'pos) 0)
-  (set! (it 'cap) (s 'cap)))
+  (set-fields! it
+               'kbuf (as ptr (s 'keys))
+               'sbuf (as ptr (s 'states))
+               'pos  0
+               'cap  (s 'cap)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (HashSetIter T) conformance. `iter` returns a fresh HashSetIter BY

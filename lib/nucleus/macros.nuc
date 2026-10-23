@@ -441,3 +441,16 @@
     (if (= calls null)
       `(do)
       `(macrolet ((__macmap ~params ~tmpl)) ~@calls))))
+
+(defmacro set-fields! (a-struct :rest kvs)
+  (when (!= 0 (% (ast-len kvs) 2))
+    (macro-error kvs "There must be an even number of field/value pairs"))
+  (let (idx:i32 0
+        acc:?&Node '())
+    (while (< idx (ast-len kvs))
+      (let (k:?&Node (ast-at kvs idx)
+            v:?&Node (ast-at kvs (+ 1 idx)))
+        (set! acc `(~@acc (set! (~a-struct ~k)
+                                ~v)))
+        (set! idx (+ idx 2))))
+    `(do ~@acc)))

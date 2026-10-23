@@ -581,9 +581,10 @@
   (when (= (isatty 0) 0) (return 0))
   (when (< g-in-pos g-in-len) (return 1))
   (let (pf:&pollfd (as &pollfd (alloca pollfd 1)))
-    (set! (pf 'fd) 0)
-    (set! (pf 'events) POLLIN)
-    (set! (pf 'revents) 0)
+    (set-fields! pf
+                 'fd      0
+                 'events  POLLIN
+                 'revents 0)
     (when (> (poll pf 1 0) 0) (return 1))
     (return 0)))
 
@@ -2024,9 +2025,10 @@
           (conj g-repl-generic-marks (new GenericMark g-arena)))
         (let (mk:&GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
               gg:&Generic (as &Generic (invoke g-generics gi:usize)))
-          (set! (mk 'n-methods) (unsafe/cast i32 (count (gg 'methods))))
-          (set! (mk 'finalized) (gg 'finalized))
-          (set! (mk 'mangled) (gg 'mangled)))
+          (set-fields! mk
+                       'n-methods (unsafe/cast i32 (count (gg 'methods)))
+                       'finalized (gg 'finalized)
+                       'mangled   (gg 'mangled)))
         (inc! gi))))
 
   (defn repl-restore (st:&ReplState):void

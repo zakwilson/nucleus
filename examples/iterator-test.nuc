@@ -50,9 +50,10 @@
              (alloca (MapIter I64ArrayIter SquareI64))
         fi:&(FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)
              (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
-    (set! (src 'data) arr)
-    (set! (src 'pos) 0)
-    (set! (src 'len) 5)
+    (set-fields! src
+                 'data arr
+                 'pos  0
+                 'len  5)
     (memcpy (as ptr (ref mi 'source)) (as ptr src) (as i64 (sizeof I64ArrayIter)))
     (memcpy (as ptr (ref mi 'f))      (as ptr sq)  (as i64 (sizeof SquareI64)))
     (memcpy (as ptr (ref fi 'source)) (as ptr mi)

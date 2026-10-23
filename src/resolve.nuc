@@ -117,37 +117,38 @@
 
 (defn resolve-arm ():void
   (let (st:&ResolveState (new ResolveState g-arena))
-    (set! (st 'sites) (new (HashMap usize &RSite) g-arena))
-    (set! (st 'origins) (new (HashMap usize &ROrigin) g-arena))
-    (set! (st 'splits) (new (HashMap usize &RSplit) g-arena))
-    (set! (st 'tops) (new (HashMap Symbol &Syn) g-arena))
-    (set! (st 'twins) (new (HashMap usize &Node) g-arena))
-    (set! (st 'subst) (new (HashMap usize i32) g-arena))
-    (set! (st 'gone) (new (HashMap usize i32) g-arena))
-    (set! (st 'seen) (new (HashMap Symbol i32) g-arena))
-    (set! (st 'frames) (new (Vector &RFrame) g-arena))
-    (set! (st 'depth) 0)
-    (set! (st 'acts) (new (Vector &RAct) g-arena))
-    (set! (st 'nact) 0)
-    (set! (st 'events) (new (Vector &REvent) g-arena))
-    (set! (st 'heads) (new (Vector &RDef) g-arena))
-    (set! (st 'links) (new (HashMap usize Symbol) g-arena))
-    (set! (st 'mint) (new (HashMap Symbol i32) g-arena))
-    (set! (st 'pend) (new (HashMap Symbol &(Vector Symbol)) g-arena))
-    (set! (st 'mirroring) 0)
-    (set! (st 'gmint) (new (HashMap Symbol i32) g-arena))
-    (set! (st 'kmint) (new (HashMap Symbol &(HashMap Symbol i32)) g-arena))
-    (set! (st 'ctkeys) (new (Vector Symbol) g-arena))
-    (set! (st 'ctsited) (new (Vector bool) g-arena))
-    (set! (st 'ctn) 0)
-    (set! (st 'qq) (new (Vector &RQQ) g-arena))
-    (set! (st 'nqq) 0)
-    (set! (st 'uf) (new (HashMap Symbol i32) g-arena))
-    (set! (st 'ufs) (new (Vector Symbol) g-arena))
-    (set! (st 'ufevs) (new (Vector &REvent) g-arena))
-    (set! (st 'tally) (new (Vector i64) g-arena))
+    (set-fields! st
+                 'sites     (new (HashMap usize &RSite) g-arena)
+                 'origins   (new (HashMap usize &ROrigin) g-arena)
+                 'splits    (new (HashMap usize &RSplit) g-arena)
+                 'tops      (new (HashMap Symbol &Syn) g-arena)
+                 'twins     (new (HashMap usize &Node) g-arena)
+                 'subst     (new (HashMap usize i32) g-arena)
+                 'gone      (new (HashMap usize i32) g-arena)
+                 'seen      (new (HashMap Symbol i32) g-arena)
+                 'frames    (new (Vector &RFrame) g-arena)
+                 'depth     0
+                 'acts      (new (Vector &RAct) g-arena)
+                 'nact      0
+                 'events    (new (Vector &REvent) g-arena)
+                 'heads     (new (Vector &RDef) g-arena)
+                 'links     (new (HashMap usize Symbol) g-arena)
+                 'mint      (new (HashMap Symbol i32) g-arena)
+                 'pend      (new (HashMap Symbol &(Vector Symbol)) g-arena)
+                 'mirroring 0
+                 'gmint     (new (HashMap Symbol i32) g-arena)
+                 'kmint     (new (HashMap Symbol &(HashMap Symbol i32)) g-arena)
+                 'ctkeys    (new (Vector Symbol) g-arena)
+                 'ctsited   (new (Vector bool) g-arena)
+                 'ctn       0
+                 'qq        (new (Vector &RQQ) g-arena)
+                 'nqq       0
+                 'uf        (new (HashMap Symbol i32) g-arena)
+                 'ufs       (new (Vector Symbol) g-arena)
+                 'ufevs     (new (Vector &REvent) g-arena)
+                 'tally     (new (Vector i64) g-arena)
+                 'vtally    (new (Vector i64) g-arena))
     (dotimes (i (* RREF-COUNT RO-COUNT)) (conj (st 'tally) 0))
-    (set! (st 'vtally) (new (Vector i64) g-arena))
     (dotimes (i VIA-COUNT) (conj (st 'vtally) 0))
     (set! g-rs st)))
 
@@ -390,9 +391,10 @@
     (let (s:&RSite (unsafe/cast &RSite s1)
           m:&RKids (new RKids g-arena)
           c:&RSite (new RSite g-arena (s 'syn) (s 'file)))
-      (set! (m 'b) (resolve-elem-syn l1 i1))
-      (set! (m 'c) (resolve-elem-syn l2 i2))
-      (set! (m 'd) (resolve-elem-syn l3 i3))
+      (set-fields! m
+                   'b (resolve-elem-syn l1 i1)
+                   'c (resolve-elem-syn l2 i2)
+                   'd (resolve-elem-syn l3 i3))
       (set! (c 'via) (resolve-nest (s 'via) VIA-REWRITE))
       (set! (c 'kids) m)
       (assoc ((rs) 'sites) (resolve-addr copy) c))))
@@ -513,9 +515,10 @@
 ; that desugared. A call that is itself generated passes on its outermost origin.
 (defn resolve-exp-new (call:&Syn file:&RFile macro:Symbol inst:bool key:Symbol):&RExp
   (let (x:&RExp (new RExp g-arena call file macro inst))
-    (set! (x 'key) key)
-    (set! (x 'inner) null)
-    (set! (x 'data) null)
+    (set-fields! x
+                 'key   key
+                 'inner null
+                 'data  null)
     (return x)))
 
 (defn resolve-macro-key (h:Symbol):Symbol
@@ -541,10 +544,11 @@
     (when (!= site null)
       (let (s:&RSite (unsafe/cast &RSite site)
             fresh:&ROrigin (new ROrigin g-arena))
-        (set! (fresh 'call) (s 'syn))
-        (set! (fresh 'file) (s 'file))
-        (set! (fresh 'macro) h)
-        (set! (fresh 'exp) (resolve-exp-new (s 'syn) (s 'file) h false (resolve-macro-key h)))
+        (set-fields! fresh
+                     'call  (s 'syn)
+                     'file  (s 'file)
+                     'macro h
+                     'exp   (resolve-exp-new (s 'syn) (s 'file) h false (resolve-macro-key h)))
         (set! o fresh)))
     (resolve-map-copies raw ex)
     (when (!= o null)
@@ -612,9 +616,10 @@
 
 ; The candidates among the operands of call `c`; its head is not one.
 (defn resolve-trace-call (f:&SynFile c:&Syn type:bool name:StrView passed:?&(HashMap usize i32) r:&RTr):void
-  (set! (r 'n) 0)
-  (set! (r 'amb) false)
-  (set! (r 'span) (resolve-no-span))
+  (set-fields! r
+               'n    0
+               'amb  false
+               'span (resolve-no-span))
   (dotimes (i (node-len (c 'node)))
     (when (> i 0)
       (let (k:?&Syn (resolve-kid c i))
@@ -758,17 +763,18 @@
 
 ; The registry a head's definition lands in, or "" for a form that defines no name.
 (defn resolve-def-kind (h:Symbol):StrView
-  (cond (or (= h "defn") (= h "defn-") (= h "declare") (= h "defmethod")) (return "function")
-        (or (= h "defvar") (= h "defvar-") (= h "extern")) (return "var")
-        (or (= h "defconst") (= h "defconst-")) (return "const")
-        (= h "deferror") (return "error")
-        (or (= h "defstruct") (= h "defstruct-")) (return "struct")
-        (or (= h "defunion") (= h "defunion-")) (return "union")
-        (or (= h "defenum") (= h "defenum-")) (return "enum")
-        (or (= h "deftype") (= h "deftype-")) (return "type-alias")
-        (or (= h "defprotocol") (= h "defprotocol-")) (return "protocol")
-        (or (= h "defmacro") (= h "defmacro-")) (return "macro")
-        (= h "ns") (return "namespace"))
+  (case h
+        (:or "defn" "defn-" "declare" "defmethod") (return "function")
+        (:or "defvar" "defvar-" "extern") (return "var")
+        (:or "defconst" "defconst-") (return "const")
+        "deferror" (return "error")
+        (:or "defstruct" "defstruct-") (return "struct")
+        (:or "defunion" "defunion-") (return "union")
+        (:or "defenum" "defenum-") (return "enum")
+        (:or "deftype" "deftype-") (return "type-alias")
+        (:or "defprotocol" "defprotocol-") (return "protocol")
+        (:or "defmacro" "defmacro-") (return "macro")
+        "ns" (return "namespace"))
   (return ""))
 
 (defn resolve-value-kind? (kind:StrView):bool
@@ -853,21 +859,22 @@
             hv:StrView (symbol-as-view h)
             d:&RDef (new RDef g-arena)
             site:?&RSite (resolve-site-of f))
-        (set! (d 'bare) bare-sym)
-        (set! (d 'kind) kind)
-        (set! (d 'form) h)
-        (set! (d 'key) (cond (= kind "namespace") bare-sym
-                             (resolve-value-kind? kind) (qualify-name (priv-key-use bare-sym))
-                             true (qualify-name bare-sym)))
-        (set! (d 'link) (resolve-def-link f h kind (d 'key)))
-        (set! (d 'ns) (if (= kind "namespace") bare-sym g-current-ns))
-        (set! (d 'private) (= (aref (hv 'data) (as i64 (- (hv 'len) 1))) 45))
-        (set! (d 'path) g-source-path)
-        (set! (d 'origin) "source")
-        (set! (d 'trace) "none")
-        (set! (d 'macro) (symbol-none))
-        (set! (d 'span) (resolve-no-span))
-        (set! (d 'call) (resolve-no-span))
+        (set-fields! d
+                     'bare    bare-sym
+                     'kind    kind
+                     'form    h
+                     'key     (cond (= kind "namespace") bare-sym
+                                    (resolve-value-kind? kind) (qualify-name (priv-key-use bare-sym))
+                                    true (qualify-name bare-sym))
+                     'link    (resolve-def-link f h kind (d 'key))
+                     'ns      (if (= kind "namespace") bare-sym g-current-ns)
+                     'private (= (aref (hv 'data) (as i64 (- (hv 'len) 1))) 45)
+                     'path    g-source-path
+                     'origin  "source"
+                     'trace   "none"
+                     'macro   (symbol-none)
+                     'span    (resolve-no-span)
+                     'call    (resolve-no-span))
         (if (!= site null)
           (let (s:&RSite (unsafe/cast &RSite site)
                 sf:&SynFile ((s 'file) 'syn)
@@ -883,10 +890,11 @@
               (let (o:&ROrigin (unsafe/cast &ROrigin og)
                     t:&RTr (new RTr g-arena))
                 (resolve-trace-call ((o 'file) 'syn) (o 'call) false bare null t)
-                (set! (d 'origin) "macro")
-                (set! (d 'macro) (o 'macro))
-                (set! (d 'path) ((o 'file) 'path))
-                (set! (d 'call) (resolve-syn-span (o 'call)))
+                (set-fields! d
+                             'origin "macro"
+                             'macro  (o 'macro)
+                             'path   ((o 'file) 'path)
+                             'call   (resolve-syn-span (o 'call)))
                 (cond (and (= (t 'n) 1) (not (t 'amb))) (do (set! (d 'span) (t 'span)) (set! (d 'trace) "arg"))
                       (= (t 'n) 0) (set! (d 'trace) "absent")
                       true (set! (d 'trace) "ambiguous"))))))
@@ -965,15 +973,16 @@
     (when (!= g-rs-quiet 0) (return d))
     (when (= d (count fs)) (conj fs (new RFrame g-arena)))
     (let (f:&RFrame (fs d))
-      (set! (f 'node) n)
-      (set! (f 'idx) idx)
-      (set! (f 'slot) slot)
-      (set! (f 'macro) (symbol-none))
-      (set! (f 'why) why)
-      (set! (f 'open) false)
-      ; An atom pushed inside a minted form is that form's too.
-      (set! (f 'gen) (and (= idx RF-ANCHOR) (> d 0) ((fs (- d 1)) 'gen)))
-      (set! (f 'exp) null))
+      (set-fields! f
+                   'node  n
+                   'idx   idx
+                   'slot  slot
+                   'macro (symbol-none)
+                   'why   why
+                   'open  false
+                   ; An atom pushed inside a minted form is that form's too.
+                   'gen   (and (= idx RF-ANCHOR) (> d 0) ((fs (- d 1)) 'gen))
+                   'exp   null))
     (set! (st 'depth) (+ d 1))
     ; A whole list emitted in place is no candidate for the expansions it is in.
     (when (= idx -1)
@@ -1104,17 +1113,19 @@
   (when (= g-resolve 0) (return (RUnframe 0 0 null)))
   (let (st:&ResolveState (rs)
         u:RUnframe (RUnframe (st 'depth) (st 'nact) (st 'frames)))
-    (set! (st 'frames) (new (Vector &RFrame) g-arena))
-    (set! (st 'depth) 0)
-    (set! (st 'nact) 0)
+    (set-fields! st
+                 'frames (new (Vector &RFrame) g-arena)
+                 'depth  0
+                 'nact   0)
     (return u)))
 
 (defn resolve-unframe-leave (u:RUnframe):void
   (when (= g-resolve 0) (return))
   (let (st:&ResolveState (rs))
-    (set! (st 'frames) (unsafe/cast &(Vector &RFrame) (u 'frames)))
-    (set! (st 'depth) (u 'depth))
-    (set! (st 'nact) (u 'nact))))
+    (set-fields! st
+                 'frames (unsafe/cast &(Vector &RFrame) (u 'frames))
+                 'depth  (u 'depth)
+                 'nact   (u 'nact))))
 
 (defn resolve-quiet-enter ():void
   (set! g-rs-quiet (+ g-rs-quiet 1)))
@@ -1177,11 +1188,12 @@
 
 (defn resolve-cand-add (c:&RCand l:?&Node k:i32 skip0:bool s:i32 own:i32):void
   (when (= (c 'n) 0)
-    (set! (c 'node) l)
-    (set! (c 'idx) k)
-    (set! (c 'skip0) skip0)
-    (set! (c 'slot) s)
-    (set! (c 'own) own))
+    (set-fields! c
+                 'node  l
+                 'idx   k
+                 'skip0 skip0
+                 'slot  s
+                 'own   own))
   (set! (c 'n) (+ (c 'n) 1)))
 
 ; Elem `k` of `l`, an atom in slot `s` of a list whose own slot is `own`. `dn`: it
@@ -1248,10 +1260,11 @@
 
 (defn resolve-macro-occ (call:&Syn file:&RFile macro:Symbol exp:?&RExp):ROcc
   (let (r:ROcc (resolve-occ RO-MACRO))
-    (set! (r 'file) file)
-    (set! (r 'call) (resolve-syn-span call))
-    (set! (r 'macro) macro)
-    (set! (r 'exp) exp)
+    (set-fields! r
+                 'file  file
+                 'call  (resolve-syn-span call)
+                 'macro macro
+                 'exp   exp)
     (return r)))
 
 ; Why the occurrence in `l` has no span: the nearest frame that has one says. A
@@ -1446,34 +1459,36 @@
                 (assoc (st 'uf) uk 0)
                 (conj (st 'ufs) uk)
                 (set! (rf 'path) g-source-path)
-                (set! (ev 'role) role)
-                (set! (ev 'cls) cls)
-                (set! (ev 'name) name)
-                (set! (ev 'kind) kind)
-                (set! (ev 'key) key)
-                (set! (ev 'tgt) null)
-                (set! (ev 'file) rf)
-                (set! (ev 'macro) (symbol-none))
-                (set! (ev 'call) (resolve-no-span))
+                (set-fields! ev
+                             'role  role
+                             'cls   cls
+                             'name  name
+                             'kind  kind
+                             'key   key
+                             'tgt   null
+                             'file  rf
+                             'macro (symbol-none)
+                             'call  (resolve-no-span))
                 (conj (st 'ufevs) ev))))
       (return null))
     (let (occ:ROcc (resolve-locate cls atom (symbol-as-view name) el ei)
           ev:&REvent (new REvent g-arena))
-      (set! (ev 'role) role)
-      (set! (ev 'cls) cls)
-      (set! (ev 'name) name)
-      (set! (ev 'kind) kind)
-      (set! (ev 'key) key)
-      (set! (ev 'tgt) tb)
-      (set! (ev 'ident) ident)
-      (set! (ev 'outcome) (occ 'outcome))
-      (set! (ev 'file) (occ 'file))
-      (set! (ev 'span) (occ 'span))
-      (set! (ev 'call) (occ 'call))
-      (set! (ev 'macro) (occ 'macro))
-      (set! (ev 'via) (if (and (!= vo VIA-NONE) (= (occ 'outcome) RO-ATTRIBUTED)) vo (occ 'via)))
-      (set! (ev 'exp) (occ 'exp))
-      (set! (ev 'ufk) uk)
+      (set-fields! ev
+                   'role    role
+                   'cls     cls
+                   'name    name
+                   'kind    kind
+                   'key     key
+                   'tgt     tb
+                   'ident   ident
+                   'outcome (occ 'outcome)
+                   'file    (occ 'file)
+                   'span    (occ 'span)
+                   'call    (occ 'call)
+                   'macro   (occ 'macro)
+                   'via     (if (and (!= vo VIA-NONE) (= (occ 'outcome) RO-ATTRIBUTED)) vo (occ 'via))
+                   'exp     (occ 'exp)
+                   'ufk     uk)
       (when (= role RREF-BINDER)
         (let (b:&RBind (new RBind g-arena))
           (set! (ev 'self) b)
@@ -1566,10 +1581,11 @@
         n:usize (st 'nqq))
     (when (= n (count q)) (conj q (new RQQ g-arena)))
     (let (h:&RQQ (q n))
-      (set! (h 'name) name)
-      (set! (h 'kind) kind)
-      (set! (h 'payload) payload)
-      (set! (h 'full) full))
+      (set-fields! h
+                   'name    name
+                   'kind    kind
+                   'payload payload
+                   'full    full))
     (set! (st 'nqq) (+ n 1))))
 
 (defn resolve-qq-mark ():usize
@@ -1644,10 +1660,11 @@
             (set! r t)))))
     (let (t:&RTr (unsafe/cast &RTr r))
       (cond (and (= (t 'n) 1) (not (t 'amb)) (not (resolve-minted-in? x (ev 'name))))
-              (do (set! (ev 'outcome) RO-ATTRIBUTED)
-                  (set! (ev 'span) (t 'span))
-                  (set! (ev 'file) (x 'file))
-                  (set! (ev 'via) (if (x 'inst) VIA-INSTANCE VIA-EXPANSION)))
+              (do (set-fields! ev
+                               'outcome RO-ATTRIBUTED
+                               'span    (t 'span)
+                               'file    (x 'file)
+                               'via     (if (x 'inst) VIA-INSTANCE VIA-EXPANSION)))
             (>= (t 'n) 1) (set! (ev 'outcome) RO-AMBIGUOUS)))))
 
 (defn resolve-ev-path (ev:&REvent):Symbol
@@ -1722,10 +1739,11 @@
         (assoc framed (ev 'ufk) 1)
         (when (and (!= (ev 'self) null) (= (ev 'outcome) RO-ATTRIBUTED))
           (let (b:&RBind (unsafe/cast &RBind (ev 'self)))
-            (set! (b 'file) (resolve-ev-path ev))
-            (set! (b 'start) ((ev 'span) 'start))
-            (set! (b 'end) ((ev 'span) 'end))
-            (set! (b 'ok) true)))))
+            (set-fields! b
+                         'file  (resolve-ev-path ev)
+                         'start ((ev 'span) 'start)
+                         'end   ((ev 'span) 'end)
+                         'ok    true)))))
     ; Spanned records merge by span; the rest are their line, written once.
     (dotimes (i (count evs))
       (let (ev:&REvent (evs i))
@@ -1745,10 +1763,11 @@
                 (none
                   (let (g:&RGroup (new RGroup g-arena)
                         sl:&RSlot (new RSlot g-arena))
-                    (set! (g 'ev) ev)
-                    (set! (g 'meaning) m)
-                    (set! (g 'kind) (ev 'kind))
-                    (set! (g 'via) (ev 'via))
+                    (set-fields! g
+                                 'ev      ev
+                                 'meaning m
+                                 'kind    (ev 'kind)
+                                 'via     (ev 'via))
                     (set! (sl 'group) g)
                     (assoc groups k g)
                     (conj slots sl))))))

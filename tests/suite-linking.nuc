@@ -349,27 +349,24 @@ w9-own
         sharev:StrView (string-as-view &share)
         mdirv:StrView (string-as-view &mdir)
         t:&DTree (alloca DTree))
-    (set! (t 'dshare)
-      (try (write-into sharev "dshare.nuc"
-             "(defvar d-calls:i32 0)
+    (set-fields! t
+                 'dshare (try (write-into sharev "dshare.nuc"
+                                "(defvar d-calls:i32 0)
 (defn d-next ():i32 (set! d-calls (+ d-calls 1)) (return d-calls))
 (defvar d-runs:i32 (d-next))
 (defn d-calls-get ():i32 (return d-calls))
-")))
-    (set! (t 'dside)
-      (try (write-into (string-as-view &side) "dside.nuc"
-             "(import dshare)
+"))
+                 'dside  (try (write-into (string-as-view &side) "dside.nuc"
+                                "(import dshare)
 (defn d-side ():i32 (return (d-calls-get)))
-")))
-    (set! (t 'dmain)
-      (try (write-into mdirv "dmain.nuc"
-             "(import dshare)
+"))
+                 'dmain  (try (write-into mdirv "dmain.nuc"
+                                "(import dshare)
 (import dside)
 (defn main ():i32 (return (d-calls-get)))
-")))
-    (set! (t 'dwhole)
-      (try (write-into mdirv "dwhole.nuc"
-             "(import dshare)
+"))
+                 'dwhole (try (write-into mdirv "dwhole.nuc"
+                                "(import dshare)
 (defn main ():i32 (return (d-calls-get)))
 ")))
     (let (h:String (try (emit-into sharev "--emit-nuch" (dtree-dside t)

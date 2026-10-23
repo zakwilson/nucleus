@@ -105,14 +105,15 @@
 ; iterator's lifetime (the iterator holds raw pointers into their buffers).
 (defn strview-split (sv:&StrView sep:&StrView):SplitIter
   (let (it:&SplitIter (alloca SplitIter))
-    (set! (it 'buf) (sv 'data))
-    (set! (it 'rem) (sv 'len))
-    (set! (it 'sep-data) (sep 'data))
-    (set! (it 'sep-len) (sep 'len))
-    ; done=false unless source is empty AND sep is non-empty: in that case the
-    ; first call will yield an empty segment and then set done=true, so start
-    ; with false always (one empty segment for empty input matches Python/Rust).
-    (set! (it 'done) false)
+    (set-fields! it
+                 'buf      (sv 'data)
+                 'rem      (sv 'len)
+                 'sep-data (sep 'data)
+                 'sep-len  (sep 'len)
+                 ; done=false unless source is empty AND sep is non-empty: in that case the
+                 ; first call will yield an empty segment and then set done=true, so start
+                 ; with false always (one empty segment for empty input matches Python/Rust).
+                 'done     false)
     (return @it)))
 
 ; Yields each segment as a StrView BY VALUE. Was (Iterator ptr) with a `cur`
@@ -182,9 +183,10 @@
 ; Borrowed: caller must keep sv alive for the iterator's lifetime.
 (defn strview-lines (sv:&StrView):LineIter
   (let (it:&LineIter (alloca LineIter))
-    (set! (it 'buf) (sv 'data))
-    (set! (it 'rem) (sv 'len))
-    (set! (it 'done) false)
+    (set-fields! it
+                 'buf  (sv 'data)
+                 'rem  (sv 'len)
+                 'done false)
     (return @it)))
 
 ; ---------------------------------------------------------------------------

@@ -140,7 +140,10 @@
 
 (defn iter (self:(ConstVec T)) (ConstIter T)
   (let (it:&(ConstIter T) (alloca (ConstIter T)))
-    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (set-fields! it
+                 'data (self 'data)
+                 'pos  0
+                 'len  (self 'len))
     (return @it)))
 
 ; ---------------------------------------------------------------------------
@@ -154,7 +157,10 @@
 
 (defn iter (self:(ConstSet T)) (ConstIter T)
   (let (it:&(ConstIter T) (alloca (ConstIter T)))
-    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (set-fields! it
+                 'data (self 'data)
+                 'pos  0
+                 'len  (self 'len))
     (return @it)))
 
 ; ---------------------------------------------------------------------------
@@ -192,7 +198,10 @@
 
 (defn iter (self:(ConstMap K V)) (ConstIter (Entry K V))
   (let (it:&(ConstIter (Entry K V)) (alloca (ConstIter (Entry K V))))
-    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (set-fields! it
+                 'data (self 'data)
+                 'pos  0
+                 'len  (self 'len))
     (return @it)))
 
 ; keys / vals: single-projection cursors, as HashMap's.
@@ -215,10 +224,16 @@
 
 (defn keys (self:(ConstMap K V)) (ConstKeyIter K V)
   (let (it:&(ConstKeyIter K V) (alloca (ConstKeyIter K V)))
-    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (set-fields! it
+                 'data (self 'data)
+                 'pos  0
+                 'len  (self 'len))
     (return @it)))
 
 (defn vals (self:(ConstMap K V)) (ConstValIter K V)
   (let (it:&(ConstValIter K V) (alloca (ConstValIter K V)))
-    (set! (it 'data) (self 'data)) (set! (it 'pos) 0) (set! (it 'len) (self 'len))
+    (set-fields! it
+                 'data (self 'data)
+                 'pos  0
+                 'len  (self 'len))
     (return @it)))

@@ -187,13 +187,14 @@
 (defn cdecl-site-push (list:?&CDeclSite fname:Symbol file:Symbol line:i32
                        sig:StrView form:?&Node):&CDeclSite
   (let (e:&CDeclSite (new CDeclSite g-arena))
-    (set! (e 'name) fname)
-    (set! (e 'file) file)
-    (set! (e 'line) line)
-    (set! (e 'sig) sig)
-    (set! (e 'warned) 0)
-    (set! (e 'form) form)
-    (set! (e 'next) list)
+    (set-fields! e
+                 'name   fname
+                 'file   file
+                 'line   line
+                 'sig    sig
+                 'warned 0
+                 'form   form
+                 'next   list)
     (return e)))
 
 ; `<nuc file>:<line>: warning: …` — blamed on the *explicit* declaration, which
@@ -1599,11 +1600,12 @@
       (set! buf-len 0))
     (when (= buf null) (set! @out-len 0))
     (let (n:&CHeaderCache (new CHeaderCache g-arena))
-      (set! (n 'path) header-path)
-      (set! (n 'dump-macros) dump-macros)
-      (set! (n 'len) buf-len)
-      (set! (n 'buf) buf)
-      (set! (n 'next) g-cheader-cache)
+      (set-fields! n
+                   'path        header-path
+                   'dump-macros dump-macros
+                   'len         buf-len
+                   'buf         buf
+                   'next        g-cheader-cache)
       (set! g-cheader-cache n))
     (set! @out-len buf-len)
     (return buf)))
@@ -1665,13 +1667,14 @@
 ; an entry that was registered opaque before its definition was reached. The
 ; `fields` Vector is immutable after build, so sharing the handle is sound.
 (defn cheader-adopt-shape (dst:&StructDef src:&StructDef):void
-  (set! (dst 'fields) (src 'fields))
-  (set! (dst 'num-fields) (src 'num-fields))
-  ; PK-2: sharing the field table is not sharing the LAYOUT — an alias that
-  ; dropped this printed `{ … }` for a `<{ … }>` type and sized it as unpacked.
-  (set! (dst 'packed) (src 'packed))
-  (set! (dst 'align-attr) (src 'align-attr))
-  (set! (dst 'opaque) 0)
+  (set-fields! dst
+               'fields     (src 'fields)
+               'num-fields (src 'num-fields)
+               ; PK-2: sharing the field table is not sharing the LAYOUT — an alias that
+               ; dropped this printed `{ … }` for a `<{ … }>` type and sized it as unpacked.
+               'packed     (src 'packed)
+               'align-attr (src 'align-attr)
+               'opaque     0)
   (if (!= (src 'is-union) 0)
     ; Union: same deferred-definition path as the tag (drain-pending-union-irs).
     (do
@@ -1704,12 +1707,13 @@
   (let (existing:ptr (lookup-struct name))
     (when (!= existing null) (return existing)))
   (let (sd:&StructDef (register-struct name))
-    (set! (sd 'opaque) 1)
-    (set! (sd 'is-union) is-union)
-    (set! (sd 'alias-of) (as ?&StructDef alias-of-sd))
-    (set! (sd 'src-file) g-cheader-file)
-    (set! (sd 'src-line) line)
-    (set! (sd 'from-c) 1)
+    (set-fields! sd
+                 'opaque   1
+                 'is-union is-union
+                 'alias-of (as ?&StructDef alias-of-sd)
+                 'src-file g-cheader-file
+                 'src-line line
+                 'from-c   1)
     (return (as ptr sd))))
 
 ; ============================================================
@@ -2379,9 +2383,10 @@
           (struct-upgrade-aliases esd)
           (return existing))))
     (let (sd:&StructDef (register-struct tag-name))
-      (set! (sd 'src-file) g-cheader-file)
-      (set! (sd 'src-line) decl-line)
-      (set! (sd 'from-c) 1)
+      (set-fields! sd
+                   'src-file g-cheader-file
+                   'src-line decl-line
+                   'from-c   1)
       (cheader-struct-define sd fnames ftypes faligns fbits nfields is-union packed align)
       (return sd)))))
 
@@ -2443,10 +2448,11 @@
       (let (prior:ptr (lookup-struct dn))
         (if (= prior null)
           (let (alias:&StructDef (register-struct dn))
-            (set! (alias 'alias-of) (as ?&StructDef sd))
-            (set! (alias 'src-file) g-cheader-file)
-            (set! (alias 'src-line) tag-line)
-            (set! (alias 'from-c) 1)
+            (set-fields! alias
+                         'alias-of (as ?&StructDef sd)
+                         'src-file g-cheader-file
+                         'src-line tag-line
+                         'from-c   1)
             (cheader-adopt-shape alias (unsafe/cast &StructDef sd)))
           (let (psd:&StructDef (unsafe/cast &StructDef prior))
             ; The prescan registered the name before its tag, so link it here.
@@ -3091,11 +3097,12 @@
                (not (cconst-name-taken? name)))
       (let (sym:ref:Sym (scope-define g-globals name
                           (as ptr (int-literal-type val)) "" 0))
-        (set! (sym 'is-const) 1)
-        (set! (sym 'const-val) (fstr val))
-        (set! (sym 'const-lit) 1)
-        (set! (sym 'const-lit-i64) val)
-        (set! (sym 'c-const) 1)
+        (set-fields! sym
+                     'is-const      1
+                     'const-val     (fstr val)
+                     'const-lit     1
+                     'const-lit-i64 val
+                     'c-const       1)
         (when (!= priv 0) (set! (sym 'sym-private) 1))))))
 
 ; Does a Nucleus definition other than a value hold `name`? A C header's own tag
@@ -3267,9 +3274,10 @@
 
 (defn c-enum-record (name:Symbol val:i64 known:i32):void
   (let (m:ref:CMacro (new CMacro g-arena))
-    (set! (m 'name) name)
-    (set! (m 'val) val)
-    (set! (m 'folded) known)
+    (set-fields! m
+                 'name   name
+                 'val    val
+                 'folded known)
     (assoc g-cenum-index name m))
   (when (!= known 0) (cheader-define-int-const name val)))
 
@@ -3319,9 +3327,10 @@
         (when (= (symbol-len name) 0) (return))
         (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40)) (return))
         (let (m:ref:CMacro (new CMacro g-arena))
-          (set! (m 'name) name)
-          (set! (m 'body-start) (c-skip-ws buf ne line-end))
-          (set! (m 'body-end) line-end)
+          (set-fields! m
+                       'name       name
+                       'body-start (c-skip-ws buf ne line-end)
+                       'body-end   line-end)
           (conj g-cmacros m)
           (assoc g-cmacro-index name m))))))
 
@@ -3356,9 +3365,10 @@
               ; stops at the `.`, which would register M_PI as 3.
               (set! e (c-skip-ws g-cmacro-buf e (m 'body-end)))
               (when (and (!= ok 0) (= e (m 'body-end)))
-                (set! (m 'val) v)
-                (set! (m 'rank) g-cexpr-rank)
-                (set! (m 'folded) 1)
+                (set-fields! m
+                             'val    v
+                             'rank   g-cexpr-rank
+                             'folded 1)
                 (set! more 1)))))))
     (set! g-cmacro-folding 0)
     (set! g-cheader-unrep-quiet save-quiet)))
@@ -4053,16 +4063,17 @@
   (let (e:&CheaderInst (new CheaderInst g-arena)
         s:ptr:StructDef sd
         saved:?&CheaderInst g-cheader-inst-cur)
-    (set! (e 'sd) sd)
-    (set! (e 'kw) (if (!= (s 'is-union) 0) "union" "struct"))
-    ; `__anon_…` is a reserved C identifier.
-    (set! (e 'cname) (let (nv:StrView (symbol-as-view (s 'ir-name)))
-                       (if (strview-has-prefix nv "__anon_")
-                         (fstr "nuc" (strview-drop-bytes nv 1))
-                         (cheader-c-ident-view (symbol-intern nv)))))
-    (set! (e 'deps) (new (Vector &CheaderInst) g-arena))
-    (set! (e 'busy) true)
-    (set! (e 'emitted) false)
+    (set-fields! e
+                 'sd      sd
+                 'kw      (if (!= (s 'is-union) 0) "union" "struct")
+                 ; `__anon_…` is a reserved C identifier.
+                 'cname   (let (nv:StrView (symbol-as-view (s 'ir-name)))
+                            (if (strview-has-prefix nv "__anon_")
+                              (fstr "nuc" (strview-drop-bytes nv 1))
+                              (cheader-c-ident-view (symbol-intern nv))))
+                 'deps    (new (Vector &CheaderInst) g-arena)
+                 'busy    true
+                 'emitted false)
     (conj g-cheader-insts e)
     ; A box's fields are compiler pointers: C may hold or pass one, never build it (§4.6).
     (when (!= (dyn-canonical (as ptr (type-for-sdef (as ptr sd)))) null)
@@ -4194,9 +4205,10 @@
           (split-typed (n 's) (as &Symbol &bname) (as &Symbol &tname))
           (when (symbol-none? tname) (return null))
           (let (tn:&Node (as &Node (alloc-node)))
-            (set! (tn 'kind) NODE-SYM)
-            (set! (tn 'line) line)
-            (set! (tn 's) tname)
+            (set-fields! tn
+                         'kind NODE-SYM
+                         'line line
+                         's    tname)
             (return (as ptr tn))))
       NODE-LIST
         (let (rest:ptr (node-rest n))

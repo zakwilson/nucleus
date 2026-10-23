@@ -68,11 +68,12 @@
         nup:String (try (write-into dir (string-as-view &nun)
                                     (string-as-view &nuch)))
         e:&Exports (alloca Exports))
-    (set! (e 'll) ll)
-    (set! (e 'nuch) nuch)
-    (set! (e 'h) h)
-    (set! (e 'llpath) llp)
-    (set! (e 'nuchpath) nup)
+    (set-fields! e
+                 'll       ll
+                 'nuch     nuch
+                 'h        h
+                 'llpath   llp
+                 'nuchpath nup)
     (drop &nun)
     (drop &lln)
     (return (ok (deref e)))))

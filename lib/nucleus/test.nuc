@@ -73,11 +73,12 @@
 ; cases from a table calls this once per row, before `test-main`.
 (defn test-add (name:StrView file:StrView line:i32 (f (fn !void) (ptr)) data:ptr):void
   (let (tc:&TestCase (alloca TestCase))
-    (set! (tc 'name) (symbol-intern name))
-    (set! (tc 'file) file)
-    (set! (tc 'line) line)
-    (set! (tc 'run) f)
-    (set! (tc 'data) data)
+    (set-fields! tc
+                 'name (symbol-intern name)
+                 'file file
+                 'line line
+                 'run  f
+                 'data data)
     (conj g-tests @tc)))
 
 ; Called by `deftest`'s expansion from a global initializer, which is why it
@@ -342,11 +343,12 @@
         notes:?&Node (edn-get m "notes"))
     (when (or (= file null) (= line null) (!= (edn-kind notes) EDN-VECTOR))
       (return (err! test-bad-args)))
-    (set! (d 'severity) (try (edn-keyword sev)))
-    (set! (d 'file) (if (= (edn-kind file) EDN-NIL) "" (try (edn-str file))))
-    (set! (d 'line) (if (= (edn-kind line) EDN-NIL) -1 (unsafe/cast i32 (try (edn-int line)))))
-    (set! (d 'message) (try (edn-str (edn-get m "message"))))
-    (set! (d 'notes) (test-notes-new))
+    (set-fields! d
+                 'severity (try (edn-keyword sev))
+                 'file     (if (= (edn-kind file) EDN-NIL) "" (try (edn-str file)))
+                 'line     (if (= (edn-kind line) EDN-NIL) -1 (unsafe/cast i32 (try (edn-int line))))
+                 'message  (try (edn-str (edn-get m "message")))
+                 'notes    (test-notes-new))
     (dotimes (i (edn-count notes))
       (conj (d 'notes) (try (edn-str (edn-nth notes (as usize i))))))
     (return (ok @d))))

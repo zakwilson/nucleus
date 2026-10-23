@@ -433,9 +433,10 @@
         skip:i64 -1
         collide:i64 -1
         i:i32 3)
-    (set! (opts 'compiler) "build/nucleusc")
-    (set! (opts 'compiler-src) "src")
-    (set! (opts 'ir-check) false)
+    (set-fields! opts
+                 'compiler     "build/nucleusc"
+                 'compiler-src "src"
+                 'ir-check     false)
     (init (ref opts 'edit) (handle g-arena))
     (cond (= mode "ir") (do (ir-map (arg argv 2) (arg argv 3)) (return (if (> g-failures 0) 1 0)))
           (= mode "unmap") (do (unmap-files argc argv 2) (return (if (> g-failures 0) 1 0))))

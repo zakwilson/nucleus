@@ -1,0 +1,214 @@
+; Merge runs of three or more `(set! (X 'f) v)` on one X into `(set-fields! X 'f v …)`.
+;
+;   build/nucleusc --run scripts/stage26/set-fields-sweep.nuc -- \
+;     [--apply] [--strict] FILE|DIR|GLOB...
+;
+; Only consecutive forms in a known body merge. Two runs on one X with a single
+; other form between them are reported instead: whether that form reads or writes
+; those fields is for a person to judge. So is a run under a head not known to be
+; a body. Quoted data and quasiquote templates are left alone.
+
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.refactor)
+
+(defconst MIN-RUN 3)
+
+(defn kid (s:&Syn i:usize):&Syn
+  (return ((ref s 'kids) i)))
+
+; The index of the first body elem of a form headed `h`; -1 when it has none.
+(defn body-start (h:StrView):i32
+  (cond (or (= h "do") (= h "compile-time")) (return 1)
+        (or (= h "let") (= h "with") (= h "when") (= h "unless") (= h "while")
+            (= h "dotimes") (= h "doseq") (= h "doseq-iter") (= h "for")
+            (= h "when-some") (= h "fn"))
+          (return 2)
+        (or (= h "defn") (= h "defn-") (= h "defmacro") (= h "defmacro-")) (return 3))
+  (return -1))
+
+(defn code-list? (s:&Syn):bool
+  (return (and (= (s 'kind) SYN-LIST) (> (count (ref s 'kids)) 0)
+               (not (in-quote? s)) (not (in-quasiquote? s)))))
+
+(defn body-of (s:&Syn):i32
+  (when (or (not (code-list? s)) (!= ((kid s 0) 'kind) SYN-ATOM)) (return -1))
+  (return (body-start (src-text (kid s 0)))))
+
+; `(set! (X 'f) v)` with X an atom: X, else null.
+(defn set-target (s:&Syn):?&Syn
+  (when (or (!= (s 'kind) SYN-LIST) (!= (count (ref s 'kids)) 3)) (return null))
+  (when (or (!= ((kid s 0) 'kind) SYN-ATOM) (!= (src-text (kid s 0)) "set!")) (return null))
+  (let (p:&Syn (kid s 1))
+    (when (or (!= (p 'kind) SYN-LIST) (!= (count (ref p 'kids)) 2)) (return null))
+    (let (x:&Syn (kid p 0)
+          f:&Syn (kid p 1))
+      (when (and (= (x 'kind) SYN-ATOM) (spelled? f "'") (= (count (ref f 'kids)) 1)
+                 (= ((kid f 0) 'kind) SYN-ATOM))
+        (return x))
+      (return null))))
+
+(defn same-target? (a:&Syn b:&Syn):bool
+  (when-some (x (set-target a))
+    (when-some (y (set-target b))
+      (return (same-text? x y))))
+  (return false))
+
+; The end of the run of set!s on one X that starts at `i`; `i` when there is none.
+(defn run-end (ks:&(Vector &Syn) i:usize):usize
+  (when (= (set-target (ks i)) null) (return i))
+  (let (j:usize (+ i 1))
+    (while (and (< j (count ks)) (same-target? (ks i) (ks j)))
+      (set! j (+ j 1)))
+    (return j)))
+
+(defn report (s:&Syn why:String):void
+  (let (w:String why)
+    (rw-report (rw-cur) s 0 false (edit-arena-str &w))))
+
+(defn target-text (s:&Syn):StrView
+  (return (src-text (kid (kid s 1) 0))))
+
+; Reports split runs, and runs under heads that are not known bodies. Never
+; applies: the rewrite is the next rule's.
+(defn note (s:&Syn):bool
+  (when (not (code-list? s)) (return false))
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        b:i32 (body-of s)
+        i:usize (if (> b 1) (as usize b) 1)
+        pi:usize 0
+        pj:usize 0)
+    (while (< i (count ks))
+      (let (j:usize (run-end ks i))
+        (if (= j i)
+          (set! i (+ i 1))
+          (do
+            (cond (< b 1)
+                    (when (>= (- j i) MIN-RUN)
+                      (report (ks i) (str "a run of " (as i64 (- j i)) " set!s on `" (target-text (ks i))
+                                          "` under `" (src-text (kid s 0))
+                                          "`, which is not a known body; left alone")))
+                  (and (> pj 0) (= (+ pj 1) i) (same-target? (ks pi) (ks i))
+                       (>= (+ (- pj pi) (- j i)) MIN-RUN))
+                    (report (ks pj) (str "this form splits the set!s on `" (target-text (ks i)) "` ("
+                                         (as i64 (- pj pi)) " + " (as i64 (- j i))
+                                         "); merge by hand if it neither reads nor writes those fields")))
+            (set! pi i)
+            (set! pj j)
+            (set! i j)))))
+    (return false)))
+
+(defn merge-site? (s:&Syn):bool
+  (let (b:i32 (body-of s))
+    (when (< b 1) (return false))
+    (let (ks:&(Vector &Syn) (ref s 'kids)
+          i:usize (as usize b))
+      (while (< i (count ks))
+        (let (j:usize (run-end ks i))
+          (when (>= (- j i) MIN-RUN) (return true))
+          (set! i (if (> j i) j (+ i 1)))))
+      (return false))))
+
+(defn blank? (from:usize to:usize):bool
+  (let (v:StrView (src-slice from to))
+    (dotimes (i (as i64 (v 'len)))
+      (let (c:i32 (as i32 (aref (v 'data) i)))
+        (when (not (or (= c 32) (= c 9) (= c 13))) (return false))))
+    (return true)))
+
+(defn spans-in? (v:&(Vector SynSpan) from:usize to:usize):bool
+  (let (i:usize 0)
+    (while (< i (count v))
+      (when (and (>= ((v i) 'start) from) (< ((v i) 'start) to)) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+(defn put-spaces (out:&RwMatch n:i32):void
+  (dotimes (i n) (rw-put out " ")))
+
+; The source between two pairs: a comment ending the earlier pair's line stays
+; on it, and comment lines move to the pairs' column.
+(defn put-gap (out:&RwMatch from:usize to:usize col:i32):void
+  (conj (ref out 'kept) (SynSpan from to))
+  (let (src:StrView ((rw-cur) 'src)
+        a:usize from
+        first:bool true
+        done:bool false)
+    (while (not done)
+      (let (e:usize a)
+        (while (and (< e to) (!= (aref (src 'data) (as i64 e)) 10)) (set! e (+ e 1)))
+        (let (last:bool (= e to)
+              t:usize a)
+          (while (and (< t e) (blank? t (+ t 1))) (set! t (+ t 1)))
+          (cond first (when (< t e)
+                        (if last
+                          (rw-refuse-text out "a form other than a set! sits inside the run")
+                          (rw-put out (src-slice a e))))
+                last (when (< t e) (rw-refuse-text out "a form other than a set! sits inside the run"))
+                (= t e) (rw-put out "\n")
+                true (do (rw-put out "\n") (put-spaces out col) (rw-put out (src-slice t e))))
+          (set! first false)
+          (if last (set! done true) (set! a (+ e 1))))))))
+
+(defn put-run (out:&RwMatch ks:&(Vector &Syn) i:usize j:usize):void
+  (let (f:&SynFile (unsafe/cast &SynFile ((rw-cur) 'file))
+        col:i32 (+ (rw-col out) 13)
+        w:usize 0
+        k:usize i)
+    (while (< k j)
+      (let (n:usize ((src-text (kid (kid (ks k) 1) 1)) 'len))
+        (when (> n w) (set! w n)))
+      (set! k (+ k 1)))
+    (rw-put out "(set-fields! ")
+    (rw-put out (target-text (ks i)))
+    (set! k i)
+    (while (< k j)
+      (let (s:&Syn (ks k)
+            fl:StrView (src-text (kid (kid s 1) 1))
+            v:&Syn (kid s 2))
+        (when (or (spans-in? (ref f 'comments) (s 'start) (v 'start))
+                  (spans-in? (ref f 'comments) (v 'end) (s 'end))
+                  (spans-in? (ref f 'discards) (s 'start) (v 'start))
+                  (spans-in? (ref f 'discards) (v 'end) (s 'end)))
+          (rw-refuse-text out "a comment or #_ inside a set! of the run, outside its value"))
+        (when (> k i) (put-gap out ((ks (- k 1)) 'end) (s 'start) col))
+        (rw-put out "\n")
+        (put-spaces out col)
+        (rw-put out fl)
+        (put-spaces out (unsafe/cast i32 (- (+ w 1) (fl 'len))))
+        (rw-put-syn out v))
+      (set! k (+ k 1)))
+    (rw-put out ")")))
+
+; Text outside the runs is copied where it stood; only values are reindented.
+(defn put-merged (out:&RwMatch s:&Syn):void
+  (let (ks:&(Vector &Syn) (ref s 'kids)
+        shift:i32 (out 'lines)
+        pos:usize (s 'start)
+        i:usize (as usize (body-of s)))
+    (while (< i (count ks))
+      (let (j:usize (run-end ks i))
+        (if (>= (- j i) MIN-RUN)
+          (do
+            (set! (out 'lines) LINES-KEEP)
+            (rw-put-range out pos ((ks i) 'start))
+            (set! (out 'lines) shift)
+            (put-run out ks i j)
+            (set! pos ((ks (- j 1)) 'end))
+            (set! i j))
+          (set! i (if (> j i) j (+ i 1))))))
+    (set! (out 'lines) LINES-KEEP)
+    (rw-put-range out pos (s 'end))
+    (set! (out 'lines) shift)))
+
+(defrewrite set-fields
+  (rule ~x :refuse "never applies" :when (note x))
+  (rule ~x :emit (put-merged out x) :reindent :when (merge-site? x)))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (set-fields))))

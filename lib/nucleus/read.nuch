@@ -10,6 +10,7 @@
 (import-use nucleus.intern)
 (import-use nucleus.node)
 (import-use nucleus.syntax)
+(import-use nucleus.const)
 (deferror read-eof "unexpected end of input")
 (deferror read-unterminated-list "unterminated list")
 (deferror read-unexpected-close "unexpected close bracket")

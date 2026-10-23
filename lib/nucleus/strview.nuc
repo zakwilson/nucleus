@@ -211,9 +211,10 @@
 ; Drive with &it + next (value-return convention from M2/C2.1).
 (defn strview-bytes (sv:&StrView):ByteIter
   (let (it:&ByteIter (alloca ByteIter))
-    (set! (it 'buf) (sv 'data))
-    (set! (it 'pos) 0)
-    (set! (it 'len) (sv 'len))
+    (set-fields! it
+                 'buf (sv 'data)
+                 'pos 0
+                 'len (sv 'len))
     (return @it)))
 
 ; strview-as-view — identity: return the StrView by value (two-word copy).
@@ -233,17 +234,19 @@
 ; cstr-bytes — a ByteIter over the bytes of cs (by value, value-return convention).
 (defn cstr-bytes (cs:CStr):ByteIter
   (let (it:&ByteIter (alloca ByteIter))
-    (set! (it 'buf) (unsafe/cast &ui8 (as ptr cs)))
-    (set! (it 'pos) 0)
-    (set! (it 'len) (as usize (strlen (as ptr cs))))
+    (set-fields! it
+                 'buf (unsafe/cast &ui8 (as ptr cs))
+                 'pos 0
+                 'len (as usize (strlen (as ptr cs))))
     (return @it)))
 
 ; cstr-chars — a CharIter over the UTF-8 codepoints of cs (by value).
 (defn cstr-chars (cs:CStr):CharIter
   (let (it:&CharIter (alloca CharIter))
-    (set! (it 'buf) (unsafe/cast &ui8 (as ptr cs)))
-    (set! (it 'pos) 0)
-    (set! (it 'len) (as usize (strlen (as ptr cs))))
+    (set-fields! it
+                 'buf (unsafe/cast &ui8 (as ptr cs))
+                 'pos 0
+                 'len (as usize (strlen (as ptr cs))))
     (return @it)))
 
 ; strview-sub-bytes — O(1) sub-slice [start, end).
@@ -411,9 +414,10 @@
 ; Drive with &it + next (value-return convention from M2/C2.1).
 (defn strview-chars (sv:&StrView):CharIter
   (let (it:&CharIter (alloca CharIter))
-    (set! (it 'buf) (sv 'data))
-    (set! (it 'pos) 0)
-    (set! (it 'len) (sv 'len))
+    (set-fields! it
+                 'buf (sv 'data)
+                 'pos 0
+                 'len (sv 'len))
     (return @it)))
 
 ; strview-empty — true if the view has zero bytes.

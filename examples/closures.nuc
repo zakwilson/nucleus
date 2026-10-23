@@ -37,16 +37,18 @@
   ; One shared iterator slot. `reduce` advances it to exhaustion, so reset
   ; start/end before each fold.
   (let (r:&IntRangeIter (alloca IntRangeIter))
-    (set! (r 'start) 1)
-    (set! (r 'end) 6)
+    (set-fields! r
+                 'start 1
+                 'end   6
 
-    ; ------------------------------------------------------------------
-    ; 1. fn — anonymous function (no runtime capture).
-    ;
-    ; (a) A top-level defn passed by name: a bare function pointer.
-    ;     sum of squares over 1..5 = 1+4+9+16+25 = 55.
-    ; ------------------------------------------------------------------
-    (set! (r 'start) 1) (set! (r 'end) 6)
+                 ; ------------------------------------------------------------------
+                 ; 1. fn — anonymous function (no runtime capture).
+                 ;
+                 ; (a) A top-level defn passed by name: a bare function pointer.
+                 ;     sum of squares over 1..5 = 1+4+9+16+25 = 55.
+                 ; ------------------------------------------------------------------
+                 'start 1
+                 'end   6)
     (printf "fn   defn-fnptr   sumsq(1..5)        = %d\n"
             (reduce sumsq 0 r))
 

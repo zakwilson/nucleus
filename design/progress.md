@@ -4185,3 +4185,63 @@ With RR-5, all of Stage 26 (RF-0 … RF-8, RR-0 … RR-5) is built. RF-6's one
 IR-snapshot difference still awaits review. The details are in
 [stage26-refactoring/overview.md](stage26-refactoring/overview.md) §4.11 and
 §8 RR-5, which ends with the stage's closing state.
+
+## `set-fields!` sweep (2026-10-23)
+
+`scripts/stage26/set-fields-sweep.nuc`, a `defrewrite` tool, merges each run of
+three or more consecutive `(set! (X 'f) v)` on one atom `X` into
+`(set-fields! X 'f v …)`, values aligned. The run must sit in a known body
+(`do`, `let`, `when`, `defn`, …); quoted data and quasiquote templates are left
+alone. Comments between the forms move into the merged form. The tool also
+reports two kinds of site without rewriting them:
+
+- two runs on one `X` with a single other form between them, as `'vtally` was
+  in `resolve-arm`, for a person to merge if that form does not touch the
+  fields (17 sites);
+- a run under a head not known to be a body (1 site, a `match` arm in
+  `lib/nucleus/read.nuc`).
+
+Applied repo-wide: 214 forms rewritten in 39 files, with 0 refusals.
+
+- **Bootstrap.** stage1 == stage2. `stage2.ll` is byte-identical to the
+  compiler built before the sweep, so the compiler and its library closure
+  compile to the same program.
+- **IR snapshot.** 3286 artifacts, compared with a snapshot taken before the
+  sweep. 3277 are byte-identical. The other 9 are three fixtures' diagnostics,
+  identical modulo the line numbers of notes that point into the swept
+  `lib/nucleus/vector.nuc`.
+- **Headers.** `const`, `hashmap`, `hashset` and `vector` `.nuch` regenerated
+  (their macro and template bodies changed); all 99 match.
+- **Tests.** `make test` 1555 passed, 5 failed (the known datalayout five).
+
+## Emacs mode: reader prefixes in the syntax table (2026-10-23)
+
+`editor/nucleus-mode.el` gave `'`, `` ` ``, `~`, `@` and `#` punctuation syntax,
+so `lisp-indent-line` aligned a line under the previous line's first form one
+column past its prefix. Each line of a run like `'f v` in `set-fields!` moved one
+column further right. They now have expression-prefix syntax. Re-indenting
+`src/nucleusc.nuc`, `src/generics.nuc`, `src/resolve.nuc`, `src/abi.nuc` and
+`lib/nucleus/refactor.nuc` with `indent-region` now leaves 463 more lines as
+written. The lines it moves that the old mode left alone are all knock-on
+shifts. The old mode's drift had happened to cancel a separate, older
+difference: the mode indents a `match` arm's body one column past the arm's
+paren, where the source uses two.
+
+The Vim indent (`editor/indent/nucleus.vim`) aligns under the first argument on
+the line that opened the form, never under the previous line, and VS Code's
+`indentationRules` only add or remove a level. Neither has this bug; checked by
+reading, since no Vim is installed here.
+
+## Float oracle on LLVM 23 (2026-10-23)
+
+`s16-fl-constants-vs-clang` failed on a host whose clang is LLVM 23
+(`v0_f16: nucleus 0xH3C00, clang 1.000000e+00`). LLVM 23's printer writes half,
+bfloat, float, x86_fp80 and fp128 constants as decimals when they round-trip in
+their own type, `+inf` for infinities, and otherwise `f0x…`. The unit assumed
+the three wider types print as `0xH`/`0xK`/`0xL` bits and that a float's decimal
+is its f64 value. It now has the host clang re-print the Nucleus module and
+compares the two modules' text, so both sides use one printer. The value-parsing
+helpers are gone. Checked with clang 19 here (passes). For LLVM 23, both modules
+were re-printed through `libLLVM.so.23.1`: all 104 constants equal, and a
+one-bit change shows. See
+[float-width-oracle.md](stage18-tooling/float-width-oracle.md).

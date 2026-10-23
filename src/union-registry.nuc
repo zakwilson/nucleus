@@ -141,10 +141,11 @@
         (struct-set-fields sd2 field-names field-types nfields)
         (struct-set-field-aligns sd2 faligns nfields)
         (struct-set-field-bits sd2 fbits nfields)
-        (set! (sd2 'is-union) 1)
-        (set! (sd2 'emitted) 0)
-        (set! (sd2 'src-file) g-source-path)
-        (set! (sd2 'src-line) 0)
+        (set-fields! sd2
+                     'is-union 1
+                     'emitted  0
+                     'src-file g-source-path
+                     'src-line 0)
         (queue-type-line sd2)))
     (return (unsafe/cast &StructDef sd))))
 
@@ -678,9 +679,10 @@
       (let (t:&Type (type-for-sdef (as ptr sd)))
         ; Carry the Fn signature on the struct Type for invoke-forwarding / boxing.
         ; Reuse the `pvec` built above (immutable after build) as the param list.
-        (set! (t 'ret) ret)
-        (set! (t 'params) pvec)
-        (set! (t 'num-params) num-p)
+        (set-fields! t
+                     'ret        ret
+                     'params     pvec
+                     'num-params num-p)
         (boxedfn-memo-put key (as ptr t))
         (return t)))))
 
@@ -728,10 +730,11 @@
 
 (defn dyn-memo-put (key:Symbol ty:ptr proto:Symbol argtys:ptr nargs:i32 borrowed:bool):void
   (let (rec:&DynEntry (new DynEntry g-arena))
-    (set! (rec 'key) key)
-    (set! (rec 'ty) (as ?&Type ty))
-    (set! (rec 'proto) proto)
-    (set! (rec 'borrowed) borrowed)
+    (set-fields! rec
+                 'key      key
+                 'ty       (as ?&Type ty)
+                 'proto    proto
+                 'borrowed borrowed)
     (when (> nargs 0)
       (let (v:&(Vector Symbol) (new (Vector Symbol) g-arena))
         (dotimes (i nargs)
@@ -1266,11 +1269,12 @@
                                  (as ?&Type (aref (unsafe/cast &ptr ftypes) 0))
                                  (as &Type
                                    (type-for-sdef (lookup-or-make-anon-struct fnames ftypes null null nf 0 0))))))
-            (set! (rec 'name) aname)
-            (set! (rec 'ptype) pty)
-            (set! (rec 'fnames) fnames)
-            (set! (rec 'ftypes) ftypes)
-            (set! (rec 'nfields) nf)
+            (set-fields! rec
+                         'name    aname
+                         'ptype   pty
+                         'fnames  fnames
+                         'ftypes  ftypes
+                         'nfields nf)
             (conj arms-vec rec)))
         (set! cur (node-rest (unsafe/cast &Node cur))))
       ; Classify the layout (unions.md §6 — the U4/A2 convergence). The arm
@@ -1362,23 +1366,24 @@
                   (sdef-note-emitted sd &g-type-stream))))
             (let (ud:&UnionDef (new UnionDef g-arena))
               (conj g-uniondefs ud)
-              (set! (ud 'ctors-emitted) 0)
-              (set! (ud 'name) name)
-              (set! (ud 'sdef) sd)
-              (set! (ud 'union-sd) union-sd)
-              (set! (ud 'num-arms) narms)
-              (set! (ud 'arms) arms-vec)
-              (set! (ud 'layout) layout)
-              (set! (ud 'niche-elem) niche-elem-box)
-              (set! (ud 'src-line) line)
-              ; Stage 15 B4 (R4): the file half of the redefinition blame.
-              (set! (ud 'src-file) g-source-path)
-              ; Stage 15 B5: `defunion-`'s privacy, mirrored onto the backing
-              ; StructDef because `g-structs` is the registry a type REFERENCE
-              ; actually probes (the union name and its backing struct share one
-              ; key), so a filter that only knew about UnionDef would never fire.
-              (set! (ud 'priv) g-defining-private)
-              (set! (ud 'src-ns) g-current-ns)
+              (set-fields! ud
+                           'ctors-emitted 0
+                           'name          name
+                           'sdef          sd
+                           'union-sd      union-sd
+                           'num-arms      narms
+                           'arms          arms-vec
+                           'layout        layout
+                           'niche-elem    niche-elem-box
+                           'src-line      line
+                           ; Stage 15 B4 (R4): the file half of the redefinition blame.
+                           'src-file      g-source-path
+                           ; Stage 15 B5: `defunion-`'s privacy, mirrored onto the backing
+                           ; StructDef because `g-structs` is the registry a type REFERENCE
+                           ; actually probes (the union name and its backing struct share one
+                           ; key), so a filter that only knew about UnionDef would never fire.
+                           'priv          g-defining-private
+                           'src-ns        g-current-ns)
               (when (!= g-defining-private 0)
                 (set! (sd 'priv) 1)
                 (set! (sd 'src-ns) g-current-ns)
@@ -1454,18 +1459,19 @@
             (set! (aref (unsafe/cast &Symbol tyvars) i) (tv 's))))
         (let (ut:&UnionTemplate (new UnionTemplate g-arena))
           (conj g-union-templates ut)
-          (set! (ut 'name) key)
-          (set! (ut 'tyvars) tyvars)
-          (set! (ut 'ntv) ntv)
-          (set! (ut 'form) form)
-          ; Stage 15 B5: `defunion-`'s privacy. The caller (prescan-struct-names
-          ; / emit-defunion) arms g-defining-private for the private spelling.
-          (set! (ut 'priv) g-defining-private)
-          (set! (ut 'src-ns) g-current-ns)
-          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
-          (set! (ut 'src-file) g-source-path)
-          (set! (ut 'src-line) (ff 'line))
-          (set! (ut 'src-imports) g-file-imports)
+          (set-fields! ut
+                       'name        key
+                       'tyvars      tyvars
+                       'ntv         ntv
+                       'form        form
+                       ; Stage 15 B5: `defunion-`'s privacy. The caller (prescan-struct-names
+                       ; / emit-defunion) arms g-defining-private for the private spelling.
+                       'priv        g-defining-private
+                       'src-ns      g-current-ns
+                       ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+                       'src-file    g-source-path
+                       'src-line    (ff 'line)
+                       'src-imports g-file-imports)
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stage 11: register `(defstruct (Name T ...) field-specs...)` as a template.
@@ -1519,17 +1525,18 @@
             (set! (aref (unsafe/cast &Symbol tyvars) i) (tv 's))))
         (let (st:&StructTemplate (new StructTemplate g-arena))
           (conj g-struct-templates st)
-          (set! (st 'name) key)
-          (set! (st 'tyvars) tyvars)
-          (set! (st 'ntv) ntv)
-          (set! (st 'form) form)
-          ; Stage 15 B5: `defstruct-`'s privacy for the parametric spelling.
-          (set! (st 'priv) g-defining-private)
-          (set! (st 'src-ns) g-current-ns)
-          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
-          (set! (st 'src-file) g-source-path)
-          (set! (st 'src-line) (ff 'line))
-          (set! (st 'src-imports) g-file-imports)
+          (set-fields! st
+                       'name        key
+                       'tyvars      tyvars
+                       'ntv         ntv
+                       'form        form
+                       ; Stage 15 B5: `defstruct-`'s privacy for the parametric spelling.
+                       'priv        g-defining-private
+                       'src-ns      g-current-ns
+                       ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+                       'src-file    g-source-path
+                       'src-line    (ff 'line)
+                       'src-imports g-file-imports)
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; What `name` already names as a TYPE, as a noun for a diagnostic, or null.
@@ -1589,9 +1596,10 @@
               (set! acc (fstr acc ":" piece)))))
         (when (and (!= hit 0) (not (str-empty? &acc)))
           (let (new:&Node (as &Node (alloc-node)))
-            (set! (new 'kind) NODE-SYM)
-            (set! (new 'line) (n 'line))
-            (set! (new 's) (symbol-intern acc))
+            (set-fields! new
+                         'kind NODE-SYM
+                         'line (n 'line)
+                         's    (symbol-intern acc))
             (return (as ?&Node (as ptr new)))))))
     (return node)))
 
@@ -1749,21 +1757,23 @@
 ; The marker for type node `a`, read back in this file at `line`.
 (defn env-arg-sym (a:ptr line:i32):Symbol
   (let (rec:&EnvArg (new EnvArg g-arena))
-    (set! (rec 'node) (as ?&Node a))
-    (set! (rec 'env) (name-env-here))
-    (set! (rec 'line) line)
-    (set! (rec 'ctx) g-mono-context)
-    (set! (rec 'type) null)
+    (set-fields! rec
+                 'node (as ?&Node a)
+                 'env  (name-env-here)
+                 'line line
+                 'ctx  g-mono-context
+                 'type null)
     (return (env-arg-push rec))))
 
 ; The marker for a type already resolved. A stamp substitutes one where the type's
 ; spelling would be refused in the template's file (`stamp-key-spelling`).
 (defn env-arg-of-type (t:&Type):Symbol
   (let (rec:&EnvArg (new EnvArg g-arena))
-    (set! (rec 'node) null)
-    (set! (rec 'env) (name-env-here))
-    (set! (rec 'ctx) g-mono-context)
-    (set! (rec 'type) t)
+    (set-fields! rec
+                 'node null
+                 'env  (name-env-here)
+                 'ctx  g-mono-context
+                 'type t)
     (return (env-arg-push rec))))
 
 (defn env-arg-push (rec:&EnvArg):Symbol
@@ -1874,16 +1884,17 @@
           (die-at (ff 'line) "too many type aliases"))
         (let (ta:&TypeAlias (new TypeAlias g-arena))
           (conj g-type-aliases ta)
-          (set! (ta 'name) key)
-          (set! (ta 'body) (as ?&Node body))
-          (set! (ta 'tyvars) tyvars)
-          (set! (ta 'ntv) ntv)
-          (set! (ta 'priv) is-priv)
-          (set! (ta 'src-ns) g-current-ns)
-          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
-          (set! (ta 'src-file) g-source-path)
-          (set! (ta 'src-line) (ff 'line))
-          (set! (ta 'src-imports) g-file-imports)
+          (set-fields! ta
+                       'name        key
+                       'body        (as ?&Node body)
+                       'tyvars      tyvars
+                       'ntv         ntv
+                       'priv        is-priv
+                       'src-ns      g-current-ns
+                       ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+                       'src-file    g-source-path
+                       'src-line    (ff 'line)
+                       'src-imports g-file-imports)
           (when (!= is-priv 0) (set! g-priv-bindings 1)))))))
 
 ; The Type a defunion instance resolves to. For a niche layout (unions.md §6
@@ -2051,9 +2062,10 @@
             (set! (ud2 'src-ns) g-current-ns))
           (dotimes (oi nargs)
             (set! (aref (unsafe/cast &ptr origin-args) oi) (aref (unsafe/cast &ptr argts) oi)))
-          (set! (ud2 'origin-template) ut)
-          (set! (ud2 'origin-args) origin-args)
-          (set! (ud2 'origin-nargs) nargs)
+          (set-fields! ud2
+                       'origin-template ut
+                       'origin-args     origin-args
+                       'origin-nargs    nargs)
           (tmpl-conformance-check-union (as ptr ut) ud2 line)
           (return (union-instance-type ud2)))))))
 
@@ -2112,9 +2124,10 @@
         (let (origin-args:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
           (dotimes (oi nargs)
             (set! (aref (unsafe/cast &ptr origin-args) oi) (aref (unsafe/cast &ptr argts) oi)))
-          (set! (sd 'origin-template) st)
-          (set! (sd 'origin-args) origin-args)
-          (set! (sd 'origin-nargs) nargs))
+          (set-fields! sd
+                       'origin-template st
+                       'origin-args     origin-args
+                       'origin-nargs    nargs))
         (let (fnm:ptr (arena-alloc (* nfields (ptr-bytes)))
               ftp:ptr (arena-alloc (* nfields (ptr-bytes))))
           (set! (sd 'src-file) g-source-path)
@@ -2796,10 +2809,11 @@
                           (!= (node-first (unsafe/cast &Node ret-node)) null))
                  (set! ret-type (parse-type-from-node (node-first (unsafe/cast &Node ret-node)) line)))
                (let (ft:&Type (make-type TY-FN))
-                 (set! (ft 'ret) ret-type)
-                 (set! (ft 'params) null)
-                 (set! (ft 'num-params) 0)
-                 (set! (ft 'variadic) 0)
+                 (set-fields! ft
+                              'ret        ret-type
+                              'params     null
+                              'num-params 0
+                              'variadic   0)
                  (return ft))))))
       ; Stage 15 W9 item 13: every probe above failed, so this list is not a type.
       ; Falling off the end returned null, and NO caller distinguishes "no

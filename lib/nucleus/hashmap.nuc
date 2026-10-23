@@ -86,11 +86,12 @@
           (let ((sbuf ?&ui8) (allocate ah init-cap 1))
             (when (= (as ptr sbuf) null) (hashmap-oom))
             (memset (as ptr sbuf) 0 (as i64 init-cap))
-            (set! (m 'keys) kbuf)
-            (set! (m 'vals) vbuf)
-            (set! (m 'states) sbuf)
-            (set! (m 'count) 0)
-            (set! (m 'cap) init-cap)))))))
+            (set-fields! m
+                         'keys   kbuf
+                         'vals   vbuf
+                         'states sbuf
+                         'count  0
+                         'cap    init-cap)))))))
 
 ; ---------------------------------------------------------------------------
 ; Internal: rehash all occupied buckets from old arrays into new-cap arrays.
@@ -142,10 +143,11 @@
           (deallocate ah (m 'vals)   (* old-cap (as usize (sizeof V))) (as usize (alignof V)))
           (deallocate ah (m 'states) old-cap                              1)
           ; Install new arrays.
-          (set! (m 'keys) nk)
-          (set! (m 'vals) nv)
-          (set! (m 'states) ns)
-          (set! (m 'cap) new-cap))))))
+          (set-fields! m
+                       'keys   nk
+                       'vals   nv
+                       'states ns
+                       'cap    new-cap))))))
 
 ; reserve: room for n live entries with no resize, i.e. n*4 < cap*3.
 (defn reserve (self:&(HashMap K V) n:usize):void
@@ -320,11 +322,12 @@
       (deallocate ah (self 'keys)   (* cap (as usize (sizeof K))) (as usize (alignof K)))
       (deallocate ah (self 'vals)   (* cap (as usize (sizeof V))) (as usize (alignof V)))
       (deallocate ah (self 'states) cap                              1)))
-  (set! (self 'keys) null)
-  (set! (self 'vals) null)
-  (set! (self 'states) null)
-  (set! (self 'count) 0)
-  (set! (self 'cap) 0))
+  (set-fields! self
+               'keys   null
+               'vals   null
+               'states null
+               'count  0
+               'cap    0))
 
 ; ---------------------------------------------------------------------------
 ; HashMapKeyIter K V — a forward cursor over occupied keys.
@@ -361,10 +364,11 @@
 ; hmap-iter-keys: fill a caller-allocated HashMapKeyIter to scan m's keys.
 ; Borrows the key and states buffers; iterator must not outlive m.
 (defn hmap-iter-keys (it:&(HashMapKeyIter K V) m:&(HashMap K V)):void
-  (set! (it 'kbuf) (as ptr (m 'keys)))
-  (set! (it 'sbuf) (as ptr (m 'states)))
-  (set! (it 'pos) 0)
-  (set! (it 'cap) (m 'cap)))
+  (set-fields! it
+               'kbuf (as ptr (m 'keys))
+               'sbuf (as ptr (m 'states))
+               'pos  0
+               'cap  (m 'cap)))
 
 ; ---------------------------------------------------------------------------
 ; HashMapValIter K V — a forward cursor over occupied values only (C2.2b).
@@ -404,10 +408,11 @@
 ; Internal helper: the value-returning `vals` (Assoc) wraps it.
 ; Borrows the val and states buffers; iterator must not outlive m.
 (defn hmap-iter-vals (it:&(HashMapValIter K V) m:&(HashMap K V)):void
-  (set! (it 'vbuf) (as ptr (m 'vals)))
-  (set! (it 'sbuf) (as ptr (m 'states)))
-  (set! (it 'pos) 0)
-  (set! (it 'cap) (m 'cap)))
+  (set-fields! it
+               'vbuf (as ptr (m 'vals))
+               'sbuf (as ptr (m 'states))
+               'pos  0
+               'cap  (m 'cap)))
 
 ; ---------------------------------------------------------------------------
 ; Assoc K V (HashMapKeyIter K V) (HashMapValIter K V) conformance.
@@ -465,11 +470,12 @@
 ; entries. Internal helper: the value-returning `iter` (Coll) wraps it.
 ; Borrows the key, val and states buffers; iterator must not outlive m.
 (defn hmap-iter-entries (it:&(HashMapEntryIter K V) m:&(HashMap K V)):void
-  (set! (it 'kbuf) (as ptr (m 'keys)))
-  (set! (it 'vbuf) (as ptr (m 'vals)))
-  (set! (it 'sbuf) (as ptr (m 'states)))
-  (set! (it 'pos) 0)
-  (set! (it 'cap) (m 'cap)))
+  (set-fields! it
+               'kbuf (as ptr (m 'keys))
+               'vbuf (as ptr (m 'vals))
+               'sbuf (as ptr (m 'states))
+               'pos  0
+               'cap  (m 'cap)))
 
 ; ---------------------------------------------------------------------------
 ; Coll (Entry K V) (HashMapEntryIter K V) conformance — the extend + value-

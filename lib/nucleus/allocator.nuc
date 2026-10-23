@@ -247,9 +247,10 @@
       (let ((next ?&ArenaBlock) (b 'next))
         (deallocate (ref self 'parent) (unsafe/cast ?&ui8 b) (b 'size) (arena-block-align))
         (set! b next))))
-  (set! (self 'first) null)
-  (set! (self 'cur) null)
-  (set! (self 'off) 0))
+  (set-fields! self
+               'first null
+               'cur   null
+               'off   0))
 
 ; ---------------------------------------------------------------------------
 ; FixedBuffer: bump allocation over a borrowed buffer. `live` counts
@@ -446,6 +447,7 @@
 (extend Tracking Init)
 
 (defn init (self:&Tracking a:Alloc):void
-  (set! (self 'parent) a)
-  (set! (self 'live) 0)
-  (set! (self 'bytes) 0))
+  (set-fields! self
+               'parent a
+               'live   0
+               'bytes  0))

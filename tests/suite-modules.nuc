@@ -823,10 +823,11 @@
         r:&NuchLib (alloca NuchLib))
     (try (compile-object (string-as-view &lib)
                          (string-as-view &obj)))
-    (set! (r 'idir) hdir)
-    (set! (r 'nuch) h)
-    (set! (r 'src) lib)
-    (set! (r 'obj) obj)
+    (set-fields! r
+                 'idir hdir
+                 'nuch h
+                 'src  lib
+                 'obj  obj)
     (drop &hn)
     (drop &nm)
     (drop &ldir)

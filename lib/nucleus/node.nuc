@@ -170,9 +170,10 @@
       (while (< k (lst 'len))
         (node-push b (aref (lst 'elems) k))
         (inc! k)))
-    (set! (lst 'elems) (b 'elems))
-    (set! (lst 'len) (b 'len))
-    (set! (lst 'cap) (b 'cap))))
+    (set-fields! lst
+                 'elems (b 'elems)
+                 'len   (b 'len)
+                 'cap   (b 'cap))))
 
 (defn node-list1 (a:?&Node line:i32):&Node
   (let (b:&Node (node-list-new line))
@@ -278,9 +279,10 @@
                                     (unsafe/ptr+ (unsafe/cast &InternEntry g-intern-table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (let (nd:&Node (alloc-node))
-            (set! (nd 'kind) NODE-SYM)
-            (set! (nd 'line) 0)
-            (set! (nd 's) sym)
+            (set-fields! nd
+                         'kind NODE-SYM
+                         'line 0
+                         's    sym)
             (set! (e 'spelling) sym)
             (set! (e 'node) nd)
             (inc! g-intern-len)

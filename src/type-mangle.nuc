@@ -203,9 +203,10 @@
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
           (let (new:&Node (as &Node (alloc-node)))
-            (set! (new 'kind) NODE-SYM)
-            (set! (new 'line) (n 'line))
-            (set! (new 's) ns)
+            (set-fields! new
+                         'kind NODE-SYM
+                         'line (n 'line)
+                         's    ns)
             (return new)))
       ; Stage 14 defn-signature.md S1: a new-style return type rides in a
       ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
@@ -217,9 +218,10 @@
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
           (let (new:&Node (as &Node (alloc-node)))
-            (set! (new 'kind) NODE-KEYWORD)
-            (set! (new 'line) (n 'line))
-            (set! (new 's) ns)
+            (set-fields! new
+                         'kind NODE-KEYWORD
+                         'line (n 'line)
+                         's    ns)
             (return new)))
       NODE-LIST
         (return (node-cons (subst-tyvars-node (node-first n) tyvars spellings ntv)

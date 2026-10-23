@@ -124,12 +124,18 @@
 
 (defn hex (v:i64 width:i32):Hex
   (let (h:&Hex (alloca Hex))
-    (set! (h 'v) v) (set! (h 'width) width) (set! (h 'upper) 0)
+    (set-fields! h
+                 'v     v
+                 'width width
+                 'upper 0)
     (return (deref h))))
 
 (defn hexu (v:i64 width:i32):Hex
   (let (h:&Hex (alloca Hex))
-    (set! (h 'v) v) (set! (h 'width) width) (set! (h 'upper) 1)
+    (set-fields! h
+                 'v     v
+                 'width width
+                 'upper 1)
     (return (deref h))))
 
 (extend Hex ToStr)

@@ -105,12 +105,13 @@
     (init (ref c 'buf))
     (init (ref c 'offs))
     (init (ref c 'envs))
-    (set! (c 'cwd-off) -1)
-    (set! (c 'search) true)
-    (set! (c 'capture) false)
-    (set! (c 'out-path-off) -1)
-    (set! (c 'in-path-off) -1)
-    (set! (c 'merge-err) false)
+    (set-fields! c
+                 'cwd-off      -1
+                 'search       true
+                 'capture      false
+                 'out-path-off -1
+                 'in-path-off  -1
+                 'merge-err    false)
     (let (off:usize (command-push-cstr c prog))
       (conj (ref c 'offs) off))
     (return @c)))
@@ -330,14 +331,15 @@
       (drop argv)
       (drop envp)
       (let (p:&Process (alloca Process))
-        (set! (p 'pid) pid)
-        (set! (p 'out-fd) (if cap (aref op 0) -1))
         ; Merged capture left nothing on the err pipe; closing it here is what
         ; keeps `process-capture`'s poll set from waiting on a stream that will
         ; never carry a byte.
         (when (and cap merge) (close (aref ep 0)))
-        (set! (p 'err-fd) (if (and cap (not merge)) (aref ep 0) -1))
-        (set! (p 'status) (ExitStatus-exited 0))
+        (set-fields! p
+                     'pid    pid
+                     'out-fd (if cap (aref op 0) -1)
+                     'err-fd (if (and cap (not merge)) (aref ep 0) -1)
+                     'status (ExitStatus-exited 0))
         (return (ok @p))))))
 
 ; ---------------------------------------------------------------------------
@@ -367,12 +369,14 @@
         buf:&ui8 (as &ui8 (alloca ui8 PROC-CHUNK))
         a:&pollfd pf
         b:&pollfd (unsafe/ptr+ pf 1))
-    (set! (a 'fd) (self 'out-fd))
-    (set! (a 'events) POLLIN)
-    (set! (a 'revents) 0)
-    (set! (b 'fd) (self 'err-fd))
-    (set! (b 'events) POLLIN)
-    (set! (b 'revents) 0)
+    (set-fields! a
+                 'fd      (self 'out-fd)
+                 'events  POLLIN
+                 'revents 0)
+    (set-fields! b
+                 'fd      (self 'err-fd)
+                 'events  POLLIN
+                 'revents 0)
     (while (or (>= (a 'fd) 0) (>= (b 'fd) 0))
       (when (< (poll pf 2 -1) 0)
         (set! (self 'out-fd) (a 'fd))

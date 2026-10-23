@@ -116,9 +116,10 @@
 ; Helper: build an error DecodeResult consuming 1 byte.
 (defn decode-err ():DecodeResult
   (let (r:&DecodeResult (alloca DecodeResult))
-    (set! (r 'ch) \nul)
-    (set! (r 'nbytes) 1)
-    (set! (r 'ok) 0)
+    (set-fields! r
+                 'ch     \nul
+                 'nbytes 1
+                 'ok     0)
     (return @r)))
 
 (defn char-decode-utf8 (p:&ui8 (len usize)):DecodeResult
@@ -129,9 +130,10 @@
     ; --- 1-byte (ASCII): 0xxxxxxx ---
     (when (= (bit-and b0 128) 0)
       (let (r:&DecodeResult (alloca DecodeResult))
-        (set! (r 'ch) (as Char b0))
-        (set! (r 'nbytes) 1)
-        (set! (r 'ok) 1)
+        (set-fields! r
+                     'ch     (as Char b0)
+                     'nbytes 1
+                     'ok     1)
         (return @r)))
 
     ; --- 2-byte: 110xxxxx 10xxxxxx ---
@@ -144,9 +146,10 @@
           ; Overlong: must be >= 0x80
           (when (< cp 128) (return (decode-err)))
           (let (r:&DecodeResult (alloca DecodeResult))
-            (set! (r 'ch) (as Char cp))
-            (set! (r 'nbytes) 2)
-            (set! (r 'ok) 1)
+            (set-fields! r
+                         'ch     (as Char cp)
+                         'nbytes 2
+                         'ok     1)
             (return @r)))))
 
     ; --- 3-byte: 1110xxxx 10xxxxxx 10xxxxxx ---
@@ -165,9 +168,10 @@
           (when (and (>= cp 55296) (<= cp 57343))
             (return (decode-err)))
           (let (r:&DecodeResult (alloca DecodeResult))
-            (set! (r 'ch) (as Char cp))
-            (set! (r 'nbytes) 3)
-            (set! (r 'ok) 1)
+            (set-fields! r
+                         'ch     (as Char cp)
+                         'nbytes 3
+                         'ok     1)
             (return @r)))))
 
     ; --- 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx ---
@@ -188,9 +192,10 @@
           ; Must be <= U+10FFFF
           (when (> cp 1114111) (return (decode-err)))
           (let (r:&DecodeResult (alloca DecodeResult))
-            (set! (r 'ch) (as Char cp))
-            (set! (r 'nbytes) 4)
-            (set! (r 'ok) 1)
+            (set-fields! r
+                         'ch     (as Char cp)
+                         'nbytes 4
+                         'ok     1)
             (return @r)))))
 
     ; --- Invalid lead byte ---

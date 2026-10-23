@@ -65,10 +65,11 @@
 
 (defn syn-new (kind:i32 start:usize line:i32 col:i32):&Syn
   (let (s:&Syn (unsafe/cast &Syn (arena-alloc (sizeof Syn))))
-    (set! (s 'kind) kind)
-    (set! (s 'start) start)
-    (set! (s 'line) line)
-    (set! (s 'col) col)
+    (set-fields! s
+                 'kind  kind
+                 'start start
+                 'line  line
+                 'col   col)
     (init (ref s 'kids) (handle g-arena))
     (return s)))
 
@@ -82,11 +83,12 @@
     (set! (f 'fragment) false)
     (set! (f 'ends-in-string) false)
     (let (b:&SynBuilder (unsafe/cast &SynBuilder (arena-alloc (sizeof SynBuilder))))
-      (set! (b 'file) f)
-      (set! (b 'cur) null)
-      (set! (b 'sink) (syn-new SYN-LIST 0 0 0))
-      (set! (b 'framed) false)
-      (set! (b 'recover) false)
+      (set-fields! b
+                   'file    f
+                   'cur     null
+                   'sink    (syn-new SYN-LIST 0 0 0)
+                   'framed  false
+                   'recover false)
       (return b))))
 
 ; Open a frame at `start`; it is the parent of every frame opened before it closes.
@@ -115,9 +117,10 @@
 ; tagged literal's tag), placed first among `s`'s kids.
 (defn syn-add-head-kid (s:&Syn start:usize end:usize n:?&Node):void
   (let (k:&Syn (syn-new SYN-ATOM start (s 'line) (+ (s 'col) (unsafe/cast i32 (- start (s 'start))))))
-    (set! (k 'end) end)
-    (set! (k 'node) n)
-    (set! (k 'parent) s)
+    (set-fields! k
+                 'end    end
+                 'node   n
+                 'parent s)
     (insert (ref s 'kids) 0 k)))
 
 (defn syn-comment (b:&SynBuilder start:usize end:usize):void

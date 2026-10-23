@@ -50,11 +50,12 @@
           (set! (sc 'syms) ns)
           (set! (sc 'cap) nc))))
     (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) (sc 'len))))
-      (set! (sym 'name) name)
-      (set! (sym 'type) type)
-      (set! (sym 'ir-name) ir-name)
-      (set! (sym 'is-local) is-local)
-      (set! (sym 'home) s)
+      (set-fields! sym
+                   'name     name
+                   'type     type
+                   'ir-name  ir-name
+                   'is-local is-local
+                   'home     s)
       (when (and (!= g-resolve 0) (!= (sc 'parent) null)) (resolve-note-binder sym name))
       (set! (sc 'len) (+ (sc 'len) 1))
       (when (= (as ptr sc) (as ptr g-globals)) (assoc g-globals-index name (- (sc 'len) 1)))
@@ -216,11 +217,12 @@
   (let (p:&StrView &sv
         id:i32 (unsafe/cast i32 (count g-strs))
         sl:&StrLit (new StrLit g-arena))
-    (set! (sl 'bytes) (strview (unsafe/cast &ui8
-                                 (arena-bytes (as ptr (p 'data)) (p 'len)))
-                               (p 'len)))
-    (set! (sl 'len) (unsafe/cast i32 (p 'len)))
-    (set! (sl 'id) id)
+    (set-fields! sl
+                 'bytes (strview (unsafe/cast &ui8
+                                   (arena-bytes (as ptr (p 'data)) (p 'len)))
+                                 (p 'len))
+                 'len   (unsafe/cast i32 (p 'len))
+                 'id    id)
     (conj g-strs sl)
     (return id)))
 
@@ -290,28 +292,30 @@
 ; and not here is the drift this placement exists to make obvious.
 (defn push-function-state ():&FnState
   (let (s:&FnState (new FnState g-arena))
-    (set! (s 'tmp) g-tmp)
-    (set! (s 'label) g-label)
-    (set! (s 'block-term) g-block-term)
-    (set! (s 'lbl-tbl) g-lbl-tbl)
-    (set! (s 'cur-fname) g-cur-fname)
-    (set! (s 'fn-ret-abi) g-fn-ret-abi)
-    (set! (s 'fn-sret-name) g-fn-sret-name)
-    (set! (s 'fn-ret-type) g-fn-ret-type)
-    (set! (s 'loop-depth) g-loop-depth)
-    (set! (s 'nundo) g-nundo)
-    (set! (s 'narrow-gen) g-narrow-gen)
-    ; A MOVE, not a copy: the nested emission calls `reset-function-state`,
-    ; which would clear the outer function's buffer if it were still installed.
-    (set! (s 'entry-stream) (string-box g-entry-stream))
-    (set! (s 'body-stream) (string-box g-body-stream))
+    (set-fields! s
+                 'tmp          g-tmp
+                 'label        g-label
+                 'block-term   g-block-term
+                 'lbl-tbl      g-lbl-tbl
+                 'cur-fname    g-cur-fname
+                 'fn-ret-abi   g-fn-ret-abi
+                 'fn-sret-name g-fn-sret-name
+                 'fn-ret-type  g-fn-ret-type
+                 'loop-depth   g-loop-depth
+                 'nundo        g-nundo
+                 'narrow-gen   g-narrow-gen
+                 ; A MOVE, not a copy: the nested emission calls `reset-function-state`,
+                 ; which would clear the outer function's buffer if it were still installed.
+                 'entry-stream (string-box g-entry-stream)
+                 'body-stream  (string-box g-body-stream))
     (set! g-entry-stream (make String))
     (set! g-body-stream (make String))
-    (set! (s 'abi-gpr-left) g-abi-gpr-left)
-    (set! (s 'abi-fpr-left) g-abi-fpr-left)
-    (set! (s 'abi-varargs) g-abi-varargs)
-    (set! (s 'want-type) g-want-type)
-    (set! (s 'form-line) g-form-line)
+    (set-fields! s
+                 'abi-gpr-left g-abi-gpr-left
+                 'abi-fpr-left g-abi-fpr-left
+                 'abi-varargs  g-abi-varargs
+                 'want-type    g-want-type
+                 'form-line    g-form-line)
     (return s)))
 
 ; Restore what push-function-state saved. The nested emission is responsible for
@@ -399,16 +403,17 @@
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return null))
   (let (pd:&ProgDefn (new ProgDefn g-arena))
-    (set! (pd 'ir-name) irn)
-    (set! (pd 'ret) ret)
-    (set! (pd 'ptypes) ptypes)
-    (set! (pd 'nparams) nparams)
-    (set! (pd 'variadic) variadic)
-    (set! (pd 'from-lib) (path-under-ct-lib-root g-source-path))
-    (set! (pd 'ir-start) (if (!= (ct-span-recordable) 0)
-                           (byte-len &g-def-buf)
-                           (as usize 0)))
-    (set! (pd 'ir-end) (as usize 0))
+    (set-fields! pd
+                 'ir-name  irn
+                 'ret      ret
+                 'ptypes   ptypes
+                 'nparams  nparams
+                 'variadic variadic
+                 'from-lib (path-under-ct-lib-root g-source-path)
+                 'ir-start (if (!= (ct-span-recordable) 0)
+                             (byte-len &g-def-buf)
+                             (as usize 0))
+                 'ir-end   (as usize 0))
     (conj g-program-defns pd)
     (return pd)))
 
@@ -434,14 +439,15 @@
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-global-lookup irn)) null) (return null))
   (let (pg:&ProgGlobal (new ProgGlobal g-arena))
-    (set! (pg 'ir-name) irn)
-    (set! (pg 'ty-ir) (symbol-none))
-    (set! (pg 'is-const) is-const)
-    (set! (pg 'from-lib) (path-under-ct-lib-root g-source-path))
-    (set! (pg 'ir-start) (if (!= (ct-span-recordable) 0)
-                           (byte-len &g-def-buf)
-                           (as usize 0)))
-    (set! (pg 'ir-end) (as usize 0))
+    (set-fields! pg
+                 'ir-name  irn
+                 'ty-ir    (symbol-none)
+                 'is-const is-const
+                 'from-lib (path-under-ct-lib-root g-source-path)
+                 'ir-start (if (!= (ct-span-recordable) 0)
+                             (byte-len &g-def-buf)
+                             (as usize 0))
+                 'ir-end   (as usize 0))
     (conj g-program-globals pg)
     (return pg)))
 

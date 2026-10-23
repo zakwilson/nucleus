@@ -67,11 +67,12 @@
 ; came from somewhere else.
 (defn mono-job-here (form:?&Node context:StrView):&MonoJob
   (let (job:&MonoJob (new MonoJob g-arena))
-    (set! (job 'form) form)
-    (set! (job 'context) context)
-    (set! (job 'ns) g-current-ns)
-    (set! (job 'path) g-source-path)
-    (set! (job 'imports) g-file-imports)
+    (set-fields! job
+                 'form    form
+                 'context context
+                 'ns      g-current-ns
+                 'path    g-source-path
+                 'imports g-file-imports)
     (return job)))
 
 ; Stage 15 W9 item 43 — the namespaces this file may name WITHOUT a qualifier.
@@ -121,9 +122,10 @@
     (when (= keep 0) (return null))
     (when (= keep n) (return (as ptr gg)))
     (let (f:&Generic (generic-alloc (gg 'name)))
-      (set! (f 'finalized) (gg 'finalized))
-      (set! (f 'mangled) (gg 'mangled))
-      (set! (f 'ir-prefix) (gg 'ir-prefix))
+      (set-fields! f
+                   'finalized (gg 'finalized)
+                   'mangled   (gg 'mangled)
+                   'ir-prefix (gg 'ir-prefix))
       (dotimes (i n)
         (let (m:&Method (as &Method (invoke (gg 'methods) i:usize)))
           (when (method-reachable-as m ns (gg 'name)) (conj (f 'methods) m))))
@@ -261,10 +263,11 @@
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
   ; compilation).
   (let (g:&Generic (new Generic g-arena))
-    (set! (g 'name) name)
-    (set! (g 'methods) (new (Vector &Method) g-arena))
-    (set! (g 'finalized) 0)
-    (set! (g 'mangled) 0)
+    (set-fields! g
+                 'name      name
+                 'methods   (new (Vector &Method) g-arena)
+                 'finalized 0
+                 'mangled   0)
     ; Stage 12 N4: snapshot the defining namespace's ir-prefix now, so a finalize
     ; or monomorphization that runs in a later import's namespace still mangles
     ; under this generic's own namespace.
@@ -333,16 +336,17 @@
     (doseq (bop g-binops (VecIter &BinOp))
            (let (g:&Generic (generic-alloc (bop 'name))
                  m:&Method (new Method g-arena))
-      (set! (m 'param-types) null)
-      (set! (m 'num-params) 2)
-      (set! (m 'ret-type) null)
-      (set! (m 'has-rest) 0)
-      (set! (m 'variadic) 0)
-      (set! (m 'kind) METHOD-INTRINSIC)
-      (set! (m 'ir-name) (symbol-none))
-      (set! (m 'fn-type) null)
-      (set! (m 'binop) (as ptr bop))
-      (set! (m 'body) null)
+      (set-fields! m
+                   'param-types null
+                   'num-params  2
+                   'ret-type    null
+                   'has-rest    0
+                   'variadic    0
+                   'kind        METHOD-INTRINSIC
+                   'ir-name     (symbol-none)
+                   'fn-type     null
+                   'binop       (as ptr bop)
+                   'body        null)
       (generic-add-method g m)
       (conj v g)))
     (return v)))
@@ -764,32 +768,34 @@
         (fstr "'" fname "' on (" (type-display (aref (unsafe/cast &ptr param-types) 0)) ", "
               (type-display (aref (unsafe/cast &ptr param-types) 1))
               ") is built in and cannot be redefined -- define it over a type of your own")))
-    (let (ft:&Type (as &Type (make-type TY-FN)))
-      (set! (ft 'ret) ret)
+    (let (ft:&Type (as &Type (make-type TY-FN))
+          m:ref:Method (new Method g-arena))
       (type-set-params ft param-types nparams)
-      (set! (ft 'variadic) variadic)
+      (set! (ft 'ret) ret)
       (set! (ft 'has-rest) has-rest)
-      (let (m:ref:Method (new Method g-arena))
-        (set! (m 'param-types) param-types)
-        (set! (m 'num-params) nparams)
-        (set! (m 'ret-type) ret)
-        (set! (m 'has-rest) has-rest)
-        (set! (m 'variadic) variadic)
-        (set! (m 'kind) METHOD-USER)
-        (set! (m 'ir-name) (symbol-none))
-        (set! (m 'fn-type) (as ptr ft))
-        (set! (m 'binop) null)
-        (set! (m 'body) body)
-        ; W5e: provenance for the duplicate-signature diagnostic, which must name
-        ; the OTHER definition's file — a Method.body Node carries a line but no
-        ; file — and phrase the namespace rule according to whether the pair is
-        ; public or private.
-        (set! (m 'src-file) g-source-path)
-        (set! (m 'src-ns) g-current-ns)
-        (set! (m 'src-imports) g-file-imports)
-        (set! (m 'priv) g-defining-private)
-        (generic-add-method g m)
-        (return m)))))
+      (set-fields! m
+                   'variadic    variadic
+                   'has-rest    has-rest
+                   'param-types param-types
+                   'num-params  nparams
+                   'ret-type    ret
+                   'has-rest    has-rest
+                   'variadic    variadic
+                   'kind        METHOD-USER
+                   'ir-name     (symbol-none)
+                   'fn-type     (as ptr ft)
+                   'binop       null
+                   'body        body
+                     ; W5e: provenance for the duplicate-signature diagnostic, which must name
+                     ; the OTHER definition's file — a Method.body Node carries a line but no
+                   ; file — and phrase the namespace rule according to whether the pair is
+                   ; public or private.
+                   'src-file    g-source-path
+                   'src-ns      g-current-ns
+                   'src-imports g-file-imports
+                   'priv        g-defining-private)
+      (generic-add-method g m)
+      (return m))))
 
 ; Stage 15 W5e: the message for two definitions of one name with identical
 ; parameter types. Both definitions' FILES are named (a Method.body Node carries a
@@ -1065,11 +1071,12 @@
       (when (and (!= (gg 'finalized) 0) (= (gg 'mangled) 0))
         (generic-unbind-solitary gg))
       (let (m:&Method (generic-register-method fname ret ptypes nparams 0 variadic null))
-        (set! (m 'ir-name) irn)
-        (set! (m 'ir-fixed) 1)
-        (set! (m 'c-decl) true)
-        (set! (m 'src-ns) g-ns-user)
-        (set! (m 'priv) 0))
+        (set-fields! m
+                     'ir-name  irn
+                     'ir-fixed 1
+                     'c-decl   true
+                     'src-ns   g-ns-user
+                     'priv     0))
       (return true))))
 
 ; Does `m` implement the C declaration? Its slots must be the C ones as a Nucleus
@@ -1167,10 +1174,11 @@
     (when-some (s (scope-frame-find g-globals gname))
       (when (= (s 'ir-name) (symbol-as-view (m 'ir-name))) (return s))))
   (let (ss:&Sym (new Sym g-arena))
-    (set! (ss 'name) gname)
-    (set! (ss 'type) (m 'fn-type))
-    (set! (ss 'ir-name) (symbol-as-view (m 'ir-name)))
-    (set! (ss 'is-local) 0)
+    (set-fields! ss
+                 'name     gname
+                 'type     (m 'fn-type)
+                 'ir-name  (symbol-as-view (m 'ir-name))
+                 'is-local 0)
     (return ss)))
 
 ; Can an argument of type `at` (an untyped int literal when is-lit≠0, an untyped
@@ -2596,12 +2604,13 @@
       (let (c0:&Node (unsafe/cast &Node (node-at cnode 0))
             vn:&Node (unsafe/cast &Node (node-at cnode 1))
             rec:ref:Constraint (new Constraint g-arena))
-        (set! (rec 'args) null)
-        (set! (rec 'nargs) 0)
-        (set! (rec 'settled) false)
-        (set! (rec 'ns) g-current-ns)
-        (set! (rec 'path) g-source-path)
-        (set! (rec 'imports) g-file-imports)
+        (set-fields! rec
+                     'args    null
+                     'nargs   0
+                     'settled false
+                     'ns      g-current-ns
+                     'path    g-source-path
+                     'imports g-file-imports)
         (when (!= (vn 'kind) NODE-SYM)
           (die-at line "defn: :where constraint must name a protocol and a variable"))
         ; Element 0 may be null when written as the empty list `()` in the
@@ -2626,9 +2635,10 @@
                   (let (argn:ptr (node-at (as ptr c0) (+ ai 1)))
                     (set! (aref (unsafe/cast &ptr argv) ai) argn)
                     (collect-constraint-arg-tyvars argn (hn 's) tyvars io-ntv)))
-                (set! (rec 'proto) (hn 's))
-                (set! (rec 'args) argv)
-                (set! (rec 'nargs) na)))))
+                (set-fields! rec
+                             'proto (hn 's)
+                             'args  argv
+                             'nargs na)))))
         (constraint-settle rec)
         ; A blanket name and `Valid` are not in the registry and never will be.
         (when (and (not (rec 'settled))
@@ -2729,37 +2739,38 @@
           (let (key:Symbol (priv-key-define fname)
                 g:&Generic (generic-find-or-new key))
             (let (m:&Method (new Method g-arena))
-              (set! (m 'priv) g-defining-private)
-              (set! (m 'param-types) null)
-              (set! (m 'num-params) nparams)
-              (set! (m 'ret-type) null)
-              (set! (m 'has-rest) 0)
-              (set! (m 'variadic) 0)
-              (set! (m 'kind) METHOD-GENERIC)
-              (set! (m 'ir-name) (symbol-none))
-              (set! (m 'fn-type) null)
-              (set! (m 'binop) null)
-              (set! (m 'body) form)
-              (set! (m 'tyvars) tyvars)
-              (set! (m 'num-tyvars) ntv)
-              (set! (m 'constraints) constraints)
-              (set! (m 'num-constraints) nc)
-              ; Imported templates were checked by the exporting unit; skip A2.
-              (set! (m 'checked) trusted)
-              ; Stage 15 B4: provenance, which this site never recorded because
-              ; it does not go through `generic-register-method`. A generic is
-              ; keyed BARE (R2), so `Method.src-ns` is the only thing that says
-              ; which namespace a method came from — and without it a template
-              ; reached as `p/name` filtered to nothing and the name did not
-              ; resolve at all. Runs in `prescan-defn-signatures`, so
-              ; `g-current-ns`/`g-source-path` are the defining file's.
-              (set! (m 'src-ns) g-current-ns)
-              (set! (m 'src-file) g-source-path)
-              ; W9 item 43: and its import environment, because a TEMPLATE is the
-              ; one method whose body is emitted somewhere else — `prescan-file-
-              ; imports` has already filled this file's, which is why the value
-              ; here is the defining file's and not its importer's.
-              (set! (m 'src-imports) g-file-imports)
+              (set-fields! m
+                           'priv            g-defining-private
+                           'param-types     null
+                           'num-params      nparams
+                           'ret-type        null
+                           'has-rest        0
+                           'variadic        0
+                           'kind            METHOD-GENERIC
+                           'ir-name         (symbol-none)
+                           'fn-type         null
+                           'binop           null
+                           'body            form
+                           'tyvars          tyvars
+                           'num-tyvars      ntv
+                           'constraints     constraints
+                           'num-constraints nc
+                           ; Imported templates were checked by the exporting unit; skip A2.
+                           'checked         trusted
+                           ; Stage 15 B4: provenance, which this site never recorded because
+                           ; it does not go through `generic-register-method`. A generic is
+                           ; keyed BARE (R2), so `Method.src-ns` is the only thing that says
+                           ; which namespace a method came from — and without it a template
+                           ; reached as `p/name` filtered to nothing and the name did not
+                           ; resolve at all. Runs in `prescan-defn-signatures`, so
+                           ; `g-current-ns`/`g-source-path` are the defining file's.
+                           'src-ns          g-current-ns
+                           'src-file        g-source-path
+                           ; W9 item 43: and its import environment, because a TEMPLATE is the
+                           ; one method whose body is emitted somewhere else — `prescan-file-
+                           ; imports` has already filled this file's, which is why the value
+                           ; here is the defining file's and not its importer's.
+                           'src-imports     g-file-imports)
               (generic-add-method g m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
@@ -2776,9 +2787,10 @@
 (defn conf-arg-to-type (spelling:Symbol line:i32):&Type
   (let (n:&Node (as &Node (alloc-node))
         saved:i32 g-type-key-ok)
-    (set! (n 'kind) NODE-SYM)
-    (set! (n 'line) line)
-    (set! (n 's) (spelling-as-key spelling))
+    (set-fields! n
+                 'kind NODE-SYM
+                 'line line
+                 's    (spelling-as-key spelling))
     ; Stage 15 B3′: a retained conformance arg is a stored canonical spelling —
     ; a key, read back in a file that may not be the one that wrote it.
     (set! g-type-key-ok 1)
@@ -3471,17 +3483,13 @@
               job:&MonoJob (mono-job-here stamped
                                 (fstr "while instantiating " mangled " (requested at "
                                       g-source-path ":" line ")")))
-          (set! (newm 'ir-name) mangled)
-          (set! (job 'src) (mm 'body))
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
-          (set! (newm 'origin-template) mm)
           ; SE-2: `ir-fixed` says "this symbol is already decided", which is now
           ; true of a discriminated stamp for the same reason it is true of an
           ; imported method — `finalize-generics` would re-mangle it from the
           ; parameter types alone and drop the `.$r.`, and would read its siblings
           ; as duplicate definitions of one signature.
-          (when (!= disc null) (set! (newm 'ir-fixed) 1))
           ; Stage 15 B4: a stamp is owned by the TEMPLATE's namespace, not by the
           ; call site's — the same distinction `(gg ir-prefix)` above already
           ; makes for mangling. `generic-register-method` wrote `g-current-ns`,
@@ -3489,8 +3497,12 @@
           ; `p/tmpl` call in another namespace filters the first stamp out of the
           ; method set, `generic-find-method-exact`'s memo probe misses, and the
           ; instance is stamped (and emitted) twice under one symbol.
-          (set! (newm 'src-ns) (mm 'src-ns))
-          (set! (newm 'src-imports) (mm 'src-imports))
+          (set-fields! newm
+                       'ir-name mangled
+                       'origin-template mm
+                       'src-ns (mm 'src-ns)
+                       'src-imports (mm 'src-imports))
+          (when (!= disc null) (set! (newm 'ir-fixed) 1))
           ; Stage 15 W9 item 43: and the body resolves its names as the TEMPLATE's
           ; file, not as this one. `mono-job-here` captured the call site's
           ; environment, which is the right default for a body the compiler
@@ -3500,9 +3512,11 @@
           ; a merged bare-keyed generic (R2) resolved from any namespace, while a
           ; solitary name or a global went through the environment and reported
           ; `unknown: <name>` against the CALLER's file at the LIBRARY's line.
-          (set! (job 'ns) (mm 'src-ns))
-          (set! (job 'path) (mm 'src-file))
-          (set! (job 'imports) (mm 'src-imports))
+          (set-fields! job
+                       'src     (mm 'body)
+                       'ns      (mm 'src-ns)
+                       'path    (mm 'src-file)
+                       'imports (mm 'src-imports))
           (conj g-mono-worklist job)
           (return newm)))))))
 
@@ -4508,17 +4522,18 @@
     ; namespace (identity under `user`). Everything downstream — the conformance
     ; registry, the super-protocol edges, `(dyn P)`'s box type — keys off this
     ; canonical name via `protocol-canon-name`.
-    (set! (p 'name) (protocol-key name))
-    (set! (p 'sigs) sigs)
-    (set! (p 'num-sigs) num-sigs)
-    (set! (p 'params) null)
-    (set! (p 'num-params) 0)
-    ; Stage 15 B5: `defprotocol-`'s privacy. `prescan-protocols` arms
-    ; g-defining-private for the private spelling; before B5 the flag was set
-    ; and then dropped on the floor, which is the second of §13.2's two
-    ; independently-found instances of one failure mode.
-    (set! (p 'priv) g-defining-private)
-    (set! (p 'src-ns) g-current-ns)
+    (set-fields! p
+                 'name       (protocol-key name)
+                 'sigs       sigs
+                 'num-sigs   num-sigs
+                 'params     null
+                 'num-params 0
+                 ; Stage 15 B5: `defprotocol-`'s privacy. `prescan-protocols` arms
+                 ; g-defining-private for the private spelling; before B5 the flag was set
+                 ; and then dropped on the floor, which is the second of §13.2's two
+                 ; independently-found instances of one failure mode.
+                 'priv       g-defining-private
+                 'src-ns     g-current-ns)
     (when (!= g-defining-private 0) (set! g-priv-bindings 1))
     (conj g-protocols p)
     (return p)))
@@ -4556,9 +4571,10 @@
 ; Queue `crec`, written at `line` by a `who`, for `drain-where-checks`.
 (defn where-check-later (crec:ref:Constraint line:i32 who:StrView):void
   (let (w:&WhereCheck (new WhereCheck g-arena))
-    (set! (w 'crec) crec)
-    (set! (w 'line) line)
-    (set! (w 'who) who)
+    (set-fields! w
+                 'crec crec
+                 'line line
+                 'who  who)
     (conj g-where-checks w)))
 
 ; Refuse a queued `:where` whose protocol no file defines, at its own line.
@@ -4733,12 +4749,13 @@
             (let (k:i32 (shape-index (dyn-proto-key (node-head-sym (as ptr p)))))
               (when (>= k 0)
                 (let (e:&ShapeExtend (new ShapeExtend g-arena))
-                  (set! (e 'subject) (unsafe/cast &Node s))
-                  (set! (e 'proto) (unsafe/cast &Node p))
-                  (set! (e 'shape) k)
-                  (set! (e 'ns) g-current-ns)
-                  (set! (e 'path) g-source-path)
-                  (set! (e 'imports) g-file-imports)
+                  (set-fields! e
+                               'subject (unsafe/cast &Node s)
+                               'proto   (unsafe/cast &Node p)
+                               'shape   k
+                               'ns      g-current-ns
+                               'path    g-source-path
+                               'imports g-file-imports)
                   (conj g-shape-extends e))))))))))
 
 ; C's arguments for `shape` from a written extend: a template's, with its type
@@ -4840,12 +4857,13 @@
                      (not (symbol-contains-byte ((unsafe/cast &Node s) 's) 58))
                      (or (= (node-kind p) NODE-SYM) (= (node-kind p) NODE-LIST)))
             (let (pr:&ConformancePromise (new ConformancePromise g-arena))
-              (set! (pr 'subject) ((unsafe/cast &Node s) 's))
-              (set! (pr 'proto) p)
-              (set! (pr 'ns) g-current-ns)
-              (set! (pr 'path) g-source-path)
-              (set! (pr 'imports) g-file-imports)
-              (set! (pr 'line) (node-line f 0))
+              (set-fields! pr
+                           'subject ((unsafe/cast &Node s) 's)
+                           'proto   p
+                           'ns      g-current-ns
+                           'path    g-source-path
+                           'imports g-file-imports
+                           'line    (node-line f 0))
               (conj g-conf-promises pr))))))))
 
 (defn promise-resolve (pr:&ConformancePromise):void
@@ -4917,11 +4935,12 @@
 
 (defn conformance-note-no (tkey:Symbol pkey:Symbol asked:Symbol line:i32):void
   (let (q:&ConformanceNo (new ConformanceNo g-arena))
-    (set! (q 'tkey) tkey)
-    (set! (q 'pkey) pkey)
-    (set! (q 'asked) asked)
-    (set! (q 'path) g-source-path)
-    (set! (q 'line) line)
+    (set-fields! q
+                 'tkey  tkey
+                 'pkey  pkey
+                 'asked asked
+                 'path  g-source-path
+                 'line  line)
     (conj g-conf-noes q)))
 
 ; Retrieve the retained associated-type arguments for the `(type-name, proto-name)`
@@ -5006,10 +5025,11 @@
           (return))))
     (conformance-refuse-after-no type-name proto-name line)
     (let (c:&Conformance (new Conformance g-arena))
-      (set! (c 'type-name) type-name)
-      (set! (c 'proto-name) proto-name)
-      (set! (c 'args) av)
-      (set! (c 'promised) g-conf-promising)
+      (set-fields! c
+                   'type-name  type-name
+                   'proto-name proto-name
+                   'args       av
+                   'promised   g-conf-promising)
       (conj g-conformances c)
       (tmpl-retry-pending))))
 
@@ -5105,12 +5125,13 @@
               (dotimes (fpi fn-np)
                 (set! (aref (unsafe/cast &ptr ptypes) (+ fpi 1)) (as ptr ((field-at (cv 'params) fpi) 'type))))
               (let (syn:ref:Method (new Method g-arena))
-                (set! (syn 'param-types) ptypes)
-                (set! (syn 'num-params) total)
-                (set! (syn 'ret-type) (cv 'ret))
-                (set! (syn 'kind) METHOD-USER)
-                (set! (syn 'has-rest) 0)
-                (set! (syn 'variadic) 0)
+                (set-fields! syn
+                             'param-types ptypes
+                             'num-params  total
+                             'ret-type    (cv 'ret)
+                             'kind        METHOD-USER
+                             'has-rest    0
+                             'variadic    0)
                 (set! imp-src (as ptr syn))
                 (set! call-style 1)))))
         (when (= imp-src null) (return 0))
@@ -5293,9 +5314,10 @@
     (case (n 'kind)
       NODE-SYM
         (let (ns:&Node (as &Node (alloc-node)))
-          (set! (ns 'kind) NODE-SYM)
-          (set! (ns 'line) (n 'line))
-          (set! (ns 's) (subst-self-sym (n 's) typename (n 'line)))
+          (set-fields! ns
+                       'kind NODE-SYM
+                       'line (n 'line)
+                       's    (subst-self-sym (n 's) typename (n 'line)))
           (return (as ptr ns)))
       NODE-LIST
         (return (node-cons (subst-self-node (node-first n) typename)
@@ -5431,9 +5453,10 @@
         (let (p:ref:Protocol (protocol-new pname sigs nsigs))
           ; Stage 15 B4 (R4): the defining site, which is both the redefinition
           ; blame and the "same form, registered again" discriminator.
-          (set! (p 'src-file) g-source-path)
-          (set! (p 'src-line) (ff 'line))
-          (set! (p 'src-imports) g-file-imports)
+          (set-fields! p
+                       'src-file    g-source-path
+                       'src-line    (ff 'line)
+                       'src-imports g-file-imports)
           (when (> nparams 0)
             (set! (p 'params) params)
             (set! (p 'num-params) nparams)))))))
@@ -5710,14 +5733,15 @@
       (let (crec:ref:Constraint (constraints-at constraints ci))
         (when (not (constraint-proto-known crec))
           (die-at line (constraint-unknown-message crec "defprotocol")))))
-    (set! (m 'tyvars) tyvars)
-    (set! (m 'num-tyvars) ntv)
-    (set! (m 'constraints) constraints)
-    (set! (m 'num-constraints) nc)
-    (set! (m 'kind) METHOD-GENERIC)
-    (set! (m 'body) csig)
-    (set! (m 'num-params) wi)
-    (set! (m 'ret-type) null)
+    (set-fields! m
+                 'tyvars          tyvars
+                 'num-tyvars      ntv
+                 'constraints     constraints
+                 'num-constraints nc
+                 'kind            METHOD-GENERIC
+                 'body            csig
+                 'num-params      wi
+                 'ret-type        null)
     (dotimes (i wi)
       (let (pn:ptr:Node (node-at params i)
             tn:?&Node (if (= (node-kind pn) NODE-LIST) (binding-type-node pn) null))
@@ -5731,11 +5755,12 @@
                            (< (tyvar-index-of (colon-tail (pn 's)) tyvars ntv) 0)))
                 null
                 (gbind-decl-type pn m line)))))
-    (set! (m 'param-types) ptypes)
-    ; The protocol's file, so `generic-sig-satisfied` reads a nested parameter there.
-    (set! (m 'src-ns) g-current-ns)
-    (set! (m 'src-file) g-source-path)
-    (set! (m 'src-imports) g-file-imports)
+    (set-fields! m
+                 'param-types ptypes
+                 ; The protocol's file, so `generic-sig-satisfied` reads a nested parameter there.
+                 'src-ns      g-current-ns
+                 'src-file    g-source-path
+                 'src-imports g-file-imports)
     (let (rn:?&Node (node-at csig 2))
       (when (and (!= rn null) (= (node-kind rn) NODE-SYM))
         (let (idx:i32 (tyvar-index-of (rn 's) tyvars ntv))
@@ -5985,15 +6010,16 @@
   (doseq (c g-tmpl-conformances (VecIter &TmplConformance))
     (when (and (= (c 'template) template) (= (c 'proto) proto) (= (c 'ptr-depth) depth)) (return)))
   (let (c:&TmplConformance (new TmplConformance g-arena))
-    (set! (c 'ptr-depth) depth)
-    (set! (c 'template) template)
-    (set! (c 'proto) proto)
-    (set! (c 'bindings) bindings)
-    (set! (c 'nbindings) nbindings)
-    (set! (c 'tyvars) tyvars)
-    (set! (c 'num-tyvars) num-tyvars)
-    (set! (c 'constraints) constraints)
-    (set! (c 'num-constraints) num-constraints)
+    (set-fields! c
+                 'ptr-depth       depth
+                 'template        template
+                 'proto           proto
+                 'bindings        bindings
+                 'nbindings       nbindings
+                 'tyvars          tyvars
+                 'num-tyvars      num-tyvars
+                 'constraints     constraints
+                 'num-constraints num-constraints)
     (conj g-tmpl-conformances c)))
 
 ; Check (and record) that the concrete instance named `iname`, stamped from
@@ -6122,12 +6148,13 @@
 
 (defn tmpl-check-defer (c:?&TmplConformance st:ptr iname:Symbol args:ptr nargs:i32 line:i32):void
   (let (p:&PendingTmplCheck (new PendingTmplCheck g-arena))
-    (set! (p 'c) c)
-    (set! (p 'st) st)
-    (set! (p 'iname) iname)
-    (set! (p 'args) args)
-    (set! (p 'nargs) nargs)
-    (set! (p 'line) line)
+    (set-fields! p
+                 'c     c
+                 'st    st
+                 'iname iname
+                 'args  args
+                 'nargs nargs
+                 'line  line)
     (conj g-pending-tmpl-checks p)))
 
 ; A conformance just arrived: retry every instance check that waited on one. The
@@ -6774,9 +6801,10 @@
                                       (node-line (as ptr n) 0)))))
             (when (= etype null) (return ty))
             (let (rt:&Type (as &Type (make-type TY-PTR)))
-              (set! (rt 'elem) etype)
-              (set! (rt 'pkind) (tt 'pkind))
-              (set! (rt 'is-volatile) (tt 'is-volatile))
+              (set-fields! rt
+                           'elem        etype
+                           'pkind       (tt 'pkind)
+                           'is-volatile (tt 'is-volatile))
               (return (as ptr rt)))))))))
 
 ; let / with: the type of the last body expression, evaluated in a child scope

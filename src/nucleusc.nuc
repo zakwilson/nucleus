@@ -2149,9 +2149,10 @@
   (let (rnn:?&Node rn)
     (when (= (rnn 'kind) NODE-KEYWORD)
       (let (new:&Node (alloc-node))
-        (set! (new 'kind) NODE-SYM)
-        (set! (new 'line) (rnn 'line))
-        (set! (new 's) (rnn 's))
+        (set-fields! new
+                     'kind NODE-SYM
+                     'line (rnn 'line)
+                     's    (rnn 's))
         (return new)))
     (return rn)))
 
@@ -2438,9 +2439,10 @@
     ; where the target type is known, exactly as for an integer literal.
     (let (lex:StrView (symbol-as-view (nn 's))
           rv:&Val (alloc-val ty-f64 (float-literal-ir lex)))
-      (set! (rv 'is-flit) 1)
-      (set! (rv 'lit-f64) (float-literal-value lex))
-      (set! (rv 'lit-lex) (nn 's))
+      (set-fields! rv
+                   'is-flit 1
+                   'lit-f64 (float-literal-value lex)
+                   'lit-lex (nn 's))
       (return rv))))
 
 (defn emit-string (n:?&Node target:?&Type):&Val
@@ -2508,9 +2510,10 @@
         line:i32 (nn 'line)
         ; Synthetic NODE-STR carrying the keyword name.
         strnode:&Node (alloc-node))
-    (set! (strnode 'kind) NODE-STR)
-    (set! (strnode 'line) line)
-    (set! (strnode 's) (nn 's))
+    (set-fields! strnode
+                 'kind NODE-STR
+                 'line line
+                 's    (nn 's))
     ; (keyword-intern "name")
     (core-ns-require "nucleus.keyword" "a keyword literal" line)
     (let (call:ptr (node-list2 (intern-node (core-spelling "nucleus.keyword" "keyword-intern"))
@@ -2912,9 +2915,10 @@
 
 (defn conforms-str-node (s:Symbol line:i32):&Node
   (let (sn:&Node (alloc-node))
-    (set! (sn 'kind) NODE-STR)
-    (set! (sn 's) s)
-    (set! (sn 'line) line)
+    (set-fields! sn
+                 'kind NODE-STR
+                 's    s
+                 'line line)
     (return sn)))
 
 ; `(conforms? t P)`: `t` is evaluated and resolves in the caller's file; `P` is
@@ -2998,16 +3002,18 @@
     (let (eff:ptr (sym-effective-type sym))
       (when (!= (ptr-pkind eff) PTR-MAYBE) (return))
       (let (u:&NarrowUndo (new NarrowUndo g-arena))
-        (set! (u 'name) name)
-        (set! (u 'scope) scope)
-        (set! (u 'old-ntype) (sym 'ntype))
-        (set! (u 'old-ndepth) (sym 'ndepth))
-        (set! (u 'old-ngen) (sym 'ngen))
-        (set! (u 'stamp) (sym 'kstamp))
+        (set-fields! u
+                     'name       name
+                     'scope      scope
+                     'old-ntype  (sym 'ntype)
+                     'old-ndepth (sym 'ndepth)
+                     'old-ngen   (sym 'ngen)
+                     'stamp      (sym 'kstamp))
         (conj g-nundo u))
-      (set! (sym 'ntype) (type-as-pkind eff PTR-REF))
-      (set! (sym 'ndepth) g-loop-depth)
-      (set! (sym 'ngen) g-narrow-gen))))
+      (set-fields! sym
+                   'ntype  (type-as-pkind eff PTR-REF)
+                   'ndepth g-loop-depth
+                   'ngen   g-narrow-gen))))
 
 ; Undo narrows back to `mark` (a branch/region boundary). Entries whose
 ; binding was killed after the push are skipped.
@@ -3021,9 +3027,10 @@
       (let (sym:?&Sym (scope-lookup (u 'scope) (u 'name)))
         (when (!= sym null)
           (when (= (u 'stamp) (sym 'kstamp))
-            (set! (sym 'ntype) (u 'old-ntype))
-            (set! (sym 'ndepth) (u 'old-ndepth))
-            (set! (sym 'ngen) (u 'old-ngen)))))
+            (set-fields! sym
+                         'ntype  (u 'old-ntype)
+                         'ndepth (u 'old-ndepth)
+                         'ngen   (u 'old-ngen)))))
       (set! (g-nundo 'len) (- (_get g-nundo 'len) 1)))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
@@ -4188,11 +4195,12 @@
           ; Stage 10: the read uses the flow-narrowed view of the binding's
           ; type and carries the binding's escape taint.
           (let (rv:&Val (alloc-val (sym-effective-type sym) tmp))
-            (set! (rv 'taint) (sym 'taint))
-            (set! (rv 'taint-frame) (sym 'taint-frame))
-            ; The one place a Val becomes an lvalue: this load came from the
-            ; binding's own storage, so its address is recoverable.
-            (set! (rv 'lvalue-sym) sym)
+            (set-fields! rv
+                         'taint       (sym 'taint)
+                         'taint-frame (sym 'taint-frame)
+                         ; The one place a Val becomes an lvalue: this load came from the
+                         ; binding's own storage, so its address is recoverable.
+                         'lvalue-sym  sym)
             (return rv))))
       (die-at (node-line n line) (undefined-name-message (nn 's))))))
 
@@ -4240,10 +4248,11 @@
 ; below; a builder may never name the global it initializes.
 (defn add-binop (v:&(Vector &BinOp) name:Symbol instr:StrView instr-u:StrView is-cmp:i32):void
   (let (op:&BinOp (new BinOp g-arena))
-    (set! (op 'name) name)
-    (set! (op 'instr) instr)
-    (set! (op 'instr-u) instr-u)
-    (set! (op 'is-cmp) is-cmp)
+    (set-fields! op
+                 'name    name
+                 'instr   instr
+                 'instr-u instr-u
+                 'is-cmp  is-cmp)
     (conj v op)))
 
 (defn build-binops ():&(Vector &BinOp)
@@ -4403,9 +4412,10 @@
   (when (>= (unsafe/cast i32 (count g-cast-rules)) MAX-CAST-RULES)
     (eprint "nucleusc: too many defcast rules\n") (exit 1))
   (let (cr:&CastRule (new CastRule g-arena))
-    (set! (cr 'from) from)
-    (set! (cr 'to) to)
-    (set! (cr 'ir-name) ir-name)
+    (set-fields! cr
+                 'from    from
+                 'to      to
+                 'ir-name ir-name)
     (conj g-cast-rules cr)))
 
 (defn lookup-cast-rule (from:?&Type to:?&Type):?&CastRule
@@ -5423,10 +5433,11 @@
           (when (= bind-none 0) (set! (e 'bind-none) 0))
           (return))))
     (let (rec:&ImportBind (new ImportBind g-arena))
-      (set! (rec 'prefix) prefix)
-      (set! (rec 'path) path)
-      (set! (rec 'private) g-import-include-private)
-      (set! (rec 'bind-none) bind-none)
+      (set-fields! rec
+                   'prefix    prefix
+                   'path      path
+                   'private   g-import-include-private
+                   'bind-none bind-none)
       (conj tbl rec))))
 
 ; One edge of the unit's import graph, once. The importer is the file being
@@ -5684,9 +5695,10 @@
 ; THE canonicaliser. See the section header for the rules.
 (defn resolve-spelling (spelling:Symbol):&NameRef
   (let (r:&NameRef (new NameRef g-arena))
-    (set! (r 'spelling) spelling)
-    (set! (r 'bare) spelling)
-    (set! (r 'status) NR-BARE)
+    (set-fields! r
+                 'spelling spelling
+                 'bare     spelling
+                 'status   NR-BARE)
     (let (sv:StrView (symbol-as-view spelling)
           n:usize (qualifier-len spelling))
       ; Unqualified: the current namespace's key. The caller walks the flattened
@@ -5694,9 +5706,10 @@
       (when (= n 0)
         (set! (r 'canonical) (qualify-name spelling))
         (return r))
-      (set! (r 'qual) (strview-take-bytes sv n))
-      (set! (r 'bare) (symbol-intern (strview-drop-bytes sv (+ n 1))))
-      (set! (r 'status) NR-UNBOUND)
+      (set-fields! r
+                   'qual   (strview-take-bytes sv n)
+                   'bare   (symbol-intern (strview-drop-bytes sv (+ n 1)))
+                   'status NR-UNBOUND)
       (cond
         ; A file may always name its own namespace, qualified or not.
         (= (r 'qual) (symbol-as-view g-current-ns))
@@ -6262,12 +6275,13 @@
     ((some i) (return (as ptr (invoke g-link-claims (as usize i)))))))
 
 (defn link-claim-set (c:&LinkClaim ident:Symbol name:Symbol sig:Symbol c-decl:bool line:i32):void
-  (set! (c 'ident) ident)
-  (set! (c 'name) name)
-  (set! (c 'file) g-source-path)
-  (set! (c 'line) line)
-  (set! (c 'sig) sig)
-  (set! (c 'c-decl) c-decl))
+  (set-fields! c
+               'ident  ident
+               'name   name
+               'file   g-source-path
+               'line   line
+               'sig    sig
+               'c-decl c-decl))
 
 (defn link-claim-put (irn:Symbol ident:Symbol name:Symbol sig:Symbol c-decl:bool line:i32):void
   (let (c:&LinkClaim (new LinkClaim g-arena))
@@ -6445,10 +6459,11 @@
     (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
           base:Symbol (path-basename-token (symbol-as-view path))
           pf:&PrivFile (new PrivFile g-arena))
-      (set! (pf 'path) path)
-      (set! (pf 'ns) (symbol-intern (fstr "#p" n)))
-      (set! (pf 'prefix) (symbol-intern (fstr base "_p" n)))
-      (set! (pf 'names) (new (Vector &PrivName) g-arena))
+      (set-fields! pf
+                   'path   path
+                   'ns     (symbol-intern (fstr "#p" n))
+                   'prefix (symbol-intern (fstr base "_p" n))
+                   'names  (new (Vector &PrivName) g-arena))
       (ns-ir-prefix-set (pf 'ns) (pf 'prefix))
       (conj tbl pf)
       ; A path that previously answered "owns no private names" now owns some.
@@ -6593,17 +6608,18 @@
         pidx:ptr (arena-alloc 4))
     (set! (aref (unsafe/cast &ptr psd) 0) (as ptr sd))
     (set! (aref (unsafe/cast &i32 pidx) 0) (field-ir-index sd idx))
-    (set! (fr 'owner) sd)
-    (set! (fr 'index) idx)
-    (set! (fr 'type) (f 'type))
-    (set! (fr 'psd) psd)
-    (set! (fr 'pidx) pidx)
-    ; BF-2: a bit-field's own step is a byte offset, not a member index, so it
-    ; contributes no level to the chain.
-    (set! (fr 'depth) (if (> w 0) 0 1))
-    (set! (fr 'bit-width) w)
-    (set! (fr 'bf-signed) (f 'bf-signed))
-    (set! (fr 'bit-offset) (if (!= w 0) (field-bit-offset sd idx) 0))
+    (set-fields! fr
+                 'owner      sd
+                 'index      idx
+                 'type       (f 'type)
+                 'psd        psd
+                 'pidx       pidx
+                 ; BF-2: a bit-field's own step is a byte offset, not a member index, so it
+                 ; contributes no level to the chain.
+                 'depth      (if (> w 0) 0 1)
+                 'bit-width  w
+                 'bf-signed  (f 'bf-signed)
+                 'bit-offset (if (!= w 0) (field-bit-offset sd idx) 0))
     (return fr)))
 
 ; ============================================================
@@ -6718,15 +6734,16 @@
       (set! (aref (unsafe/cast &i32 pidx) (+ j 1)) (aref (unsafe/cast &i32 (sub 'pidx)) j)))
     ; `owner` is read for one question — is the load packed — so a packed level
     ; anywhere in the chain has to win it.
-    (set! (fr 'owner) (if (!= (sd 'packed) 0) sd (sub 'owner)))
-    (set! (fr 'index) (sub 'index))
-    (set! (fr 'type) (sub 'type))
-    (set! (fr 'psd) psd)
-    (set! (fr 'pidx) pidx)
-    (set! (fr 'depth) d)
-    (set! (fr 'bit-width) (sub 'bit-width))
-    (set! (fr 'bf-signed) (sub 'bf-signed))
-    (set! (fr 'bit-offset) (sub 'bit-offset))
+    (set-fields! fr
+                 'owner      (if (!= (sd 'packed) 0) sd (sub 'owner))
+                 'index      (sub 'index)
+                 'type       (sub 'type)
+                 'psd        psd
+                 'pidx       pidx
+                 'depth      d
+                 'bit-width  (sub 'bit-width)
+                 'bf-signed  (sub 'bf-signed)
+                 'bit-offset (sub 'bit-offset))
     (return fr)))
 
 ; Depth-first search for `fname` through `sd`'s anonymous members, counting
@@ -7083,9 +7100,10 @@
               k:i32 (- nf 1))
           (while (>= k 0)
             (let (fsym-node:&Node (alloc-node))
-              (set! (fsym-node 'kind) NODE-SYM)
-              (set! (fsym-node 'line) line)
-              (set! (fsym-node 's) ((field-at (sdd 'fields) k) 'name))
+              (set-fields! fsym-node
+                           'kind NODE-SYM
+                           'line line
+                           's    ((field-at (sdd 'fields) k) 'name))
               (let (fsym:StrView (emit-quote-tree fsym-node)
                     cmp:StrView (new-tmp))
                 (emit g-body-stream "  " cmp " = icmp eq ptr " (sel 'val) ", " fsym "\n")
@@ -7631,10 +7649,11 @@
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 1) (die-at (cc 'line) "source-file takes no arguments"))
     (let (s:&Node (as &Node (alloc-node)))
-      (set! (s 'kind) NODE-STR)
-      (set! (s 'line) (cc 'line))
-      (set! (s 's) g-source-path)
-      (set! (s 'i) 0)
+      (set-fields! s
+                   'kind NODE-STR
+                   'line (cc 'line)
+                   's    g-source-path
+                   'i    0)
       (return (emit-string s null)))))
 
 ; Its `__LINE__` peer. Both are one form so that `deftest` -- and any other
@@ -7644,9 +7663,10 @@
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 1) (die-at (cc 'line) "source-line takes no arguments"))
     (let (n:&Node (as &Node (alloc-node)))
-      (set! (n 'kind) NODE-INT)
-      (set! (n 'line) (cc 'line))
-      (set! (n 'i) (as i64 (cc 'line)))
+      (set-fields! n
+                   'kind NODE-INT
+                   'line (cc 'line)
+                   'i    (as i64 (cc 'line)))
       (return (emit-int n)))))
 
 ; (char "x") — now sugar for the `\x` char literal: produces a `Char`-typed
@@ -8658,10 +8678,11 @@
   (let (bdt:ptr (boxedfn-drop-target ty))
     (when (!= bdt null)
       (let (m:&Method (new Method g-arena))
-        (set! (m 'ir-name) (symbol-intern "@__boxedfn_drop"))
-        (set! (m 'ret-type) ty-void)
-        (set! (m 'kind) METHOD-USER)
-        (set! (m 'num-params) 1)
+        (set-fields! m
+                     'ir-name    (symbol-intern "@__boxedfn_drop")
+                     'ret-type   ty-void
+                     'kind       METHOD-USER
+                     'num-params 1)
         (return m))))
   (let (tt:(ptr Type) ty
         sd:?&StructDef null
@@ -8969,10 +8990,11 @@
           (let (ft:&Type (as &Type (make-type TY-FN)))
             (set! (ft 'ret) ret)
             (type-set-params ft param-types nparams)
-            (set! (ft 'variadic) 0)
-            (set! (ft 'has-rest) 0)
-            (set! (ft 'nopt) 0)
-            (set! (ft 'opt-defaults) null)
+            (set-fields! ft
+                         'variadic     0
+                         'has-rest     0
+                         'nopt         0
+                         'opt-defaults null)
             (let (irn:Symbol (defn-ir-name lifted param-types nparams ret))
               ; (defn <lifted> (params) <ret> body…). The return is the source
               ; operand, not `type-spelling ret`, which drops the pointer kind.
@@ -9555,9 +9577,10 @@
         (set! (e 'epoch) g-module-epoch)
         (return))))
   (let (rec:&VtableEntry (new VtableEntry g-arena))
-    (set! (rec 'key) key)
-    (set! (rec 'name) name)
-    (set! (rec 'epoch) g-module-epoch)
+    (set-fields! rec
+                 'key   key
+                 'name  name
+                 'epoch g-module-epoch)
     (conj g-vtable-table rec)))
 
 ; The module stays open across an epoch bump, so its vtables are still defined in it.
@@ -9715,13 +9738,14 @@
     (dyn-annot-check spelling nargs borrowed line)
     (return))
   (let (j:&DynAnnot (new DynAnnot g-arena))
-    (set! (j 'spelling) spelling)
-    (set! (j 'nargs) nargs)
-    (set! (j 'borrowed) borrowed)
-    (set! (j 'path) g-source-path)
-    (set! (j 'line) line)
-    (set! (j 'ns) g-current-ns)
-    (set! (j 'imports) g-file-imports)
+    (set-fields! j
+                 'spelling spelling
+                 'nargs    nargs
+                 'borrowed borrowed
+                 'path     g-source-path
+                 'line     line
+                 'ns       g-current-ns
+                 'imports  g-file-imports)
     (conj g-dyn-annots j)))
 
 ; Ask every recorded question as the file that asked it. The three globals
@@ -11715,9 +11739,10 @@
                           (let (cl:&Cleanup (new Cleanup g-arena))
                             (set! @cl (Cleanup-libc-free slot))
                             (scope-push-cleanup inner (as ptr cl))
-                            (set! (sym 'owns) 1)
-                            (set! (sym 'cslot) slot)
-                            (set! (sym 'taint) inner))
+                            (set-fields! sym
+                                         'owns  1
+                                         'cslot slot
+                                         'taint inner))
                           ; Owning binding, Drop shape: statically dispatched
                           ; (drop binding) at scope exit (lifecycle.md §5).
                           ; CE-3 fix (c): a struct-VALUE binding (TY-STRUCT — an
@@ -11743,9 +11768,10 @@
                                 ; drop-ty was write-only in the old struct — omitted.
                               (set! @cl (Cleanup-drop cslot (dm 'ir-name) (dm 'ret-type)))
                               (scope-push-cleanup inner (as ptr cl))
-                              (set! (sym 'owns) 1)
-                              (set! (sym 'cslot) cslot)
-                              (set! (sym 'taint) inner)))
+                              (set-fields! sym
+                                           'owns  1
+                                           'cslot cslot
+                                           'taint inner)))
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
                         true
@@ -12285,21 +12311,22 @@
   (let (src:&Type t)
     (when (!= (src 'is-volatile) 0) (return t))
     (let (dst:&Type (alloc-type))
-      (set! (dst 'kind) (src 'kind))
-      (set! (dst 'ret) (src 'ret))
-      (set! (dst 'params) (src 'params))
-      (set! (dst 'num-params) (src 'num-params))
-      (set! (dst 'variadic) (src 'variadic))
-      (set! (dst 'has-rest) (src 'has-rest))
-      (set! (dst 'nopt) (src 'nopt))
-      (set! (dst 'opt-defaults) (src 'opt-defaults))
-      (set! (dst 'elem) (src 'elem))
-      (set! (dst 'sdef) (src 'sdef))
-      (set! (dst 'is-volatile) 1)
-      (set! (dst 'pkind) (src 'pkind))
-      ; Stage 15 W8 G-2: the array length is part of the type; a clone that
-      ; dropped it would silently become a zero-length array.
-      (set! (dst 'arr-len) (src 'arr-len))
+      (set-fields! dst
+                   'kind         (src 'kind)
+                   'ret          (src 'ret)
+                   'params       (src 'params)
+                   'num-params   (src 'num-params)
+                   'variadic     (src 'variadic)
+                   'has-rest     (src 'has-rest)
+                   'nopt         (src 'nopt)
+                   'opt-defaults (src 'opt-defaults)
+                   'elem         (src 'elem)
+                   'sdef         (src 'sdef)
+                   'is-volatile  1
+                   'pkind        (src 'pkind)
+                   ; Stage 15 W8 G-2: the array length is part of the type; a clone that
+                   ; dropped it would silently become a zero-length array.
+                   'arr-len      (src 'arr-len))
       (return dst))))
 
 ; ============================================================
@@ -12356,9 +12383,10 @@
   (let (e:&LabelEntry (unsafe/cast &LabelEntry (lbl-find name)))
     (when (= (as ptr e) null)
       (let (ne:&LabelEntry (new LabelEntry g-arena))
-        (set! (ne 'name) name)
-        (set! (ne 'total) 0)
-        (set! (ne 'seen) 0)
+        (set-fields! ne
+                     'name  name
+                     'total 0
+                     'seen  0)
         (conj g-lbl-tbl ne)
         (set! e ne)))
     (set! (e 'total) (+ (e 'total) 1))))
@@ -13102,10 +13130,11 @@
                       (set! (av 'type) pt)
                       (set! (av 'val) tmp))))))
     (when (m 'c-decl) (return (emit-call-with-args n scope (method-call-sym gname m) args nargs)))
-    (set! (ss 'name) gname)
-    (set! (ss 'type) (m 'fn-type))
-    (set! (ss 'ir-name) (symbol-as-view (m 'ir-name)))
-    (set! (ss 'is-local) 0)
+    (set-fields! ss
+                 'name     gname
+                 'type     (m 'fn-type)
+                 'ir-name  (symbol-as-view (m 'ir-name))
+                 'is-local 0)
     (return (emit-call-with-args n scope ss args nargs))))
 
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
@@ -13360,12 +13389,13 @@
                         kind:i32 noun:StrView nk:i32
                         collides:i32 name-keyed:i32 reregisterable:i32):void
   (let (r:&BindingKind (new BindingKind g-arena))
-    (set! (r 'kind) kind)
-    (set! (r 'noun) noun)
-    (set! (r 'nk) nk)
-    (set! (r 'collides) collides)
-    (set! (r 'name-keyed) name-keyed)
-    (set! (r 'reregisterable) reregisterable)
+    (set-fields! r
+                 'kind           kind
+                 'noun           noun
+                 'nk             nk
+                 'collides       collides
+                 'name-keyed     name-keyed
+                 'reregisterable reregisterable)
     (conj v r)))
 
 ; The table. Row i has `kind` == i, so `binding-row` is an index.
@@ -13728,9 +13758,10 @@
 
 (defn qq-keyword-node (old:&Node s:Symbol):&Node
   (let (k:&Node (alloc-node))
-    (set! (k 'kind) NODE-KEYWORD)
-    (set! (k 'line) (old 'line))
-    (set! (k 's) s)
+    (set-fields! k
+                 'kind NODE-KEYWORD
+                 'line (old 'line)
+                 's    s)
     (return k)))
 
 ; One data symbol: a typed token keeps its binder and rewrites its type's leaf.
@@ -14064,9 +14095,10 @@
         ; facade) must not stack entries.
         (when (and (= (e 'kind) kind) (= (e 'key) key)) (return))))
     (let (rec:&BindingAlias (new BindingAlias g-arena))
-      (set! (rec 'key) key)
-      (set! (rec 'kind) kind)
-      (set! (rec 'payload) payload)
+      (set-fields! rec
+                   'key     key
+                   'kind    kind
+                   'payload payload)
       (conj tbl rec))))
 
 ; The payload `spelling` names through a re-export, or null. `spelling` is a
@@ -14562,9 +14594,10 @@
 
 (defn lit-int-node (v:i64 line:i32):ptr
   (let (n:&Node (alloc-node))
-    (set! (n 'kind) NODE-INT)
-    (set! (n 'line) line)
-    (set! (n 'i) v)
+    (set-fields! n
+                 'kind NODE-INT
+                 'line line
+                 'i    v)
     (return (as ptr n))))
 
 ; Elements that are not all constant: a frame table filled in source order and,
@@ -14698,14 +14731,15 @@
               (when (not (lit-const-slot? vn (unsafe/cast &Type vty) vcls what)) (set! all-const false))
               (set! cur (as ptr (node-rest (unsafe/cast &Node cur)))))))
         (inc! i))
-      (set! (out 'keys) keys)
-      (set! (out 'vals) vals)
-      (set! (out 'idx) idx)
-      (set! (out 'n) cnt)
-      (set! (out 'all-const) all-const)
-      (set! (out 'kty) kty)
-      (set! (out 'vty) vty)
-      (set! (out 'ety) ety))))
+      (set-fields! out
+                   'keys      keys
+                   'vals      vals
+                   'idx       idx
+                   'n         cnt
+                   'all-const all-const
+                   'kty       kty
+                   'vty       vty
+                   'ety       ety))))
 
 ; The header constant of an all-constant literal, its table emitted to `g-out`.
 (defn lit-const-header-ir (le:&LitElems what:StrView is-map:i32 line:i32):StrView
@@ -16269,14 +16303,15 @@
 
 (defn init-queue-form (form:?&Node name:Symbol irn:Symbol line:i32 src:?&Node):void
   (let (job:&InitJob (new InitJob g-arena))
-    (set! (job 'form) form)
-    (set! (job 'src) src)
-    (set! (job 'ns) g-current-ns)
-    (set! (job 'path) g-source-path)
-    (set! (job 'imports) g-file-imports)
-    (set! (job 'line) line)
-    (set! (job 'name) name)
-    (set! (job 'ir-name) irn)
+    (set-fields! job
+                 'form    form
+                 'src     src
+                 'ns      g-current-ns
+                 'path    g-source-path
+                 'imports g-file-imports
+                 'line    line
+                 'name    name
+                 'ir-name irn)
     (conj g-init-worklist job)))
 
 ; ============================================================
@@ -16759,9 +16794,10 @@
       (set! (sym 'is-const) 1)
       (when (!= annot null) (set! (sym 'const-annot) 1))
       (if int-path
-        (do (set! (sym 'const-val) (fstr (lit 'i)))
-            (set! (sym 'const-lit) 1)
-            (set! (sym 'const-lit-i64) (lit 'i)))
+        (do (set-fields! sym
+                         'const-val     (fstr (lit 'i))
+                         'const-lit     1
+                         'const-lit-i64 (lit 'i)))
         (set! (sym 'const-node) (defconst-node-copy lit)))
       (return sym))))
 
@@ -16769,9 +16805,10 @@
 (defn defconst-node-copy (lit:&Node):&Node
   (when (= (lit 'kind) NODE-SYM) (return lit))
   (let (c:&Node (alloc-node))
-    (set! (c 'kind) (lit 'kind))
-    (set! (c 'i) (lit 'i))
-    (set! (c 's) (lit 's))
+    (set-fields! c
+                 'kind (lit 'kind)
+                 'i    (lit 'i)
+                 's    (lit 's))
     (return c)))
 
 ; A substituted constant: its literal, emitted here and put at its annotated type.
@@ -16933,17 +16970,18 @@
           (guard-value-redefinition (name 's) (cc 'line))
           (let (sym:&Sym (scope-define g-globals (name 's) ty-i32 "" 0))
             (sym-record-src sym (cc 'line))
-            (set! (sym 'is-const) 1)
-            (set! (sym 'const-val) (fstr (- i 2)))
-            ; Stage 15 W2b: an enum member is a named integer literal too — it
-            ; carries no distinct nominal type (its Sym type is plain i32, and
-            ; `match` exhaustiveness keys off the EnumDef, not the type), so
-            ; withholding literal provenance here would recreate the very wart
-            ; W2b removes one level over: `(= c:ui32 RED)` rejected while
-            ; `(= c:ui32 0)` compiles. The ordinal always fits i32, so no
-            ; int-literal-type call is needed (unlike defconst).
-            (set! (sym 'const-lit) 1)
-            (set! (sym 'const-lit-i64) (as i64 (- i 2)))
+            (set-fields! sym
+                         'is-const      1
+                         'const-val     (fstr (- i 2))
+                         ; Stage 15 W2b: an enum member is a named integer literal too — it
+                         ; carries no distinct nominal type (its Sym type is plain i32, and
+                         ; `match` exhaustiveness keys off the EnumDef, not the type), so
+                         ; withholding literal provenance here would recreate the very wart
+                         ; W2b removes one level over: `(= c:ui32 RED)` rejected while
+                         ; `(= c:ui32 0)` compiles. The ordinal always fits i32, so no
+                         ; int-literal-type call is needed (unlike defconst).
+                         'const-lit     1
+                         'const-lit-i64 (as i64 (- i 2)))
             ; Stage 12 N3: mark private when defined via `defenum-`.
             (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
             ; Stage 15 B4 (R4): the defining site — see `guard-value-redefinition`.
@@ -16963,16 +17001,17 @@
               ed:&EnumDef (new EnumDef g-arena))
           (dotimes (j n)
             (set! (aref (unsafe/cast &Symbol members) j) ((unsafe/cast &Node (node-at cc (+ j 2))) 's)))
-          (set! (ed 'name) (qualify-name (en 's)))
-          (set! (ed 'members) members)
-          (set! (ed 'num-members) n)
-          ; Stage 15 B5: the enum NAME's own provenance. Its members already
-          ; carry `sym-private` on their Syms (the g-globals row).
-          (set! (ed 'priv) g-defining-private)
-          (set! (ed 'src-ns) g-current-ns)
-          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
-          (set! (ed 'src-file) g-source-path)
-          (set! (ed 'src-line) (cc 'line))
+          (set-fields! ed
+                       'name        (qualify-name (en 's))
+                       'members     members
+                       'num-members n
+                       ; Stage 15 B5: the enum NAME's own provenance. Its members already
+                       ; carry `sym-private` on their Syms (the g-globals row).
+                       'priv        g-defining-private
+                       'src-ns      g-current-ns
+                       ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+                       'src-file    g-source-path
+                       'src-line    (cc 'line))
           (conj g-enumdefs ed))))))
 
 (defn enumdef-lookup (name:Symbol):?&EnumDef
@@ -17706,10 +17745,11 @@
             (set! (ft 'ret) ret)
             (type-set-params ft param-types nparams)
             (type-set-param-names ft param-names nparams)
-            (set! (ft 'variadic) 0)
-            (set! (ft 'has-rest) has-rest)
-            (set! (ft 'nopt) nopt)
-            (set! (ft 'opt-defaults) opt-defaults)
+            (set-fields! ft
+                         'variadic     0
+                         'has-rest     has-rest
+                         'nopt         nopt
+                         'opt-defaults opt-defaults)
             ; Solitary names (and fallback defns with no registered generic) keep
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
@@ -18797,24 +18837,25 @@
           (when (>= (unsafe/cast i32 (count g-macros)) 256)
             (die-at (ff 'line) "defmacro: macro table full"))
           (let (mdef:&MacroDef (new MacroDef g-arena))
-            (set! (mdef 'name) macro-key)
             (when (!= g-resolve 0) (resolve-note-link form (symbol-as-view jit-name)))
-            (set! (mdef 'jit-name) jit-name)
-            (set! (mdef 'num-params) pcount)
-            (set! (mdef 'variadic) variadic)
-            ; Stage 15 B5: `defmacro-`'s privacy (§13.2 — nothing enforced it
-            ; before, because a macro has no Sym and Sym is where privacy lived).
-            (set! (mdef 'priv) g-defining-private)
-            (set! (mdef 'src-ns) g-current-ns)
-            ; Stage 15 B4 (R4): the fields existed and nothing wrote them — see
-            ; `same-definition-site`.
-            (set! (mdef 'src-file) g-source-path)
-            (set! (mdef 'src-line) (ff 'line))
-            ; The declared parameter names, for `dir`/`doc` — a `Symbol[]`, the
-            ; same array `compile-macro-body` binds the body against.
-            (set! (mdef 'param-names) pnames)
-            (set! (mdef 'docstring) (body-docstring ff 3))
-            (set! (mdef 'type-query) (node-queries-types? form))
+            (set-fields! mdef
+                         'name        macro-key
+                         'jit-name    jit-name
+                         'num-params  pcount
+                         'variadic    variadic
+                         ; Stage 15 B5: `defmacro-`'s privacy (§13.2 — nothing enforced it
+                         ; before, because a macro has no Sym and Sym is where privacy lived).
+                         'priv        g-defining-private
+                         'src-ns      g-current-ns
+                         ; Stage 15 B4 (R4): the fields existed and nothing wrote them — see
+                         ; `same-definition-site`.
+                         'src-file    g-source-path
+                         'src-line    (ff 'line)
+                         ; The declared parameter names, for `dir`/`doc` — a `Symbol[]`, the
+                         ; same array `compile-macro-body` binds the body against.
+                         'param-names pnames
+                         'docstring   (body-docstring ff 3)
+                         'type-query  (node-queries-types? form))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef)
 
@@ -19027,14 +19068,15 @@
         jit-name:Symbol (symbol-intern (fstr "__ct_eval_" (as i64 g-ct-eval-id)))
         mdef:&MacroDef (new MacroDef g-arena))
     (inc! g-ct-eval-id)
-    (set! (mdef 'name) who)
-    (set! (mdef 'jit-name) jit-name)
-    (set! (mdef 'num-params) 0)
-    (set! (mdef 'variadic) 0)
-    (set! (mdef 'priv) 0)
-    (set! (mdef 'src-ns) g-current-ns)
-    (set! (mdef 'src-file) g-source-path)
-    (set! (mdef 'src-line) line)
+    (set-fields! mdef
+                 'name       who
+                 'jit-name   jit-name
+                 'num-params 0
+                 'variadic   0
+                 'priv       0
+                 'src-ns     g-current-ns
+                 'src-file   g-source-path
+                 'src-line   line)
     ; body-start 1 over a synthetic `(<nothing> e)`, so the body loop compiles
     ; exactly `e`. The bracket is `macrolet-bind`'s: a macro call is expanded
     ; mid-function, and `compile-macro-body` calls `reset-function-state`.
@@ -19124,18 +19166,19 @@
                 mdef:&MacroDef (new MacroDef g-arena))
             (inc! g-macrolet-id)
             ; The BARE spelling is the key — find-macrolet matches on it alone.
-            (set! (mdef 'name) mname)
-            (set! (mdef 'jit-name) jit-name)
-            (set! (mdef 'num-params) pcount)
-            (set! (mdef 'variadic) variadic)
-            ; No privacy: a macrolet binding has no name reachable outside its
-            ; body, so `g-defining-private` — still 1 throughout a `defn-` body,
-            ; since the top-level dispatcher brackets the whole emit-defn call —
-            ; must not leak in here.
-            (set! (mdef 'priv) 0)
-            (set! (mdef 'src-ns) g-current-ns)
-            (set! (mdef 'src-file) g-source-path)
-            (set! (mdef 'src-line) bline)
+            (set-fields! mdef
+                         'name       mname
+                         'jit-name   jit-name
+                         'num-params pcount
+                         'variadic   variadic
+                         ; No privacy: a macrolet binding has no name reachable outside its
+                         ; body, so `g-defining-private` — still 1 throughout a `defn-` body,
+                         ; since the top-level dispatcher brackets the whole emit-defn call —
+                         ; must not leak in here.
+                         'priv       0
+                         'src-ns     g-current-ns
+                         'src-file   g-source-path
+                         'src-line   bline)
             (conj g-macrolet-stack mdef)
             ; The push/pop bracket is what makes compiling a macro *mid-function*
             ; safe; compile-macro-body calls reset-function-state, which would
@@ -20240,10 +20283,11 @@
         (let (name:&Node (unsafe/cast &Node (node-at cc i)))
           (when (and (!= (as ptr name) null) (= (name 'kind) NODE-SYM))
             (let (sym:&Sym (scope-define g-globals (name 's) ty-i32 "" 0))
-              (set! (sym 'is-const) 1)
-              (set! (sym 'const-val) (fstr (- i 2)))
-              (set! (sym 'const-lit) 1)
-              (set! (sym 'const-lit-i64) (as i64 (- i 2)))
+              (set-fields! sym
+                           'is-const      1
+                           'const-val     (fstr (- i 2))
+                           'const-lit     1
+                           'const-lit-i64 (as i64 (- i 2)))
               (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
               ; Stage 15 B4 (R4): the site — see `guard-value-redefinition`.
               (sym-set-src-loc (as ptr sym) (cc 'line)))))
@@ -20801,9 +20845,10 @@
       (dotimes (i nb)
         (macrolet-bind (as ?&Node (node-at binds i)) (f 'line)))
       (let (cnt:&Node (alloc-node))
-        (set! (cnt 'kind) NODE-INT)
-        (set! (cnt 'line) (f 'line))
-        (set! (cnt 'i) (as i64 nb))
+        (set-fields! cnt
+                     'kind NODE-INT
+                     'line (f 'line)
+                     'i    (as i64 nb))
         (late-prescan (node-rest (node-rest f)) (f 'line))
         (toplevel-splice forms i
                          (node-rest (node-rest f))
@@ -21230,10 +21275,11 @@
 ; design/stage10/nullability.md N2 friction notes.)
 (defn import-list-push (list:?&Node path:Symbol):ptr
   (let (n:&Node (new Node g-arena))
-    (set! (n 'kind) NODE-STR)
-    (set! (n 'line) 0)
-    (set! (n 'i) 0)
-    (set! (n 's) path)
+    (set-fields! n
+                 'kind NODE-STR
+                 'line 0
+                 'i    0
+                 's    path)
     (return (node-cons n list 0))))
 
 ; Stage 12: push a loaded-file record that also carries the [start, end) slice of
@@ -21242,10 +21288,11 @@
 ; re-processing — and re-emitting — the file's definitions.
 (defn import-list-push-slice (list:?&Node path:Symbol start:i32 end:i32):ptr
   (let (n:&Node (new Node g-arena))
-    (set! (n 'kind) NODE-STR)
-    (set! (n 'line) end)
-    (set! (n 'i) (as i64 start))
-    (set! (n 's) path)
+    (set-fields! n
+                 'kind NODE-STR
+                 'line end
+                 'i    (as i64 start)
+                 's    path)
     (return (node-cons n list 0))))
 
 ; Remove the head of a Node-based string list, return new head.
@@ -21267,10 +21314,11 @@
 ; costs nothing on a compiling program and cannot perturb emitted IR.
 (defn note-import-cycle (path:Symbol line:i32):void
   (let (n:&Node (new Node g-arena))
-    (set! (n 'kind) NODE-STR)
-    (set! (n 'line) line)
-    (set! (n 'i) 0)
-    (set! (n 's) path)
+    (set-fields! n
+                 'kind NODE-STR
+                 'line line
+                 'i    0
+                 's    path)
     (cell-aux-set n g-source-path)
     (set! g-import-cycles (as ptr (node-cons n g-import-cycles line)))))
 
@@ -21612,9 +21660,10 @@
                   (set! g-import-aliased
                         (import-list-push g-import-aliased (import-key path prefix)))
                   (let (pn:&Node (new Node g-arena))
-                    (set! (pn 'kind) NODE-STR)
-                    (set! (pn 'line) 0)
-                    (set! (pn 's) prefix)
+                    (set-fields! pn
+                                 'kind NODE-STR
+                                 'line 0
+                                 's    prefix)
                     (cell-aux-set pn path)
                     (set! g-import-prefixes
                           (as ptr (node-cons pn g-import-prefixes 0)))))))
@@ -21743,9 +21792,10 @@
             (set! g-import-aliased
                   (import-list-push g-import-aliased (import-key path prefix)))
             (let (pn:&Node (new Node g-arena))
-              (set! (pn 'kind) NODE-STR)
-              (set! (pn 'line) 0)
-              (set! (pn 's) prefix)
+              (set-fields! pn
+                           'kind NODE-STR
+                           'line 0
+                           's    prefix)
               (cell-aux-set pn path)
               (set! g-import-prefixes
                     (as ptr (node-cons pn g-import-prefixes 0))))))))))
@@ -22157,16 +22207,17 @@
               psize:i32 (LLVMPointerSize td)
               ptr-ty:ptr (LLVMPointerType (LLVMInt8Type) 0)
               palign:i32 (LLVMABIAlignmentOfType td ptr-ty))
-          (set! (tgt 'triple) triple)
-          (set! (tgt 'datalayout) dl-str)
-          (set! (tgt 'ptr-size) psize)
-          (set! (tgt 'ptr-align) palign)
-          (set! (tgt 'cpu) eff-cpu)
-          (set! (tgt 'features) eff-features)
-          (set! (tgt 'abi) eff-abi)
-          ; AVR-6: program address space from the datalayout `P<n>` token (1 on
-          ; AVR, 0 everywhere else). Gates the function-value diagnostic.
-          (set! (tgt 'prog-as) (datalayout-prog-as (symbol-as-view dl-str))))
+          (set-fields! tgt
+                       'triple     triple
+                       'datalayout dl-str
+                       'ptr-size   psize
+                       'ptr-align  palign
+                       'cpu        eff-cpu
+                       'features   eff-features
+                       'abi        eff-abi
+                       ; AVR-6: program address space from the datalayout `P<n>` token (1 on
+                       ; AVR, 0 everywhere else). Gates the function-value diagnostic.
+                       'prog-as    (datalayout-prog-as (symbol-as-view dl-str))))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
         (return tgt))))))

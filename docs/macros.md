@@ -137,6 +137,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `macmap` | `(macmap ((param ...) template) (row ...))` | Expands `template` once per row, binding the parameters to the row, and splices the results in sequence. See [`macmap`](#macmap--one-template-over-a-table-of-rows) below. |
 | `macfoldr` | `(macfoldr op unit a b c)` | `(op a (op b c))` — right-nested fold over a variadic argument list. No args → `unit`; one arg → that arg. See [`macfoldl`/`macfoldr`](#macfoldl--macfoldr--a-template-over-a-variadic-argument-list). |
 | `macfoldl` | `(macfoldl op unit a b c)` | `(op (op a b) c)` — the left-nested counterpart. |
+| `set-fields!` | `(set-fields! x 'f1 v1 'f2 v2 ...)` | `(do (set! (x 'f1) v1) (set! (x 'f2) v2) ...)` — in order, with `x` written once and evaluated once per pair, so use a variable. An odd number of field/value operands is refused. |
 
 The binding list of `dotimes`, `doseq` and `doseq-iter` must have exactly the
 shape shown, with a symbol first. Anything else is refused at the call's line —
