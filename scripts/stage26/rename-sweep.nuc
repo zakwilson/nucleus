@@ -1,0 +1,376 @@
+; The rename-local no-op gate (design/stage26-refactoring/overview.md §4.10, §8 RR-4).
+;
+;   rename-sweep forward REPORT OUT MAP [--skip N] [--steal N] FILE...
+;       every renameable local of each FILE renamed to a fresh RNM<k>, written to
+;       OUT/FILE, one `RNM<k> old path` line per rename in MAP; refusals by class.
+;       --skip and --steal misdirect the Nth candidate rename, for the gate's own check.
+;   rename-sweep ir MAP IN OUT       IN with each %RNM<k> spelled as its old name's IR token
+;   rename-sweep back REPORT MAP OUT FILE...   each RNM<k> of the FILEs renamed back
+;   rename-sweep unmap MAP IN OUT    IN with each leftover RNM<k> token spelled as its old name
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
+(import-use nucleus.syntax)
+(import-use nucleus.string-split)
+(import-use nucleus.create)
+(import-use nucleus.allocator)
+(import-use nucleus.refactor)
+
+(defvar g-classes:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-class-names:&(Vector StrView) (new (Vector StrView) heap))
+(defvar g-log:&(Vector StrView) (new (Vector StrView) heap))
+(defvar g-k:i64 0)
+(defvar g-refused:i64 0)
+(defvar g-sites:i64 0)
+(defvar g-failures:i64 0)
+(defvar g-candidates:i64 0)
+; Spanless :binder records no operand spells: an expansion's own locals.
+(defvar g-unspelled:i64 0)
+
+(defn arg (argv:ptr i:i32):StrView
+  (return (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
+
+(defn fail (what:String):void
+  (set! g-failures (+ g-failures 1))
+  (eprint (string-as-view &what) "\n"))
+
+; A refusal's reason with its quoted names and qualified keys blanked, so reasons group.
+(defn class-of (why:StrView):StrView
+  (let (out:&String (alloca String)
+        n:usize (why 'len)
+        i:usize 0)
+    (init out)
+    (while (< i n)
+      (let (c:i32 (as i32 (aref (why 'data) (as i64 i)))
+            prev:i32 (if (= i 0) 32 (as i32 (aref (why 'data) (as i64 (- i 1)))))
+            j:usize i)
+        (while (and (< j n) (not (rn-boundary? (as i32 (aref (why 'data) (as i64 j)))))) (set! j (+ j 1)))
+        (cond (and (= c 39) (or (= prev 32) (= prev 40)))
+                (do (str-into out "'_'")
+                    (set! i (+ i 1))
+                    (while (and (< i n) (!= (aref (why 'data) (as i64 i)) 39)) (set! i (+ i 1)))
+                    (set! i (+ i 1)))
+              (and (> j i) (or (= prev 32) (= prev 40)) (strview-contains (edit-slice why i j) "/"))
+                (do (str-into out "_") (set! i j))
+              true (do (str-into out (edit-slice why i (+ i 1))) (set! i (+ i 1))))))
+    (return (edit-arena-str out))))
+
+(defn classify (why:StrView):void
+  (let (c:StrView (class-of why)
+        k:Symbol (symbol-intern c))
+    (match (get g-classes k)
+      ((some n) (assoc g-classes k (+ n 1)))
+      (none (do (conj g-class-names c) (assoc g-classes k 1))))))
+
+(defn print-classes ():void
+  (dotimes (i (count g-class-names))
+    (match (get g-classes (symbol-intern (g-class-names i)))
+      ((some n) (print "  " n "\t" (g-class-names i) "\n"))
+      (none 0))))
+
+(defn line-col (src:StrView at:usize):String
+  (let (l:i64 1
+        i:usize 0)
+    (while (and (< i at) (< i (src 'len)))
+      (when (= (aref (src 'data) (as i64 i)) 10) (set! l (+ l 1)))
+      (set! i (+ i 1)))
+    (return (str l ":" (syn-col src (if (< at (src 'len)) at (src 'len)))))))
+
+(defn log-refusal (path:StrView src:StrView r:Refusal):void
+  (let (lc:String (line-col src (r 'at)))
+    (conj g-log (rp-arena-text (str path ":" (string-as-view &lc) ": rename-local: " (r 'reason))))
+    (drop &lc)))
+
+(defn read-src (path:StrView):StrView
+  (match (rw-read-file path)
+    ((err e) (return ""))
+    ((ok t) (let (tx:String t) (return (edit-arena-str &tx))))))
+
+(defn load-report (path:StrView files:&(Vector StrView)):?&Report
+  (match (rw-read-file path)
+    ((err e) (do (fail (str "cannot read " path)) (return null)))
+    ((ok t)
+      (let (tx:String t
+            r:ReportResult (report-parse-for (string-as-view &tx) files))
+        (drop &tx)
+        (match r
+          ((err why) (do (fail (str path ": " why)) (return null)))
+          ((ok rep) (return rep)))))))
+
+(defn write-out (out:StrView path:StrView src:StrView e:&Edits):void
+  (match (edits-apply src e)
+    ((err x) (fail (str path ": the edits do not apply: " (x 'msg))))
+    ((ok t)
+      (let (tx:String t
+            dest:String (str out "/" path))
+        (match (rw-write-file (string-as-view &dest) (string-as-view &tx))
+          ((err e) (fail (str "cannot write " (string-as-view &dest))))
+          ((ok) (do)))
+        (drop &dest)
+        (drop &tx)))))
+
+(defn region-of (f:&RnFile p:&RnPlan):?&Syn
+  (when-some (a (rn-syn-at (f 'syn) ((p 'binder) 'start) ((p 'binder) 'end)))
+    (return (rn-region a)))
+  (return null))
+
+; Misdirects candidate `n`: drops one reference from a rename.
+(defn skip-one (plans:&(Vector &RnPlan) n:i64 path:StrView src:StrView):void
+  (dotimes (i (count plans))
+    (let (p:&RnPlan (plans i)
+          ss:&(Vector SynSpan) (ref p 'sites))
+      (when (>= (count ss) 2)
+        (when (= g-candidates n)
+          (let (k:usize (if (= ((ss (- (count ss) 1)) 'start) ((p 'binder) 'start)) 0 (- (count ss) 1))
+                lc:String (line-col src ((ss k) 'start)))
+            (eprint "skip: " path ":" (string-as-view &lc) " keeps '" (p 'old) "' (binder renamed to "
+                    (p 'new) ")\n")
+            (remove-at ss k)
+            (drop &lc)))
+        (set! g-candidates (+ g-candidates 1))))))
+
+; Misdirects candidate `n`: one reference of a rename spelled as the fresh name
+; of another local whose scope holds it, declared before it.
+(defn steal-one (f:&RnFile plans:&(Vector &RnPlan) n:i64 path:StrView src:StrView):void
+  (dotimes (i (count plans))
+    (let (b:&RnPlan (plans i)
+          ss:&(Vector SynSpan) (ref b 'sites)
+          j:usize 0)
+      (while (< j (count ss))
+        (let (s:SynSpan (ss j)
+              taken:bool false)
+          (when (!= (s 'start) ((b 'binder) 'start))
+            (dotimes (k (count plans))
+              (let (a:&RnPlan (plans k))
+                (when (and (not taken) (!= k i) (< ((a 'binder) 'end) (s 'start)))
+                  (when-some (rg (region-of f a))
+                    (when (and (<= (rg 'start) (s 'start)) (<= (s 'end) (rg 'end)))
+                      (when (= g-candidates n)
+                        (let (lc:String (line-col src (s 'start)))
+                          (eprint "steal: " path ":" (string-as-view &lc) " '" (b 'old) "' respelled as "
+                                  (a 'new) " (a '" (a 'old) "')\n")
+                          (drop &lc))
+                        (remove-at ss j)
+                        (conj (ref a 'sites) s)
+                        (set! taken true))
+                      (set! g-candidates (+ g-candidates 1))))))))
+          (when (not taken) (set! j (+ j 1))))))))
+
+(defn forward-file (ctx:&RnCtx path:StrView out:StrView map:&String skip:i64 steal:i64):void
+  (let (src:StrView (read-src path))
+    (when (= (src 'len) 0) (fail (str path ": cannot read the file")) (return))
+    (let (lr:Refusal (rename-file-load ctx path src))
+      (when (> ((lr 'reason) 'len) 0) (fail (str path ": " (lr 'reason))) (return)))
+    (let (rep:&Report (ctx 'rep)
+          f:&RnFile (unsafe/cast &RnFile (rn-file ctx path))
+          rs:&(Vector usize) (rn-in-file rep (ref rep 'by-file) path)
+          plans:&(Vector &RnPlan) (new (Vector &RnPlan) heap)
+          e:&Edits (alloca Edits)
+          i:usize 0)
+      (while (< i (count rs))
+        (let (x:RRef ((ref rep 'refs) (rs i)))
+          (when (and (= (x 'role) "binder") (or (!= (x 'why) "") (= (x 'tstart) (x 'start))))
+            (let (p:&RnPlan (rename-local-plan ctx path (as usize (x 'start))
+                                               (rp-arena-text (str "RNM" g-k))))
+              (if (rn-plan-ok? p)
+                (do (conj plans p)
+                    (str-into map (p 'new) "\t" (p 'old) "\t" path "\n")
+                    (set! g-k (+ g-k 1)))
+                (do (set! g-refused (+ g-refused 1))
+                    (classify ((p 'refusal) 'reason))
+                    (log-refusal path src (p 'refusal)))))))
+        (set! i (+ i 1)))
+      (let (cs:&(Vector usize) (rn-in-file rep (ref rep 'calls-by-file) path))
+        (dotimes (j (count cs))
+          (let (x:RRef ((ref rep 'refs) (cs j)))
+            (when (= (x 'role) "binder")
+              (if (= (x 'why) "macro")
+                (set! g-unspelled (+ g-unspelled 1))
+                (do (set! g-refused (+ g-refused 1))
+                    (classify (rp-arena-text (str "a binder with no span (:why " (x 'why) ")")))))))))
+      (when (>= skip 0) (skip-one plans skip path src))
+      (when (>= steal 0) (steal-one f plans steal path src))
+      (set! @e (edits-new))
+      (dotimes (j (count plans))
+        (set! g-sites (+ g-sites (as i64 (count (ref (plans j) 'sites)))))
+        (rename-edits-add e (plans j)))
+      (write-out out path src e)
+      (drop e))))
+
+; MAP's lines as fresh name → (old name, path).
+(defstruct MapEntry fresh:StrView old:StrView path:StrView)
+
+(defn read-map (path:StrView):&(Vector MapEntry)
+  (let (v:&(Vector MapEntry) (new (Vector MapEntry) heap)
+        text:StrView (read-src path)
+        it:LineIter (strview-lines &text))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (match (strview-find-byte &line 9)
+          ((some a)
+            (let (rest:StrView (strview-drop-bytes line (+ a 1)))
+              (match (strview-find-byte &rest 9)
+                ((some b) (conj v (MapEntry (strview-take-bytes line a) (strview-take-bytes rest b)
+                                            (strview-drop-bytes rest (+ b 1)))))
+                (none 0))))
+          (none 0))))
+    (return v)))
+
+(defn map-index (v:&(Vector MapEntry)):&(HashMap Symbol usize)
+  (let (h:&(HashMap Symbol usize) (new (HashMap Symbol usize) heap))
+    (dotimes (i (count v)) (assoc h (symbol-intern ((v i) 'fresh)) i))
+    (return h)))
+
+(defn ir-char? (c:i32):bool
+  (return (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57)) (= c 95))))
+
+; The compiler's local-name spelling in IR (src/format.nuc ir-name-token).
+(defn ir-token (out:&String name:StrView):void
+  (when (and (> (name 'len) 0) (>= (aref (name 'data) 0) 48) (<= (aref (name 'data) 0) 57))
+    (str-into out "_"))
+  (dotimes (i (as i64 (name 'len)))
+    (let (c:i32 (as i32 (aref (name 'data) i)))
+      (cond (= c 63) (str-into out "_QMARK")
+            (= c 33) (str-into out "_BANG")
+            true (str-into out (edit-slice name (as usize i) (as usize (+ i 1))))))))
+
+; Every `RNM<digits>` token of `text` the map names, spelled by `ir` as IR or as source.
+(defn unmap-text (out:&String text:StrView es:&(Vector MapEntry) h:&(HashMap Symbol usize) ir:bool):void
+  (let (n:usize (text 'len)
+        i:usize 0
+        mapped:i64 0)
+    (while (< i n)
+      (let (start:bool (if ir
+                         (and (= (aref (text 'data) (as i64 i)) 37)
+                              (strview-has-prefix (strview-drop-bytes text (+ i 1)) "RNM"))
+                         (and (strview-has-prefix (strview-drop-bytes text i) "RNM")
+                              (or (= i 0) (rn-boundary? (as i32 (aref (text 'data) (as i64 (- i 1))))))))
+            b:usize (if ir (+ i 1) i)
+            j:usize (+ b 3))
+        (if (not start)
+          (do (str-into out (edit-slice text i (+ i 1)))
+              (set! i (+ i 1)))
+          (do (while (and (< j n) (>= (aref (text 'data) (as i64 j)) 48) (<= (aref (text 'data) (as i64 j)) 57))
+                (set! j (+ j 1)))
+              (let (tok:StrView (edit-slice text b j)
+                    ends:bool (or (= j n) (if ir
+                                            (not (ir-char? (as i32 (aref (text 'data) (as i64 j)))))
+                                            (rn-boundary? (as i32 (aref (text 'data) (as i64 j)))))))
+                (match (get h (symbol-intern tok))
+                  ((some k)
+                    (if ends
+                      (do (if ir
+                            (do (str-into out "%") (ir-token out ((es k) 'old)))
+                            (str-into out ((es k) 'old)))
+                          (set! mapped (+ mapped 1)))
+                      (str-into out (edit-slice text i j))))
+                  (none (str-into out (edit-slice text i j))))
+                (set! i j))))))))
+
+(defn unmap-file (mapf:StrView in:StrView outp:StrView ir:bool):void
+  (let (es:&(Vector MapEntry) (read-map mapf)
+        h:&(HashMap Symbol usize) (map-index es)
+        text:StrView (read-src in)
+        r:&String (alloca String))
+    (init r)
+    (unmap-text r text es h ir)
+    (match (rw-write-file outp (string-as-view r))
+      ((err e) (fail (str "cannot write " outp)))
+      ((ok) (do)))
+    (drop r)))
+
+(defn back-file (ctx:&RnCtx path:StrView out:StrView es:&(Vector MapEntry)):void
+  (let (src:StrView (read-src path))
+    (when (= (src 'len) 0) (fail (str path ": cannot read the file")) (return))
+    (let (lr:Refusal (rename-file-load ctx path src))
+      (when (> ((lr 'reason) 'len) 0) (fail (str path ": " (lr 'reason))) (return)))
+    (let (rep:&Report (ctx 'rep)
+          rs:&(Vector usize) (rn-in-file rep (ref rep 'by-file) path)
+          byname:&(HashMap Symbol usize) (new (HashMap Symbol usize) heap)
+          e:&Edits (alloca Edits))
+      (set! @e (edits-new))
+      (dotimes (i (count rs))
+        (let (x:RRef ((ref rep 'refs) (rs i)))
+          (when (and (= (x 'role) "binder") (strview-has-prefix (x 'name) "RNM"))
+            (assoc byname (symbol-intern (x 'name)) (rs i)))))
+      (dotimes (k (count es))
+        (let (m:MapEntry (es k))
+          (when (= (m 'path) path)
+            (match (get byname (symbol-intern (m 'fresh)))
+              (none (do (set! g-refused (+ g-refused 1)) (classify "the renamed binder has no record")))
+              ((some j)
+                (let (x:RRef ((ref rep 'refs) j)
+                      p:&RnPlan (rename-local-plan ctx path (as usize (x 'start)) (m 'old)))
+                  (if (rn-plan-ok? p)
+                    (do (set! g-k (+ g-k 1))
+                        (set! g-sites (+ g-sites (as i64 (count (ref p 'sites)))))
+                        (rename-edits-add e p))
+                    (do (set! g-refused (+ g-refused 1))
+                        (classify ((p 'refusal) 'reason))
+                        (log-refusal path src (p 'refusal))))))))))
+      (write-out out path src e)
+      (drop e))))
+
+(defn files-from (argc:i32 argv:ptr i0:i32):&(Vector StrView)
+  (let (v:&(Vector StrView) (new (Vector StrView) heap)
+        i:i32 i0)
+    (while (< i argc) (conj v (arg argv i)) (set! i (+ i 1)))
+    (return v)))
+
+(defn write-log (path:StrView):void
+  (let (s:&String (alloca String))
+    (init s)
+    (dotimes (i (count g-log)) (str-into s (g-log i) "\n"))
+    (match (rw-write-file path (string-as-view s))
+      ((err e) (fail (str "cannot write " path)))
+      ((ok) (do)))))
+
+(defn main (argc:i32 argv:ptr):int
+  (when (< argc 2) (eprint "usage: rename-sweep forward|ir|back|unmap ...\n") (return 2))
+  (let (mode:StrView (arg argv 1))
+    (cond (and (= mode "forward") (>= argc 5))
+            (let (skip:i64 -1
+                  steal:i64 -1
+                  i:i32 5)
+              (while (and (< (+ i 1) argc) (strview-has-prefix (arg argv i) "--"))
+                (let (v:i64 (rn-digits (arg argv (+ i 1))))
+                  (if (= (arg argv i) "--skip") (set! skip v) (set! steal v)))
+                (set! i (+ i 2)))
+              (let (files:&(Vector StrView) (files-from argc argv i))
+                (when-some (rep (load-report (arg argv 2) files))
+                  (let (ctx:&RnCtx (rename-ctx-new rep false)
+                        map:&String (alloca String)
+                        mp:String (str (arg argv 4) ".refusals"))
+                    (init map)
+                    (dotimes (k (count files)) (forward-file ctx (files k) (arg argv 3) map skip steal))
+                    (match (rw-write-file (arg argv 4) (string-as-view map))
+                      ((err e) (fail (str "cannot write " (arg argv 4))))
+                      ((ok) (do)))
+                    (write-log (string-as-view &mp))
+                    (print "renamed " g-k " locals at " g-sites " sites; refused " g-refused
+                           "; " g-unspelled " expansion-made binders not in the text")
+                    (when (>= (+ skip steal) -1) (print "; misdirection candidates " g-candidates))
+                    (print "\n")
+                    (print-classes)))))
+          (and (= mode "back") (>= argc 5))
+            (let (files:&(Vector StrView) (files-from argc argv 5))
+              (when-some (rep (load-report (arg argv 2) files))
+                (let (ctx:&RnCtx (rename-ctx-new rep false)
+                      es:&(Vector MapEntry) (read-map (arg argv 3))
+                      mp:String (str (arg argv 3) ".back-refusals"))
+                  (dotimes (k (count files)) (back-file ctx (files k) (arg argv 4) es))
+                  (write-log (string-as-view &mp))
+                  (print "renamed back " g-k " of " (count es) " at " g-sites " sites; refused " g-refused "\n")
+                  (print-classes))))
+          (and (= mode "ir") (= argc 5)) (unmap-file (arg argv 2) (arg argv 3) (arg argv 4) true)
+          (and (= mode "unmap") (= argc 5)) (unmap-file (arg argv 2) (arg argv 3) (arg argv 4) false)
+          true (do (eprint "usage: rename-sweep forward|ir|back|unmap ...\n") (return 2))))
+  (return (if (= g-failures 0) 0 1)))

@@ -3940,3 +3940,248 @@ With RF-8, Stage 26 is built through RF-8.
 - **Python scripts:** `list-api-sweep.py` and `ptr-sweep.py` are deleted;
   `sugar-sweep.py` stays (Q6).
 
+## Stage 26 — RF-7 rulings and RR-0 (2026-10-18)
+
+The user ruled on RF-7's questions:
+- a compiler report mode with an unstable EDN format is acceptable for now;
+- the form stack is prototyped in RR-2;
+- a rename refuses when an occurrence has no record;
+- a global rename's unit is the set of roots the caller names;
+- RR-0 lands in Stage 26;
+- operand-role declarations for macros are deferred.
+
+RR-0 is built: `desugar` compares against the rest it was given, so an
+unchanged list keeps its identity. In the self-compile, copied expansions
+fall from 28,565 to 915, and those 915 are all real changes. Bootstrap is a
+fixed point; `make test` is 1508/5 (the known 5); the IR snapshot (3286) and
+the `--dump-ast` corpus (1815) are byte-identical. RR-1 … RR-5 are a later
+stage.
+
+## Stage 26 — RR-1 … RR-5 moved into this stage (2026-10-18)
+
+The user moved the resolution work, RR-1 … RR-5 in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RF-7,
+into Stage 26. That is `nucleusc --resolve`, then reference events, tracing
+through copies, `rename-local` and the global rename. RR-1 starts now.
+
+## Stage 26 — RR-1: `nucleusc --resolve`, definitions (2026-10-18)
+
+`nucleusc --resolve FILE` compiles the unit as `--emit-llvm` does, discards
+the IR and writes an EDN report to stdout. The format is unstable and its first
+line is `{:record :report :version 1 …}`. RR-1 reports definitions only:
+- a `:file` record for each file the unit read;
+- a `:def` record for each top-level definer, with the byte span of its
+  name's chain segment 0 and its registry key (`qualify-name`, plus
+  `priv-key-use` for values).
+
+A definer that a macro produced carries the macro and the call's span. It gets
+the operand's span when exactly one operand spells the name, and otherwise no
+span.
+
+Only the emitting reads go through `read-syntax-all`, and ordinary builds are
+inert. `src/resolve.nuc` is new, and the compiler calls it from six hooks
+guarded by `g-resolve`. The format is in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §4.9 and
+the as-built record is in §8 RR-1.
+
+Gates:
+- bootstrap is a fixed point;
+- `make test` is 1514/5: the 6 new `rr1-*` units, and the known 5;
+- the headers are unchanged;
+- the IR snapshot (3286 artifacts) and the `--dump-ast` corpus (1818
+  artifacts) are byte-identical against RR-0's compiler;
+- self-compile time is 8.18 s against 8.19 s.
+
+The new census, `scripts/stage26/resolve-census.nuc`, ran over 225 reports.
+All 52,262 slot-table definers map to exactly one record. The 267 records
+with no span are all names a macro template made up (`edn-scalar-codec`,
+`derive-edn`, `deftest`'s gensyms). Seven deliberate breakages each fail the
+units, the census, or both. RR-2, the form-stack prototype for references, is
+next.
+
+## Stage 26 — RR-2: reference events (2026-10-18)
+
+`--resolve` now writes report version 2. Each name that emission resolved
+gets a `:ref` record, which carries:
+- a role: `:local`, `:binder`, `:global`, `:head`, `:type`, `:field`, `:arm`
+  or `:macro`;
+- the byte span of the name's chain segment, or `nil` with a `:why`;
+- its target: a local's binder span, or the registry key that a `:def`
+  joins on.
+
+The last line is a `:coverage` record.
+
+Placement uses a form stack. `emit-node` pushes a frame for each list
+(guarded by `g-resolve`), and a hook finds its atom among the top frame's
+elems. Sites where one atom fills two elems, or where the search cannot
+reach, name the elem themselves. A name the frame cannot place is never
+guessed: it is reported `:ambiguous`, `:absent`, `:macro`, `:instance` or
+`:generated`. The re-reads that resolve names speculatively are quiet regions
+(`node-type`, `gcheck`, `const-fold`, stamps, tier matching and the
+conformance checks). Records are deduplicated by line.
+
+The full as-built record is in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RR-2,
+and the format is in §4.9.
+
+Gates:
+- bootstrap is a fixed point;
+- `make test` is 1521/5: 7 new `rr2-*` units, and the known 5;
+- the headers are unchanged;
+- the IR snapshot (3286) and the `--dump-ast` corpus (1818) are
+  byte-identical against RR-1's compiler;
+- `--emit-llvm` self-compile is 8.223 s against 8.225 s;
+- `--resolve` is 8.34 s against 8.68 s.
+
+The census covered 225 reports, with 0 failures:
+- 202,643 distinct `:ref` records, every spanned one on its segment's name;
+- of the 188,750 symbol atoms in code, 127,607 have exactly one record and
+  none has two;
+- the rest are classed, with 218 marked as events the compiler never raises
+  (`move`, address-of places, designated fields, …).
+
+Nine deliberate breakages are each caught. RR-3, tracing through copies (the
+27% of records that are `:macro`), is next.
+
+## Stage 26 — RR-3: tracing through copies (2026-10-18)
+
+`--resolve` now writes report version 3. The compiler emits copies of what it
+read, and each record now follows its copy back to the source atom:
+- `desugar`'s copies;
+- generic instances, against their template;
+- closure bodies, where a capture is a `:local` targeting the outer binder;
+- the `set!`/`aref` rewrite;
+- macro expansions, traced by name to the call's one operand that spells the
+  name;
+- quasiquote template sites.
+
+A new `:via` slot names the copy each record was placed through.
+
+Events are now kept until the compile ends. Every occurrence at one span is
+one record. When copies disagree (two instances reaching different overloads,
+or a member of two stamped structs), the record keeps its span and is
+`:ambiguous`; it is never guessed.
+
+An expansion trace refuses any name that a body which ran for that expansion
+could have minted. That covers the macro's own templates, quotes and string
+literals, the macros nested inside it, `compile-time` blocks, and the program
+functions macro bodies call. Refusing that way closes RR-1's template-literal
+mistrace.
+
+Prescan lookups that emission never repeats (984 of 36,752 on the corpus) are
+written as `:why :prescan`. A union's `:kind` is now settled when the compile
+ends: a signature prescan used to report it as `:struct`.
+
+The as-built record is in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §8 RR-3,
+and the format is in §4.9.
+
+Gates:
+- bootstrap is a fixed point;
+- `make test` is 1528/5: 7 new `rr3-*` units, and the known 5;
+- the headers are unchanged;
+- the IR snapshot (3286) and the `--dump-ast` corpus (1818) are
+  byte-identical against RR-2's;
+- `--emit-llvm` is unchanged (RR-2 8.419 s, RR-3 8.287 s);
+- `--resolve` is RR-2 8.763 s, RR-3 9.072 s: +3.5%.
+
+The census on the same sources had 0 failures. Atoms with exactly one record
+rose from 127,607 to 139,779. Atoms inside macro calls fell from 9,785 to 361,
+inside generic templates from 2,370 to 6, and inside closure bodies from 204
+to 0. Seven breakages are each caught. RR-4 is next.
+
+## Stage 26 — RR-4: `rename-local` (2026-10-23)
+
+`nucleus.refactor` now reads a `--resolve` report and renames a local:
+`scripts/stage26/rename-local.nuc -- [--apply] [--root F] [--report F]
+PATH:LINE:COL NEW`. It runs the compiler for the report by default, and checks
+that a saved report is fresh. It refuses any report version but 3.
+
+The rename edits the binder and every record targeting it, at the name's
+bytes only, so chain sugar and sigils survive. It refuses wherever exactness
+is not proven:
+- an unrecorded, spanless or `:ambiguous` occurrence in scope (ruling 3);
+- capture of the new name, inward or outward, by generated code, or by a
+  macro's definition;
+- a non-local position;
+- a bad name.
+
+The gate found that a macro which quotes its operand (`defrewrite`'s hole
+names) makes a traced name observable. `src/resolve.nuc` now treats the
+spellings an expansion's own output holds as data like mints (§4.9 rule 3).
+This is inert outside `--resolve`, and the report stays version 3.
+
+Gates:
+- **The no-op.** Every renameable local of 226 units, the compiler as one
+  51-file unit among them, was renamed to a fresh name in one pass:
+  - 20,214 renamed at 78,655 sites, and 552 refused, by class in §8 RR-4;
+  - IR equal modulo the names in 226 of 226 units;
+  - rename and back byte-identical everywhere;
+  - 220 misdirections all caught: 175 do not compile, 45 have different IR.
+- **Tests.** 14 `rr4-*` units; `make test` is 1542 passed and 5 failed (the
+  known datalayout five).
+- **Bootstrap.** stage1 == stage2, and `boot/` is unchanged.
+- **Headers.** `refactor.nuch` and `refactor.h` are regenerated, and all 99
+  match.
+- **Output neutrality.**
+  - The IR snapshot (3286) and the `--dump-ast` corpus (1818) are
+    byte-identical.
+  - The census has 0 failures. On RR-3's sources only `ptr-sweep`'s two
+    binders change.
+- **Breakages.** 14 breakages, each caught. Three units were added because a
+  breakage first passed.
+
+RR-5 (global rename within caller-named roots) is next. The details are in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §4.10 and
+§8 RR-4.
+
+## Stage 26 — RR-5: `rename-global` (2026-10-23)
+
+`nucleus.refactor` now renames a top-level definition across the units the
+caller names. The command is `scripts/stage26/rename-global.nuc -- [--apply]
+--root F... PATH:LINE:COL NEW`; without `--apply` it is a dry run. It plans
+against one `--resolve` report per root, and the roots must agree on the
+definition's key. Qualifiers are kept, and a union's arm constructors are
+renamed with it. It never edits a `.nuch`; it lists the committed headers to
+regenerate instead.
+
+It refuses wherever exactness is not proven:
+- an unrecorded or `:ambiguous` occurrence;
+- a site outside the writable set;
+- any collision: a definition in any namespace, a local that would capture, a
+  link name, or a symbol in a root's IR;
+- the core tier: the prelude, names the compiler's source spells, and `:host`
+  globals;
+- `import-only` and `export` lists;
+- protocols, `extern`s, and definitions a macro call made.
+
+The report is now version 4: `:def` gains `:link`, the emitted symbol, and
+`:host`, true when macro bodies share the compiler's own copy. `rename-local`
+reads version 4. The no-op gate found several `--resolve` gaps, which are
+fixed at the lowering (§4.11). Each fix is gated on `--resolve`, so ordinary
+output is byte-identical.
+
+Gates:
+- **The no-op.** Every renameable definition of 228 units, the compiler as one
+  51-file unit among them, was renamed to a fresh name:
+  - 25,597 renamed at 117,706 sites;
+  - IR equal modulo link names in 228 of 228 units;
+  - rename and back byte-identical everywhere;
+  - 143 misdirections, all caught: 92 do not compile, 51 have different IR.
+- **Multi-root.** A rename across eight roots has equal IR and returns to the
+  original bytes.
+- **Library headers.** A library rename, then `check-headers.sh --fix`, then
+  `make test`: 1552/5.
+- **Tests.** 13 `rr5-*` units; `make test` is 1555 passed and 5 failed (the
+  known datalayout five).
+- **Bootstrap.** stage1 == stage2, and `boot/` is unchanged.
+- **Headers.** All 99 match.
+- **Output neutrality.** The IR snapshot (3286) and the `--dump-ast` corpus
+  (1818) are byte-identical. The census has 0 failures. `--emit-llvm` time is
+  unchanged.
+- **Breakages.** 10 breakages, each caught.
+
+With RR-5, all of Stage 26 (RF-0 … RF-8, RR-0 … RR-5) is built. RF-6's one
+IR-snapshot difference still awaits review. The details are in
+[stage26-refactoring/overview.md](stage26-refactoring/overview.md) §4.11 and
+§8 RR-5, which ends with the stage's closing state.

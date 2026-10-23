@@ -1594,7 +1594,15 @@
 
 ; generic-resolve's three tiers; null when none resolves, with the reason a
 ; diagnostic needs left in `out-infer` / `out-cfail`.
+; `--resolve`: matching re-reads method signatures, which are not references at the call.
 (defn generic-resolve-tiers (g:?&Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:?&Type
+                             out-infer:&Symbol out-cfail:&i32):?&Method
+  (resolve-quiet-enter)
+  (let (r:?&Method (generic-resolve-tiers-in g argtypes arg-nodes nargs line want out-infer out-cfail))
+    (resolve-quiet-leave)
+    (return r)))
+
+(defn generic-resolve-tiers-in (g:?&Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:?&Type
                              out-infer:&Symbol out-cfail:&i32):?&Method
   (let (gg:ptr:Generic g
         found:?&Method null)
@@ -2774,7 +2782,9 @@
     ; Stage 15 B3′: a retained conformance arg is a stored canonical spelling —
     ; a key, read back in a file that may not be the one that wrote it.
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (t:ref:Type (parse-type-from-node (as ptr n) line))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return t))))
 
@@ -3130,7 +3140,9 @@
   (when (= ptn null) (return null))
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (r:?&Type (resolve-param-type-bound-in ptn tyvars bound ntv line))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return r))))
 
@@ -3367,7 +3379,9 @@
 (defn generic-instantiate (g:?&Generic m:?&Method bound:ptr argtypes:ptr nargs:i32 line:i32):&Method
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (r:ref:Method (generic-instantiate-in g m bound argtypes nargs line))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return r))))
 
@@ -3458,6 +3472,7 @@
                                 (fstr "while instantiating " mangled " (requested at "
                                       g-source-path ":" line ")")))
           (set! (newm 'ir-name) mangled)
+          (set! (job 'src) (mm 'body))
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
           (set! (newm 'origin-template) mm)
@@ -3788,6 +3803,11 @@
 ; Returns the node's (possibly abstract) type, or null when not modeled. Aborts
 ; with a def-time diagnostic on an operation the constraints do not provide.
 (defn gcheck (n:?&Node scope:ref:Scope m:&Method):ptr
+  (when (and (!= g-resolve 0) (= g-rs-quiet 0))
+    (resolve-quiet-enter)
+    (let (t:ptr (gcheck n scope m))
+      (resolve-quiet-leave)
+      (return t)))
   (when (= n null) (return ty-void))
   (let (nn:?&Node n)
     (case (nn 'kind)
@@ -4320,7 +4340,9 @@
         (when (not (symbol-none? (job 'ns))) (set! g-current-ns (job 'ns)))
         (when (not (symbol-none? (job 'path))) (set! g-source-path (job 'path)))
         (set! g-file-imports (job 'imports))
-        (emit-defn (job 'form))
+        (let (rsd:usize (resolve-push-barrier (job 'form) (job 'src) (job 'path)))
+          (emit-defn (job 'form))
+          (resolve-pop-to rsd))
         (set! g-file-imports save-imports)
         (set! g-source-path save-path)
         (set! g-current-ns save-ns)
@@ -5013,7 +5035,9 @@
   ; type's CANONICAL spelling and re-parses the result.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (r:i32 (derive-closure-conformance-in cvtype proto line))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return r))))
 
@@ -5608,7 +5632,9 @@
 ; permission rather than a global relaxation.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (r:i32 (proto-sigs-resolve-in proto typename pspellings line notes))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return r))))
 
@@ -6005,7 +6031,10 @@
 (defn tmpl-conformance-check-one (c:?&TmplConformance st:ptr iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    ; `--resolve`: the check resolves minted instance spellings, not source references.
+    (resolve-quiet-enter)
     (tmpl-conformance-check-one-in c st iname arg-spellings nargs line)
+    (resolve-quiet-leave)
     (set! g-type-key-ok saved)))
 
 (defn tmpl-conformance-check-one-in (c:?&TmplConformance st:ptr iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
@@ -6329,10 +6358,12 @@
           ; stripped), and re-deriving it by looking the spelling up a second time
           ; is what would ask the scope question twice and get two answers.
           ; Identity under `user`.
+          rsp:usize (resolve-push-type-arg form 2)
           proto-spelling:Symbol (extend-proto-name proto-node
                                                  (as &ptr &proto-args)
                                                  (as &i32 &proto-nargs)
                                                  (node-line (as ptr proto-node) (ff 'line)))
+          rss:usize (do (resolve-pop-to rsp) (resolve-push-type-arg form 1))
           proto-rec:?&Protocol (protocol-lookup proto-spelling)
           ; Unresolved names pass through as written: a blanket protocol
           ; (`Any`/`Struct`), `Valid`, and the spelling a diagnostic must quote.
@@ -6340,6 +6371,7 @@
                             proto-spelling
                             (-> proto-rec (as &Protocol _) (_ 'name)))
           typed:bool (extend-subject-typed type-node (ff 'line)))
+      (resolve-pop-to rss)
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
@@ -6356,12 +6388,20 @@
               (die-at sline "extend: template subject name must be a symbol"))
             ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
             ; bare-keyed template registry. Identity under `user`.
-            (let (app:?&Node (extend-subject-template-app (as ?&Node type-node) sline &depth)
+            (let (rsd:usize (resolve-push-type-arg form 1)
+                  app:?&Node (extend-subject-template-app (as ?&Node type-node) sline &depth)
+                  rsd2:i32 (do (resolve-pop-to rsd) 0)
                   st:ptr (if (= app null) null (as ptr (node-template-of app)))
                   ut:ptr (if (= app null) null (as ptr (node-union-template-of app))))
               (when (and (= st null) (= ut null))
                 (die-at sline
                   (fstr "extend: '" (thead 's) "' is not a struct or union template")))
+              ; No instance carries the subject's spelling back, so the template is named here.
+              (when (and (!= g-resolve 0) (!= st null) (= (node-kind (node-first app)) NODE-SYM))
+                (let (rsn:usize (resolve-push-type-arg form 1))
+                  (resolve-note-type ((unsafe/cast &Node (node-first app)) 's) "struct"
+                                     ((unsafe/cast &StructTemplate st) 'name))
+                  (resolve-pop-to rsn)))
               (let (proto:?&Protocol proto-rec
                     tmpl:ptr (if (!= st null) st ut)
                     base-ntv:i32 (if (!= st null) ((unsafe/cast &StructTemplate st) 'ntv) ((unsafe/cast &UnionTemplate ut) 'ntv))
@@ -6544,7 +6584,9 @@
           (if typed
             (set! typename (extend-subject-key type-node (ff 'line)))
             (when (= (symbol-contains-byte (type-node 's) 58) false)
-              (parse-type-name (type-node 's) (node-line (as ptr type-node) (ff 'line)))))
+              (let (rsd:usize (resolve-push-type-arg form 1))
+                (parse-type-name (type-node 's) (node-line (as ptr type-node) (ff 'line)))
+                (resolve-pop-to rsd))))
           (when (!= proto-nargs (-> proto (unsafe/cast &Protocol _) (_ 'num-params)))
             (die-at (node-line (as ptr proto-node) (ff 'line))
               (fstr "extend: protocol '" proto-name "' expects a different number of parameters")))
@@ -6553,9 +6595,11 @@
             (when (> proto-nargs 0)
               (set! pspellings (arena-alloc (* proto-nargs (ptr-bytes))))
               (dotimes (i proto-nargs)
-                (set! (aref (unsafe/cast &Symbol pspellings) i) (type-spelling (parse-type-from-node
-                                        (aref (unsafe/cast &ptr proto-args) i)
-                                        (node-line (as ptr proto-node) (ff 'line)))))))
+                (let (rsd:usize (resolve-push-type-arg proto-node (+ i 1)))
+                  (set! (aref (unsafe/cast &Symbol pspellings) i) (type-spelling (parse-type-from-node
+                                          (aref (unsafe/cast &ptr proto-args) i)
+                                          (node-line (as ptr proto-node) (ff 'line)))))
+                  (resolve-pop-to rsd))))
             (verify-conformance-params typename proto-name pspellings proto-nargs (ff 'line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
@@ -7220,6 +7264,11 @@
     (return null)))
 
 (defn node-type (n:?&Node scope:ref:Scope):?&Type
+  (when (and (!= g-resolve 0) (= g-rs-quiet 0))
+    (resolve-quiet-enter)
+    (let (t:?&Type (node-type n scope))
+      (resolve-quiet-leave)
+      (return t)))
   (when (= n null) (return ty-void))
   (let (nn:?&Node n)
     (case (nn 'kind)

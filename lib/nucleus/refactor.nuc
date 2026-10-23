@@ -21,6 +21,11 @@
 (import-use nucleus.read)
 (import-use nucleus.syntax)
 (import-use nucleus.slots)
+(import-use nucleus.hashmap)
+(import-use nucleus.intern-str)
+(import-use nucleus.string-split)
+(import-use nucleus.edn)
+(import-use nucleus.process)
 
 (deferror edit-overlap "two edits overlap")
 (deferror edit-out-of-range "an edit lies outside the text it applies to")
@@ -1399,3 +1404,2146 @@
        (let ((~rs &Rules) (rw-rules-new ~(rw-str-node (name 's))))
          ~@adds
          (return ~rs)))))
+
+; ---------------------------------------------------------------------------
+; Resolution reports (§4.9) and rename-local (§4.10)
+; ---------------------------------------------------------------------------
+
+(defconst REPORT-VERSION 4)
+
+; A `:ref` record; an absent integer is -1 and absent text "". A local's
+; target is `tfile`/`tstart`/`tend`, any other's `tkey`.
+(defstruct RRef
+  file:StrView start:i64 end:i64 name:StrView role:StrView kind:StrView
+  tfile:StrView tstart:i64 tend:i64 tkey:StrView why:StrView macro:StrView
+  cstart:i64 cend:i64 cline:i64 ccol:i64 via:StrView)
+
+(defstruct RDef
+  file:StrView start:i64 end:i64 name:StrView ns:StrView key:StrView kind:StrView form:StrView link:StrView
+  macro:StrView private:bool host:bool)
+
+(defstruct Report
+  unit:StrView
+  files:(Vector StrView)
+  defs:(Vector RDef)
+  refs:(Vector RRef)
+  ; Span key → the :ref there; -2 when two are (a report defect, refused).
+  spans:(HashMap Symbol i64)
+  ; A binder's span key → every :ref whose target it is.
+  targets:(HashMap Symbol &(Vector usize))
+  ; Spanless :refs: by call span key, and by name when they locate no call.
+  calls:(HashMap Symbol &(Vector usize))
+  loose:(HashMap Symbol &(Vector usize))
+  ; By file: its spanned :refs and :defs, and its spanless ones with a call.
+  by-file:(HashMap Symbol &(Vector usize))
+  defs-by-file:(HashMap Symbol &(Vector usize))
+  calls-by-file:(HashMap Symbol &(Vector usize))
+  def-names:(HashMap Symbol usize)
+  macros:(HashMap Symbol usize))
+
+(defunion ReportResult (ok v:&Report) (err e:StrView))
+
+(defn rp-text (m:?&Node k:StrView):StrView
+  (let (v:?&Node (edn-get m k)
+        t:i32 (edn-kind v))
+    (when (or (= t EDN-STR) (= t EDN-KEYWORD) (= t EDN-SYM))
+      (return (symbol-as-view ((unsafe/cast &Node v) 's))))
+    (return "")))
+
+(defn rp-int (m:?&Node k:StrView):i64
+  (let (v:?&Node (edn-get m k))
+    (when (= (edn-kind v) EDN-INT) (return ((unsafe/cast &Node v) 'i)))
+    (return -1)))
+
+(defn rp-bool (m:?&Node k:StrView):bool
+  (let (v:?&Node (edn-get m k))
+    (return (and (= (edn-kind v) EDN-BOOL) (= (symbol-as-view ((unsafe/cast &Node v) 's)) "true")))))
+
+(defn rp-key (path:StrView start:i64 end:i64):Symbol
+  (let (s:String (str path "\n" start "\n" end)
+        k:Symbol (symbol-intern (string-as-view &s)))
+    (drop &s)
+    (return k)))
+
+(defn rp-arena-text (s:String):StrView
+  (return (edit-arena-str &s)))
+
+(defn rp-push (m:&(HashMap Symbol &(Vector usize)) k:Symbol i:usize):void
+  (match (get m k)
+    ((some v) (conj v i))
+    (none (let (v:&(Vector usize) (unsafe/cast &(Vector usize) (arena-alloc (sizeof (Vector usize)))))
+            (init v (handle g-arena))
+            (conj v i)
+            (assoc m k v)))))
+
+(defn rp-list (m:&(HashMap Symbol &(Vector usize)) k:Symbol):?&(Vector usize)
+  (match (get m k)
+    ((some v) (return v))
+    (none (return null))))
+
+(defn rp-ref (m:?&Node):RRef
+  (let (t:?&Node (edn-get m "target")
+        local:bool (= (edn-kind t) EDN-MAP))
+    (return (RRef (rp-text m "file") (rp-int m "start") (rp-int m "end") (rp-text m "name")
+                  (rp-text m "role") (rp-text m "kind")
+                  (if local (rp-text t "file") "") (if local (rp-int t "start") -1)
+                  (if local (rp-int t "end") -1) (if local "" (rp-text m "target"))
+                  (rp-text m "why") (rp-text m "macro") (rp-int m "call-start") (rp-int m "call-end")
+                  (rp-int m "call-line") (rp-int m "call-col") (rp-text m "via")))))
+
+(defn rp-add-ref (r:&Report m:?&Node):void
+  (let (x:RRef (rp-ref m)
+        i:usize (count (ref r 'refs)))
+    (conj (ref r 'refs) x)
+    (cond (>= (x 'start) 0)
+            (let (k:Symbol (rp-key (x 'file) (x 'start) (x 'end)))
+              (match (get (ref r 'spans) k)
+                ((some j) (assoc (ref r 'spans) k -2))
+                (none (assoc (ref r 'spans) k (as i64 i))))
+              (rp-push (ref r 'by-file) (symbol-intern (x 'file)) i))
+          (>= (x 'cstart) 0)
+            (do (rp-push (ref r 'calls) (rp-key (x 'file) (x 'cstart) (x 'cend)) i)
+                (rp-push (ref r 'calls-by-file) (symbol-intern (x 'file)) i))
+          true (rp-push (ref r 'loose) (symbol-intern (x 'name)) i))
+    (when (>= (x 'tstart) 0)
+      (rp-push (ref r 'targets) (rp-key (x 'tfile) (x 'tstart) (x 'tend)) i))))
+
+(defn rp-add-def (r:&Report m:?&Node):void
+  (let (d:RDef (RDef (rp-text m "file") (rp-int m "start") (rp-int m "end") (rp-text m "name")
+                     (rp-text m "ns") (rp-text m "key") (rp-text m "kind") (rp-text m "form") (rp-text m "link")
+                     (rp-text m "macro") (rp-bool m "private") (rp-bool m "host"))
+        i:usize (count (ref r 'defs)))
+    (conj (ref r 'defs) d)
+    (assoc (ref r 'def-names) (symbol-intern (d 'name)) i)
+    (when (>= (d 'start) 0) (rp-push (ref r 'defs-by-file) (symbol-intern (d 'file)) i))
+    (when (= (d 'kind) "macro") (assoc (ref r 'macros) (symbol-intern (d 'key)) i))))
+
+(defn report-new ():&Report
+  (let (r:&Report (unsafe/cast &Report (arena-alloc (sizeof Report))))
+    (set! (r 'unit) "")
+    (init (ref r 'files) (handle g-arena))
+    (init (ref r 'defs) (handle g-arena))
+    (init (ref r 'refs) (handle g-arena))
+    (init (ref r 'spans) (handle g-arena))
+    (init (ref r 'targets) (handle g-arena))
+    (init (ref r 'calls) (handle g-arena))
+    (init (ref r 'loose) (handle g-arena))
+    (init (ref r 'by-file) (handle g-arena))
+    (init (ref r 'defs-by-file) (handle g-arena))
+    (init (ref r 'calls-by-file) (handle g-arena))
+    (init (ref r 'def-names) (handle g-arena))
+    (init (ref r 'macros) (handle g-arena))
+    (return r)))
+
+; Whether `line` is a file's :ref that no file in `only` appears in, as its file
+; or its target's, which a reader of those files can skip unparsed.
+(defn rp-skip? (line:StrView needles:&(Vector StrView)):bool
+  (let (i:usize 0)
+    (when (or (= (count needles) 0) (not (strview-has-prefix line "{:record :ref :file \""))) (return false))
+    (while (< i (count needles))
+      (when (strview-contains line (needles i)) (return false))
+      (set! i (+ i 1)))
+    (return true)))
+
+; A `--resolve` report's text. The version must be REPORT-VERSION, and the
+; :coverage record must close it: a truncated report is refused, not read.
+(defn report-parse (text:StrView):ReportResult
+  (let (all:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
+    (init all (handle g-arena))
+    (return (report-parse-for text all))))
+
+; The same, keeping only the :ref records of the files in `only` (all when it is
+; empty) and those that name no file.
+(defn report-parse-for (text:StrView only:&(Vector StrView)):ReportResult
+  (let (r:&Report (report-new)
+        it:LineIter (strview-lines &text)
+        n:i64 0
+        last:StrView ""
+        needles:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView))))
+        j:usize 0)
+    (init needles (handle g-arena))
+    (while (< j (count only))
+      (conj needles (rp-arena-text (str ":file \"" (only j) "\"")))
+      (set! j (+ j 1)))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it)
+            skip:bool (and (> (line 'len) 0) (rp-skip? line needles)))
+        (when skip
+          (set! n (+ n 1))
+          (set! last "ref"))
+        (when (and (> (line 'len) 0) (not skip))
+          (set! n (+ n 1))
+          (match (edn-parse line)
+            ((err e) (return (err (rp-arena-text (str "line " n " of the report is not EDN")))))
+            ((ok m)
+              (let (kind:StrView (rp-text m "record"))
+                (cond (= n 1)
+                        (do (when (!= kind "report")
+                              (return (err "not a --resolve report: the first record is not :report")))
+                            (when (!= (rp-int m "version") REPORT-VERSION)
+                              (return (err (rp-arena-text (str "the report is version " (rp-int m "version")
+                                                               "; this library reads version " REPORT-VERSION)))))
+                            (set! (r 'unit) (rp-text m "unit")))
+                      (= kind "file") (conj (ref r 'files) (rp-text m "file"))
+                      (= kind "def") (rp-add-def r m)
+                      (= kind "ref") (rp-add-ref r m)
+                      (!= kind "coverage")
+                        (return (err (rp-arena-text (str "line " n " of the report is an unknown record :" kind)))))
+                (set! last kind)))))))
+    (when (= n 0) (return (err "the report is empty")))
+    (when (!= last "coverage") (return (err "the report does not end with its :coverage record")))
+    (return (ok r))))
+
+; `compiler --resolve root`'s report, for the files in `only`: the compile and
+; the text it read are this one, so the spans cannot be stale.
+(defn report-run (compiler:StrView root:StrView only:&(Vector StrView)):ReportResult
+  (let (cmd:Command (command compiler))
+    (command-arg &cmd "--resolve")
+    (command-arg &cmd root)
+    (command-capture &cmd true)
+    (match (run &cmd)
+      ((err e) (do (drop &cmd)
+                   (return (err (rp-arena-text (str "cannot run " compiler))))))
+      ((ok o)
+        (let (out:Output o
+              code:i32 (exit-code (ref out 'status))
+              res:ReportResult (if (= code 0)
+                                 (report-parse-for (string-as-view (ref out 'out)) only)
+                                 (err (rp-arena-text (str compiler " --resolve " root " failed (status " code "):\n"
+                                                          (string-as-view (ref out 'err)))))))
+          (drop &out)
+          (drop &cmd)
+          (return res))))))
+
+(defn report-reads? (r:&Report path:StrView):bool
+  (let (fs:&(Vector StrView) (ref r 'files)
+        i:usize 0)
+    (while (< i (count fs))
+      (when (= (fs i) path) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+; One file as the rename reads it. `strays` are its spanless :refs whose call
+; span is no form's, so no region can rule them out.
+(defstruct RnFile path:StrView src:StrView syn:&SynFile strays:(Vector usize))
+
+(defstruct RnCtx
+  rep:&Report
+  in-strings:bool
+  files:(HashMap Symbol &RnFile)
+  ; A macro's key → every spelling its definition holds.
+  spelled:(HashMap Symbol &(HashMap Symbol i64)))
+
+(defn rename-ctx-new (rep:&Report in-strings:bool):&RnCtx
+  (let (c:&RnCtx (unsafe/cast &RnCtx (arena-alloc (sizeof RnCtx))))
+    (set! (c 'rep) rep)
+    (set! (c 'in-strings) in-strings)
+    (init (ref c 'files) (handle g-arena))
+    (init (ref c 'spelled) (handle g-arena))
+    (return c)))
+
+; Where a rename stopped, and why; `at` is a byte offset of the file.
+(defstruct Refusal at:usize reason:StrView)
+
+(defstruct RnPlan
+  path:StrView old:StrView new:StrView
+  binder:SynSpan
+  sites:(Vector SynSpan)
+  refusal:Refusal)
+
+(defn rn-plan-ok? (p:&RnPlan):bool
+  (return (= (((p 'refusal) 'reason) 'len) 0)))
+
+(defn rn-kid-holding (ks:&(Vector &Syn) start:usize end:usize):?&Syn
+  (let (i:usize 0)
+    (while (< i (count ks))
+      (let (k:&Syn (ks i))
+        (when (and (<= (k 'start) start) (<= end (k 'end))) (return k)))
+      (set! i (+ i 1)))
+    (return null)))
+
+; The innermost Syn whose span holds [start, end).
+(defn rn-syn-at (f:&SynFile start:usize end:usize):?&Syn
+  (let (cur:?&Syn (rn-kid-holding (ref f 'forms) start end))
+    (while true
+      (if-some (c cur)
+        (let (k:?&Syn (rn-kid-holding (ref c 'kids) start end))
+          (if (= k null) (return c) (set! cur k)))
+        (return null)))
+    (return null)))
+
+(defn rn-src-at (f:&RnFile start:i64 end:i64):StrView
+  (when (or (< start 0) (< end start) (> end (as i64 ((f 'src) 'len)))) (return ""))
+  (return (edit-slice (f 'src) (as usize start) (as usize end))))
+
+(defn rn-in-file (rep:&Report m:&(HashMap Symbol &(Vector usize)) path:StrView):&(Vector usize)
+  (match (get m (symbol-intern path))
+    ((some v) (return v))
+    (none (let (v:&(Vector usize) (unsafe/cast &(Vector usize) (arena-alloc (sizeof (Vector usize)))))
+            (init v (handle g-arena))
+            (return v)))))
+
+; Every record of `path` must spell its :name where it says, or the report is
+; not of this text; a file the reader refuses cannot be renamed in either.
+(defn rn-file-load (ctx:&RnCtx path:StrView src:StrView):Refusal
+  (let (rep:&Report (ctx 'rep))
+    (match (read-syntax-all src)
+      ((err e) (return (Refusal 0 (rp-arena-text (str "the file does not read: line " (e 'line) ": " (e 'msg))))))
+      ((ok sf)
+        (let (f:&RnFile (unsafe/cast &RnFile (arena-alloc (sizeof RnFile)))
+              rs:&(Vector usize) (rn-in-file rep (ref rep 'by-file) path)
+              ds:&(Vector usize) (rn-in-file rep (ref rep 'defs-by-file) path)
+              cs:&(Vector usize) (rn-in-file rep (ref rep 'calls-by-file) path)
+              i:usize 0)
+          (set! (f 'path) path)
+          (set! (f 'src) src)
+          (set! (f 'syn) sf)
+          (init (ref f 'strays) (handle g-arena))
+          (while (< i (count rs))
+            (let (x:RRef ((ref rep 'refs) (rs i)))
+              (when (!= (rn-src-at f (x 'start) (x 'end)) (x 'name))
+                (return (Refusal (as usize (if (< (x 'start) 0) 0 (x 'start)))
+                                 (rp-arena-text (str "the report does not match the file: '" (x 'name)
+                                                     "' is not written here (a stale report?)"))))))
+            (set! i (+ i 1)))
+          (set! i 0)
+          (while (< i (count ds))
+            (let (d:RDef ((ref rep 'defs) (ds i)))
+              (when (!= (rn-src-at f (d 'start) (d 'end)) (d 'name))
+                (return (Refusal (as usize (d 'start))
+                                 (rp-arena-text (str "the report does not match the file: '" (d 'name)
+                                                     "' is not written here (a stale report?)"))))))
+            (set! i (+ i 1)))
+          (set! i 0)
+          (while (< i (count cs))
+            (let (x:RRef ((ref rep 'refs) (cs i)))
+              (when-some (s (rn-syn-at sf (as usize (x 'cstart)) (as usize (x 'cend))))
+                (when (or (!= (s 'start) (as usize (x 'cstart))) (!= (s 'end) (as usize (x 'cend))))
+                  (conj (ref f 'strays) (cs i))))
+              (when (= (rn-syn-at sf (as usize (x 'cstart)) (as usize (x 'cend))) null)
+                (conj (ref f 'strays) (cs i))))
+            (set! i (+ i 1)))
+          (assoc (ref ctx 'files) (symbol-intern path) f)
+          (return (Refusal 0 "")))))))
+
+(defn rn-file (ctx:&RnCtx path:StrView):?&RnFile
+  (match (get (ref ctx 'files) (symbol-intern path))
+    ((some f) (return f))
+    (none (return null))))
+
+; The file a macro's definition is in, read once.
+(defn rn-file-or-read (ctx:&RnCtx path:StrView):?&RnFile
+  (when-some (f (rn-file ctx path)) (return f))
+  (match (rw-read-file path)
+    ((err e) (return null))
+    ((ok t) (let (tx:String t)
+              (when (> (((rn-file-load ctx path (edit-arena-str &tx)) 'reason) 'len) 0) (return null))
+              (return (rn-file ctx path))))))
+
+; ---------------------------------------------------------------------------
+; Checking one binder
+; ---------------------------------------------------------------------------
+
+(defstruct RnScan
+  ctx:&RnCtx
+  f:&RnFile
+  old:StrView
+  new:StrView
+  region:&Syn
+  refusal:Refusal
+  ; Macro keys whose expansions sit in the region, with the offset to blame.
+  macros:(Vector Symbol)
+  macro-at:(Vector usize))
+
+(defn rn-refuse (sc:&RnScan at:usize why:StrView):void
+  (when (= (((sc 'refusal) 'reason) 'len) 0) (set! (sc 'refusal) (Refusal at why))))
+
+(defn rn-refused? (sc:&RnScan):bool
+  (return (> (((sc 'refusal) 'reason) 'len) 0)))
+
+(defn rn-rec (sc:&RnScan i:usize):RRef
+  (return ((ref ((sc 'ctx) 'rep) 'refs) i)))
+
+; Where a symbol's name can end a token: the reader's delimiters, a chain
+; colon, and the sigils, so `&x`, `x:i32` and `x?` all count as holding `x`.
+(defn rn-boundary? (c:i32):bool
+  (return (not (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57))
+                   (= c 45) (= c 95) (= c 42) (= c 43) (= c 47) (= c 60) (= c 62) (= c 61) (= c 46)
+                   (= c 36) (= c 37) (= c 124) (>= c 128)))))
+
+; Whether `name` occurs in `t` as a token: text that is not read as code
+; (a discard, a program in a string) is searched as bytes.
+(defn rn-token-in? (t:StrView name:StrView):bool
+  (let (n:usize (name 'len)
+        i:usize 0)
+    (when (or (= n 0) (< (t 'len) n)) (return false))
+    (while (<= (+ i n) (t 'len))
+      (when (and (= (edit-slice t i (+ i n)) name)
+                 (or (= i 0) (rn-boundary? (as i32 (aref (t 'data) (as i64 (- i 1))))))
+                 (or (= (+ i n) (t 'len)) (rn-boundary? (as i32 (aref (t 'data) (as i64 (+ i n)))))))
+        (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+; Whether the reader could return `t` as one symbol: no space, bracket, quote or `;`.
+(defn rn-spellable? (t:StrView):bool
+  (dotimes (k (as i64 (t 'len)))
+    (let (c:i32 (as i32 (aref (t 'data) k)))
+      (when (or (<= c 32) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123) (= c 125) (= c 34) (= c 39)
+                (= c 59) (= c 96))
+        (return false))))
+  (return (> (t 'len) 0)))
+
+; Whether a string's value could be read as a symbol naming `name`, which a
+; macro may intern: the whole text, or one of its chain segments.
+(defn rn-spells? (t:StrView name:StrView):bool
+  (when (= t name) (return true))
+  (when (not (rn-spellable? t)) (return false))
+  (let (c:&Chain (chain-segments t))
+    (dotimes (i (as i64 (count (ref c 'segs))))
+      (when (= (chain-body c (as usize i)) name) (return true))))
+  (return false))
+
+; The occurrence of the old name at [b, e) has one record, with one meaning.
+(defn rn-check-old (sc:&RnScan b:usize e:usize):void
+  (let (rep:&Report ((sc 'ctx) 'rep)
+        j:i64 -1)
+    (match (get (ref rep 'spans) (rp-key ((sc 'f) 'path) (as i64 b) (as i64 e)))
+      ((some v) (set! j v))
+      (none 0))
+    (when (< j -1) (rn-refuse sc b "the report has two records for this occurrence") (return))
+    (when (< j 0)
+      (rn-refuse sc b (rp-arena-text (str "this '" (sc 'old) "' has no record: code the compiler did not emit,"
+                                          " data, or a name a macro moved without a trace")))
+      (return))
+    (let (x:RRef (rn-rec sc (as usize j))
+          local:bool (or (= (x 'role) "local") (= (x 'role) "binder")))
+      (cond (= (x 'why) "ambiguous")
+              (rn-refuse sc b (rp-arena-text (str "this '" (sc 'old) "' means different things in different"
+                                                  " copies of the code (:ambiguous)")))
+            (!= (x 'why) "")
+              (rn-refuse sc b (rp-arena-text (str "this '" (sc 'old) "' has a record with :why " (x 'why))))
+            (and local (< (x 'tstart) 0))
+              (rn-refuse sc b (rp-arena-text (str "this '" (sc 'old) "' is a local whose binder has no span")))))))
+
+(defn rn-scan-atom (sc:&RnScan s:&Syn in-macro:bool):void
+  (let (k:i32 (node-kind (s 'node)))
+    (when (not (or (= k NODE-SYM) (= k NODE-KEYWORD))) (return))
+    (let (c:&Chain (chain-segments (syn-text ((sc 'f) 'syn) s)))
+      (dotimes (i (as i64 (count (ref c 'segs))))
+        (let (g:ChainSeg (chain-seg c (as usize i))
+              body:StrView (chain-body c (as usize i))
+              b:usize (+ (s 'start) (g 'body))
+              e:usize (+ (s 'start) (g 'end))
+              b0:usize (+ (s 'start) (g 'start))
+              whole:StrView (if (and (= i 0) (!= (g 'start) (g 'body)))
+                              (edit-slice ((sc 'f) 'src) b0 e) ""))
+          (cond (= k NODE-KEYWORD)
+                  (when (and in-macro (or (= body (sc 'old)) (= body (sc 'new))))
+                    (rn-refuse sc b (rp-arena-text (str "a keyword in a macro call spells '" body
+                                                        "', and a macro may make a name of it"))))
+                (or (= body (sc 'new)) (= whole (sc 'new)))
+                  (rn-refuse sc b (rp-arena-text (str "'" (sc 'new) "' already occurs in the binder's scope")))
+                (= body (sc 'old)) (rn-check-old sc b e)
+                (= whole (sc 'old)) (rn-check-old sc b0 e)))))))
+
+(defn rn-scan-string (sc:&RnScan s:&Syn in-macro:bool):void
+  (when (not (or in-macro ((sc 'ctx) 'in-strings))) (return))
+  (when-some (ss (syn-string-source ((sc 'f) 'syn) s))
+    (let (t:StrView (ss 'text))
+      (cond (and in-macro (rn-spells? t (sc 'old)))
+              (rn-refuse sc (s 'start) (rp-arena-text (str "a string in a macro call spells '" (sc 'old)
+                                                            "', and a macro may make a name of it")))
+            (and in-macro (rn-spells? t (sc 'new)))
+              (rn-refuse sc (s 'start) (rp-arena-text (str "a string in a macro call spells '" (sc 'new)
+                                                            "', and a macro may make a name of it")))
+            (and ((sc 'ctx) 'in-strings) (or (rn-token-in? t (sc 'old)) (rn-token-in? t (sc 'new))))
+              (rn-refuse sc (s 'start) "the program in this string literal spells one of the names")))))
+
+(defn rn-note-macro (sc:&RnScan key:StrView at:usize):void
+  (when (> (key 'len) 0)
+    (conj (ref sc 'macros) (symbol-intern key))
+    (conj (ref sc 'macro-at) at)))
+
+; The spanless records whose call is form `s`: an ambiguous trace of the old
+; name or any use of the new one refuses, and each names a macro that ran here.
+(defn rn-scan-calls (sc:&RnScan s:&Syn):void
+  (let (rep:&Report ((sc 'ctx) 'rep))
+    (when-some (v (rp-list (ref rep 'calls) (rp-key ((sc 'f) 'path) (as i64 (s 'start)) (as i64 (s 'end)))))
+      (let (i:usize 0)
+        (while (< i (count v))
+          (rn-scan-call-rec sc (rn-rec sc (v i)) (s 'start))
+          (set! i (+ i 1)))))))
+
+(defn rn-scan-call-rec (sc:&RnScan x:RRef at:usize):void
+  (cond (and (= (x 'name) (sc 'old)) (= (x 'why) "ambiguous"))
+          (rn-refuse sc at (rp-arena-text (str "a macro expansion here uses '" (sc 'old)
+                                               "', and the compiler cannot tell which operand it came from")))
+        (and (= (x 'name) (sc 'old)) (rn-unbound-local? x))
+          (rn-refuse sc at (rp-arena-text (str "code the compiler or a macro wrote here reads a local '" (sc 'old)
+                                               "' whose binder it does not name")))
+        (= (x 'name) (sc 'new))
+          (rn-refuse sc at (rp-arena-text (str "code the compiler or a macro wrote here uses '" (sc 'new) "'"))))
+  (rn-note-macro sc (x 'macro) at)
+  (when (= (x 'role) "macro") (rn-note-macro sc (x 'tkey) at)))
+
+; A local or binder record with no binder span: it may be this local's.
+(defn rn-unbound-local? (x:RRef):bool
+  (return (and (or (= (x 'role) "local") (= (x 'role) "binder")) (< (x 'tstart) 0))))
+
+; Whether list `s` is a macro call, or may be one: its head has no record and
+; is no built-in form.
+(defn rn-macro-call? (sc:&RnScan s:&Syn):bool
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (when (or (!= (s 'kind) SYN-LIST) (= (count ks) 0)) (return false))
+    (let (h:&Syn (ks 0))
+      (when (or (!= (h 'kind) SYN-ATOM) (!= (node-kind (h 'node)) NODE-SYM)) (return false))
+      (let (c:&Chain (chain-segments (syn-text ((sc 'f) 'syn) h))
+            g:ChainSeg (chain-seg c 0)
+            rep:&Report ((sc 'ctx) 'rep)
+            j:i64 -1)
+        (match (get (ref rep 'spans) (rp-key ((sc 'f) 'path) (as i64 (+ (h 'start) (g 'body)))
+                                             (as i64 (+ (h 'start) (g 'end)))))
+          ((some v) (set! j v))
+          (none 0))
+        (when (>= j 0)
+          (let (x:RRef (rn-rec sc (as usize j)))
+            (when (= (x 'role) "macro")
+              (rn-note-macro sc (x 'tkey) (h 'start))
+              (return true))
+            (return false)))
+        (let (r:FormSlots (form-slots-of (chain-body c 0)))
+          (return (and (= (r 'a) SLOT-UNKNOWN) (= (r 'b) SLOT-UNKNOWN) (= (r 'c) SLOT-UNKNOWN)
+                       (= (r 'rest) SLOT-UNKNOWN))))))))
+
+(defn rn-scan (sc:&RnScan s:&Syn in-macro:bool):void
+  (when (rn-refused? sc) (return))
+  (cond (= (s 'kind) SYN-ATOM) (rn-scan-atom sc s in-macro)
+        (= (s 'kind) SYN-STR) (rn-scan-string sc s in-macro)
+        (!= (s 'kind) SYN-CHAR)
+          (let (m:bool (or (rn-macro-call? sc s) in-macro)
+                ks:&(Vector &Syn) (ref s 'kids)
+                i:usize 0)
+            (rn-scan-calls sc s)
+            (while (< i (count ks))
+              (rn-scan sc (ks i) m)
+              (set! i (+ i 1))))))
+
+; A slot the table knows holds code: a binder's scope ends at such a form.
+(defn rn-code-slot? (k:i32):bool
+  (return (or (= k SLOT-TOP) (= k SLOT-VALUE) (= k SLOT-PLACE) (= k SLOT-CLAUSE) (= k SLOT-HEAD))))
+
+; The form the binder's scope lies in: the nearest list around it in a code
+; slot. A call's operand is passed over, since a macro may bind there.
+(defn rn-region (a:&Syn):&Syn
+  (let (cur:&Syn a)
+    (while true
+      (if-some (p (cur 'parent))
+        (do (when (and (= (p 'kind) SYN-LIST) (rn-code-slot? (slot-kind p))) (return p))
+            (set! cur p))
+        (return cur)))
+    (return cur)))
+
+; Every spelling in a macro's definition: its template's free names and
+; binders, its quoted symbols, and the strings it could intern.
+(defn rn-spellings-of (f:&RnFile s:&Syn out:&(HashMap Symbol i64)):void
+  (cond (= (s 'kind) SYN-ATOM)
+          (let (k:i32 (node-kind (s 'node)))
+            (when (or (= k NODE-SYM) (= k NODE-KEYWORD))
+              (let (c:&Chain (chain-segments (syn-text (f 'syn) s)))
+                (assoc out (symbol-intern (syn-text (f 'syn) s)) 1)
+                (dotimes (i (as i64 (count (ref c 'segs))))
+                  (assoc out (symbol-intern (chain-body c (as usize i))) 1)))))
+        (= (s 'kind) SYN-STR)
+          (when-some (ss (syn-string-source (f 'syn) s))
+            (let (t:StrView (ss 'text))
+              (assoc out (symbol-intern t) 1)
+              (when (rn-spellable? t)
+                (let (c:&Chain (chain-segments t))
+                  (dotimes (i (as i64 (count (ref c 'segs))))
+                    (assoc out (symbol-intern (chain-body c (as usize i))) 1))))))
+        true
+          (let (ks:&(Vector &Syn) (ref s 'kids)
+                i:usize 0)
+            (while (< i (count ks))
+              (rn-spellings-of f (ks i) out)
+              (set! i (+ i 1))))))
+
+; Whether macro `key`'s definition spells `name`; -1 when it cannot be read.
+(defn rn-macro-spells (ctx:&RnCtx key:Symbol name:StrView):i32
+  (let (rep:&Report (ctx 'rep)
+        m:?&(HashMap Symbol i64) null)
+    (match (get (ref ctx 'spelled) key)
+      ((some v) (set! m v))
+      (none
+        (match (get (ref rep 'macros) key)
+          ; A macrolet's own: its text is in the macro that made it, or the call's.
+          (none (return 0))
+          ((some i)
+            (let (d:RDef ((ref rep 'defs) i))
+              (when (< (d 'start) 0) (return -1))
+              (when-some (f (rn-file-or-read ctx (d 'file)))
+                (when-some (s (rn-kid-holding (ref (f 'syn) 'forms) (as usize (d 'start)) (as usize (d 'end))))
+                  (let (h:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64)
+                                                  (arena-alloc (sizeof (HashMap Symbol i64)))))
+                    (init h (handle g-arena))
+                    (rn-spellings-of f s h)
+                    (assoc (ref ctx 'spelled) key h)
+                    (set! m h))))
+              (when (= m null) (return -1)))))))
+    (match (get (unsafe/cast &(HashMap Symbol i64) m) (symbol-intern name))
+      ((some x) (return 1))
+      (none (return 0)))))
+
+(defn rn-ident-text? (t:StrView):bool
+  (match (read-all t)
+    ((err e) (return false))
+    ((ok r)
+      (when (or (!= (node-len r) 1) (!= (node-kind (node-at r 0)) NODE-SYM)) (return false))
+      (return (= (symbol-as-view ((unsafe/cast &Node (node-at r 0)) 's)) t)))))
+
+; Why `t` cannot name a local, or "".
+(defn rn-bad-name (t:StrView):StrView
+  (let (c:&Chain (chain-segments t)
+        r:FormSlots (form-slots-of t))
+    (cond (= (t 'len) 0) (return "the new name is empty")
+          (not (rn-ident-text? t)) (return "the new name does not read as one symbol")
+          (or (!= (count (ref c 'segs)) 1) (!= ((chain-seg c 0) 'start) ((chain-seg c 0) 'body))
+              (strview-contains t "/") (strview-contains t ":"))
+            (return "the new name must be a plain symbol: no qualifier, chain or sigil")
+          (strview-has-prefix t "__")
+            (return "names that start with __ are the compiler's and the macros' own")
+          (or (= t "true") (= t "false") (= t "null") (= t "none") (= t "_") (= t "self"))
+            (return "the new name is a literal or a name the compiler binds")
+          (not (and (= (r 'a) SLOT-UNKNOWN) (= (r 'b) SLOT-UNKNOWN) (= (r 'c) SLOT-UNKNOWN)
+                    (= (r 'rest) SLOT-UNKNOWN)))
+            (return "the new name is a built-in form")
+          (rn-builtin-type? t) (return "the new name is a built-in type"))
+    (return "")))
+
+(defn rn-builtin-type? (t:StrView):bool
+  (return (or (= t "i8") (= t "i16") (= t "i32") (= t "i64") (= t "i128") (= t "ui8") (= t "ui16")
+              (= t "ui32") (= t "ui64") (= t "u8") (= t "u16") (= t "u32") (= t "u64") (= t "usize")
+              (= t "ssize") (= t "isize") (= t "f32") (= t "f64") (= t "bool") (= t "void") (= t "ptr")
+              (= t "int") (= t "char") (= t "CStr") (= t "ref") (= t "Maybe") (= t "dyn") (= t "fn")
+              (= t "BoxedFn") (= t "array") (= t "struct") (= t "union") (= t "Const") (= t "Self")
+              (= t "Result") (= t "Err") (= t "Any") (= t "Valid") (= t "raw"))))
+
+(defn rn-fail (p:&RnPlan at:usize why:StrView):&RnPlan
+  (set! (p 'refusal) (Refusal at why))
+  (return p))
+
+; The plan to rename the local named at byte `at` of `path` (its binder or a
+; reference to it) to `new`: every site to edit, or the refusal and its site.
+(defn rename-local-plan (ctx:&RnCtx path:StrView at:usize new:StrView):&RnPlan
+  (let (rep:&Report (ctx 'rep)
+        p:&RnPlan (unsafe/cast &RnPlan (arena-alloc (sizeof RnPlan)))
+        hit:i64 -1)
+    (set! (p 'path) path)
+    (set! (p 'old) "")
+    (set! (p 'new) new)
+    (set! (p 'binder) (SynSpan 0 0))
+    (init (ref p 'sites) (handle g-arena))
+    (set! (p 'refusal) (Refusal 0 ""))
+    (when (not (or (strview-has-suffix path ".nuc") (strview-has-suffix path ".nuch")))
+      (return (rn-fail p at "only .nuc and .nuch files are renamed")))
+    (when (not (report-reads? rep path))
+      (return (rn-fail p at "the unit does not read this file; name a root that imports it")))
+    (when (= (rn-file ctx path) null)
+      (return (rn-fail p at "the file was not loaded")))
+    (let (f:&RnFile (unsafe/cast &RnFile (rn-file ctx path))
+          rs:&(Vector usize) (rn-in-file rep (ref rep 'by-file) path)
+          i:usize 0)
+      (while (< i (count rs))
+        (let (x:RRef ((ref rep 'refs) (rs i)))
+          (when (and (<= (x 'start) (as i64 at)) (< (as i64 at) (x 'end))) (set! hit (as i64 (rs i)))))
+        (set! i (+ i 1)))
+      (when (< hit 0)
+        (let (ds:&(Vector usize) (rn-in-file rep (ref rep 'defs-by-file) path))
+          (set! i 0)
+          (while (< i (count ds))
+            (let (d:RDef ((ref rep 'defs) (ds i)))
+              (when (and (<= (d 'start) (as i64 at)) (< (as i64 at) (d 'end)))
+                (return (rn-fail p at (rp-arena-text (str "'" (d 'name) "' here is a definition (" (d 'kind)
+                                                          "), not a local"))))))
+            (set! i (+ i 1))))
+        (return (rn-fail p at "the compiler resolved no name here")))
+      (let (x:RRef ((ref rep 'refs) (as usize hit)))
+        (cond (= (x 'why) "ambiguous")
+                (return (rn-fail p at (rp-arena-text (str "'" (x 'name) "' here means different things in"
+                                                          " different copies of the code (:ambiguous)"))))
+              (not (and (or (= (x 'role) "local") (= (x 'role) "binder")) (= (x 'kind) "local")))
+                (return (rn-fail p at (rp-arena-text (str "'" (x 'name) "' here is a " (x 'role) " ("
+                                                          (x 'kind) "), not a local"))))
+              (< (x 'tstart) 0)
+                (return (rn-fail p at (rp-arena-text (str "the binder of '" (x 'name) "' has no span"))))
+              (!= (x 'tfile) path)
+                (return (rn-fail p at "the binder is in another file")))
+        (rn-plan-binder ctx f p (as usize (x 'tstart)) (as usize (x 'tend)))))))
+
+(defn rn-plan-binder (ctx:&RnCtx f:&RnFile p:&RnPlan bs:usize be:usize):&RnPlan
+  (let (rep:&Report (ctx 'rep)
+        bkey:Symbol (rp-key (f 'path) (as i64 bs) (as i64 be))
+        bj:i64 -1)
+    (match (get (ref rep 'spans) bkey) ((some v) (set! bj v)) (none 0))
+    (when (< bj 0) (return (rn-fail p bs "the binder has no record of its own")))
+    (let (b:RRef ((ref rep 'refs) (as usize bj))
+          old:StrView (b 'name)
+          bad:StrView (rn-bad-name (p 'new)))
+      (set! (p 'old) old)
+      (set! (p 'binder) (SynSpan bs be))
+      (cond (or (!= (b 'role) "binder") (!= (b 'kind) "local") (!= (b 'why) "")
+                (!= (b 'tfile) (f 'path)) (!= (b 'tstart) (as i64 bs)) (!= (b 'tend) (as i64 be)))
+              (return (rn-fail p bs (rp-arena-text (str "'" old "' here is not a local's own binder"))))
+            (> (bad 'len) 0) (return (rn-fail p bs bad))
+            (= (p 'new) old) (return (rn-fail p bs "the new name is the old one")))
+      (match (get (ref rep 'def-names) (symbol-intern (p 'new)))
+        ((some k) (let (d:RDef ((ref rep 'defs) k))
+                    (return (rn-fail p bs (rp-arena-text (str "'" (p 'new) "' names a definition of the unit ("
+                                                              (d 'key) ", " (d 'file) "); a local would shadow it"
+                                                              " where code the compiler writes calls it"))))))
+        (none 0))
+      (when (= (rn-syn-at (f 'syn) bs be) null)
+        (return (rn-fail p bs "the binder is in no form")))
+      (let (a:&Syn (unsafe/cast &Syn (rn-syn-at (f 'syn) bs be))
+            region:&Syn (rn-region a)
+            sc:&RnScan (alloca RnScan))
+        (set! (sc 'ctx) ctx)
+        (set! (sc 'f) f)
+        (set! (sc 'old) old)
+        (set! (sc 'new) (p 'new))
+        (set! (sc 'region) region)
+        (set! (sc 'refusal) (Refusal 0 ""))
+        (init (ref sc 'macros) (handle g-arena))
+        (init (ref sc 'macro-at) (handle g-arena))
+        (rn-check-sites sc p bkey)
+        (rn-check-outer sc bs be)
+        (rn-check-loose sc)
+        (rn-check-discards sc)
+        (rn-scan sc region (rn-enclosed-by-macro? sc region))
+        (rn-check-strays sc)
+        (rn-check-macros sc)
+        (when (rn-refused? sc)
+          (while (> (count (ref p 'sites)) 0) (remove-at (ref p 'sites) (- (count (ref p 'sites)) 1)))
+          (set! (p 'refusal) (sc 'refusal)))
+        (return p)))))
+
+; Every record whose target is the binder: a site to edit, spanned, in this
+; file and in the region, and spelled as the binder is.
+(defn rn-check-sites (sc:&RnScan p:&RnPlan bkey:Symbol):void
+  (let (rep:&Report ((sc 'ctx) 'rep)
+        f:&RnFile (sc 'f)
+        rg:&Syn (sc 'region))
+    (when-some (v (rp-list (ref rep 'targets) bkey))
+      (let (i:usize 0)
+        (while (< i (count v))
+          (let (x:RRef (rn-rec sc (v i))
+                at:usize (as usize (if (>= (x 'cstart) 0) (x 'cstart) (as i64 ((p 'binder) 'start)))))
+            (cond (< (x 'start) 0)
+                    (rn-refuse sc at (rp-arena-text (str "an occurrence of '" (sc 'old) "' has no span (:why "
+                                                         (x 'why) (if (> ((x 'macro) 'len) 0) ", in a call of " "")
+                                                         (x 'macro) ")")))
+                  (!= (x 'file) (f 'path)) (rn-refuse sc at "an occurrence of the local is in another file")
+                  (or (< (x 'start) (as i64 (rg 'start))) (> (x 'end) (as i64 (rg 'end))))
+                    (rn-refuse sc (as usize (x 'start)) "this occurrence of the local lies outside its binder's form")
+                  (!= (x 'why) "") (rn-refuse sc (as usize (x 'start)) "this occurrence of the local is :ambiguous")
+                  (!= (x 'name) (sc 'old))
+                    (rn-refuse sc (as usize (x 'start)) "an occurrence of the local is spelled otherwise")
+                  (and (= (x 'role) "binder") (!= (x 'start) (as i64 ((p 'binder) 'start))))
+                    (rn-refuse sc (as usize (x 'start)) "a second binder shares this one's target")
+                  (not (or (= (x 'role) "local") (= (x 'role) "binder")))
+                    (rn-refuse sc (as usize (x 'start)) "an occurrence of the local is no local reference")
+                  true (conj (ref p 'sites) (SynSpan (as usize (x 'start)) (as usize (x 'end))))))
+          (set! i (+ i 1)))))))
+
+; A binder of the new name whose scope holds this one: the renamed binder would
+; shadow it, used here or not.
+(defn rn-check-outer (sc:&RnScan bs:usize be:usize):void
+  (let (rep:&Report ((sc 'ctx) 'rep)
+        f:&RnFile (sc 'f)
+        rs:&(Vector usize) (rn-in-file rep (ref rep 'by-file) (f 'path))
+        i:usize 0)
+    (while (< i (count rs))
+      (let (x:RRef ((ref rep 'refs) (rs i)))
+        (when (and (= (x 'role) "binder") (= (x 'name) (sc 'new)))
+          (when-some (a (rn-syn-at (f 'syn) (as usize (x 'start)) (as usize (x 'end))))
+            (let (r:&Syn (rn-region a))
+              (when (and (<= (r 'start) bs) (<= be (r 'end)))
+                (rn-refuse sc (as usize (x 'start))
+                           (rp-arena-text (str "'" (sc 'new) "' is bound here around the binder;"
+                                               " the renamed binder would shadow it"))))))))
+      (set! i (+ i 1)))))
+
+; Spanless records that locate no call, of this file or of none: one ambiguous
+; or unbound under the old name, or any under the new one, may be in the region.
+(defn rn-check-loose (sc:&RnScan):void
+  (let (rep:&Report ((sc 'ctx) 'rep)
+        at:usize ((sc 'region) 'start)
+        path:StrView ((sc 'f) 'path))
+    (when-some (v (rp-list (ref rep 'loose) (symbol-intern (sc 'old))))
+      (let (i:usize 0)
+        (while (< i (count v))
+          (let (x:RRef (rn-rec sc (v i)))
+            (when (and (or (= (x 'file) path) (= ((x 'file) 'len) 0))
+                       (or (= (x 'why) "ambiguous") (rn-unbound-local? x)))
+              (rn-refuse sc at (rp-arena-text (str "code the compiler wrote uses '" (sc 'old)
+                                                   "' where the report cannot place it")))))
+          (set! i (+ i 1)))))
+    (when-some (v (rp-list (ref rep 'loose) (symbol-intern (sc 'new))))
+      (let (i:usize 0)
+        (while (< i (count v))
+          (let (x:RRef (rn-rec sc (v i)))
+            (when (or (= (x 'file) path) (= ((x 'file) 'len) 0))
+              (rn-refuse sc at (rp-arena-text (str "code the compiler wrote uses '" (sc 'new)
+                                                   "' where the report cannot place it")))))
+          (set! i (+ i 1)))))))
+
+(defn rn-check-strays (sc:&RnScan):void
+  (let (v:&(Vector usize) (ref (sc 'f) 'strays)
+        i:usize 0)
+    (while (< i (count v))
+      (rn-scan-call-rec sc (rn-rec sc (v i)) ((sc 'region) 'start))
+      (set! i (+ i 1)))))
+
+(defn rn-check-discards (sc:&RnScan):void
+  (let (ds:&(Vector SynSpan) (ref ((sc 'f) 'syn) 'discards)
+        rg:&Syn (sc 'region)
+        i:usize 0)
+    (while (< i (count ds))
+      (let (d:SynSpan (ds i))
+        (when (and (< (d 'start) (rg 'end)) (> (d 'end) (rg 'start)))
+          (let (t:StrView (edit-slice ((sc 'f) 'src) (d 'start) (d 'end)))
+            (when (or (rn-token-in? t (sc 'old)) (rn-token-in? t (sc 'new)))
+              (rn-refuse sc (d 'start) "a #_ form in the binder's scope spells one of the names")))))
+      (set! i (+ i 1)))))
+
+; Whether a macro call holds the region; the calls around it are scanned too.
+(defn rn-enclosed-by-macro? (sc:&RnScan rg:&Syn):bool
+  (let (m:bool false
+        cur:&Syn rg)
+    (while true
+      (if-some (p (cur 'parent))
+        (do (when (rn-macro-call? sc p) (set! m true))
+            (rn-scan-calls sc p)
+            (set! cur p))
+        (return m)))
+    (return m)))
+
+(defn rn-check-macros (sc:&RnScan):void
+  (let (ms:&(Vector Symbol) (ref sc 'macros)
+        i:usize 0)
+    (while (< i (count ms))
+      (let (r:i32 (rn-macro-spells (sc 'ctx) (ms i) (sc 'new))
+            at:usize ((ref sc 'macro-at) i))
+        (cond (< r 0)
+                (rn-refuse sc at (rp-arena-text (str "cannot read the definition of macro " (symbol-as-view (ms i)))))
+              (> r 0)
+                (rn-refuse sc at (rp-arena-text (str "macro " (symbol-as-view (ms i)) "'s definition spells '"
+                                                     (sc 'new) "', which its expansion here could capture")))))
+      (set! i (+ i 1)))))
+
+; ---------------------------------------------------------------------------
+; Applying a rename, and the rename-local driver
+; ---------------------------------------------------------------------------
+
+(defunion RenameResult (ok v:String) (err e:Refusal))
+
+; Every site of `p` into `e`, spelled as the plan's new name.
+(defn rename-edits-add (e:&Edits p:&RnPlan):void
+  (let (ss:&(Vector SynSpan) (ref p 'sites)
+        i:usize 0)
+    (while (< i (count ss))
+      (edit-span e ((ss i) 'start) ((ss i) 'end) (p 'new))
+      (set! i (+ i 1)))))
+
+; `src` with the edits applied; refused when the result does not read.
+(defn rename-edits-apply (src:StrView e:&Edits at:usize):RenameResult
+  (match (edits-apply src e)
+    ((err x) (return (err (Refusal ((x 'first) 'start) (x 'msg)))))
+    ((ok t) (let (tx:String t)
+              (match (read-syntax-all (string-as-view &tx))
+                ((err x) (do (drop &tx)
+                             (return (err (Refusal at "the renamed text does not read")))))
+                ((ok f) (return (ok tx))))))))
+
+(defn rename-local-apply (src:StrView p:&RnPlan):RenameResult
+  (when (not (rn-plan-ok? p)) (return (err (p 'refusal))))
+  (let (e:&Edits (alloca Edits))
+    (set! @e (edits-new))
+    (rename-edits-add e p)
+    (let (r:RenameResult (rename-edits-apply src e ((p 'binder) 'start)))
+      (drop e)
+      (return r))))
+
+; Load `path`, whose text is `src`, for renames in it; a refusal if the report
+; is not of this text. `src` must outlive `ctx`.
+(defn rename-file-load (ctx:&RnCtx path:StrView src:StrView):Refusal
+  (when-some (f (rn-file ctx path)) (return (Refusal 0 "")))
+  (return (rn-file-load ctx path src)))
+
+; The local named at byte `at` of `path` renamed to `new` throughout its scope.
+(defn rename-local (ctx:&RnCtx path:StrView src:StrView at:usize new:StrView):RenameResult
+  (let (r:Refusal (rename-file-load ctx path src))
+    (when (> ((r 'reason) 'len) 0) (return (err r))))
+  (return (rename-local-apply src (rename-local-plan ctx path at new))))
+
+; The byte offset of 1-based `line`:`col` (a byte column), or -1.
+(defn rn-offset (src:StrView line:i64 col:i64):i64
+  (let (l:i64 1
+        i:usize 0)
+    (while (and (< l line) (< i (src 'len)))
+      (when (= (aref (src 'data) (as i64 i)) 10) (set! l (+ l 1)))
+      (set! i (+ i 1)))
+    (when (or (!= l line) (< col 1)) (return -1))
+    (let (at:usize (+ i (as usize (- col 1)))
+          k:usize i)
+      (while (< k at)
+        (when (or (>= k (src 'len)) (= (aref (src 'data) (as i64 k)) 10)) (return -1))
+        (set! k (+ k 1)))
+      (when (>= at (src 'len)) (return -1))
+      (return (as i64 at)))))
+
+(defn rn-line (src:StrView at:usize):i64
+  (let (l:i64 1
+        i:usize 0)
+    (while (and (< i at) (< i (src 'len)))
+      (when (= (aref (src 'data) (as i64 i)) 10) (set! l (+ l 1)))
+      (set! i (+ i 1)))
+    (return l)))
+
+(defn rn-print-site (path:StrView src:StrView at:usize what:StrView):void
+  (print path ":" (rn-line src at) ":" (syn-col src (if (< at (src 'len)) at (src 'len))) ": rename-local: "
+         what "\n"))
+
+(defn rn-digits (t:StrView):i64
+  (let (n:i64 0)
+    (when (= (t 'len) 0) (return -1))
+    (dotimes (k (as i64 (t 'len)))
+      (let (c:i64 (as i64 (aref (t 'data) k)))
+        (when (or (< c 48) (> c 57)) (return -1))
+        (set! n (+ (* n 10) (- c 48)))))
+    (return n)))
+
+(defn rn-usage ():i32
+  (eprint "usage: rename-local [--apply] [--in-strings] [--root FILE] [--report FILE] [--compiler PATH]"
+          " PATH:LINE:COL NEW\n")
+  (return 2))
+
+; `main` for the rename tool (§4.10). A dry run by default; the report comes
+; from `COMPILER --resolve ROOT` (ROOT defaults to PATH) unless --report names
+; one. Exit 0 when the rename is made (or would be), 1 when it is refused or
+; fails, 2 on a bad argument.
+(defn rename-local-main (argc:i32 argv:ptr):i32
+  (let (apply:bool false
+        in-strings:bool false
+        root:StrView ""
+        report:StrView ""
+        compiler:StrView "build/nucleusc"
+        site:StrView ""
+        new:StrView ""
+        words:i32 0
+        i:i32 1)
+    (while (< i argc)
+      (let (a:StrView (rw-arg argv i)
+            more:bool (< (+ i 1) argc))
+        (cond (= a "--apply") (set! apply true)
+              (= a "--dry-run") (set! apply false)
+              (= a "--in-strings") (set! in-strings true)
+              (and more (= a "--root")) (do (set! root (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--report")) (do (set! report (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--compiler")) (do (set! compiler (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (strview-has-prefix a "-") (do (eprint "rename-local: unknown option " a "\n")
+                                             (return (rn-usage)))
+              true (do (if (= words 0) (set! site a) (set! new a))
+                       (set! words (+ words 1)))))
+      (set! i (+ i 1)))
+    (when (!= words 2) (return (rn-usage)))
+    (let (path:StrView ""
+          line:i64 -1
+          col:i64 -1)
+      (match (strview-rfind-byte &site 58)
+        ((some j)
+          (let (head:StrView (strview-take-bytes site j))
+            (set! col (rn-digits (strview-drop-bytes site (+ j 1))))
+            (match (strview-rfind-byte &head 58)
+              ((some k) (do (set! line (rn-digits (strview-drop-bytes head (+ k 1))))
+                            (set! path (strview-take-bytes head k))))
+              (none (do)))))
+        (none (do)))
+      (when (or (< line 1) (< col 1))
+        (eprint "rename-local: name the local as PATH:LINE:COL, not " site "\n")
+        (return (rn-usage)))
+      (when (strview-has-prefix path "./") (set! path (strview-drop-bytes path 2)))
+      (rn-main path line col new apply in-strings (if (= (root 'len) 0) path root) report compiler))))
+
+(defn rn-main (path:StrView line:i64 col:i64 new:StrView apply:bool in-strings:bool root:StrView
+               report:StrView compiler:StrView):i32
+  (let (src:StrView "")
+    (match (rw-read-file path)
+      ((err e) (do (eprint path ": cannot read the file\n") (return 1)))
+      ((ok t) (let (tx:String t) (set! src (edit-arena-str &tx)))))
+    (let (only:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
+      (init only (handle g-arena))
+      (conj only path)
+      (let (res:ReportResult (if (= (report 'len) 0)
+                               (report-run compiler root only)
+                               (match (rw-read-file report)
+                                 ((err e) (err (rp-arena-text (str "cannot read " report))))
+                                 ((ok t) (let (tx:String t
+                                               r:ReportResult (report-parse-for (string-as-view &tx) only))
+                                           (drop &tx)
+                                           r)))))
+        (return (rn-main-with path src line col new apply in-strings res))))))
+
+(defn rn-main-with (path:StrView src:StrView line:i64 col:i64 new:StrView apply:bool in-strings:bool
+                    res:ReportResult):i32
+  (match res
+    ((err why) (do (eprint "rename-local: " why "\n") (return 1)))
+    ((ok rep)
+      (let (ctx:&RnCtx (rename-ctx-new rep in-strings)
+            at:i64 (rn-offset src line col))
+        (when (< at 0)
+          (print path ":" line ":" col ": rename-local: no such position in the file\n")
+          (return 1))
+        (let (lr:Refusal (rename-file-load ctx path src))
+          (when (> ((lr 'reason) 'len) 0)
+            (rn-print-site path src (lr 'at) (lr 'reason))
+            (return 1)))
+        (let (p:&RnPlan (rename-local-plan ctx path (as usize at) new))
+          (match (rename-local-apply src p)
+            ((err r) (do (rn-print-site path src (r 'at) (r 'reason)) (return 1)))
+            ((ok t)
+              (let (tx:String t
+                    ss:&(Vector SynSpan) (ref p 'sites)
+                    k:usize 0)
+                (while (< k (count ss))
+                  (rn-print-site path src ((ss k) 'start) (rp-arena-text (str (p 'old) " -> " new)))
+                  (set! k (+ k 1)))
+                (print path ": '" (p 'old) "' renamed to '" new "' at " (count ss) " sites"
+                       (if apply "" " (dry run; --apply writes)") "\n")
+                (when apply
+                  (match (rw-write-file path (string-as-view &tx))
+                    ((err e) (do (eprint path ": cannot write the file\n") (drop &tx) (return 1)))
+                    ((ok) (do)))
+                  (let (h:String (str path "h"))
+                    (when (and (strview-has-suffix path ".nuc") (path-readable? (string-as-view &h)))
+                      (print path ": its header " (string-as-view &h) " may spell the old name;"
+                             " regenerate it if so\n"))
+                    (drop &h)))
+                (drop &tx)
+                (return 0)))))))))
+
+; ---------------------------------------------------------------------------
+; rename-global (§4.11): one root's index
+; ---------------------------------------------------------------------------
+
+; An occurrence of a name: an atom's segment (`q` where the name after any
+; qualifier starts), data a macro may make a name of, or an import-only or
+; export list's entry.
+(defenum RgWhat RG-ATOM RG-DATA RG-LIST)
+
+(defstruct RgOcc path:StrView b:usize e:usize q:usize what:i32 syn:&Syn)
+
+; Text that is not read as code: a `#_` discard, or with --in-strings a string literal.
+(defstruct RgText path:StrView at:usize text:StrView)
+
+(defstruct RgOpts compiler:StrView compiler-src:StrView ir-check:bool edit:(Vector StrView))
+
+; A root's report, its files read, and its names indexed once for any number of plans.
+(defstruct RgRoot
+  name:StrView
+  ctx:&RnCtx
+  occ:(HashMap Symbol &(Vector RgOcc))
+  texts:(Vector RgText)
+  def-spans:(HashMap Symbol usize)
+  key-refs:(HashMap Symbol &(Vector usize))
+  key-defs:(HashMap Symbol &(Vector usize))
+  ; Spanless :refs by the name after any qualifier.
+  loose:(HashMap Symbol &(Vector usize))
+  links:(HashMap Symbol usize)
+  nfiles:usize
+  ir:StrView
+  ir-read:bool
+  refusal:Refusal
+  refused:StrView)
+
+; The name after a qualifier's last `/`; `name` itself when it has none.
+(defn rg-bare (name:StrView):StrView
+  (match (strview-rfind-byte &name 47)
+    ((some j) (when (< (+ j 1) (name 'len)) (return (strview-drop-bytes name (+ j 1)))))
+    (none 0))
+  (return name))
+
+; An instance key's template: `ns/Vector.i32` is `ns/Vector`'s.
+(defn rg-template-key (key:StrView):StrView
+  (let (b:StrView (rg-bare key)
+        lead:usize (- (key 'len) (b 'len)))
+    (match (strview-find-byte &b 46)
+      ((some j) (when (> j 0) (return (strview-take-bytes key (+ lead j)))))
+      (none 0))
+    (return key)))
+
+; `ir-name-token`'s spelling of a name (src/format.nuc).
+(defn rg-ir-token (name:StrView):StrView
+  (let (out:String (str ""))
+    (when (and (> (name 'len) 0) (>= (aref (name 'data) 0) 48) (<= (aref (name 'data) 0) 57))
+      (str-into &out "_"))
+    (dotimes (k (as i64 (name 'len)))
+      (let (c:i32 (as i32 (aref (name 'data) k)))
+        (cond (= c 63) (str-into &out "_QMARK")
+              (= c 33) (str-into &out "_BANG")
+              true (str-into &out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1)))))
+    (return (rp-arena-text out))))
+
+; `sanitize-for-ir`'s spelling (src/format.nuc): what IR does not allow becomes `_`.
+(defn rg-ir-sanitize (name:StrView):StrView
+  (let (out:String (str ""))
+    (dotimes (k (as i64 (name 'len)))
+      (let (c:i32 (as i32 (aref (name 'data) k)))
+        (if (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57)) (= c 95) (= c 46))
+          (str-into &out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1))
+          (str-into &out "_"))))
+    (return (rp-arena-text out))))
+
+; A name's spellings in link names: a solitary defn's, an overload's base, a macro's JIT name.
+(defn rg-link-spellings (name:StrView):&(Vector StrView)
+  (let (v:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView))))
+        a:StrView (rg-ir-token name)
+        b:StrView (rg-ir-sanitize a)
+        c:StrView (rg-ir-sanitize name))
+    (init v (handle g-arena))
+    (conj v a)
+    (when (!= b a) (conj v b))
+    (when (and (!= c a) (!= c b)) (conj v c))
+    (return v)))
+
+(defn rg-push-occ (m:&(HashMap Symbol &(Vector RgOcc)) k:Symbol o:RgOcc):void
+  (match (get m k)
+    ((some v) (conj v o))
+    (none (let (v:&(Vector RgOcc) (unsafe/cast &(Vector RgOcc) (arena-alloc (sizeof (Vector RgOcc)))))
+            (init v (handle g-arena))
+            (conj v o)
+            (assoc m k v)))))
+
+(defn rg-occ (r:&RgRoot name:StrView):?&(Vector RgOcc)
+  (match (get (ref r 'occ) (symbol-intern name))
+    ((some v) (return v))
+    (none (return null))))
+
+(defn rg-head-text (f:&RnFile s:&Syn):StrView
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (when (or (!= (s 'kind) SYN-LIST) (= (count ks) 0)) (return ""))
+    (let (h:&Syn (ks 0))
+      (when (or (!= (h 'kind) SYN-ATOM) (!= (node-kind (h 'node)) NODE-SYM)) (return ""))
+      (return (syn-text (f 'syn) h)))))
+
+; The first elem of a top-level form that is an import-only or export list's entry; -1 for none.
+(defn rg-list-from (f:&RnFile s:&Syn):i64
+  (let (h:StrView (rg-head-text f s))
+    (cond (= h "import-only") (return 2)
+          (= h "export") (return 1))
+    (return -1)))
+
+; A keyword outside a macro call is a name only in a type slot: `(x:i32):Foo` returns a `Foo`.
+(defn rg-type-keyword? (s:&Syn):bool
+  (let (k:i32 (slot-kind s))
+    (return (or (= k SLOT-RETURN) (= k SLOT-TYPE) (= k SLOT-TYPES)))))
+
+(defn rg-index-atom (r:&RgRoot f:&RnFile s:&Syn in-macro:bool list:bool):void
+  (let (k:i32 (node-kind (s 'node)))
+    (when (not (or (= k NODE-SYM) (and (= k NODE-KEYWORD) (or in-macro (rg-type-keyword? s))))) (return))
+    (let (c:&Chain (chain-segments (syn-text (f 'syn) s))
+          what:i32 (cond (and (= k NODE-KEYWORD) in-macro) RG-DATA list RG-LIST true RG-ATOM))
+      (dotimes (i (as i64 (count (ref c 'segs))))
+        (let (g:ChainSeg (chain-seg c (as usize i))
+              bare:StrView (rg-bare (chain-body c (as usize i)))
+              b:usize (+ (s 'start) (g 'body))
+              e:usize (+ (s 'start) (g 'end)))
+          (when (> (bare 'len) 0)
+            (rg-push-occ (ref r 'occ) (symbol-intern bare) (RgOcc (f 'path) b e (- e (bare 'len)) what s))))))))
+
+; A string a macro could intern: its whole text and, when it reads as one symbol, each name in it.
+(defn rg-index-spelling (r:&RgRoot f:&RnFile s:&Syn t:StrView):void
+  (rg-push-occ (ref r 'occ) (symbol-intern t) (RgOcc (f 'path) (s 'start) (s 'end) (s 'start) RG-DATA s))
+  (when (rn-spellable? t)
+    (let (c:&Chain (chain-segments t))
+      (dotimes (i (as i64 (count (ref c 'segs))))
+        (let (b:StrView (rg-bare (chain-body c (as usize i))))
+          (when (and (> (b 'len) 0) (!= b t))
+            (rg-push-occ (ref r 'occ) (symbol-intern b)
+                         (RgOcc (f 'path) (s 'start) (s 'end) (s 'start) RG-DATA s))))))))
+
+(defn rg-index-string (r:&RgRoot f:&RnFile s:&Syn data:bool):void
+  (when-some (ss (syn-string-source (f 'syn) s))
+    (let (t:StrView (ss 'text))
+      (when data (rg-index-spelling r f s t))
+      (when ((r 'ctx) 'in-strings) (conj (ref r 'texts) (RgText (f 'path) (s 'start) t))))))
+
+; `in-def`: inside a defmacro, whose strings it may intern.
+(defn rg-index (r:&RgRoot sc:&RnScan s:&Syn in-macro:bool in-def:bool list:bool):void
+  (let (f:&RnFile (sc 'f))
+    (cond (= (s 'kind) SYN-ATOM) (rg-index-atom r f s in-macro list)
+          (= (s 'kind) SYN-STR) (rg-index-string r f s (or in-macro in-def))
+          (!= (s 'kind) SYN-CHAR)
+            (let (m:bool (or in-macro (rn-macro-call? sc s))
+                  ks:&(Vector &Syn) (ref s 'kids)
+                  from:i64 (if (= (s 'parent) null) (rg-list-from f s) -1)
+                  i:usize 0)
+              (while (< i (count ks))
+                (rg-index r sc (ks i) m in-def (and (>= from 0) (>= (as i64 i) from)))
+                (set! i (+ i 1)))))))
+
+(defn rg-index-file (r:&RgRoot f:&RnFile):void
+  (let (fs:&(Vector &Syn) (ref (f 'syn) 'forms)
+        ds:&(Vector SynSpan) (ref (f 'syn) 'discards)
+        i:usize 0)
+    (while (< i (count ds))
+      (conj (ref r 'texts) (RgText (f 'path) ((ds i) 'start) (edit-slice (f 'src) ((ds i) 'start) ((ds i) 'end))))
+      (set! i (+ i 1)))
+    (when (= (count fs) 0) (return))
+    (let (sc:&RnScan (alloca RnScan))
+      (set! (sc 'ctx) (r 'ctx))
+      (set! (sc 'f) f)
+      (set! (sc 'old) "")
+      (set! (sc 'new) "")
+      (set! (sc 'region) (fs 0))
+      (set! (sc 'refusal) (Refusal 0 ""))
+      (init (ref sc 'macros) (handle g-arena))
+      (init (ref sc 'macro-at) (handle g-arena))
+      (set! i 0)
+      (while (< i (count fs))
+        (let (s:&Syn (fs i))
+          (rg-index r sc s false (= (rg-head-text f s) "defmacro") false))
+        (set! i (+ i 1))))))
+
+(defn rg-index-report (r:&RgRoot):void
+  (let (rep:&Report ((r 'ctx) 'rep)
+        rs:&(Vector RRef) (ref rep 'refs)
+        ds:&(Vector RDef) (ref rep 'defs))
+    (dotimes (i (as i64 (count rs)))
+      (let (x:RRef (rs (as usize i)))
+        (when (> ((x 'tkey) 'len) 0)
+          (rp-push (ref r 'key-refs) (symbol-intern (x 'tkey)) (as usize i))
+          (let (t:StrView (rg-template-key (x 'tkey)))
+            (when (!= t (x 'tkey)) (rp-push (ref r 'key-refs) (symbol-intern t) (as usize i)))))
+        (when (< (x 'start) 0) (rp-push (ref r 'loose) (symbol-intern (rg-bare (x 'name))) (as usize i)))))
+    (dotimes (i (as i64 (count ds)))
+      (let (d:RDef (ds (as usize i)))
+        (when (>= (d 'start) 0) (assoc (ref r 'def-spans) (rp-key (d 'file) (d 'start) (d 'end)) (as usize i)))
+        (rp-push (ref r 'key-defs) (symbol-intern (d 'key)) (as usize i))
+        (when (> ((d 'link) 'len) 0) (assoc (ref r 'links) (symbol-intern (d 'link)) (as usize i)))))))
+
+(defn rg-root-refuse (r:&RgRoot path:StrView at:usize why:StrView):&RgRoot
+  (when (= (((r 'refusal) 'reason) 'len) 0)
+    (set! (r 'refusal) (Refusal at why))
+    (set! (r 'refused) path))
+  (return r))
+
+; Root `name`'s report read for renames: every .nuc and .nuch file it read is
+; loaded and indexed. A file that does not load refuses every plan of the root.
+(defn rename-global-root (name:StrView rep:&Report in-strings:bool):&RgRoot
+  (let (r:&RgRoot (unsafe/cast &RgRoot (arena-alloc (sizeof RgRoot))))
+    (set! (r 'name) name)
+    (set! (r 'ctx) (rename-ctx-new rep in-strings))
+    (init (ref r 'occ) (handle g-arena))
+    (init (ref r 'texts) (handle g-arena))
+    (init (ref r 'def-spans) (handle g-arena))
+    (init (ref r 'key-refs) (handle g-arena))
+    (init (ref r 'key-defs) (handle g-arena))
+    (init (ref r 'loose) (handle g-arena))
+    (init (ref r 'links) (handle g-arena))
+    (set! (r 'nfiles) 0)
+    (set! (r 'ir) "")
+    (set! (r 'ir-read) false)
+    (set! (r 'refusal) (Refusal 0 ""))
+    (set! (r 'refused) "")
+    (rg-index-report r)
+    (let (fs:&(Vector StrView) (ref rep 'files)
+          i:usize 0)
+      (while (< i (count fs))
+        (let (path:StrView (fs i))
+          (when (or (strview-has-suffix path ".nuc") (strview-has-suffix path ".nuch"))
+            (match (rw-read-file path)
+              ((err e) (rg-root-refuse r path 0 "cannot read a file the root read"))
+              ((ok t)
+                (let (tx:String t
+                      src:StrView (edit-arena-str &tx)
+                      lr:Refusal (rename-file-load (r 'ctx) path src))
+                  (if (> ((lr 'reason) 'len) 0)
+                    (rg-root-refuse r path (lr 'at) (lr 'reason))
+                    (do (set! (r 'nfiles) (+ (r 'nfiles) 1))
+                        (rg-index-file r (unsafe/cast &RnFile (rn-file (r 'ctx) path))))))))))
+        (set! i (+ i 1))))
+    (return r)))
+
+; ---------------------------------------------------------------------------
+; rename-global: the plan
+; ---------------------------------------------------------------------------
+
+; An edit: `[q, qe)` of `path` becomes the new name; `[b, e)` is the occurrence's record span.
+(defstruct RgSite path:StrView b:usize e:usize q:usize qe:usize)
+
+(defstruct RgPlan
+  old:StrView new:StrView key:StrView kind:StrView
+  sites:(Vector RgSite)
+  refusal:Refusal
+  refused:StrView
+  ; Committed generated headers that spell the old name.
+  headers:(Vector StrView))
+
+(defn rg-plan-ok? (p:&RgPlan):bool
+  (return (= (((p 'refusal) 'reason) 'len) 0)))
+
+(defn rg-fail (p:&RgPlan path:StrView at:usize why:StrView):&RgPlan
+  (when (rg-plan-ok? p)
+    (set! (p 'refusal) (Refusal at why))
+    (set! (p 'refused) path))
+  (return p))
+
+(defn rg-ref (r:&RgRoot i:usize):RRef
+  (return ((ref ((r 'ctx) 'rep) 'refs) i)))
+
+(defn rg-def (r:&RgRoot i:usize):RDef
+  (return ((ref ((r 'ctx) 'rep) 'defs) i)))
+
+(defn rg-list (m:&(HashMap Symbol &(Vector usize)) k:StrView):?&(Vector usize)
+  (return (rp-list m (symbol-intern k))))
+
+; Whether a :ref of `role`/`rk` to a definition of `kind` is spelled where it is edited.
+(defn rg-edits? (kind:StrView role:StrView rk:StrView):bool
+  (cond (= kind "function") (return (and (or (= role "head") (= role "global")) (= rk "function")))
+        (= kind "var") (return (and (= role "global") (= rk "var")))
+        (= kind "const") (return (and (= role "global") (or (= rk "const") (= rk "var"))))
+        (= kind "error") (return (and (= role "global") (= rk "const")))
+        (= kind "struct") (return (and (or (= role "type") (= role "head")) (= rk "struct")))
+        (= kind "union") (return (or (and (= role "type") (or (= rk "union") (= rk "struct")))
+                                     (and (= role "head") (= rk "union"))))
+        (= kind "type-alias") (return (and (or (= role "type") (= role "head")) (= rk "type-alias")))
+        (= kind "macro") (return (and (= role "macro") (= rk "macro"))))
+  (return false))
+
+(defn rg-kind-in-scope? (kind:StrView):bool
+  (return (or (= kind "function") (= kind "var") (= kind "const") (= kind "error") (= kind "struct")
+              (= kind "union") (= kind "type-alias") (= kind "enum") (= kind "macro"))))
+
+(defn rg-declaring? (form:StrView):bool
+  (return (or (= form "declare") (= form "defmethod") (= form "extern"))))
+
+; The top-level form of `path` that holds [start, end), read through `r`.
+(defn rg-top-form (r:&RgRoot path:StrView start:usize end:usize):?&Syn
+  (when-some (f (rn-file-or-read (r 'ctx) path))
+    (return (rn-kid-holding (ref (f 'syn) 'forms) start end)))
+  (return null))
+
+; Whether a :def of `key` in `path` has a top-level form holding [cs, ce).
+(defn rg-in-definer? (r:&RgRoot key:StrView path:StrView cs:i64 ce:i64):bool
+  (when (or (< cs 0) (= (path 'len) 0)) (return false))
+  (when-some (v (rg-list (ref r 'key-defs) key))
+    (dotimes (i (as i64 (count v)))
+      (let (d:RDef (rg-def r (v (as usize i))))
+        (when (and (= (d 'file) path) (>= (d 'start) 0))
+          (when-some (s (rg-top-form r path (as usize (d 'start)) (as usize (d 'end))))
+            (when (and (<= (as i64 (s 'start)) cs) (<= ce (as i64 (s 'end)))) (return true)))))))
+  (return false))
+
+(defn rg-has-site-in? (sites:&(Vector RgSite) path:StrView start:usize end:usize):bool
+  (dotimes (i (as i64 (count sites)))
+    (let (x:RgSite (sites (as usize i)))
+      (when (and (= (x 'path) path) (<= start (x 'b)) (<= (x 'e) end)) (return true))))
+  (return false))
+
+; Whether macro `key`'s defmacro form holds one of `sites`: its expansion names what its template does.
+(defn rg-template-site? (r:&RgRoot key:StrView sites:&(Vector RgSite)):bool
+  (match (get (ref ((r 'ctx) 'rep) 'macros) (symbol-intern key))
+    ((some i)
+      (let (d:RDef (rg-def r i))
+        (when (< (d 'start) 0) (return false))
+        (when-some (s (rg-top-form r (d 'file) (as usize (d 'start)) (as usize (d 'end))))
+          (return (rg-has-site-in? sites (d 'file) (s 'start) (s 'end))))
+        (return false)))
+    (none (return false))))
+
+; A member's declared name or an import form's module operand: a name by position.
+(defn rg-positional-name? (o:RgOcc):bool
+  (let (k:i32 (slot-kind (o 'syn)))
+    (when (= k SLOT-FIELD) (return true))
+    (when (!= k SLOT-NAME) (return false))
+    (when-some (p ((o 'syn) 'parent))
+      (when (= (p 'parent) null)
+        (let (h:?&Node (node-at (p 'node) 0))
+          (when (= (node-kind h) NODE-SYM)
+            (let (t:StrView (symbol-as-view ((unsafe/cast &Node h) 's)))
+              (return (and (= (syn-elem-index p (o 'syn)) 1)
+                           (or (= t "import") (= t "import-use") (= t "import-only") (= t "import-prefixed")
+                               (= t "require") (= t "require-ct") (= t "ns")))))))))
+    (return false)))
+
+; One occurrence of `old`, which names `key` of `kind` here: a site, whose first
+; `len` bytes are edited, another name, or a refusal.
+(defn rg-check-occ (r:&RgRoot p:&RgPlan key:StrView kind:StrView old:StrView len:usize o:RgOcc
+                    out:&(Vector RgSite)):void
+  (let (rep:&Report ((r 'ctx) 'rep)
+        sk:Symbol (rp-key (o 'path) (as i64 (o 'b)) (as i64 (o 'e)))
+        j:i64 -1)
+    (cond (= (o 'what) RG-DATA)
+            (do (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "a keyword or string a macro may make a name of"
+                                                                " spells '" old "'")))
+                (return))
+          (= (o 'what) RG-LIST)
+            (do (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "an import-only or export list names '" old
+                                                                "'; no record says which definition, so edit"
+                                                                " it by hand")))
+                (return)))
+    (match (get (ref r 'def-spans) sk)
+      ((some i) (let (d:RDef (rg-def r i))
+                  (when (= (d 'key) key) (conj out (RgSite (o 'path) (o 'b) (o 'e) (o 'q) (+ (o 'q) len))))
+                  (return)))
+      (none 0))
+    (match (get (ref rep 'spans) sk)
+      ((some v) (set! j v))
+      (none 0))
+    (when (< j -1)
+      (rg-fail p (o 'path) (o 'b) "the report has two records for this occurrence")
+      (return))
+    (when (< j 0)
+      (when (not (rg-positional-name? o))
+        (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "this '" old "' has no record: code the compiler did"
+                                                        " not emit, data, or a name a macro moved without a trace"))))
+      (return))
+    (let (x:RRef (rg-ref r (as usize j)))
+      (cond (= (x 'why) "ambiguous")
+              (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "this '" old "' means different things in different"
+                                                              " copies of the code (:ambiguous)")))
+            (or (!= (x 'tkey) key) (rg-member? x)) 0
+            (rg-edits? kind (x 'role) (x 'kind)) (conj out (RgSite (o 'path) (o 'b) (o 'e) (o 'q) (+ (o 'q) len)))
+            true (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "a :" (x 'role) " :" (x 'kind) " reference to the "
+                                                                 kind ", which rename-global does not edit")))))))
+
+; A field or arm record targets its aggregate's key but names the member.
+(defn rg-member? (x:RRef):bool
+  (return (or (= (x 'role) "field") (= (x 'role) "arm"))))
+
+; The records of `key`, spelled `old`, the occurrences did not account for; `dkey` is the definer's key.
+(defn rg-check-key-refs (r:&RgRoot p:&RgPlan key:StrView old:StrView dkey:StrView out:&(Vector RgSite)):void
+  (when-some (v (rg-list (ref r 'key-refs) key))
+    (dotimes (i (as i64 (count v)))
+      (let (x:RRef (rg-ref r (v (as usize i)))
+            at:usize (as usize (cond (>= (x 'start) 0) (x 'start) (>= (x 'cstart) 0) (x 'cstart) true 0)))
+        (cond (rg-member? x) 0
+              (and (>= (x 'start) 0) (!= (rg-bare (x 'name)) old))
+                (rg-fail p (x 'file) at (rp-arena-text (str "a reference to it is spelled '" (x 'name) "'")))
+              (>= (x 'start) 0) 0
+              (= (x 'why) "instance") 0
+              (and (= (x 'why) "macro") (rg-template-site? r (x 'macro) out)) 0
+              (= (x 'why) "macro")
+                (rg-fail p (x 'file) at (rp-arena-text (str "macro " (x 'macro) " makes a reference to '" old
+                                                            "' that its template does not spell")))
+              (and (= (x 'why) "generated") (rg-in-definer? r dkey (x 'file) (x 'cstart) (x 'cend))) 0
+              true
+                (rg-fail p (x 'file) at (rp-arena-text (str "code the compiler wrote names '" old "' (:why "
+                                                            (x 'why) "), and would go on naming it")))))
+      (when (not (rg-plan-ok? p)) (return)))))
+
+; Spanless records of `old` that may mean `key`.
+(defn rg-check-loose-old (r:&RgRoot p:&RgPlan key:StrView old:StrView):void
+  (when-some (v (rg-list (ref r 'loose) old))
+    (dotimes (i (as i64 (count v)))
+      (let (x:RRef (rg-ref r (v (as usize i))))
+        (when (and (!= (x 'tkey) key) (or (= (x 'why) "ambiguous") (= ((x 'tkey) 'len) 0)))
+          (rg-fail p (x 'file) (as usize (if (>= (x 'cstart) 0) (x 'cstart) 0))
+                   (rp-arena-text (str "code the compiler or a macro wrote uses '" old
+                                       "', and the report cannot say what it means")))
+          (return))))))
+
+; `link` with the old name's IR token, at the last place it is a whole name, replaced.
+(defn rg-relink (link:StrView old:StrView new:StrView):StrView
+  (let (n:usize (old 'len)
+        hit:i64 -1
+        i:usize 0)
+    (when (or (= n 0) (< (link 'len) n)) (return ""))
+    (while (<= (+ i n) (link 'len))
+      (when (and (= (edit-slice link i (+ i n)) old)
+                 (or (= i 0) (= (aref (link 'data) (as i64 (- i 1))) 95))
+                 (or (= (+ i n) (link 'len)) (= (aref (link 'data) (as i64 (+ i n))) 95)
+                     (= (aref (link 'data) (as i64 (+ i n))) 46)))
+        (set! hit (as i64 i)))
+      (set! i (+ i 1)))
+    (when (< hit 0) (return ""))
+    (return (rp-arena-text (str (strview-take-bytes link (as usize hit)) new
+                                (strview-drop-bytes link (+ (as usize hit) n)))))))
+
+; `link` renamed: a macro's JIT name sanitizes the name; a defn's link spells its
+; `ir-name-token`, or, for an overload, that sanitized.
+(defn rg-relink-any (link:StrView old:StrView new:StrView):StrView
+  (when (strview-has-prefix link "__macro_")
+    (return (rg-relink link (rg-ir-sanitize old) (rg-ir-sanitize new))))
+  (let (l:StrView (rg-relink link (rg-ir-token old) (rg-ir-token new)))
+    (when (> (l 'len) 0) (return l))
+    (return (rg-relink link (rg-ir-sanitize (rg-ir-token old)) (rg-ir-sanitize (rg-ir-token new))))))
+
+(defn rg-ir-char? (c:i32):bool
+  (return (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57))
+              (= c 95) (= c 46) (= c 36) (= c 45))))
+
+; Whether IR text names `tok` as a symbol: after `@`, `%`, a namespace's `__` or `nuc_`.
+(defn rg-ir-has? (ir:StrView tok:StrView):bool
+  (let (n:usize (tok 'len)
+        i:usize 1)
+    (when (= n 0) (return false))
+    (while (<= (+ i n) (ir 'len))
+      (when (= (edit-slice ir i (+ i n)) tok)
+        (let (pc:i32 (as i32 (aref (ir 'data) (as i64 (- i 1))))
+              after:bool (or (= (+ i n) (ir 'len))
+                             (not (rg-ir-char? (as i32 (aref (ir 'data) (as i64 (+ i n))))))
+                             (= (aref (ir 'data) (as i64 (+ i n))) 46)))
+          (when (and after (or (= pc 64) (= pc 37)
+                               (and (>= i 2) (= pc 95) (= (aref (ir 'data) (as i64 (- i 2))) 95))
+                               (and (>= i 4) (= (edit-slice ir (- i 4) i) "nuc_"))))
+            (return true))))
+      (set! i (+ i 1)))
+    (return false)))
+
+(defn rg-root-ir (r:&RgRoot opts:&RgOpts):StrView
+  (when (r 'ir-read) (return (r 'ir)))
+  (set! (r 'ir-read) true)
+  (let (cmd:Command (command (opts 'compiler)))
+    (command-arg &cmd "--emit-llvm")
+    (command-arg &cmd (r 'name))
+    (command-capture &cmd true)
+    (match (run &cmd)
+      ((err e) (do))
+      ((ok o) (let (out:Output o)
+                (when (= (exit-code (ref out 'status)) 0)
+                  (set! (r 'ir) (edit-arena-str (ref out 'out))))
+                (drop &out))))
+    (drop &cmd)
+    (return (r 'ir))))
+
+; `new` must be no name of the root and spelled nowhere it reads.
+(defn rg-check-new-name (r:&RgRoot p:&RgPlan new:StrView):void
+  (let (rep:&Report ((r 'ctx) 'rep))
+    (match (get (ref rep 'def-names) (symbol-intern new))
+      ((some k) (let (d:RDef (rg-def r k))
+                  (rg-fail p (d 'file) (as usize (if (< (d 'start) 0) 0 (d 'start)))
+                           (rp-arena-text (str "'" new "' names a definition of root " (r 'name) " (" (d 'key) ")")))
+                  (return)))
+      (none 0))
+    (when-some (v (rg-occ r new))
+      (when (> (count v) 0)
+        (let (o:RgOcc (v 0))
+          (rg-fail p (o 'path) (o 'b) (rp-arena-text (str "'" new "' already occurs here; the renamed name"
+                                                          " could be captured or capture"))))
+        (return)))
+    (when-some (v (rg-list (ref r 'loose) new))
+      (when (> (count v) 0)
+        (let (x:RRef (rg-ref r (v 0)))
+          (rg-fail p (x 'file) (as usize (if (>= (x 'cstart) 0) (x 'cstart) 0))
+                   (rp-arena-text (str "code the compiler or a macro wrote uses '" new "'"))))))))
+
+; The new name's checks, and its link names'.
+(defn rg-check-new (r:&RgRoot p:&RgPlan key:StrView opts:&RgOpts):void
+  (let (new:StrView (p 'new)
+        old:StrView (p 'old))
+    (rg-check-new-name r p new)
+    (when (not (rg-plan-ok? p)) (return))
+    (let (ts:&(Vector RgText) (ref r 'texts))
+      (dotimes (i (as i64 (count ts)))
+        (let (t:RgText (ts (as usize i)))
+          (when (or (rn-token-in? (t 'text) old) (rn-token-in? (t 'text) new))
+            (rg-fail p (t 'path) (t 'at) "a #_ form or a program in a string spells one of the names")
+            (return)))))
+    (let (nt:StrView (rg-ir-token new))
+      (when-some (v (rg-list (ref r 'key-defs) key))
+        (dotimes (i (as i64 (count v)))
+          (let (d:RDef (rg-def r (v (as usize i))))
+            (when (> ((d 'link) 'len) 0)
+              (let (l:StrView (rg-relink-any (d 'link) old new))
+                (when (= (l 'len) 0)
+                  (rg-fail p (d 'file) (as usize (d 'start))
+                           (rp-arena-text (str "the link name " (d 'link) " does not spell '" old "'")))
+                  (return))
+                (match (get (ref r 'links) (symbol-intern l))
+                  ((some k) (do (rg-fail p (d 'file) (as usize (d 'start))
+                                         (rp-arena-text (str "the new link name " l " is "
+                                                             ((rg-def r k) 'key) "'s")))
+                                (return)))
+                  (none 0)))))))
+      (when (opts 'ir-check)
+        (let (ir:StrView (rg-root-ir r opts))
+          (when (= (ir 'len) 0)
+            (rg-fail p (r 'name) 0 (rp-arena-text (str "cannot emit root " (r 'name) "'s IR to check the new name;"
+                                                       " pass --no-ir-check to skip it")))
+            (return))
+          (let (ns:&(Vector StrView) (rg-link-spellings new))
+            (dotimes (i (as i64 (count ns)))
+              (when (rg-ir-has? ir (ns (as usize i)))
+                (rg-fail p (r 'name) 0 (rp-arena-text (str "root " (r 'name) "'s IR names a symbol '" (ns (as usize i))
+                                                           "' (a C declaration no code names?)")))
+                (return)))))))))
+
+; Names the compiler's source spells as data, in a string literal or a quasiquote
+; template: the names by which it may recognize a core definition (§4.11 "Core").
+(defvar g-rg-fixed:?&(HashMap Symbol i64) null)
+(defvar g-rg-fixed-dir:StrView "")
+(defvar g-rg-fixed-files:i64 0)
+
+(defn rg-fixed ():&(HashMap Symbol i64)
+  (when (= g-rg-fixed null)
+    (let (m:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64)))))
+      (init m (handle g-arena))
+      (set! g-rg-fixed m)))
+  (return (unsafe/cast &(HashMap Symbol i64) g-rg-fixed)))
+
+(defn rg-fixed-add (t:StrView):void
+  (when (> (t 'len) 0) (assoc (rg-fixed) (symbol-intern t) 1)))
+
+; A string's tokens, whole and split at a qualifier, chain or path separator.
+(defn rg-fixed-text (t:StrView):void
+  (let (i:usize 0
+        from:usize 0)
+    (while (<= i (t 'len))
+      (let (c:i32 (if (< i (t 'len)) (as i32 (aref (t 'data) (as i64 i))) 32))
+        (when (or (<= c 32) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123) (= c 125) (= c 34) (= c 39)
+                  (= c 59) (= c 96) (= c 44))
+          (when (> i from)
+            (let (w:StrView (edit-slice t from i)
+                  k:usize 0
+                  p:usize 0)
+              (rg-fixed-add w)
+              (while (<= k (w 'len))
+                (let (d:i32 (if (< k (w 'len)) (as i32 (aref (w 'data) (as i64 k))) 47))
+                  (when (or (= d 47) (= d 58) (= d 46) (= d 38) (= d 64) (= d 126) (= d 35))
+                    (when (> k p) (rg-fixed-add (edit-slice w p k)))
+                    (set! p (+ k 1))))
+                (set! k (+ k 1)))))
+          (set! from (+ i 1))))
+      (set! i (+ i 1)))))
+
+(defn rg-fixed-walk (f:&SynFile s:&Syn):void
+  (cond (= (s 'kind) SYN-STR)
+          (when-some (ss (syn-string-source f s)) (rg-fixed-text (ss 'text)))
+        (= (s 'kind) SYN-ATOM)
+          (when (and (= (node-kind (s 'node)) NODE-SYM) (in-quasiquote? s))
+            (let (c:&Chain (chain-segments (syn-text f s)))
+              (dotimes (i (as i64 (count (ref c 'segs))))
+                (rg-fixed-add (chain-body c (as usize i)))
+                (rg-fixed-add (rg-bare (chain-body c (as usize i)))))))
+        true
+          (dotimes (i (as i64 (count (ref s 'kids))))
+            (rg-fixed-walk f ((ref s 'kids) (as usize i))))))
+
+; Every .nuc file of `dir` indexed once; false when there are none.
+(defn rg-fixed-load (dir:StrView):bool
+  (when (= g-rg-fixed-dir dir) (return (> g-rg-fixed-files 0)))
+  (set! g-rg-fixed-dir dir)
+  (match (glob-files (rp-arena-text (str dir "/*.nuc")))
+    ((err e) (return false))
+    ((ok d)
+      (let (ds:DirEntries d
+            k:usize 0)
+        (while (< k (dir-count &ds))
+          (match (rw-read-file (dir-name &ds k))
+            ((err e) (do))
+            ((ok t) (let (tx:String t
+                          src:StrView (edit-arena-str &tx))
+                      (match (read-syntax-all src)
+                        ((err e) (do))
+                        ((ok sf) (do (set! g-rg-fixed-files (+ g-rg-fixed-files 1))
+                                     (dotimes (i (as i64 (count (ref sf 'forms))))
+                                       (rg-fixed-walk sf ((ref sf 'forms) (as usize i))))))))))
+          (set! k (+ k 1)))
+        (drop &ds))))
+  (return (> g-rg-fixed-files 0)))
+
+(defn rg-core-ns? (ns:StrView):bool
+  (return (or (= ns "nucleus") (strview-has-prefix ns "nucleus."))))
+
+; Why a core definition cannot be renamed, or "".
+(defn rg-core-refusal (d:RDef opts:&RgOpts):StrView
+  (when (not (rg-core-ns? (d 'ns))) (return ""))
+  (when (or (= (d 'ns) "nucleus.core") (= (d 'ns) "nucleus.macros"))
+    (return (rp-arena-text (str "'" (d 'name) "' is the prelude's (" (d 'ns) "): every file reads it, and the"
+                                " compiler names prelude definitions by their bare names"))))
+  (when (not (rg-fixed-load (opts 'compiler-src)))
+    (return (rp-arena-text (str "cannot read the compiler's source in " (opts 'compiler-src) " to see which core"
+                                " names it spells; pass --compiler-src"))))
+  (match (get (rg-fixed) (symbol-intern (d 'name)))
+    ((some x) (return (rp-arena-text (str "the compiler's source spells '" (d 'name) "' in a string or a template,"
+                                          " so it may name this core definition by that name"))))
+    (none (return ""))))
+
+; The definition at byte `at` of `path` in `r`: its key, or "" with the plan refused.
+(defn rg-key-at (r:&RgRoot p:&RgPlan path:StrView at:usize):StrView
+  (let (rep:&Report ((r 'ctx) 'rep))
+    (when-some (ds (rp-list (ref rep 'defs-by-file) (symbol-intern path)))
+      (dotimes (i (as i64 (count ds)))
+        (let (d:RDef (rg-def r (ds (as usize i))))
+          (when (and (<= (d 'start) (as i64 at)) (< (as i64 at) (d 'end))) (return (d 'key))))))
+    (when-some (rs (rp-list (ref rep 'by-file) (symbol-intern path)))
+      (dotimes (i (as i64 (count rs)))
+        (let (x:RRef (rg-ref r (rs (as usize i))))
+          (when (and (<= (x 'start) (as i64 at)) (< (as i64 at) (x 'end)))
+            (cond (= (x 'why) "ambiguous")
+                    (rg-fail p path at (rp-arena-text (str "'" (x 'name) "' here means different things in"
+                                                           " different copies of the code (:ambiguous)")))
+                  (or (= (x 'role) "local") (= (x 'role) "binder"))
+                    (rg-fail p path at (rp-arena-text (str "'" (x 'name) "' here is a local; use rename-local")))
+                  (rg-member? x)
+                    (rg-fail p path at (rp-arena-text (str "'" (x 'name) "' here is a " (x 'role)
+                                                           "; rename-global does not rename members")))
+                  (= ((x 'tkey) 'len) 0)
+                    (rg-fail p path at (rp-arena-text (str "'" (x 'name) "' here names no definition")))
+                  true (return (x 'tkey)))
+            (return "")))))
+    (rg-fail p path at "the compiler resolved no name here")
+    (return "")))
+
+; Root `r`'s key for the definition root `r0` names `key0` with :defs `ds0`;
+; "" when `r` reads none of their files, "!" (refused) when it disagrees.
+(defn rg-key-in (r:&RgRoot r0:&RgRoot key0:StrView ds0:&(Vector usize) p:&RgPlan):StrView
+  (let (rep:&Report ((r 'ctx) 'rep)
+        key:StrView "")
+    (dotimes (i (as i64 (count ds0)))
+      (let (d0:RDef (rg-def r0 (ds0 (as usize i))))
+        (when (report-reads? rep (d0 'file))
+          (match (get (ref r 'def-spans) (rp-key (d0 'file) (d0 'start) (d0 'end)))
+            (none (do (rg-fail p (d0 'file) (as usize (d0 'start))
+                                 (rp-arena-text (str "root " (r 'name) " reads this file but has no :def here")))
+                        (return "!")))
+            ((some k)
+              (let (d:RDef (rg-def r k)
+                    same:bool (if (d0 'private)
+                                (and (d 'private) (= (d 'name) (d0 'name)) (= (d 'file) (d0 'file)))
+                                (= (d 'key) key0)))
+                (when (or (not same) (and (> (key 'len) 0) (!= (d 'key) key)))
+                  (rg-fail p (d0 'file) (as usize (d0 'start))
+                           (rp-arena-text (str "the roots disagree on the definition's key: " key0 " in "
+                                               (r0 'name) ", " (d 'key) " in " (r 'name))))
+                  (return "!"))
+                (set! key (d 'key))))))))
+    (return key)))
+
+; Root `r`'s sites for `key`, after its own checks; the plan is refused on any.
+(defn rg-root-sites (r:&RgRoot p:&RgPlan key:StrView kind:StrView opts:&RgOpts out:&(Vector RgSite)):void
+  (when (> (((r 'refusal) 'reason) 'len) 0)
+    (rg-fail p (r 'refused) ((r 'refusal) 'at) ((r 'refusal) 'reason))
+    (return))
+  (when-some (v (rg-list (ref r 'key-defs) key))
+    (let (defining:bool false)
+      (dotimes (i (as i64 (count v)))
+        (let (d:RDef (rg-def r (v (as usize i)))
+              at:usize (as usize (if (< (d 'start) 0) 0 (d 'start))))
+          (cond (= (d 'form) "extern")
+                  (do (rg-fail p (d 'file) at "an extern declares it: the name is a C symbol") (return))
+                ; A function's copy reads the compiler's own globals by link; a global's copy is new state.
+                (and (d 'host) (!= (d 'kind) "function"))
+                  (do (rg-fail p (d 'file) at (rp-arena-text (str "macro bodies share the compiler's own '" (d 'name)
+                                                                  "' (:host); a renamed copy would be a second one,"
+                                                                  " with state of its own")))
+                      (return))
+                (> ((d 'macro) 'len) 0)
+                  (do (rg-fail p (d 'file) at (rp-arena-text (str "a call of macro " (d 'macro) " makes this"
+                                                                  " definition; rename the call by hand")))
+                      (return))
+                (< (d 'start) 0)
+                  (do (rg-fail p (d 'file) at "a :def of it has no span") (return))
+                (not (rg-declaring? (d 'form))) (set! defining true))))
+      (when (not defining)
+        (let (d:RDef (rg-def r (v 0)))
+          (rg-fail p (d 'file) (as usize (d 'start))
+                   (rp-arena-text (str "root " (r 'name) " only declares it (" (d 'form) "): another unit"
+                                       " defines the name")))
+          (return)))))
+  (rg-check-name r p key kind (p 'old) key out)
+  (when (not (rg-plan-ok? p)) (return))
+  (when (= kind "union")
+    (let (arms:&(Vector StrView) (rg-union-arms r key))
+      (dotimes (i (as i64 (count arms)))
+        (let (a:StrView (arms (as usize i)))
+          (rg-check-name r p (rp-arena-text (str key "-" a)) "function" (rp-arena-text (str (p 'old) "-" a)) key out)
+          (when (not (rg-plan-ok? p)) (return))
+          (rg-check-new-name r p (rp-arena-text (str (p 'new) "-" a)))
+          (when (not (rg-plan-ok? p)) (return))))))
+  (rg-check-new r p key opts))
+
+; rn-bad-name's reason, said of the definition's own name.
+(defn rg-old-bad (old:StrView bad:StrView):StrView
+  (cond (rn-builtin-type? old) (return "it is a built-in type")
+        (= bad "the new name is a built-in form") (return "it is a built-in form")
+        (= bad "the new name must be a plain symbol: no qualifier, chain or sigil")
+          (return "it is an operator or carries a qualifier, chain or sigil")
+        (= bad "the new name is a literal or a name the compiler binds") (return "the compiler binds it")
+        true (return bad)))
+
+
+; Every occurrence and record of `old`, which names `key`; the sites edit `old`'s
+; first (p 'old) bytes, so a union's `U-arm` keeps its `-arm`.
+(defn rg-check-name (r:&RgRoot p:&RgPlan key:StrView kind:StrView old:StrView dkey:StrView
+                     out:&(Vector RgSite)):void
+  (when-some (v (rg-occ r old))
+    (dotimes (i (as i64 (count v)))
+      (rg-check-occ r p key kind old ((p 'old) 'len) (v (as usize i)) out)
+      (when (not (rg-plan-ok? p)) (return))))
+  (rg-check-key-refs r p key old dkey out)
+  (when (not (rg-plan-ok? p)) (return))
+  (rg-check-loose-old r p key old))
+
+; A union's arms, from its :arm records: each mints a constructor `U-arm`.
+(defn rg-union-arms (r:&RgRoot key:StrView):&(Vector StrView)
+  (let (v:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView))))
+        seen:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64)))))
+    (init v (handle g-arena))
+    (init seen (handle g-arena))
+    (when-some (rs (rg-list (ref r 'key-refs) key))
+      (dotimes (i (as i64 (count rs)))
+        (let (x:RRef (rg-ref r (rs (as usize i))))
+          (when (and (= (x 'role) "arm") (not (rg-seen? seen (symbol-intern (x 'name)))))
+            (assoc seen (symbol-intern (x 'name)) 1)
+            (conj v (x 'name))))))
+    (return v)))
+
+(defn rg-editable? (path:StrView opts:&RgOpts):bool
+  (let (es:&(Vector StrView) (ref opts 'edit))
+    (when (= (count es) 0) (return true))
+    (dotimes (i (as i64 (count es)))
+      (let (e:StrView (es (as usize i)))
+        (when (or (= e path) (path-glob-match &e &path)
+                  (and (strview-has-prefix path e)
+                       (or (strview-has-suffix e "/") (= (aref (path 'data) (as i64 (e 'len))) 47))))
+          (return true))))
+    (return false)))
+
+; The sites `root` has in `path`, as text, to compare roots.
+(defn rg-sig (sites:&(Vector RgSite) path:StrView):StrView
+  (let (s:String (str ""))
+    (dotimes (i (as i64 (count sites)))
+      (let (x:RgSite (sites (as usize i)))
+        (when (= (x 'path) path) (str-into &s (x 'b) "-" (x 'e) " "))))
+    (return (rp-arena-text s))))
+
+(defn rg-plan-new (old:StrView new:StrView):&RgPlan
+  (let (p:&RgPlan (unsafe/cast &RgPlan (arena-alloc (sizeof RgPlan))))
+    (set! (p 'old) old)
+    (set! (p 'new) new)
+    (set! (p 'key) "")
+    (set! (p 'kind) "")
+    (init (ref p 'sites) (handle g-arena))
+    (set! (p 'refusal) (Refusal 0 ""))
+    (set! (p 'refused) "")
+    (init (ref p 'headers) (handle g-arena))
+    (return p)))
+
+; The plan to rename the definition named at byte `at` of `path` to `new` in
+; every file of `roots` (§4.11): its sites, or one refusal and its file.
+(defn rename-global-plan (roots:&(Vector &RgRoot) path:StrView at:usize new:StrView opts:&RgOpts):&RgPlan
+  (let (p:&RgPlan (rg-plan-new "" new)
+        r0:?&RgRoot null)
+    (dotimes (i (as i64 (count roots)))
+      (when (and (= r0 null) (report-reads? (((roots (as usize i)) 'ctx) 'rep) path))
+        (set! r0 (roots (as usize i)))))
+    (when (= r0 null) (return (rg-fail p path at "no root reads this file; name one with --root")))
+    (let (r:&RgRoot (unsafe/cast &RgRoot r0)
+          key:StrView (rg-key-at r p path at))
+      (when (not (rg-plan-ok? p)) (return p))
+      (when (= (rg-list (ref r 'key-defs) key) null)
+        (return (rg-fail p path at (rp-arena-text (str key " is defined in no file of root " (r 'name)
+                                                       " (built in, or a C symbol)")))))
+      (let (ds0:&(Vector usize) (unsafe/cast &(Vector usize) (rg-list (ref r 'key-defs) key))
+            d0:RDef (rg-def r (ds0 0))
+            old:StrView (d0 'name)
+            kind:StrView (d0 'kind)
+            bad:StrView (rn-bad-name old)
+            nbad:StrView (rn-bad-name new))
+        (set! (p 'old) old)
+        (set! (p 'key) key)
+        (set! (p 'kind) kind)
+        (cond (not (rg-kind-in-scope? kind))
+                (return (rg-fail p (d0 'file) (as usize (if (< (d0 'start) 0) 0 (d0 'start)))
+                                 (rp-arena-text (str "rename-global does not rename a " kind
+                                                     (if (= kind "protocol")
+                                                       ": the report records no reference to a protocol"
+                                                       "")))))
+              (= old "main") (return (rg-fail p path at "main is the C runtime's entry point"))
+              (> (bad 'len) 0)
+                (return (rg-fail p path at (rp-arena-text (str "'" old "' cannot be renamed: " (rg-old-bad old bad)))))
+              (> (nbad 'len) 0) (return (rg-fail p path at nbad))
+              (= new old) (return (rg-fail p path at "the new name is the old one")))
+        (dotimes (i (as i64 (count ds0)))
+          (when (!= ((rg-def r (ds0 (as usize i))) 'name) old)
+            (return (rg-fail p path at "the definition's :defs spell different names"))))
+        (let (cr:StrView (rg-core-refusal d0 opts))
+          (when (> (cr 'len) 0) (return (rg-fail p (d0 'file) (as usize (d0 'start)) cr))))
+        (let (parts:&(Vector &(Vector RgSite)) (unsafe/cast &(Vector &(Vector RgSite))
+                                                 (arena-alloc (sizeof (Vector &(Vector RgSite))))))
+          (init parts (handle g-arena))
+          (dotimes (i (as i64 (count roots)))
+            (let (rj:&RgRoot (roots (as usize i))
+                  kj:StrView (if (= (as ptr rj) (as ptr r)) key (rg-key-in rj r key ds0 p))
+                  out:&(Vector RgSite) (unsafe/cast &(Vector RgSite) (arena-alloc (sizeof (Vector RgSite)))))
+              (init out (handle g-arena))
+              (when (not (rg-plan-ok? p)) (return p))
+              (when (= (kj 'len) 0)
+                (return (rg-fail p (d0 'file) (as usize (d0 'start))
+                                 (rp-arena-text (str "root " (rj 'name) " reads none of the definition's files,"
+                                                     " so it cannot use it")))))
+              (rg-root-sites rj p kj kind opts out)
+              (when (not (rg-plan-ok? p)) (return p))
+              (conj parts out)))
+          (rg-merge p roots parts opts))))))
+
+(defn rg-seen? (m:&(HashMap Symbol i64) k:Symbol):bool
+  (match (get m k)
+    ((some x) (return true))
+    (none (return false))))
+
+; The roots' sites merged: a file two roots read gets the same sites from both.
+(defn rg-merge (p:&RgPlan roots:&(Vector &RgRoot) parts:&(Vector &(Vector RgSite)) opts:&RgOpts):&RgPlan
+  (let (seen:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64)))))
+    (init seen (handle g-arena))
+    (dotimes (i (as i64 (count parts)))
+      (let (out:&(Vector RgSite) (parts (as usize i)))
+        (dotimes (k (as i64 (count out)))
+          (let (x:RgSite (out (as usize k))
+                fk:Symbol (symbol-intern (x 'path)))
+            (when (not (rg-seen? seen fk))
+              (assoc seen fk 1)
+              (let (sig:StrView (rg-sig out (x 'path)))
+                (dotimes (j (as i64 (count roots)))
+                  (when (report-reads? (((roots (as usize j)) 'ctx) 'rep) (x 'path))
+                    (let (other:StrView (rg-sig (parts (as usize j)) (x 'path)))
+                      (when (!= other sig)
+                        (return (rg-fail p (x 'path) (x 'b)
+                                         (rp-arena-text (str "the roots disagree here: " ((roots (as usize i)) 'name)
+                                                             " and " ((roots (as usize j)) 'name)
+                                                             " edit different sites in this file"))))))))))
+            (when (not (rg-has-site-in? (ref p 'sites) (x 'path) (x 'b) (x 'e)))
+              (cond (strview-has-suffix (x 'path) ".nuch")
+                      (return (rg-fail p (x 'path) (x 'b) "a header names it here; headers are regenerated, not edited"))
+                    ; An absolute path is the library path's, unless --edit names it.
+                    (or (not (strview-has-suffix (x 'path) ".nuc"))
+                        (and (strview-has-prefix (x 'path) "/") (= (count (ref opts 'edit)) 0)))
+                      (return (rg-fail p (x 'path) (x 'b) "this file is outside the working tree; run from its root"))
+                    (not (rg-editable? (x 'path) opts))
+                      (return (rg-fail p (x 'path) (x 'b) "this file is outside the --edit set")))
+              (conj (ref p 'sites) x))))))
+    (return p)))
+
+; ---------------------------------------------------------------------------
+; rename-global: applying, and the driver
+; ---------------------------------------------------------------------------
+
+(defstruct RgOut path:StrView text:StrView)
+
+(defn rg-src (roots:&(Vector &RgRoot) path:StrView):?&RnFile
+  (dotimes (i (as i64 (count roots)))
+    (when-some (f (rn-file ((roots (as usize i)) 'ctx) path)) (return f)))
+  (return null))
+
+; Each edited file's new text; on a failure the plan is refused and nothing is returned.
+(defn rename-global-apply (roots:&(Vector &RgRoot) p:&RgPlan):&(Vector RgOut)
+  (let (outs:&(Vector RgOut) (unsafe/cast &(Vector RgOut) (arena-alloc (sizeof (Vector RgOut))))
+        ss:&(Vector RgSite) (ref p 'sites)
+        done:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64)))))
+    (init outs (handle g-arena))
+    (init done (handle g-arena))
+    (when (not (rg-plan-ok? p)) (return outs))
+    (dotimes (i (as i64 (count ss)))
+      (let (path:StrView ((ss (as usize i)) 'path))
+        (when (not (rg-seen? done (symbol-intern path)))
+          (assoc done (symbol-intern path) 1)
+          (when-some (f (rg-src roots path))
+            (let (e:&Edits (alloca Edits))
+              (set! @e (edits-new))
+              (dotimes (k (as i64 (count ss)))
+                (let (x:RgSite (ss (as usize k)))
+                  (when (= (x 'path) path) (edit-span e (x 'q) (x 'qe) (p 'new)))))
+              (match (rename-edits-apply (f 'src) e ((ss (as usize i)) 'b))
+                ((err r) (do (drop e)
+                             (rg-fail p path (r 'at) (r 'reason))
+                             (while (> (count outs) 0) (remove-at outs (- (count outs) 1)))
+                             (return outs)))
+                ((ok t) (let (tx:String t)
+                          (conj outs (RgOut path (edit-arena-str &tx)))
+                          (drop e)))))))))
+    (return outs)))
+
+(defn rg-c-char? (c:i32):bool
+  (return (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57)) (= c 95))))
+
+; Whether a C header names `tok` as an identifier: bare (`square`), or after a namespace's `__` or `nuc_`.
+(defn rg-c-has? (text:StrView tok:StrView):bool
+  (let (n:usize (tok 'len)
+        i:usize 0)
+    (when (= n 0) (return false))
+    (while (<= (+ i n) (text 'len))
+      (when (and (= (edit-slice text i (+ i n)) tok)
+                 (or (= (+ i n) (text 'len)) (not (rg-c-char? (as i32 (aref (text 'data) (as i64 (+ i n))))))))
+        (when (or (= i 0) (not (rg-c-char? (as i32 (aref (text 'data) (as i64 (- i 1))))))
+                  (and (>= i 2) (= (edit-slice text (- i 2) i) "__"))
+                  (and (>= i 4) (= (edit-slice text (- i 4) i) "nuc_")))
+          (return true)))
+      (set! i (+ i 1)))
+    (return false)))
+
+; Whether generated header `h` (text `text`) spells `old`: a `.nuch` as a token; a `.h` in a
+; comment or `asm` label as a token, or as its C identifier.
+(defn rg-header-spells? (h:StrView text:StrView old:StrView):bool
+  (when (rn-token-in? text old) (return true))
+  (return (and (strview-has-suffix h ".h") (rg-c-has? text (rg-ir-sanitize (rg-ir-token old))))))
+
+; The committed generated headers (scripts/check-headers.sh) that spell the old name.
+(defn rename-global-headers (p:&RgPlan):void
+  (let (pats:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
+    (init pats (handle g-arena))
+    (conj pats "lib/*.nuch")
+    (conj pats "lib/*.h")
+    (conj pats "lib/nucleus/*.nuch")
+    (conj pats "lib/nucleus/*.h")
+    (dotimes (i (as i64 (count pats)))
+      (match (glob-files (pats (as usize i)))
+        ((err e) (do))
+        ((ok d)
+          (let (ds:DirEntries d
+                k:usize 0)
+            (while (< k (dir-count &ds))
+              (let (h:StrView (rp-arena-text (str (dir-name &ds k))))
+                (match (rw-read-file h)
+                  ((err e) (do))
+                  ((ok t) (let (tx:String t
+                                v:StrView (string-as-view &tx))
+                            (when (rg-header-spells? h v (p 'old))
+                              (conj (ref p 'headers) h))
+                            (drop &tx)))))
+              (set! k (+ k 1)))
+            (drop &ds)))))))
+
+(defn rg-print-site (path:StrView f:?&RnFile at:usize what:StrView):void
+  (if-some (x f)
+    (let (src:StrView (x 'src))
+      (print path ":" (rn-line src at) ":" (syn-col src (if (< at (src 'len)) at (src 'len))) ": rename-global: "
+             what "\n"))
+    (print path ":1:1: rename-global: " what "\n")))
+
+(defn rg-usage ():i32
+  (eprint "usage: rename-global [--apply] [--in-strings] [--root FILE]... [--report FILE]... [--edit PATH]..."
+          " [--compiler PATH] [--compiler-src DIR] [--no-ir-check] PATH:LINE:COL NEW\n")
+  (return 2))
+
+(defn rg-read-report (file:StrView):ReportResult
+  (match (rw-read-file file)
+    ((err e) (return (err (rp-arena-text (str "cannot read " file)))))
+    ((ok t) (let (tx:String t
+                  src:StrView (edit-arena-str &tx))
+              (return (report-parse src))))))
+
+; `main` for the rename-global tool (§4.11). A dry run by default; each root's
+; report comes from `COMPILER --resolve ROOT` unless a --report's :unit names it.
+; Exit 0 when the rename is made (or would be), 1 when it is refused or fails,
+; 2 on a bad argument.
+(defn rename-global-main (argc:i32 argv:ptr):i32
+  (let (apply:bool false
+        in-strings:bool false
+        opts:&RgOpts (unsafe/cast &RgOpts (arena-alloc (sizeof RgOpts)))
+        roots:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView))))
+        reports:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView))))
+        site:StrView ""
+        new:StrView ""
+        words:i32 0
+        i:i32 1)
+    (set! (opts 'compiler) "build/nucleusc")
+    (set! (opts 'compiler-src) "src")
+    (set! (opts 'ir-check) true)
+    (init (ref opts 'edit) (handle g-arena))
+    (init roots (handle g-arena))
+    (init reports (handle g-arena))
+    (while (< i argc)
+      (let (a:StrView (rw-arg argv i)
+            more:bool (< (+ i 1) argc))
+        (cond (= a "--apply") (set! apply true)
+              (= a "--dry-run") (set! apply false)
+              (= a "--in-strings") (set! in-strings true)
+              (= a "--no-ir-check") (set! (opts 'ir-check) false)
+              (and more (= a "--root")) (do (conj roots (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--report")) (do (conj reports (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--edit")) (do (conj (ref opts 'edit) (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--compiler")) (do (set! (opts 'compiler) (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--compiler-src"))
+                (do (set! (opts 'compiler-src) (rw-arg argv (+ i 1))) (set! i (+ i 1)))
+              (strview-has-prefix a "-") (do (eprint "rename-global: unknown option " a "\n")
+                                             (return (rg-usage)))
+              true (do (if (= words 0) (set! site a) (set! new a))
+                       (set! words (+ words 1)))))
+      (set! i (+ i 1)))
+    (when (!= words 2) (return (rg-usage)))
+    (let (path:StrView ""
+          line:i64 -1
+          col:i64 -1)
+      (match (strview-rfind-byte &site 58)
+        ((some j)
+          (let (head:StrView (strview-take-bytes site j))
+            (set! col (rn-digits (strview-drop-bytes site (+ j 1))))
+            (match (strview-rfind-byte &head 58)
+              ((some k) (do (set! line (rn-digits (strview-drop-bytes head (+ k 1))))
+                            (set! path (strview-take-bytes head k))))
+              (none (do)))))
+        (none (do)))
+      (when (or (< line 1) (< col 1))
+        (eprint "rename-global: name the definition as PATH:LINE:COL, not " site "\n")
+        (return (rg-usage)))
+      (when (strview-has-prefix path "./") (set! path (strview-drop-bytes path 2)))
+      (when (and (= (count roots) 0) (= (count reports) 0)) (conj roots path))
+      (rg-main path line col new apply in-strings roots reports opts))))
+
+(defn rg-main (path:StrView line:i64 col:i64 new:StrView apply:bool in-strings:bool roots:&(Vector StrView)
+               reports:&(Vector StrView) opts:&RgOpts):i32
+  (let (rs:&(Vector &RgRoot) (unsafe/cast &(Vector &RgRoot) (arena-alloc (sizeof (Vector &RgRoot))))
+        empty:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
+    (init rs (handle g-arena))
+    (init empty (handle g-arena))
+    (dotimes (k (as i64 (count reports)))
+      (match (rg-read-report (reports (as usize k)))
+        ((err why) (do (eprint "rename-global: " (reports (as usize k)) ": " why "\n") (return 1)))
+        ((ok rep) (conj rs (rename-global-root (rep 'unit) rep in-strings)))))
+    (dotimes (k (as i64 (count roots)))
+      (let (name:StrView (roots (as usize k))
+            have:bool false)
+        (dotimes (j (as i64 (count rs)))
+          (when (= ((rs (as usize j)) 'name) name) (set! have true)))
+        (when (not have)
+          (match (report-run (opts 'compiler) name empty)
+            ((err why) (do (eprint "rename-global: " why "\n") (return 1)))
+            ((ok rep) (conj rs (rename-global-root name rep in-strings)))))))
+    (dotimes (k (as i64 (count rs)))
+      (print "root " ((rs (as usize k)) 'name) ": " ((rs (as usize k)) 'nfiles) " files read\n"))
+    (let (src:StrView "")
+      (match (rw-read-file path)
+        ((err e) (do (eprint path ": cannot read the file\n") (return 1)))
+        ((ok t) (let (tx:String t) (set! src (edit-arena-str &tx)))))
+      (let (at:i64 (rn-offset src line col))
+        (when (< at 0)
+          (print path ":" line ":" col ": rename-global: no such position in the file\n")
+          (return 1))
+        (let (p:&RgPlan (rename-global-plan rs path (as usize at) new opts)
+              outs:&(Vector RgOut) (rename-global-apply rs p))
+          (when (not (rg-plan-ok? p))
+            (rg-print-site (p 'refused) (rg-src rs (p 'refused)) ((p 'refusal) 'at) ((p 'refusal) 'reason))
+            (return 1))
+          (let (ss:&(Vector RgSite) (ref p 'sites))
+            (dotimes (k (as i64 (count ss)))
+              (let (x:RgSite (ss (as usize k)))
+                (rg-print-site (x 'path) (rg-src rs (x 'path)) (x 'q) (rp-arena-text (str (p 'old) " -> " new)))))
+            (print (p 'key) " (" (p 'kind) "): '" (p 'old) "' renamed to '" new "' at " (count ss) " sites in "
+                   (count outs) " files" (if apply "" " (dry run; --apply writes)") "\n"))
+          (when apply
+            (dotimes (k (as i64 (count outs)))
+              (let (o:RgOut (outs (as usize k)))
+                (match (rw-write-file (o 'path) (o 'text))
+                  ((err e) (do (eprint (o 'path) ": cannot write the file\n") (return 1)))
+                  ((ok) (do))))))
+          (rename-global-headers p)
+          (let (hs:&(Vector StrView) (ref p 'headers))
+            (when (> (count hs) 0)
+              (dotimes (k (as i64 (count hs)))
+                (print (hs (as usize k)) ": a generated header spells '" (p 'old) "'\n"))
+              (print "regenerate the headers with scripts/check-headers.sh --fix\n")))
+          (return 0))))))

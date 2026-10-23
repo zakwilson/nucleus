@@ -1,0 +1,1830 @@
+; `nucleusc --resolve`: the resolution report (design/stage26-refactoring/overview.md §4.9).
+; Every entry point is reached only when `g-resolve` is set.
+
+(import-use "stdio.h")
+(import-use "string.h")
+(import-use nucleus.arena)
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
+(import-use nucleus.hashmap)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+(import-use nucleus.create)
+(import-use diagnostics)
+(import-use strfmt)
+
+(defvar g-resolve:i32 0)
+
+; One emitting read: the path and the syntax tree its nodes came from.
+(defstruct RFile path:Symbol syn:&SynFile)
+
+(defstruct RSpan start:usize end:usize line:i32 col:i32 ok:bool)
+
+; A trace's candidates: `n` atoms spell the name, the last at `span`; `amb`: a
+; string or keyword operand is the name.
+(defstruct RTr n:i32 amb:bool span:RSpan)
+
+; The copy an occurrence was found through (§4.9 `:via`).
+(defenum RVia VIA-NONE VIA-DESUGAR VIA-REWRITE VIA-INSTANCE VIA-CLOSURE VIA-EXPANSION VIA-TEMPLATE
+              VIA-COUNT)
+
+; A rewrite that gathers elems from more than one list: elem k's Syn, or none.
+(defstruct RKids a:?&Syn b:?&Syn c:?&Syn d:?&Syn)
+
+; A rewrite's copy holds elem `k` of the Syn's list at `k + shift`, for `k >= first`,
+; unless `kids` maps each elem.
+(defstruct RSite syn:&Syn file:&RFile shift:i32 first:i32 via:i32 kids:?&RKids)
+
+; One macro call's expansion. `passed`: the Syns of operand lists it emitted in
+; place, which a trace does not search (§4.9 rule 2); `data`: the spellings its
+; own output holds as program data (rule 3).
+(defstruct RExp call:&Syn file:&RFile macro:Symbol inst:bool passed:?&(HashMap usize i32)
+  memo:?&(HashMap Symbol &RTr) key:Symbol inner:?&(Vector Symbol) data:?&(HashMap Symbol i32))
+
+; A form a top-level macro expansion produced: the outermost source call it came from.
+(defstruct ROrigin call:&Syn file:&RFile macro:Symbol exp:?&RExp)
+
+; A list a chain split made from atom `syn` (`x:i32` → `(x i32)`); `skip0`: the
+; atom is a binder, so its segment 0 is a name and never a type.
+(defstruct RSplit syn:&Syn file:&RFile skip0:bool via:i32)
+
+; One list being emitted. `idx` ≥ 0 narrows it to that elem, whose slot is `slot`;
+; RF-ANCHOR makes `node` an atom, to be found by identity in the frame below.
+; `why` marks a barrier, which only locates unless `open` (its node is a mapped copy);
+; `gen`: a minted form, where a name found nowhere is generated.
+(defstruct RFrame node:?&Node idx:i32 slot:i32 macro:Symbol why:i32 open:bool gen:bool exp:?&RExp)
+
+; An expansion whose lists are being emitted, down to frame `depth`.
+(defstruct RAct exp:&RExp depth:usize)
+
+(defstruct ResolveState
+  sites:&(HashMap usize &RSite)
+  origins:&(HashMap usize &ROrigin)
+  splits:&(HashMap usize &RSplit)
+  ; Top-level forms by `resolve-top-key`: what a prescan's unsited copy of one maps to.
+  tops:&(HashMap Symbol &Syn)
+  ; A top-level form's Syn → the desugared form emission read.
+  twins:&(HashMap usize &Node)
+  ; Atoms an instance substituted for a type variable.
+  subst:&(HashMap usize i32)
+  ; Operand atoms a closure rewrite replaced: no expansion's name comes from them.
+  gone:&(HashMap usize i32)
+  seen:&(HashMap Symbol i32)
+  frames:&(Vector &RFrame)
+  depth:usize
+  acts:&(Vector &RAct)
+  nact:usize
+  events:&(Vector &REvent)
+  heads:&(Vector &RDef)
+  ; A definer form's address → the symbol its emitter defined (`:link`).
+  links:&(HashMap usize Symbol)
+  ; Every spelling the unit's code can mint at expansion time (§4.9 rule 3).
+  mint:&(HashMap Symbol i32)
+  ; A program defn's spellings, which join `mint` once a macro body reaches the defn.
+  pend:&(HashMap Symbol &(Vector Symbol))
+  ; Spellings no one expansion owns (compile-time blocks, program defns a body calls),
+  ; and each macro's own, by JIT name (§4.9 rule 3); `mint` is their union.
+  gmint:&(HashMap Symbol i32)
+  kmint:&(HashMap Symbol &(HashMap Symbol i32))
+  mirroring:i32
+  ; The JIT bodies being compiled: their keys, and whether each is the unit's text.
+  ctkeys:&(Vector Symbol)
+  ctsited:&(Vector bool)
+  ctn:usize
+  qq:&(Vector &RQQ)
+  nqq:usize
+  unframed:i64
+  ; Unframed events by file, role, kind, name and key, against the framed ones.
+  uf:&(HashMap Symbol i32)
+  ufs:&(Vector Symbol)
+  ufevs:&(Vector &REvent)
+  unframed-only:i64
+  tally:&(Vector i64)
+  vtally:&(Vector i64))
+
+(defvar g-rs:?&ResolveState null)
+
+; Nonzero where names are resolved again or from minted spellings (inference,
+; stamps, overload matching; overview.md §8 RR-2): emission reports the occurrence.
+(defvar g-rs-quiet:i32 0)
+
+(defn resolve-arm ():void
+  (let (st:&ResolveState (new ResolveState g-arena))
+    (set! (st 'sites) (new (HashMap usize &RSite) g-arena))
+    (set! (st 'origins) (new (HashMap usize &ROrigin) g-arena))
+    (set! (st 'splits) (new (HashMap usize &RSplit) g-arena))
+    (set! (st 'tops) (new (HashMap Symbol &Syn) g-arena))
+    (set! (st 'twins) (new (HashMap usize &Node) g-arena))
+    (set! (st 'subst) (new (HashMap usize i32) g-arena))
+    (set! (st 'gone) (new (HashMap usize i32) g-arena))
+    (set! (st 'seen) (new (HashMap Symbol i32) g-arena))
+    (set! (st 'frames) (new (Vector &RFrame) g-arena))
+    (set! (st 'depth) 0)
+    (set! (st 'acts) (new (Vector &RAct) g-arena))
+    (set! (st 'nact) 0)
+    (set! (st 'events) (new (Vector &REvent) g-arena))
+    (set! (st 'heads) (new (Vector &RDef) g-arena))
+    (set! (st 'links) (new (HashMap usize Symbol) g-arena))
+    (set! (st 'mint) (new (HashMap Symbol i32) g-arena))
+    (set! (st 'pend) (new (HashMap Symbol &(Vector Symbol)) g-arena))
+    (set! (st 'mirroring) 0)
+    (set! (st 'gmint) (new (HashMap Symbol i32) g-arena))
+    (set! (st 'kmint) (new (HashMap Symbol &(HashMap Symbol i32)) g-arena))
+    (set! (st 'ctkeys) (new (Vector Symbol) g-arena))
+    (set! (st 'ctsited) (new (Vector bool) g-arena))
+    (set! (st 'ctn) 0)
+    (set! (st 'qq) (new (Vector &RQQ) g-arena))
+    (set! (st 'nqq) 0)
+    (set! (st 'uf) (new (HashMap Symbol i32) g-arena))
+    (set! (st 'ufs) (new (Vector Symbol) g-arena))
+    (set! (st 'ufevs) (new (Vector &REvent) g-arena))
+    (set! (st 'tally) (new (Vector i64) g-arena))
+    (dotimes (i (* RREF-COUNT RO-COUNT)) (conj (st 'tally) 0))
+    (set! (st 'vtally) (new (Vector i64) g-arena))
+    (dotimes (i VIA-COUNT) (conj (st 'vtally) 0))
+    (set! g-rs st)))
+
+(defn rs ():&ResolveState
+  (return (unsafe/cast &ResolveState g-rs)))
+
+(defn resolve-addr (n:?&Node):usize
+  (return (as usize (unsafe/cast i64 (as ptr n)))))
+
+(defn resolve-syn-addr (s:&Syn):usize
+  (return (as usize (unsafe/cast i64 (as ptr s)))))
+
+; `symbol-none` has no text to format.
+(defn resolve-sym-text (s:Symbol):StrView
+  (if (symbol-none? s) (return "") (return (symbol-as-view s))))
+
+(defn resolve-depth ():usize
+  (return ((rs) 'depth)))
+
+; ---------------------------------------------------------------------------
+; The emitting reads
+; ---------------------------------------------------------------------------
+
+; The compiler drops a file's text once its forms are emitted; a Syn points into it.
+(defn resolve-keep (text:StrView):StrView
+  (let (n:usize (text 'len)
+        p:ptr (arena-alloc (as i64 (+ n 1))))
+    (memcpy p (as ptr (text 'data)) (as i64 n))
+    (return (strview (unsafe/cast &ui8 p) n))))
+
+(defn resolve-index-syn (st:&ResolveState rf:&RFile s:&Syn):void
+  (when (= (node-kind (s 'node)) NODE-LIST)
+    (assoc (st 'sites) (resolve-addr (s 'node)) (new RSite g-arena s rf)))
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (dotimes (i (count ks))
+      (resolve-index-syn st rf (ks i)))))
+
+; A top-level form's identity across reads of one file: its line, head and name.
+(defn resolve-top-key (path:Symbol n:?&Node):Symbol
+  (when (or (!= (node-kind n) NODE-LIST) (< (node-len n) 2)
+            (!= (node-kind (node-at n 0)) NODE-SYM) (!= (node-kind (node-at n 1)) NODE-SYM))
+    (return (symbol-none)))
+  (return (symbol-intern (fstr path "\n" (node-line n 0) "\n" (node-head-sym n) "\n"
+                               ((unsafe/cast &Node (node-at n 1)) 's)))))
+
+; Two forms on one key (another one on that line) map to neither.
+(defn resolve-index-top (st:&ResolveState path:Symbol s:&Syn):void
+  (let (k:Symbol (resolve-top-key path (s 'node)))
+    (when (symbol-none? k) (return))
+    (match (get (st 'tops) k)
+      ((some o) (when (!= (o 'start) (s 'start))
+                  (assoc (st 'seen) (symbol-intern (fstr "top-dup\n" k)) 1)))
+      (none (assoc (st 'tops) k s)))))
+
+; True the first time `k` is asked.
+(defn resolve-first? (k:Symbol):bool
+  (let (st:&ResolveState (rs))
+    (match (get (st 'seen) k)
+      ((some v) (return false))
+      (none (do (assoc (st 'seen) k 1) (return true))))))
+
+(defn resolve-add-file (f:&SynFile path:Symbol):void
+  (let (st:&ResolveState (rs)
+        rf:&RFile (new RFile g-arena)
+        fs:&(Vector &Syn) (ref f 'forms))
+    (set! (rf 'path) path)
+    (set! (rf 'syn) f)
+    (dotimes (i (count fs))
+      (resolve-index-syn st rf (fs i))
+      (resolve-index-top st path (fs i)))
+    (when (resolve-first? (symbol-intern (fstr "file\n" path)))
+      (let (out:&String (new String g-arena)
+            d:&RDef (new RDef g-arena))
+        (str-into out "{:record :file :file ")
+        (diag-write-string out (symbol-as-view path))
+        (str-into out " :header " (if (strview-has-suffix (symbol-as-view path) ".nuch") "true" "false") "}\n")
+        (set! (d 'isfile) true)
+        (set! (d 'text) (symbol-intern (string-as-view out)))
+        (conj (st 'heads) d)))))
+
+; `read-source-or-die` in syntax mode: the same tree, with each list's Syn indexed.
+(defn resolve-read (text:StrView path:Symbol):&Node
+  (match (read-syntax-all (resolve-keep text))
+    ((err e) (do (report-read-error e) (exit 1) (return null)))
+    ((ok f) (do (resolve-add-file f path) (return (f 'tree))))))
+
+; ---------------------------------------------------------------------------
+; Copies (RR-3): a list the compiler made from another is placed as that list.
+; ---------------------------------------------------------------------------
+
+(defn resolve-site-of (n:?&Node):?&RSite
+  (match (get ((rs) 'sites) (resolve-addr n))
+    ((some s) (return (as ptr s)))
+    (none (return null))))
+
+(defn resolve-origin-of (n:?&Node):?&ROrigin
+  (match (get ((rs) 'origins) (resolve-addr n))
+    ((some o) (return (as ptr o)))
+    (none (return null))))
+
+(defn resolve-split-of (n:?&Node):?&RSplit
+  (match (get ((rs) 'splits) (resolve-addr n))
+    ((some s) (return (as ptr s)))
+    (none (return null))))
+
+; Whether a span can be had for an elem of `n`.
+(defn resolve-sited? (n:?&Node):bool
+  (return (or (!= (resolve-site-of n) null) (!= (resolve-split-of n) null))))
+
+(defn resolve-file-of (n:?&Node):?&RFile
+  (let (s:?&RSite (resolve-site-of n))
+    (when (!= s null) (return ((unsafe/cast &RSite s) 'file))))
+  (let (p:?&RSplit (resolve-split-of n))
+    (when (!= p null) (return ((unsafe/cast &RSplit p) 'file))))
+  (return null))
+
+(defn resolve-syn-of (n:?&Node):?&Syn
+  (let (s:?&RSite (resolve-site-of n))
+    (when (!= s null) (return ((unsafe/cast &RSite s) 'syn))))
+  (let (p:?&RSplit (resolve-split-of n))
+    (when (!= p null) (return ((unsafe/cast &RSplit p) 'syn))))
+  (return null))
+
+; The Syn spanning elem `i` of the list `s` spans; a fuse's name elem is its first kid.
+(defn resolve-kid (s:&Syn i:i32):?&Syn
+  (let (k:?&Syn (syn-kid-for-elem s i))
+    (when (and (= k null) (= i 0) (= (s 'kind) SYN-FUSE) (> (count (ref s 'kids)) 0))
+      (return ((ref s 'kids) 0)))
+    (return k)))
+
+; The Syn of elem `k` of a list this site maps.
+(defn resolve-site-kid (s:&RSite k:i32):?&Syn
+  (when (!= (s 'kids) null)
+    (let (m:&RKids (unsafe/cast &RKids (s 'kids)))
+      (return (cond (= k 0) (m 'a) (= k 1) (m 'b) (= k 2) (m 'c) (= k 3) (m 'd) true null))))
+  (let (j:i32 (- k (s 'shift)))
+    (when (< j (s 'first)) (return null))
+    (return (resolve-kid (s 'syn) j))))
+
+; A copy of a copy: `:instance` survives every later copy (§4.9).
+(defn resolve-nest (outer:i32 via:i32):i32
+  (return (if (= outer VIA-INSTANCE) VIA-INSTANCE via)))
+
+(defn resolve-copy-site (s:&RSite via:i32):&RSite
+  (let (c:&RSite (new RSite g-arena (s 'syn) (s 'file) (s 'shift) (s 'first)))
+    (set! (c 'via) (resolve-nest (s 'via) via))
+    (set! (c 'kids) (s 'kids))
+    (return c)))
+
+; The atom `x:T` became list `l`, and every list under it: they all map to the atom.
+(defn resolve-map-split (l:?&Node sp:&RSplit):void
+  (when (!= (node-kind l) NODE-LIST) (return))
+  (assoc ((rs) 'splits) (resolve-addr l) sp)
+  (dotimes (j (node-len l))
+    (resolve-map-split (node-at l j) sp)))
+
+; `desugar` copies a list only where a binder changed, elem i to elem i.
+(defn resolve-map-copies (orig:?&Node copy:?&Node):void
+  (resolve-map-copy orig copy VIA-DESUGAR))
+
+; An elem-for-elem copy takes its original's Syn, and a binder it split takes its atom's.
+(defn resolve-map-copy (orig:?&Node copy:?&Node via:i32):void
+  (when (or (= (as ptr orig) (as ptr copy))
+            (!= (node-kind orig) NODE-LIST)
+            (!= (node-kind copy) NODE-LIST))
+    (return))
+  (let (st:&ResolveState (rs)
+        site:?&RSite (resolve-site-of orig))
+    (when (!= site null)
+      (assoc (st 'sites) (resolve-addr copy) (resolve-copy-site (unsafe/cast &RSite site) via)))
+    (when (= (node-len orig) (node-len copy))
+      (dotimes (j (node-len orig))
+        (let (o:?&Node (node-at orig j)
+              c:?&Node (node-at copy j))
+          (if (and (= (node-kind o) NODE-SYM) (= (node-kind c) NODE-LIST) (!= site null))
+            (let (s:&RSite (unsafe/cast &RSite site)
+                  kid:?&Syn (resolve-site-kid s j))
+              (when (and (!= kid null) (= ((unsafe/cast &Syn kid) 'kind) SYN-ATOM))
+                (resolve-map-split c (new RSplit g-arena (unsafe/cast &Syn kid) (s 'file) true
+                                          (resolve-nest (s 'via) via)))))
+            (resolve-map-copy o c via)))))))
+
+; The top-level forms `desugar` made from the read `raw`; each one is also the
+; form an instance of a template defined there is stamped from.
+(defn resolve-note-top-copies (raw:?&Node forms:?&Node):void
+  (resolve-map-copies raw forms)
+  (when (or (!= (node-kind forms) NODE-LIST) (!= (node-len raw) (node-len forms))) (return))
+  (dotimes (i (node-len raw))
+    (let (site:?&RSite (resolve-site-of (node-at raw i))
+          f:?&Node (node-at forms i))
+      (when (and (!= site null) (= (node-kind f) NODE-LIST))
+        (assoc ((rs) 'twins) (resolve-syn-addr ((unsafe/cast &RSite site) 'syn))
+               (unsafe/cast &Node f))))))
+
+; `copy` is a rewrite of `orig` that keeps its elems from 1 on, up to two places
+; later behind a new head: `(ok v)` → `(__make T ok v)`. It is placed as `orig`.
+(defn resolve-map-shifted (orig:?&Node copy:?&Node):void
+  (when (or (= (as ptr orig) (as ptr copy)) (!= (node-kind orig) NODE-LIST)
+            (!= (node-kind copy) NODE-LIST))
+    (return))
+  (let (site:?&RSite (resolve-site-of orig)
+        on:i32 (node-len orig)
+        sh:i32 (- (node-len copy) (node-len orig)))
+    (when (or (= site null) (< sh 0) (> sh 2) (= on 0)) (return))
+    (when (!= ((unsafe/cast &RSite site) 'kids) null) (return))
+    (dotimes (j on)
+      (when (and (> j 0) (!= (as ptr (node-at orig j)) (as ptr (node-at copy (+ j sh)))))
+        (return)))
+    (let (s:&RSite (unsafe/cast &RSite site)
+          lo:i32 (- (if (= (as ptr (node-at orig 0)) (as ptr (node-at copy sh))) 0 1) (s 'shift))
+          c:&RSite (new RSite g-arena (s 'syn) (s 'file) (+ (s 'shift) sh) (if (> lo (s 'first)) lo (s 'first))))
+      (set! (c 'via) (resolve-nest (s 'via) VIA-REWRITE))
+      (assoc ((rs) 'sites) (resolve-addr copy) c))))
+
+; `copy` holds elem `k - delta` of `orig` at `k`, for `orig`'s elems from `from` on.
+(defn resolve-map-offset (orig:?&Node copy:?&Node delta:i32 from:i32 via:i32):void
+  (when (or (!= (node-kind orig) NODE-LIST) (!= (node-kind copy) NODE-LIST)) (return))
+  (let (site:?&RSite (resolve-site-of orig))
+    (when (= site null) (return))
+    (let (s:&RSite (unsafe/cast &RSite site)
+          lo:i32 (- from (s 'shift)))
+      (when (!= (s 'kids) null) (return))
+      (let (c:&RSite (new RSite g-arena (s 'syn) (s 'file) (+ (s 'shift) delta)
+                          (if (> lo (s 'first)) lo (s 'first))))
+        (set! (c 'via) (resolve-nest (s 'via) via))
+        (assoc ((rs) 'sites) (resolve-addr copy) c)))))
+
+; The Syn elem `i` of `l` was read from, when `l` is mapped elem by elem.
+(defn resolve-elem-syn (l:?&Node i:i32):?&Syn
+  (when (= l null) (return null))
+  (let (site:?&RSite (resolve-site-of l))
+    (when (= site null) (return null))
+    (return (resolve-site-kid (unsafe/cast &RSite site) i))))
+
+; `copy`'s elems 1…3 are elem `i1` of `l1`, `i2` of `l2` and `i3` of `l3`: a
+; place rewrite such as `(set! (aref a i) v)` → `(aset! a i v)`.
+(defn resolve-map-picks (copy:?&Node l1:?&Node i1:i32 l2:?&Node i2:i32 l3:?&Node i3:i32):void
+  (let (s1:?&RSite (resolve-site-of l1))
+    (when (= s1 null) (return))
+    (let (s:&RSite (unsafe/cast &RSite s1)
+          m:&RKids (new RKids g-arena)
+          c:&RSite (new RSite g-arena (s 'syn) (s 'file)))
+      (set! (m 'b) (resolve-elem-syn l1 i1))
+      (set! (m 'c) (resolve-elem-syn l2 i2))
+      (set! (m 'd) (resolve-elem-syn l3 i3))
+      (set! (c 'via) (resolve-nest (s 'via) VIA-REWRITE))
+      (set! (c 'kids) m)
+      (assoc ((rs) 'sites) (resolve-addr copy) c))))
+
+; A generic instance `c`, stamped from template `o` elem for elem (a parameter
+; list may be a prefix); an atom it substituted is marked, never placed.
+(defn resolve-map-instance (o:?&Node c:?&Node):void
+  (when (or (= (as ptr o) (as ptr c)) (!= (node-kind o) NODE-LIST) (!= (node-kind c) NODE-LIST)
+            (> (node-len c) (node-len o)))
+    (return))
+  (let (st:&ResolveState (rs)
+        site:?&RSite (resolve-site-of o)
+        spl:?&RSplit (resolve-split-of o))
+    (cond (!= site null)
+            (assoc (st 'sites) (resolve-addr c) (resolve-copy-site (unsafe/cast &RSite site) VIA-INSTANCE))
+          (!= spl null)
+            (let (p:&RSplit (unsafe/cast &RSplit spl))
+              (assoc (st 'splits) (resolve-addr c)
+                     (new RSplit g-arena (p 'syn) (p 'file) (p 'skip0) VIA-INSTANCE)))
+          ; A rebuilt sigil list has no site of its own, but its elems do.
+          true 0)
+    (dotimes (j (node-len c))
+      (let (oj:?&Node (node-at o j)
+            cj:?&Node (node-at c j))
+        (cond (and (= (node-kind oj) NODE-LIST) (= (node-kind cj) NODE-LIST))
+                (resolve-map-instance oj cj)
+              (!= (as ptr oj) (as ptr cj))
+                (assoc (st 'subst) (resolve-addr cj) 1))))))
+
+(defn resolve-subst? (n:?&Node):bool
+  (match (get ((rs) 'subst) (resolve-addr n))
+    ((some v) (return true))
+    (none (return false))))
+
+; The sited form an instance of template `src` is stamped against: `src` itself,
+; or, for a prescan's unsited read, the form emission read for that definition.
+(defn resolve-template-twin (src:?&Node path:Symbol):?&Node
+  (when (!= (resolve-site-of src) null) (return src))
+  (let (k:Symbol (resolve-top-key path src))
+    (when (symbol-none? k) (return null))
+    (match (get ((rs) 'seen) (symbol-intern (fstr "top-dup\n" k)))
+      ((some d) (return null))
+      (none 0))
+    (match (get ((rs) 'tops) k)
+      ((some s) (match (get ((rs) 'twins) (resolve-syn-addr s))
+                  ((some t) (return t))
+                  (none (return null))))
+      (none (return null)))))
+
+; ---- closures ----
+
+; A captured name `fn-rewrite-captures` replaced: a local of the enclosing scope.
+(defn resolve-capture (o:?&Node j:i32 scope:&Scope):void
+  (let (e:?&Node (node-at o j))
+    (when (!= (node-kind e) NODE-SYM) (return))
+    (let (name:Symbol ((unsafe/cast &Node e) 's)
+          sy:?&Syn (resolve-elem-syn o j))
+      (when (!= sy null) (assoc ((rs) 'gone) (resolve-syn-addr (unsafe/cast &Syn sy)) 1))
+      (if-some (sym (scope-lookup scope name))
+        (let (home:?&Scope (sym 'home))
+          (when (and (!= home null) (!= ((unsafe/cast &Scope home) 'parent) null))
+            (resolve-event RREF-LOCAL RC-VALUE e name "local" (symbol-none)
+                           (as ?&RBind (sym 'rs-bind)) o j VIA-CLOSURE (symbol-none))))
+        0))))
+
+; `c` is `fn-rewrite-captures`' copy of `o`: elem for elem, except that a captured
+; symbol became a list, and `(ref x)`/`(inc! x)`/`(dec! x)` on one changed shape.
+(defn resolve-closure-walk (o:?&Node c:?&Node scope:&Scope):void
+  (when (or (= (as ptr o) (as ptr c)) (!= (node-kind o) NODE-LIST) (!= (node-kind c) NODE-LIST))
+    (return))
+  (if (= (node-len o) (node-len c))
+    (do
+      (let (site:?&RSite (resolve-site-of o)
+            spl:?&RSplit (resolve-split-of o))
+        (cond (!= site null)
+                (assoc ((rs) 'sites) (resolve-addr c) (resolve-copy-site (unsafe/cast &RSite site) VIA-CLOSURE))
+              (!= spl null)
+                (let (p:&RSplit (unsafe/cast &RSplit spl))
+                  (assoc ((rs) 'splits) (resolve-addr c)
+                         (new RSplit g-arena (p 'syn) (p 'file) (p 'skip0) (resolve-nest (p 'via) VIA-CLOSURE))))))
+      (dotimes (j (node-len o))
+        (let (oj:?&Node (node-at o j)
+              cj:?&Node (node-at c j))
+          (cond (and (= (node-kind oj) NODE-LIST) (= (node-kind cj) NODE-LIST))
+                  (resolve-closure-walk oj cj scope)
+                (and (= (node-kind oj) NODE-SYM) (= (node-kind cj) NODE-LIST))
+                  (resolve-capture o j scope)))))
+    (when (and (= (node-len o) 2) (= (node-kind (node-at o 0)) NODE-SYM))
+      (let (h:Symbol ((unsafe/cast &Node (node-at o 0)) 's))
+        (when (or (= h "ref") (= h "inc!") (= h "dec!"))
+          (resolve-capture o 1 scope))))))
+
+; A capturing closure's `invoke`: `(defn invoke ((self …) params…) ret body…)`
+; from call `(… params ret body…)`, its return at elem `r`.
+(defn resolve-map-closure (call:?&Node form:?&Node r:i32 scope:&Scope):void
+  (let (delta:i32 (- 3 r))
+    (resolve-map-offset call form delta r VIA-CLOSURE)
+    (resolve-map-offset (node-at call (- r 1)) (node-at form 2) 1 0 VIA-CLOSURE)
+    (let (i:i32 (+ r 1))
+      (while (< i (node-len call))
+        (resolve-closure-walk (node-at call i) (node-at form (+ i delta)) scope)
+        (set! i (+ i 1))))))
+
+; ---------------------------------------------------------------------------
+; Top-level macro expansions
+; ---------------------------------------------------------------------------
+
+; Every list of an expansion that is not a caller's own (which has a Syn) came
+; from the call; a quoted template can share a subtree, so a list is visited once.
+(defn resolve-inherit (n:?&Node o:&ROrigin):void
+  (when (or (!= (node-kind n) NODE-LIST) (!= (resolve-site-of n) null) (!= (resolve-origin-of n) null))
+    (return))
+  (assoc ((rs) 'origins) (resolve-addr n) o)
+  (dotimes (i (node-len n))
+    (resolve-inherit (node-at n i) o)))
+
+; `f` is the call `toplevel-expand-macro` expanded, `raw` its expansion and `ex`
+; that desugared. A call that is itself generated passes on its outermost origin.
+(defn resolve-exp-new (call:&Syn file:&RFile macro:Symbol inst:bool key:Symbol):&RExp
+  (let (x:&RExp (new RExp g-arena call file macro inst))
+    (set! (x 'key) key)
+    (set! (x 'inner) null)
+    (set! (x 'data) null)
+    (return x)))
+
+(defn resolve-macro-key (h:Symbol):Symbol
+  (let (m:?&MacroDef (find-macro h))
+    (when (= m null) (return (symbol-none)))
+    (return ((unsafe/cast &MacroDef m) 'jit-name))))
+
+; Macro `key` expands inside every expansion now active.
+(defn resolve-note-inner (key:Symbol):void
+  (let (st:&ResolveState (rs))
+    (dotimes (i (st 'nact))
+      (let (x:&RExp (((st 'acts) i) 'exp))
+        (when (= (x 'inner) null) (set! (x 'inner) (new (Vector Symbol) g-arena)))
+        (conj (unsafe/cast &(Vector Symbol) (x 'inner)) key)))))
+
+(defn resolve-note-expansion (f:&Node raw:?&Node ex:?&Node h:Symbol):void
+  (resolve-note-inner (resolve-macro-key h))
+  (let (m:?&MacroDef (find-macro h))
+    (when (!= m null)
+      (resolve-note-at RREF-MACRO f 0 h "macro" ((unsafe/cast &MacroDef m) 'name))))
+  (let (site:?&RSite (resolve-site-of f)
+        o:?&ROrigin (resolve-origin-of f))
+    (when (!= site null)
+      (let (s:&RSite (unsafe/cast &RSite site)
+            fresh:&ROrigin (new ROrigin g-arena))
+        (set! (fresh 'call) (s 'syn))
+        (set! (fresh 'file) (s 'file))
+        (set! (fresh 'macro) h)
+        (set! (fresh 'exp) (resolve-exp-new (s 'syn) (s 'file) h false (resolve-macro-key h)))
+        (set! o fresh)))
+    (resolve-map-copies raw ex)
+    (when (!= o null)
+      (resolve-inherit ex (unsafe/cast &ROrigin o)))))
+
+; ---------------------------------------------------------------------------
+; Tracing by name (§4.9 "Tracing an expansion")
+; ---------------------------------------------------------------------------
+
+(defn resolve-no-span ():RSpan
+  (return (RSpan 0 0 0 0 false)))
+
+; Where `name` sits in segment `seg`: its body, or for segment 0 the whole
+; segment, since a name may begin with a sigil byte (`!=`). Start 0 is a miss.
+(defn resolve-seg-hit (text:StrView seg:ChainSeg i:usize name:StrView):usize
+  (when (= (strview-take-bytes (strview-drop-bytes text (seg 'body)) (- (seg 'end) (seg 'body))) name)
+    (return (+ (seg 'body) 1)))
+  (when (and (= i 0) (= (chain-seg-text text seg) name))
+    (return (+ (seg 'start) 1)))
+  (return 0))
+
+; A keyword's segments start after its colon.
+(defn resolve-seg-first (text:StrView):ChainSeg
+  (return (chain-seg-at text (if (and (> (text 'len) 1) (= (aref (text 'data) 0) 58)) 1 0))))
+
+(defn resolve-trace-atom (f:&SynFile a:&Syn type:bool name:StrView r:&RTr):void
+  (let (k:i32 (node-kind (a 'node))
+        text:StrView (syn-text f a))
+    (when (and (!= k NODE-SYM) (!= k NODE-KEYWORD)) (return))
+    (when (and (= k NODE-KEYWORD) (not type))
+      (when (= (strview-drop-bytes text 1) name) (set! (r 'amb) true))
+      (return))
+    (let (seg:ChainSeg (resolve-seg-first text)
+          i:usize 0
+          more:bool true)
+      (while more
+        (when (or type (= i 0))
+          (let (hit:usize (resolve-seg-hit text seg i name))
+            (when (!= hit 0)
+              (set! (r 'n) (+ (r 'n) 1))
+              (set! (r 'span) (RSpan (+ (a 'start) (- hit 1)) (+ (a 'start) (seg 'end)) (a 'line)
+                                     (+ (a 'col) (unsafe/cast i32 (- hit 1))) true)))))
+        (set! more (seg 'colon))
+        (when more
+          (set! seg (chain-seg-next text seg))
+          (set! i (+ i 1)))))))
+
+; Every candidate for `name` under `s`, outside the lists in `passed`.
+(defn resolve-trace-walk (f:&SynFile s:&Syn type:bool name:StrView passed:?&(HashMap usize i32) r:&RTr):void
+  (when (!= passed null)
+    (match (get (unsafe/cast &(HashMap usize i32) passed) (resolve-syn-addr s))
+      ((some v) (return))
+      (none 0)))
+  (match (get ((rs) 'gone) (resolve-syn-addr s))
+    ((some v) (return))
+    (none 0))
+  (case (s 'kind)
+    SYN-ATOM (resolve-trace-atom f s type name r)
+    SYN-STR (when (and (= (node-kind (s 'node)) NODE-STR)
+                       (= (symbol-as-view ((unsafe/cast &Node (s 'node)) 's)) name))
+              (set! (r 'amb) true))
+    (let (ks:&(Vector &Syn) (ref s 'kids))
+      (dotimes (i (count ks))
+        (resolve-trace-walk f (ks i) type name passed r)))))
+
+; The candidates among the operands of call `c`; its head is not one.
+(defn resolve-trace-call (f:&SynFile c:&Syn type:bool name:StrView passed:?&(HashMap usize i32) r:&RTr):void
+  (set! (r 'n) 0)
+  (set! (r 'amb) false)
+  (set! (r 'span) (resolve-no-span))
+  (dotimes (i (node-len (c 'node)))
+    (when (> i 0)
+      (let (k:?&Syn (resolve-kid c i))
+        (when (!= k null)
+          (resolve-trace-walk f (unsafe/cast &Syn k) type name passed r))))))
+
+(defn resolve-in-set? (m:?&(HashMap Symbol i32) name:Symbol):bool
+  (when (= m null) (return false))
+  (match (get (unsafe/cast &(HashMap Symbol i32) m) name)
+    ((some v) (return true))
+    (none (return false))))
+
+; Any body in the unit mints `name`.
+(defn resolve-minted? (name:Symbol):bool
+  (return (resolve-in-set? ((rs) 'mint) name)))
+
+(defn resolve-key-mints (k:Symbol):?&(HashMap Symbol i32)
+  (match (get ((rs) 'kmint) k)
+    ((some m) (return m))
+    (none (return null))))
+
+; A body that ran while `x` expanded mints `name`: its macro's, one nested in it,
+; a compile-time block's or a program defn a body called.
+(defn resolve-minted-in? (x:&RExp name:Symbol):bool
+  (when (resolve-in-set? ((rs) 'gmint) name) (return true))
+  (when (resolve-in-set? (x 'data) name) (return true))
+  (when (resolve-in-set? (resolve-key-mints (x 'key)) name) (return true))
+  (when (!= (x 'inner) null)
+    (let (ks:&(Vector Symbol) (unsafe/cast &(Vector Symbol) (x 'inner)))
+      (dotimes (i (count ks))
+        (when (resolve-in-set? (resolve-key-mints (ks i)) name) (return true)))))
+  (return false))
+
+; A string no reader returns as a symbol: a message, which mints no name (§4.9).
+(defn resolve-unspellable? (t:StrView):bool
+  (return (or (strview-contains t " ") (strview-contains t "\n") (strview-contains t "\t")
+              (strview-contains t "(") (strview-contains t ")") (strview-contains t "[")
+              (strview-contains t "]") (strview-contains t "{") (strview-contains t "}")
+              (strview-contains t "\"") (strview-contains t ";"))))
+
+; Is the list being emitted text of the unit? A body built at expansion time
+; (macmap's) quotes the operands it was handed, which mints nothing new.
+(defn resolve-mint-sited? ():bool
+  (let (st:&ResolveState (rs)
+        i:usize (st 'depth))
+    (while (> i 0)
+      (set! i (- i 1))
+      (let (n:?&Node (((st 'frames) i) 'node))
+        (when (= (node-kind n) NODE-LIST) (return (!= (resolve-syn-of n) null)))))
+    (return true)))
+
+; Around a JIT body: `key` its macro's JIT name (none for a compile-time block),
+; and whether `form` is the unit's text.
+(defn resolve-ct-enter (form:?&Node key:Symbol):void
+  (when (= g-resolve 0) (return))
+  (let (st:&ResolveState (rs)
+        n:usize (st 'ctn)
+        sited:bool (!= (resolve-syn-of form) null))
+    (if (= n (count (st 'ctkeys)))
+      (do (conj (st 'ctkeys) key) (conj (st 'ctsited) sited))
+      (do (set! ((st 'ctkeys) n) key) (set! ((st 'ctsited) n) sited)))
+    (set! (st 'ctn) (+ n 1))))
+
+(defn resolve-ct-leave ():void
+  (when (!= g-resolve 0) (set! ((rs) 'ctn) (- ((rs) 'ctn) 1))))
+
+; A spelling made by a JIT body, or by `owner` (a defn's @-less IR name), which
+; counts once a macro body calls it.
+(defn resolve-note-mint (s:Symbol jit:bool owner:StrView):void
+  (let (st:&ResolveState (rs)
+        n:usize (st 'ctn))
+    (when (resolve-unspellable? (symbol-as-view s)) (return))
+    (cond (and jit (> n 0))
+            (when ((st 'ctsited) (- n 1))
+              (let (k:Symbol ((st 'ctkeys) (- n 1)))
+                (if (symbol-none? k)
+                  (resolve-mint-add (st 'gmint) s)
+                  (let (m:?&(HashMap Symbol i32) (resolve-key-mints k))
+                    (when (= m null)
+                      (set! m (new (HashMap Symbol i32) g-arena))
+                      (assoc (st 'kmint) k (unsafe/cast &(HashMap Symbol i32) m)))
+                    (resolve-mint-add (unsafe/cast &(HashMap Symbol i32) m) s)))))
+          (or jit (> (st 'mirroring) 0)) (resolve-mint-add (st 'gmint) s)
+          (resolve-mint-sited?)
+            (let (k:Symbol (symbol-intern owner))
+              (match (get (st 'pend) k)
+                ((some v) (conj v s))
+                (none (let (v:&(Vector Symbol) (new (Vector Symbol) g-arena))
+                        (conj v s)
+                        (assoc (st 'pend) k v)))))
+          true (resolve-note-data st s))))
+
+; A spelling an expansion's output holds as program data: a macro that quotes or
+; stringifies an operand makes its spelling observable, so no operand spelled so is traced.
+(defn resolve-note-data (st:&ResolveState s:Symbol):void
+  (dotimes (i (st 'nact))
+    (let (x:&RExp (((st 'acts) i) 'exp))
+      (when (= (x 'data) null) (set! (x 'data) (new (HashMap Symbol i32) g-arena)))
+      (resolve-spellings-add (unsafe/cast &(HashMap Symbol i32) (x 'data)) s))))
+
+; A program defn (by IR name, `@` or not) a macro or compile-time body reaches.
+(defn resolve-mint-reach (irn:Symbol):void
+  (let (t:StrView (symbol-as-view irn)
+        at:StrView "@")
+    (when (strview-starts-with &t &at) (set! t (strview-drop-bytes t 1)))
+    (match (get ((rs) 'pend) (symbol-intern t))
+      ((some v) (dotimes (i (count v)) (resolve-mint-add ((rs) 'gmint) (v i))))
+      (none 0))))
+
+(defn resolve-mirror-enter ():void (set! ((rs) 'mirroring) (+ ((rs) 'mirroring) 1)))
+(defn resolve-mirror-leave ():void (set! ((rs) 'mirroring) (- ((rs) 'mirroring) 1)))
+
+; Into `m` and the unit's set.
+(defn resolve-mint-add (m:&(HashMap Symbol i32) s:Symbol):void
+  (resolve-spellings-add m s)
+  (resolve-spellings-add ((rs) 'mint) s))
+
+; Into `m`: the whole spelling, segment 0 and each segment's body.
+(defn resolve-spellings-add (m:&(HashMap Symbol i32) s:Symbol):void
+  (let (text:StrView (symbol-as-view s))
+    (assoc m s 1)
+    (when (= (text 'len) 0) (return))
+    (let (seg:ChainSeg (resolve-seg-first text)
+          i:usize 0
+          more:bool true)
+      (while more
+        (let (b:Symbol (symbol-intern (strview-take-bytes (strview-drop-bytes text (seg 'body))
+                                                          (- (seg 'end) (seg 'body)))))
+          (assoc m b 1))
+        (when (= i 0)
+          (let (z:Symbol (symbol-intern (chain-seg-text text seg)))
+            (assoc m z 1)))
+        (set! more (seg 'colon))
+        (when more
+          (set! seg (chain-seg-next text seg))
+          (set! i (+ i 1)))))))
+
+; ---------------------------------------------------------------------------
+; Definition records
+; ---------------------------------------------------------------------------
+
+; The registry a head's definition lands in, or "" for a form that defines no name.
+(defn resolve-def-kind (h:Symbol):StrView
+  (cond (or (= h "defn") (= h "defn-") (= h "declare") (= h "defmethod")) (return "function")
+        (or (= h "defvar") (= h "defvar-") (= h "extern")) (return "var")
+        (or (= h "defconst") (= h "defconst-")) (return "const")
+        (= h "deferror") (return "error")
+        (or (= h "defstruct") (= h "defstruct-")) (return "struct")
+        (or (= h "defunion") (= h "defunion-")) (return "union")
+        (or (= h "defenum") (= h "defenum-")) (return "enum")
+        (or (= h "deftype") (= h "deftype-")) (return "type-alias")
+        (or (= h "defprotocol") (= h "defprotocol-")) (return "protocol")
+        (or (= h "defmacro") (= h "defmacro-")) (return "macro")
+        (= h "ns") (return "namespace"))
+  (return ""))
+
+(defn resolve-value-kind? (kind:StrView):bool
+  (return (or (= kind "function") (= kind "var") (= kind "const") (= kind "error"))))
+
+; The elem holding the name: after any attribute keywords; a header's
+; `defmethod` carries its link name first.
+(defn resolve-name-index (f:?&Node h:Symbol):i32
+  (when (= h "defmethod") (return 2))
+  (let (k:i32 1)
+    (when ((form-slots f) 'attrs)
+      (while (and (< k (node-len f)) (= (node-kind (node-at f k)) NODE-KEYWORD))
+        (set! k (+ k 1))))
+    (return k)))
+
+; Chain segment 0 of a spelling: the name in `x:T`, `x:(T)` and `x`.
+(defn resolve-seg0 (text:StrView):ChainSeg
+  (return (chain-seg-at text 0)))
+
+; The span of the name atom's segment 0 under `k`: a list name's head (`(Vector T)`,
+; `(x T)`) and a fuse's atom (`x:(T)`) both lead to it.
+(defn resolve-atom-span (f:&SynFile k:&Syn):RSpan
+  (let (cur:&Syn k)
+    (while (and (or (= (cur 'kind) SYN-LIST) (= (cur 'kind) SYN-FUSE))
+                (> (count (ref cur 'kids)) 0))
+      (set! cur ((ref cur 'kids) 0)))
+    (when (!= (cur 'kind) SYN-ATOM) (return (resolve-no-span)))
+    (let (seg:ChainSeg (resolve-seg0 (syn-text f cur)))
+      (return (RSpan (+ (cur 'start) (seg 'start)) (+ (cur 'start) (seg 'end))
+                     (cur 'line) (+ (cur 'col) (unsafe/cast i32 (seg 'start))) true)))))
+
+(defn resolve-write-span (out:&String pre:StrView sp:RSpan):void
+  (if (sp 'ok)
+    (str-into out " :" pre "start " (as i64 (sp 'start)) " :" pre "end " (as i64 (sp 'end))
+              " :" pre "line " (sp 'line) " :" pre "col " (sp 'col))
+    (str-into out " :" pre "start nil :" pre "end nil :" pre "line nil :" pre "col nil")))
+
+(defn resolve-syn-span (s:&Syn):RSpan
+  (return (RSpan (s 'start) (s 'end) (s 'line) (s 'col) true)))
+
+; One `:def` (or, with `text`, `:file`) record, written once the unit's mint set is known.
+(defstruct RDef isfile:bool text:Symbol path:Symbol span:RSpan bare:Symbol ns:Symbol key:Symbol kind:StrView
+  form:Symbol link:Symbol private:bool origin:StrView trace:StrView macro:Symbol call:RSpan)
+
+; Definer `form`'s emitter defined `link` (an IR symbol, `@` or `%` optional).
+(defn resolve-note-link (form:?&Node link:StrView):void
+  (let (t:StrView (if (or (strview-has-prefix link "@") (strview-has-prefix link "%"))
+                    (strview-drop-bytes link 1) link))
+    (assoc ((rs) 'links) (resolve-addr form) (symbol-intern t))))
+
+; The symbol definer `f` (head `h`, registry `kind`, key `key`) emits, or none:
+; a template, an alias, an enum, an error id and a protocol emit no symbol.
+(defn resolve-def-link (f:?&Node h:Symbol kind:StrView key:Symbol):Symbol
+  (match (get ((rs) 'links) (resolve-addr f))
+    ((some l) (return l))
+    (none 0))
+  (cond (= h "defmethod")
+          (let (e:?&Node (node-at f 1))
+            (when (= (node-kind e) NODE-SYM)
+              (return (symbol-intern (strview-drop-bytes (symbol-as-view ((unsafe/cast &Node e) 's)) 1)))))
+        (or (= h "declare") (= kind "var") (= kind "const"))
+          (when-some (sym (scope-lookup-key g-globals key))
+            (when (> ((sym 'ir-name) 'len) 0)
+              (return (symbol-intern (strview-drop-bytes (sym 'ir-name) 1)))))
+        (or (= kind "struct") (= kind "union"))
+          (when-some (sd (lookup-struct key))
+            (return (sd 'ir-name))))
+  (return (symbol-none)))
+
+; Called after a definer's emitter returned, so its registration is done.
+(defn resolve-note-def (f:?&Node h:Symbol):void
+  (let (kind:StrView (resolve-def-kind h))
+    (when (str-empty? &kind) (return))
+    (let (k:i32 (resolve-name-index f h)
+          e:?&Node (node-at f k)
+          sym:?&Node (if (= (node-kind e) NODE-LIST) (node-first e) e))
+      (when (!= (node-kind sym) NODE-SYM) (return))
+      (let (spelling:StrView (symbol-as-view ((unsafe/cast &Node sym) 's))
+            seg:ChainSeg (resolve-seg0 spelling)
+            bare:StrView (chain-seg-text spelling seg)
+            bare-sym:Symbol (symbol-intern bare)
+            hv:StrView (symbol-as-view h)
+            d:&RDef (new RDef g-arena)
+            site:?&RSite (resolve-site-of f))
+        (set! (d 'bare) bare-sym)
+        (set! (d 'kind) kind)
+        (set! (d 'form) h)
+        (set! (d 'key) (cond (= kind "namespace") bare-sym
+                             (resolve-value-kind? kind) (qualify-name (priv-key-use bare-sym))
+                             true (qualify-name bare-sym)))
+        (set! (d 'link) (resolve-def-link f h kind (d 'key)))
+        (set! (d 'ns) (if (= kind "namespace") bare-sym g-current-ns))
+        (set! (d 'private) (= (aref (hv 'data) (as i64 (- (hv 'len) 1))) 45))
+        (set! (d 'path) g-source-path)
+        (set! (d 'origin) "source")
+        (set! (d 'trace) "none")
+        (set! (d 'macro) (symbol-none))
+        (set! (d 'span) (resolve-no-span))
+        (set! (d 'call) (resolve-no-span))
+        (if (!= site null)
+          (let (s:&RSite (unsafe/cast &RSite site)
+                sf:&SynFile ((s 'file) 'syn)
+                kid:?&Syn (syn-kid-for-elem (s 'syn) k))
+            (set! (d 'path) ((s 'file) 'path))
+            (when (!= kid null)
+              (set! (d 'span) (resolve-atom-span sf (unsafe/cast &Syn kid))))
+            (if (and ((d 'span) 'ok) (= (syn-slice sf ((d 'span) 'start) ((d 'span) 'end)) bare))
+              (set! (d 'trace) "exact")
+              (do (set! (d 'span) (resolve-no-span)) (set! (d 'trace) "mismatch"))))
+          (let (og:?&ROrigin (resolve-origin-of f))
+            (when (!= og null)
+              (let (o:&ROrigin (unsafe/cast &ROrigin og)
+                    t:&RTr (new RTr g-arena))
+                (resolve-trace-call ((o 'file) 'syn) (o 'call) false bare null t)
+                (set! (d 'origin) "macro")
+                (set! (d 'macro) (o 'macro))
+                (set! (d 'path) ((o 'file) 'path))
+                (set! (d 'call) (resolve-syn-span (o 'call)))
+                (cond (and (= (t 'n) 1) (not (t 'amb))) (do (set! (d 'span) (t 'span)) (set! (d 'trace) "arg"))
+                      (= (t 'n) 0) (set! (d 'trace) "absent")
+                      true (set! (d 'trace) "ambiguous"))))))
+        (conj ((rs) 'heads) d)))))
+
+(defn resolve-write-def (out:&String d:&RDef):void
+  (when (d 'isfile)
+    (str-into out (symbol-as-view (d 'text)))
+    (return))
+  ; A template literal can mint the name an operand also spells (§4.9 rule 3).
+  (when (and (= (d 'trace) "arg") (resolve-minted? (d 'bare)))
+    (set! (d 'trace) "ambiguous")
+    (set! (d 'span) (resolve-no-span)))
+  (when (resolve-first? (symbol-intern (fstr "def\n" (d 'path) "\n" (as i64 ((d 'span) 'start)) "\n"
+                                             (as i64 ((d 'call) 'start)) "\n" (d 'form) "\n" (d 'key))))
+    (str-into out "{:record :def :file ")
+    (diag-write-string out (symbol-as-view (d 'path)))
+    (resolve-write-span out "" (d 'span))
+    (str-into out " :name ")
+    (diag-write-string out (symbol-as-view (d 'bare)))
+    (str-into out " :ns ")
+    (diag-write-string out (symbol-as-view (d 'ns)))
+    (str-into out " :key ")
+    (diag-write-string out (symbol-as-view (d 'key)))
+    (str-into out " :kind :" (d 'kind) " :form ")
+    (diag-write-string out (symbol-as-view (d 'form)))
+    (str-into out " :link ")
+    (if (symbol-none? (d 'link)) (str-into out "nil") (diag-write-string out (symbol-as-view (d 'link))))
+    ; Macro bodies call the compiler's own copy of it (macro-call-linking.md §3.1).
+    (str-into out " :host " (if (and (not (symbol-none? (d 'link))) (!= (path-under-ct-lib-root (d 'path)) 0)
+                                     (!= (host-exports? (symbol-intern (fstr "@" (d 'link)))) 0))
+                              "true" "false"))
+    (str-into out " :private " (if (d 'private) "true" "false")
+              " :origin :" (d 'origin) " :trace :" (d 'trace) " :macro ")
+    (if (symbol-none? (d 'macro))
+      (str-into out "nil")
+      (diag-write-string out (symbol-as-view (d 'macro))))
+    (resolve-write-span out "call-" (d 'call))
+    (str-into out "}\n")))
+
+; ---------------------------------------------------------------------------
+; Reference records (RR-2): an event names what a lookup found; the frame stack
+; says where the name was written.
+; ---------------------------------------------------------------------------
+
+(defenum RRefRole RREF-LOCAL RREF-BINDER RREF-GLOBAL RREF-HEAD RREF-TYPE RREF-FIELD RREF-ARM
+                  RREF-MACRO RREF-COUNT)
+
+; How an event's occurrence is found: by the atom's identity, or by spelling as a
+; binder's name or as a type segment.
+(defenum RRefClass RC-VALUE RC-BINDER RC-TYPE RC-ANCHOR)
+
+(defenum ROutcome RO-ATTRIBUTED RO-AMBIGUOUS RO-MACRO RO-INSTANCE RO-GENERATED RO-ABSENT
+                  RO-PRESCAN RO-MISMATCH RO-COUNT)
+
+; A binder's span: its references' `:target`, known once traces are decided.
+(defstruct RBind file:Symbol start:usize end:usize ok:bool)
+
+(defn resolve-role-name (r:i32):StrView
+  (return (case r RREF-LOCAL "local" RREF-BINDER "binder" RREF-GLOBAL "global" RREF-HEAD "head"
+                  RREF-TYPE "type" RREF-FIELD "field" RREF-ARM "arm" "macro")))
+
+(defn resolve-outcome-name (o:i32):StrView
+  (return (case o RO-ATTRIBUTED "attributed" RO-AMBIGUOUS "ambiguous" RO-MACRO "macro"
+                  RO-INSTANCE "instance" RO-GENERATED "generated" RO-ABSENT "absent"
+                  RO-PRESCAN "prescan" "mismatch")))
+
+(defn resolve-via-name (v:i32):StrView
+  (return (case v VIA-DESUGAR "desugar" VIA-REWRITE "rewrite" VIA-INSTANCE "instance"
+                  VIA-CLOSURE "closure" VIA-EXPANSION "expansion" VIA-TEMPLATE "template" "")))
+
+(defn resolve-push-frame (n:?&Node idx:i32 slot:i32 why:i32):usize
+  (let (st:&ResolveState (rs)
+        d:usize (st 'depth)
+        fs:&(Vector &RFrame) (st 'frames))
+    (when (!= g-rs-quiet 0) (return d))
+    (when (= d (count fs)) (conj fs (new RFrame g-arena)))
+    (let (f:&RFrame (fs d))
+      (set! (f 'node) n)
+      (set! (f 'idx) idx)
+      (set! (f 'slot) slot)
+      (set! (f 'macro) (symbol-none))
+      (set! (f 'why) why)
+      (set! (f 'open) false)
+      ; An atom pushed inside a minted form is that form's too.
+      (set! (f 'gen) (and (= idx RF-ANCHOR) (> d 0) ((fs (- d 1)) 'gen)))
+      (set! (f 'exp) null))
+    (set! (st 'depth) (+ d 1))
+    ; A whole list emitted in place is no candidate for the expansions it is in.
+    (when (= idx -1)
+      (let (sy:?&Syn (resolve-syn-of n))
+        (if (!= sy null)
+          (when (> (st 'nact) 0) (resolve-pass (unsafe/cast &Syn sy)))
+          (let (og:?&ROrigin (resolve-origin-of n))
+            (when (and (!= og null) (!= ((unsafe/cast &ROrigin og) 'exp) null))
+              (resolve-activate (unsafe/cast &RExp ((unsafe/cast &ROrigin og) 'exp)) d))))))
+    (return d)))
+
+(defn resolve-pass (sy:&Syn):void
+  (let (st:&ResolveState (rs)
+        acts:&(Vector &RAct) (st 'acts))
+    (dotimes (i (st 'nact))
+      (let (x:&RExp ((acts i) 'exp))
+        (when (= (x 'passed) null) (set! (x 'passed) (new (HashMap usize i32) g-arena)))
+        (assoc (unsafe/cast &(HashMap usize i32) (x 'passed)) (resolve-syn-addr sy) 1)))))
+
+(defn resolve-activate (x:&RExp d:usize):void
+  (let (st:&ResolveState (rs)
+        acts:&(Vector &RAct) (st 'acts)
+        n:usize (st 'nact))
+    (dotimes (i n)
+      (when (= (as ptr ((acts i) 'exp)) (as ptr x)) (return)))
+    (when (= n (count acts)) (conj acts (new RAct g-arena)))
+    (set! ((acts n) 'exp) x)
+    (set! ((acts n) 'depth) d)
+    (set! (st 'nact) (+ n 1))))
+
+(defconst RF-ANCHOR -2)
+
+; An expression being emitted.
+(defn resolve-push (n:?&Node):usize
+  (return (resolve-push-frame n -1 SLOT-VALUE 0)))
+
+; Elem `i` of `l`, in slot `slot`: what a site threads where the whole list is ambiguous.
+(defn resolve-push-elem (l:?&Node i:i32 slot:i32):usize
+  (when (= g-resolve 0) (return 0))
+  (return (resolve-push-frame l i slot 0)))
+
+; A declaration `name:type` being read: a list spans itself; an atom is placed
+; by finding that very atom in the enclosing frame.
+(defn resolve-push-decl (n:?&Node):usize
+  (return (resolve-push-decl-as n SLOT-BINDER)))
+
+(defn resolve-push-decl-as (n:?&Node slot:i32):usize
+  (when (= g-resolve 0) (return 0))
+  (when (= ((rs) 'depth) 0) (return 0))
+  (if (= (node-kind n) NODE-LIST)
+    (if (resolve-sited? n)
+      (return (resolve-push-frame n -1 slot 0))
+      (return ((rs) 'depth)))
+    (return (resolve-push-frame n RF-ANCHOR slot 0))))
+
+; The source list a minted form is made from: a name found nowhere in it is the form's own.
+(defn resolve-push-minted (n:?&Node slot:i32):usize
+  (let (d:usize (resolve-push-decl-as n slot))
+    (when (and (!= g-resolve 0) (> ((rs) 'depth) d))
+      (let (f:&RFrame (((rs) 'frames) d))
+        (set! (f 'gen) true)))
+    (return d)))
+
+(defn resolve-push-clause (l:?&Node i:i32):usize
+  (return (resolve-push-elem l i SLOT-CLAUSE)))
+
+; Like resolve-push-type: a list the compiler made (a re-read, a rebuilt sigil) is no frame.
+(defn resolve-push-type-arg (l:?&Node i:i32):usize
+  (when (= g-resolve 0) (return 0))
+  (when (and (not (resolve-sited? l)) (= (resolve-origin-of l) null)) (return ((rs) 'depth)))
+  (return (resolve-push-elem l i SLOT-TYPE)))
+
+(defn resolve-pop-to (d:usize):void
+  (when (= g-resolve 0) (return))
+  (let (st:&ResolveState (rs)
+        acts:&(Vector &RAct) (st 'acts))
+    (set! (st 'depth) d)
+    (while (and (> (st 'nact) 0) (>= ((acts (- (st 'nact) 1)) 'depth) d))
+      (set! (st 'nact) (- (st 'nact) 1)))))
+
+; A type node with a span of its own is a frame while it parses; a fresh one
+; (a sigil's rebuilt list) leaves its elems to the enclosing frame.
+(defn resolve-push-type (n:?&Node):usize
+  (let (st:&ResolveState (rs))
+    (when (or (!= (node-kind n) NODE-LIST) (not (resolve-sited? n)))
+      (return (st 'depth)))
+    (return (resolve-push-frame n -1 SLOT-TYPE 0))))
+
+; Code the compiler wrote, such as a parameter default emitted at a call: below
+; it, nothing is this emission's.
+(defn resolve-push-generated (n:?&Node):usize
+  (when (= g-resolve 0) (return 0))
+  (return (resolve-push-frame n -1 SLOT-TOP RO-GENERATED)))
+
+; A drained instance (`src` its template) or lifted body `form`. Mapped onto the
+; source, its node is searched like a list; otherwise it only locates.
+(defn resolve-push-barrier (form:?&Node src:?&Node path:Symbol):usize
+  (when (= g-resolve 0) (return 0))
+  (let (instance:bool (!= src null)
+        at:?&Node form)
+    (when instance
+      (let (t:?&Node (resolve-template-twin src path))
+        (when (!= t null) (resolve-map-instance t form)))
+      (when (not (resolve-sited? form))
+        (set! at (resolve-barrier-locus src path))))
+    (let (d:usize (resolve-push-frame at -1 SLOT-TOP (if instance RO-INSTANCE RO-GENERATED)))
+      (when (and (> ((rs) 'depth) d) (= (as ptr at) (as ptr form)) (resolve-sited? form))
+        (let (f:&RFrame (((rs) 'frames) d))
+          (set! (f 'open) true)))
+      (return d))))
+
+; The template's source form, for `:call-*`, when its instance could not be mapped.
+(defn resolve-barrier-locus (n:?&Node path:Symbol):?&Node
+  (when (or (resolve-sited? n) (symbol-none? path)) (return n))
+  (let (k:Symbol (resolve-top-key path n))
+    (when (symbol-none? k) (return n))
+    (match (get ((rs) 'seen) (symbol-intern (fstr "top-dup\n" k)))
+      ((some d) (return n))
+      (none 0))
+    (match (get ((rs) 'tops) k)
+      ((some s) (return (s 'node)))
+      (none (return n)))))
+
+(defstruct RUnframe depth:usize nact:usize (frames ?&(Vector &RFrame)))
+
+; Frames of their own, empty: what runs between enter and leave is a prescan.
+(defn resolve-unframe-enter ():RUnframe
+  (when (= g-resolve 0) (return (RUnframe 0 0 null)))
+  (let (st:&ResolveState (rs)
+        u:RUnframe (RUnframe (st 'depth) (st 'nact) (st 'frames)))
+    (set! (st 'frames) (new (Vector &RFrame) g-arena))
+    (set! (st 'depth) 0)
+    (set! (st 'nact) 0)
+    (return u)))
+
+(defn resolve-unframe-leave (u:RUnframe):void
+  (when (= g-resolve 0) (return))
+  (let (st:&ResolveState (rs))
+    (set! (st 'frames) (unsafe/cast &(Vector &RFrame) (u 'frames)))
+    (set! (st 'depth) (u 'depth))
+    (set! (st 'nact) (u 'nact))))
+
+(defn resolve-quiet-enter ():void
+  (set! g-rs-quiet (+ g-rs-quiet 1)))
+
+(defn resolve-quiet-leave ():void
+  (set! g-rs-quiet (- g-rs-quiet 1)))
+
+(defn resolve-top ():?&RFrame
+  (let (st:&ResolveState (rs))
+    (when (= (st 'depth) 0) (return null))
+    (return ((st 'frames) (- (st 'depth) 1)))))
+
+; The head of the top frame expanded as macro `m`: what is emitted under it is
+; the expansion's, traced to the call's operands when the call has a Syn.
+(defn resolve-mark-macro (m:Symbol key:Symbol):void
+  (resolve-note-inner key)
+  (let (fr:?&RFrame (resolve-top))
+    (when (= fr null) (return))
+    (let (f:&RFrame (unsafe/cast &RFrame fr)
+          site:?&RSite (resolve-site-of (f 'node)))
+      (set! (f 'macro) m)
+      (when (and (!= site null) (= (f 'idx) -1) (= ((unsafe/cast &RSite site) 'kids) null))
+        (let (s:&RSite (unsafe/cast &RSite site)
+              x:&RExp (resolve-exp-new (s 'syn) (s 'file) m (= (s 'via) VIA-INSTANCE) key))
+          (set! (f 'exp) x)
+          (resolve-activate x (- ((rs) 'depth) 1)))))))
+
+; ---- finding the occurrence in a frame ----
+
+; One candidate: elem `idx` of `node`, in slot `slot` of a list in slot `own`;
+; `skip0` when its segment 0 is a binder's name.
+(defstruct RCand node:?&Node idx:i32 skip0:bool n:i32 slot:i32 own:i32)
+
+(defn resolve-value-slot? (s:i32):bool
+  (return (or (= s SLOT-VALUE) (= s SLOT-UNKNOWN) (= s SLOT-PLACE) (= s SLOT-HEAD))))
+
+(defn resolve-type-slot? (s:i32):bool
+  (return (or (= s SLOT-TYPE) (= s SLOT-RETURN) (= s SLOT-TYPES))))
+
+; Lists the emitter reads in place: what is under them is this frame's.
+(defn resolve-structural? (s:i32):bool
+  (return (or (= s SLOT-BINDINGS) (= s SLOT-PARAMS) (= s SLOT-DECL-PARAMS) (= s SLOT-OPTIONAL)
+              (= s SLOT-BINDER) (= s SLOT-FIELD) (= s SLOT-ARM) (= s SLOT-SIG) (= s SLOT-CLAUSE)
+              (= s SLOT-PATTERN) (= s SLOT-PLACE) (= s SLOT-NAME) (resolve-type-slot? s))))
+
+; How many segments of `text` from `from` (through `upto` only) have body `name`.
+(defn resolve-seg-count (text:StrView from:usize upto:usize name:StrView):i32
+  (let (seg:ChainSeg (resolve-seg-first text)
+        i:usize 0
+        n:i32 0
+        more:bool true)
+    (while more
+      (when (and (>= i from) (<= i upto) (!= (resolve-seg-hit text seg i name) 0))
+        (set! n (+ n 1)))
+      (set! more (seg 'colon))
+      (when more
+        (set! seg (chain-seg-next text seg))
+        (set! i (+ i 1))))
+    (return n)))
+
+(defn resolve-cand-add (c:&RCand l:?&Node k:i32 skip0:bool s:i32 own:i32):void
+  (when (= (c 'n) 0)
+    (set! (c 'node) l)
+    (set! (c 'idx) k)
+    (set! (c 'skip0) skip0)
+    (set! (c 'slot) s)
+    (set! (c 'own) own))
+  (set! (c 'n) (+ (c 'n) 1)))
+
+; Elem `k` of `l`, an atom in slot `s` of a list whose own slot is `own`. `dn`: it
+; is a definer's name, which no local binds.
+(defn resolve-cand-atom (c:&RCand cls:i32 atom:?&Node name:StrView l:?&Node k:i32
+                         s:i32 own:i32 dn:bool):void
+  (let (e:&Node (unsafe/cast &Node (node-at l k))
+        text:StrView (symbol-as-view (e 's))
+        binder:bool (or (= s SLOT-BINDER) (and (= s SLOT-NAME) (= own SLOT-BINDER))
+                        (and (= own SLOT-PATTERN) (> k 0))))
+    (case cls
+      RC-VALUE
+        (when (and (= (as ptr e) (as ptr atom)) (resolve-value-slot? s) (not dn))
+          (resolve-cand-add c l k false s own))
+      RC-BINDER
+        (when (and binder (not dn) (= (e 'kind) NODE-SYM) (= (resolve-seg-count text 0 0 name) 1))
+          (resolve-cand-add c l k false s own))
+      RC-ANCHOR
+        (when (= (as ptr e) (as ptr atom))
+          (resolve-cand-add c l k dn s own))
+      RC-TYPE
+        (let (named:bool (or binder dn (= s SLOT-FIELD) (and (= s SLOT-NAME) (= own SLOT-FIELD))
+                             (resolve-value-slot? s)))
+          (when (and (or named (resolve-type-slot? s))
+                     (> (resolve-seg-count text (if named 1 0) 4096 name) 0))
+            (resolve-cand-add c l k named s own)))
+      0)))
+
+; Every candidate under `l`, whose own slot is `own`; `dn`: `l` is a definer's name.
+(defn resolve-scan (c:&RCand cls:i32 atom:?&Node name:StrView l:?&Node own:i32 dn:bool):void
+  (let (h:Symbol (symbol-intern (slot-head l))
+        dk:StrView (resolve-def-kind h)
+        ni:i32 (if (or (str-empty? &dk) (and (!= own SLOT-TOP) (!= own SLOT-VALUE)))
+                 -1
+                 (resolve-name-index l h)))
+    (dotimes (k (node-len l))
+      (let (e:?&Node (node-at l k)
+            s:i32 (slot-of-elem own l k)
+            edn:bool (or dn (= k ni)))
+        (cond (or (= (node-kind e) NODE-SYM) (= (node-kind e) NODE-KEYWORD))
+                (resolve-cand-atom c cls atom name l k s own edn)
+              (and (= (node-kind e) NODE-LIST) (resolve-structural? s))
+                (resolve-scan c cls atom name e s edn))))))
+
+(defn resolve-search (f:&RFrame cls:i32 atom:?&Node name:StrView):RCand
+  (let (c:RCand (RCand null -1 false 0 0 0)
+        l:?&Node (f 'node))
+    (if (= (f 'idx) -1)
+      (resolve-scan &c cls atom name l (f 'slot) false)
+      (let (e:?&Node (node-at l (f 'idx))
+            s:i32 (f 'slot))
+        (cond (or (= (node-kind e) NODE-SYM) (= (node-kind e) NODE-KEYWORD))
+                (resolve-cand-atom &c cls atom name l (f 'idx) s SLOT-VALUE false)
+              (and (= (node-kind e) NODE-LIST) (resolve-structural? s))
+                (resolve-scan &c cls atom name e s false))))
+    (return c)))
+
+; ---- from an occurrence to a span ----
+
+(defstruct ROcc outcome:i32 file:?&RFile span:RSpan call:RSpan macro:Symbol via:i32 exp:?&RExp)
+
+(defn resolve-occ (o:i32):ROcc
+  (return (ROcc o null (resolve-no-span) (resolve-no-span) (symbol-none) VIA-NONE null)))
+
+(defn resolve-macro-occ (call:&Syn file:&RFile macro:Symbol exp:?&RExp):ROcc
+  (let (r:ROcc (resolve-occ RO-MACRO))
+    (set! (r 'file) file)
+    (set! (r 'call) (resolve-syn-span call))
+    (set! (r 'macro) macro)
+    (set! (r 'exp) exp)
+    (return r)))
+
+; Why the occurrence in `l` has no span: the nearest frame that has one says. A
+; frame copied from an instance or a lambda's body defers to its barrier.
+(defn resolve-why (l:?&Node):ROcc
+  (let (st:&ResolveState (rs)
+        og:?&ROrigin (resolve-origin-of l)
+        d:usize (st 'depth)
+        ; Under a minted form's anchor: the form it was minted from is the call.
+        gen:bool false)
+    (when (!= og null)
+      (let (o:&ROrigin (unsafe/cast &ROrigin og))
+        (return (resolve-macro-occ (o 'call) (o 'file) (o 'macro) (o 'exp)))))
+    (while (> d 0)
+      (set! d (- d 1))
+      (let (f:&RFrame ((st 'frames) d)
+            site:?&RSite (resolve-site-of (f 'node))
+            fo:?&ROrigin (resolve-origin-of (f 'node)))
+        (when (f 'gen) (set! gen true))
+        (when (!= (f 'why) 0)
+          (let (r:ROcc (resolve-occ (f 'why)))
+            (when (!= site null)
+              (set! (r 'file) ((unsafe/cast &RSite site) 'file))
+              (set! (r 'call) (resolve-syn-span ((unsafe/cast &RSite site) 'syn))))
+            (return r)))
+        (when (!= site null)
+          (let (s:&RSite (unsafe/cast &RSite site))
+            (cond (not (symbol-none? (f 'macro)))
+                    (return (resolve-macro-occ (s 'syn) (s 'file) (f 'macro) (f 'exp)))
+                  (and (!= (s 'via) VIA-INSTANCE) (!= (s 'via) VIA-CLOSURE))
+                    (let (r:ROcc (resolve-occ RO-GENERATED))
+                      (set! (r 'file) (s 'file))
+                      (when gen (set! (r 'call) (resolve-syn-span (s 'syn))))
+                      (return r)))))
+        (when (!= fo null)
+          (let (o:&ROrigin (unsafe/cast &ROrigin fo))
+            (return (resolve-macro-occ (o 'call) (o 'file) (o 'macro) (o 'exp)))))))
+    (return (resolve-occ RO-GENERATED))))
+
+; The span of `name` in elem `k` of `l`: a segment body of the atom's Syn, segment
+; 0 for a value or binder, any but a binder's name for a type.
+(defn resolve-place (cls:i32 l:?&Node k:i32 skip0:bool name:StrView):ROcc
+  (let (site:?&RSite (resolve-site-of l)
+        anchor:?&Syn null
+        file:?&RFile null
+        via:i32 VIA-NONE
+        skip:bool skip0)
+    (if (!= site null)
+      (let (s:&RSite (unsafe/cast &RSite site))
+        (set! anchor (resolve-site-kid s k))
+        (set! file (s 'file))
+        (set! via (s 'via)))
+      (let (spl:?&RSplit (resolve-split-of l))
+        (when (!= spl null)
+          (let (sp:&RSplit (unsafe/cast &RSplit spl))
+            (set! anchor (sp 'syn))
+            (set! file (sp 'file))
+            (set! via (sp 'via))
+            (when (= cls RC-TYPE) (set! skip (or skip (sp 'skip0))))))))
+    (when (= anchor null) (return (resolve-why l)))
+    (let (sub:bool (and (= via VIA-INSTANCE) (resolve-subst? (node-at l k)))
+          a:&Syn (unsafe/cast &Syn anchor)
+          rf:&RFile (unsafe/cast &RFile file)
+          r:ROcc (resolve-occ RO-MISMATCH))
+      (set! (r 'file) file)
+      (set! (r 'via) via)
+      ; A type variable's replacement is not in the template's text: only the
+      ; segments an instance's atom kept from it are.
+      (when (and sub (or (= site null) (!= (a 'kind) SYN-ATOM))) (return (resolve-why l)))
+      (when (!= (a 'kind) SYN-ATOM) (return r))
+      (let (text:StrView (syn-text (rf 'syn) a)
+            ctext:StrView (if sub (symbol-as-view ((unsafe/cast &Node (node-at l k)) 's)) text)
+            from:usize (if (and (= cls RC-TYPE) skip) 1 0)
+            seg:ChainSeg (resolve-seg-first text)
+            cseg:ChainSeg (resolve-seg-first ctext)
+            cmore:bool true
+            i:usize 0
+            n:i32 0
+            more:bool true)
+        (while more
+          (let (kept:bool (or (not sub) (and cmore (= (chain-seg-text text seg) (chain-seg-text ctext cseg))))
+                hit:usize (if (and kept (>= i from) (or (= cls RC-TYPE) (= i 0)))
+                            (resolve-seg-hit text seg i name)
+                            0))
+            (when (!= hit 0)
+              (set! n (+ n 1))
+              (set! (r 'span) (RSpan (+ (a 'start) (- hit 1)) (+ (a 'start) (seg 'end)) (a 'line)
+                                     (+ (a 'col) (unsafe/cast i32 (- hit 1))) true))))
+          (set! more (seg 'colon))
+          (when more
+            (set! seg (chain-seg-next text seg))
+            (set! i (+ i 1)))
+          (when (and sub cmore)
+            (set! cmore (cseg 'colon))
+            (when cmore (set! cseg (chain-seg-next ctext cseg)))))
+        ; An instance differs from its template only where it substituted, even
+        ; where the substitution was spelled again (`spelling-as-key`).
+        (when (and (= n 0) (or sub (= via VIA-INSTANCE))) (return (resolve-why l)))
+        (cond (= n 1) (set! (r 'outcome) RO-ATTRIBUTED)
+              (> n 1) (do (set! (r 'outcome) RO-AMBIGUOUS) (set! (r 'span) (resolve-no-span)))
+              true (set! (r 'span) (resolve-no-span)))
+        (return r)))))
+
+; The frame an anchor is found in: the nearest below it that is a list.
+(defn resolve-anchor-base (d:usize):?&RFrame
+  (let (st:&ResolveState (rs)
+        i:usize d)
+    (while (> i 0)
+      (set! i (- i 1))
+      (let (f:&RFrame ((st 'frames) i))
+        (when (!= (f 'idx) RF-ANCHOR) (return f))))
+    (return null)))
+
+; The candidate under the top frame: an anchor is the one elem that is its atom,
+; asked again as that elem.
+(defn resolve-search-top (fr:&RFrame base:&RFrame cls:i32 atom:?&Node name:StrView):RCand
+  (when (!= (fr 'idx) RF-ANCHOR) (return (resolve-search fr cls atom name)))
+  (let (a:RCand (resolve-search base RC-ANCHOR (fr 'node) name)
+        c:RCand (RCand null -1 false 0 0 0))
+    (when (= (a 'n) 1)
+      (resolve-cand-atom &c cls atom name (a 'node) (a 'idx) (a 'slot) (a 'own) (a 'skip0)))
+    (when (> (a 'n) 1) (set! (c 'n) 2))
+    (return c)))
+
+; Where the event's name was written. `el`/`ei`: the site knows the elem.
+(defn resolve-locate (cls:i32 atom:?&Node name:StrView el:?&Node ei:i32):ROcc
+  (let (f:?&RFrame (resolve-top))
+    (when (!= el null)
+      (when (resolve-sited? el)
+        (return (resolve-place cls el ei false name)))
+      (when (!= cls RC-TYPE) (return (resolve-why el))))
+    (when (= f null) (return (resolve-occ RO-ABSENT)))
+    (let (top:&RFrame (unsafe/cast &RFrame f)
+          bf:?&RFrame (if (= (top 'idx) RF-ANCHOR) (resolve-anchor-base (- ((rs) 'depth) 1)) f))
+      (when (= bf null) (return (resolve-occ RO-ABSENT)))
+      (let (fr:&RFrame (unsafe/cast &RFrame bf))
+      (when (not (symbol-none? (fr 'macro))) (return (resolve-why (fr 'node))))
+      ; A barrier's node only locates the instance unless it is a mapped copy.
+      (when (and (!= (fr 'why) 0) (not (fr 'open))) (return (resolve-why (fr 'node))))
+      (let (c:RCand (resolve-search-top top fr cls atom name)
+            site:?&RSite (resolve-site-of (fr 'node))
+            sited:bool (resolve-sited? (fr 'node)))
+        (cond (= (c 'n) 1) (return (resolve-place cls (c 'node) (c 'idx) (c 'skip0) name))
+              (not sited) (return (resolve-why (fr 'node)))
+              (> (c 'n) 1)
+                (let (r:ROcc (resolve-occ RO-AMBIGUOUS))
+                  (set! (r 'file) (resolve-file-of (fr 'node)))
+                  (return r)))
+        ; Found nowhere: a minted form's own name, or an instance's substitution.
+        ; `:call` is the form it was minted from, which says the name is its definer's.
+        (when (or (fr 'gen) (top 'gen))
+          (let (r:ROcc (resolve-occ RO-GENERATED)
+                sy:?&Syn (resolve-syn-of (fr 'node)))
+            (set! (r 'file) (resolve-file-of (fr 'node)))
+            (when (!= sy null) (set! (r 'call) (resolve-syn-span (unsafe/cast &Syn sy))))
+            (return r)))
+        (when (and (!= site null) (or (= ((unsafe/cast &RSite site) 'via) VIA-INSTANCE)
+                                      (= ((unsafe/cast &RSite site) 'via) VIA-CLOSURE)))
+          (return (resolve-why (fr 'node))))
+        (let (r:ROcc (resolve-occ RO-ABSENT))
+          (set! (r 'file) (resolve-file-of (fr 'node)))
+          (return r)))))))
+
+; ---- events ----
+
+; One resolved name, kept until the compile ends: traces need every list an
+; expansion emitted, and instances are merged.
+(defstruct REvent role:i32 cls:i32 name:Symbol kind:StrView key:Symbol tgt:?&RBind self:?&RBind
+  ident:Symbol outcome:i32 file:?&RFile span:RSpan call:RSpan macro:Symbol via:i32 exp:?&RExp
+  ufk:Symbol sd:?&StructDef)
+
+; One event. A binder's own span comes back, for the Sym its references find.
+(defn resolve-ref (role:i32 cls:i32 atom:?&Node name:Symbol kind:StrView key:Symbol
+                   tb:?&RBind el:?&Node ei:i32):?&RBind
+  (return (resolve-event role cls atom name kind key tb el ei VIA-NONE (symbol-none))))
+
+; `vo` names the copy when the site knows it; `ident` tells apart two
+; definitions that share a key (an overload set's members).
+(defn resolve-event (role:i32 cls:i32 atom:?&Node name:Symbol kind:StrView key:Symbol
+                     tb:?&RBind el:?&Node ei:i32 vo:i32 ident:Symbol):?&RBind
+  (when (!= g-rs-quiet 0) (return null))
+  (let (st:&ResolveState (rs)
+        ; Not the kind: a prescan may see a union's backing struct (`resolve-settle-kind`).
+        uk:Symbol (symbol-intern (fstr g-source-path "\n" role "\n" name "\n" (resolve-sym-text key))))
+    ; No frame: a prescan, which emission is to repeat in the frame it belongs to.
+    (when (= (st 'depth) 0)
+      (set! (st 'unframed) (+ (st 'unframed) 1))
+      (match (get (st 'uf) uk)
+        ((some v) 0)
+        (none (let (ev:&REvent (new REvent g-arena)
+                    rf:&RFile (new RFile g-arena))
+                (assoc (st 'uf) uk 0)
+                (conj (st 'ufs) uk)
+                (set! (rf 'path) g-source-path)
+                (set! (ev 'role) role)
+                (set! (ev 'cls) cls)
+                (set! (ev 'name) name)
+                (set! (ev 'kind) kind)
+                (set! (ev 'key) key)
+                (set! (ev 'tgt) null)
+                (set! (ev 'file) rf)
+                (set! (ev 'macro) (symbol-none))
+                (set! (ev 'call) (resolve-no-span))
+                (conj (st 'ufevs) ev))))
+      (return null))
+    (let (occ:ROcc (resolve-locate cls atom (symbol-as-view name) el ei)
+          ev:&REvent (new REvent g-arena))
+      (set! (ev 'role) role)
+      (set! (ev 'cls) cls)
+      (set! (ev 'name) name)
+      (set! (ev 'kind) kind)
+      (set! (ev 'key) key)
+      (set! (ev 'tgt) tb)
+      (set! (ev 'ident) ident)
+      (set! (ev 'outcome) (occ 'outcome))
+      (set! (ev 'file) (occ 'file))
+      (set! (ev 'span) (occ 'span))
+      (set! (ev 'call) (occ 'call))
+      (set! (ev 'macro) (occ 'macro))
+      (set! (ev 'via) (if (and (!= vo VIA-NONE) (= (occ 'outcome) RO-ATTRIBUTED)) vo (occ 'via)))
+      (set! (ev 'exp) (occ 'exp))
+      (set! (ev 'ufk) uk)
+      (when (= role RREF-BINDER)
+        (let (b:&RBind (new RBind g-arena))
+          (set! (ev 'self) b)
+          (set! (ev 'tgt) b)))
+      (conj (st 'events) ev)
+      (return (ev 'self)))))
+
+; ---- the hooks' entry points ----
+
+; `scope-define` bound `name` in a local scope.
+(defn resolve-note-binder (sym:&Sym name:Symbol):void
+  (set! (sym 'rs-bind) (as ptr (resolve-ref RREF-BINDER RC-BINDER null name "local" (symbol-none) null null -1))))
+
+(defn resolve-sym-kind (sym:&Sym):StrView
+  (return (cond (!= (sym 'is-const) 0) "const"
+                (and (!= (sym 'type) null) (= ((unsafe/cast &Type (sym 'type)) 'kind) TY-FN)) "function"
+                true "var")))
+
+; `scope-lookup` found `sym` for atom `atom`, spelled `name` without its annotation.
+(defn resolve-note-sym (atom:?&Node name:Symbol sym:&Sym):void
+  (let (home:?&Scope (sym 'home))
+    (if (or (= home null) (= ((unsafe/cast &Scope home) 'parent) null))
+      (resolve-ref RREF-GLOBAL RC-VALUE atom name (resolve-sym-kind sym) (sym 'name) null null -1)
+      (resolve-ref RREF-LOCAL RC-VALUE atom name "local" (symbol-none)
+                   (as ?&RBind (sym 'rs-bind)) null -1))))
+
+; Elem `i` of `l` named `key` in registry `kind`.
+(defn resolve-note-at (role:i32 l:?&Node i:i32 name:Symbol kind:StrView key:Symbol):void
+  (resolve-ref role (if (= role RREF-TYPE) RC-TYPE RC-VALUE) (node-at l i) name kind key null l i))
+
+; The head of call `n` resolved to `key` in registry `kind`.
+(defn resolve-note-head (n:?&Node kind:StrView key:Symbol):void
+  (resolve-note-at RREF-HEAD n 0 ((unsafe/cast &Node (node-at n 0)) 's) kind key))
+
+; The head of call `n` reached method `m` of overload set `gname`.
+(defn resolve-note-method (n:?&Node gname:Symbol m:&Method):void
+  (let (o:ptr (if (= (m 'origin-template) null) (as ptr m) (m 'origin-template)))
+    (resolve-event RREF-HEAD RC-VALUE (node-at n 0) ((unsafe/cast &Node (node-at n 0)) 's) "function"
+                   (resolve-method-key gname m) null n 0 VIA-NONE
+                   (symbol-intern (fstr "m" (unsafe/cast i64 o))))))
+
+; The key of the definition method `m` of overload set `gname` came from, as
+; its `:def` spells it; an instance answers for its template.
+(defn resolve-method-key (gname:Symbol m:&Method):Symbol
+  (let (o:&Method (if (= (m 'origin-template) null) m (unsafe/cast &Method (m 'origin-template))))
+    (when (or (symbol-none? (o 'src-ns)) (symbol-contains-byte gname 47)) (return gname))
+    (return (ns-qualify-in (o 'src-ns) gname))))
+
+; Call `n`, the top frame, expands macro `m`.
+(defn resolve-note-macro (n:?&Node m:&MacroDef):void
+  (resolve-note-at RREF-MACRO n 0 ((unsafe/cast &Node (node-at n 0)) 's) "macro" (m 'name))
+  (resolve-mark-macro (m 'name) (m 'jit-name)))
+
+; Member `name` of struct `skey`, written as the selector `sel`, `'name`.
+(defn resolve-note-field (sel:?&Node name:Symbol skey:Symbol):void
+  (resolve-note-at RREF-FIELD sel 1 name "field" skey))
+
+; A type name resolved, its elem unknown: found by spelling in the frame.
+(defn resolve-note-type (name:Symbol kind:StrView key:Symbol):void
+  (resolve-ref RREF-TYPE RC-TYPE null name kind key null null -1))
+
+; As `resolve-note-type`, for struct `sd`: whether it is a union is read when the
+; compile ends, since a signature prescan meets a `defunion`'s name before its arms.
+(defn resolve-note-aggregate (name:Symbol sd:&StructDef):void
+  (let (st:&ResolveState (rs)
+        n:usize (count (st 'events))
+        nu:usize (count (st 'ufevs)))
+    (resolve-note-type name "struct" (sd 'name))
+    (resolve-mark-aggregate n nu sd)))
+
+; The events since `n`/`nu` name struct `sd`.
+(defn resolve-mark-aggregate (n:usize nu:usize sd:?&StructDef):void
+  (let (st:&ResolveState (rs))
+    (when (> (count (st 'events)) n) (set! (((st 'events) n) 'sd) sd))
+    (when (> (count (st 'ufevs)) nu) (set! (((st 'ufevs) nu) 'sd) sd))))
+
+(defn resolve-settle-kind (ev:&REvent):void
+  (let (sd:?&StructDef (ev 'sd))
+    (when (!= sd null)
+      (set! (ev 'kind) (if (= ((unsafe/cast &StructDef sd) 'udef) null) "struct" "union")))))
+
+; ---- template sites (§4.9) ----
+
+; `qq-resolve` rewrote `name` to `full`, which names binding `kind`/`payload`.
+(defstruct RQQ name:Symbol kind:i32 payload:ptr full:Symbol)
+
+(defn resolve-qq-hit (name:Symbol kind:i32 payload:ptr full:Symbol):void
+  (let (st:&ResolveState (rs)
+        q:&(Vector &RQQ) (st 'qq)
+        n:usize (st 'nqq))
+    (when (= n (count q)) (conj q (new RQQ g-arena)))
+    (let (h:&RQQ (q n))
+      (set! (h 'name) name)
+      (set! (h 'kind) kind)
+      (set! (h 'payload) payload)
+      (set! (h 'full) full))
+    (set! (st 'nqq) (+ n 1))))
+
+(defn resolve-qq-mark ():usize
+  (when (= g-resolve 0) (return 0))
+  (return ((rs) 'nqq)))
+
+; The rewrites since `mark` were of elem `i` of template list `l`, when that elem is an atom.
+(defn resolve-qq-flush (l:?&Node i:i32 mark:usize):void
+  (when (= g-resolve 0) (return))
+  (let (st:&ResolveState (rs)
+        e:?&Node (node-at l i))
+    (when (or (= (node-kind e) NODE-SYM) (= (node-kind e) NODE-KEYWORD))
+      (let (j:usize mark)
+        (while (< j (st 'nqq))
+          (resolve-qq-event l i ((st 'qq) j))
+          (set! j (+ j 1)))))
+    (set! (st 'nqq) mark)))
+
+(defn resolve-qq-event (l:?&Node i:i32 h:&RQQ):void
+  (let (k:i32 (h 'kind)
+        sv:StrView (symbol-as-view ((unsafe/cast &Node (node-at l i)) 's))
+        ; A later segment is a type: `out:&String` heads nothing.
+        seg0:bool (= (chain-seg-text sv (resolve-seg-first sv)) (symbol-as-view (h 'name)))
+        head:bool (and (= i 0) seg0)
+        role:i32 -1
+        kind:StrView ""
+        fv:StrView (symbol-as-view (h 'full)))
+    (case k
+      BK-MACRO (when seg0 (set! role RREF-MACRO) (set! kind "macro"))
+      BK-GENERIC (when seg0 (set! role (if head RREF-HEAD RREF-GLOBAL)) (set! kind "function"))
+      BK-GLOBAL
+        (when seg0
+          (set! kind (if (= (h 'payload) null) "var" (resolve-sym-kind (unsafe/cast &Sym (h 'payload)))))
+          (set! role (if (and head (= kind "function")) RREF-HEAD RREF-GLOBAL)))
+      BK-STRUCT
+        (do (set! role (if head RREF-HEAD RREF-TYPE))
+            (set! kind (if (or (= (h 'payload) null)
+                               (= ((unsafe/cast &StructDef (h 'payload)) 'udef) null)) "struct" "union")))
+      BK-UNION (do (set! role (if head RREF-HEAD RREF-TYPE)) (set! kind "union"))
+      BK-STRUCT-TEMPLATE (do (set! role RREF-TYPE) (set! kind "struct"))
+      BK-UNION-TEMPLATE (do (set! role RREF-TYPE) (set! kind "union"))
+      BK-TYPE-ALIAS (do (set! role (if head RREF-HEAD RREF-TYPE)) (set! kind "type-alias"))
+      0)
+    (when (< role 0) (return))
+    (when (strview-has-prefix fv "user/") (set! fv (strview-drop-bytes fv 5)))
+    (let (st:&ResolveState (rs)
+          n:usize (count (st 'events))
+          nu:usize (count (st 'ufevs)))
+      (resolve-event role (if (= role RREF-TYPE) RC-TYPE RC-VALUE) (node-at l i) (h 'name) kind
+                     (symbol-intern fv) null l i VIA-TEMPLATE (symbol-none))
+      (when (= k BK-STRUCT) (resolve-mark-aggregate n nu (as ?&StructDef (h 'payload)))))))
+
+; ---------------------------------------------------------------------------
+; The end of the compile: traces, merging, writing
+; ---------------------------------------------------------------------------
+
+; An event inside a macro expansion, traced to the call's one operand atom that
+; spells it; more than one, or a mintable name, is ambiguous (§4.9).
+(defn resolve-trace-event (ev:&REvent):void
+  (let (x:&RExp (unsafe/cast &RExp (ev 'exp))
+        type:bool (= (ev 'cls) RC-TYPE)
+        mk:Symbol (symbol-intern (fstr (if type "t\n" "v\n") (ev 'name)))
+        r:?&RTr null)
+    (when (= (x 'memo) null) (set! (x 'memo) (new (HashMap Symbol &RTr) g-arena)))
+    (let (memo:&(HashMap Symbol &RTr) (unsafe/cast &(HashMap Symbol &RTr) (x 'memo)))
+      (match (get memo mk)
+        ((some t) (set! r t))
+        (none
+          (let (t:&RTr (new RTr g-arena))
+            (resolve-trace-call ((x 'file) 'syn) (x 'call) type (symbol-as-view (ev 'name)) (x 'passed) t)
+            (assoc memo mk t)
+            (set! r t)))))
+    (let (t:&RTr (unsafe/cast &RTr r))
+      (cond (and (= (t 'n) 1) (not (t 'amb)) (not (resolve-minted-in? x (ev 'name))))
+              (do (set! (ev 'outcome) RO-ATTRIBUTED)
+                  (set! (ev 'span) (t 'span))
+                  (set! (ev 'file) (x 'file))
+                  (set! (ev 'via) (if (x 'inst) VIA-INSTANCE VIA-EXPANSION)))
+            (>= (t 'n) 1) (set! (ev 'outcome) RO-AMBIGUOUS)))))
+
+(defn resolve-ev-path (ev:&REvent):Symbol
+  (when (= (ev 'file) null) (return (symbol-none)))
+  (return ((unsafe/cast &RFile (ev 'file)) 'path)))
+
+(defn resolve-write-bind (out:&String b:?&RBind):void
+  (if (or (= b null) (not ((unsafe/cast &RBind b) 'ok)))
+    (str-into out "nil")
+    (let (bb:&RBind (unsafe/cast &RBind b))
+      (str-into out "{:file ")
+      (diag-write-string out (symbol-as-view (bb 'file)))
+      (str-into out " :start " (as i64 (bb 'start)) " :end " (as i64 (bb 'end)) "}"))))
+
+(defn resolve-target-text (ev:&REvent):Symbol
+  (let (tk:&String (new String g-arena))
+    (if (or (= (ev 'role) RREF-LOCAL) (= (ev 'role) RREF-BINDER))
+      (resolve-write-bind tk (ev 'tgt))
+      (if (symbol-none? (ev 'key)) (str-into tk "nil") (diag-write-string tk (symbol-as-view (ev 'key)))))
+    (return (symbol-intern (string-as-view tk)))))
+
+; A traced reference that lands on its own binder is that binder's record.
+(defn resolve-self-ref? (ev:&REvent):bool
+  (when (!= (ev 'role) RREF-LOCAL) (return false))
+  (let (b:?&RBind (ev 'tgt))
+    (when (or (= b null) (not ((unsafe/cast &RBind b) 'ok))) (return false))
+    (let (bb:&RBind (unsafe/cast &RBind b))
+      (return (and (= (bb 'file) (resolve-ev-path ev)) (= (bb 'start) ((ev 'span) 'start)))))))
+
+(defn resolve-write-ref (out:&String ev:&REvent kind:StrView target:StrView why:i32 via:i32):void
+  (let (path:Symbol (resolve-ev-path ev))
+    (str-into out "{:record :ref :file ")
+    (if (symbol-none? path) (str-into out "nil") (diag-write-string out (symbol-as-view path)))
+    (resolve-write-span out "" (if (= why RO-ATTRIBUTED) (ev 'span)
+                                 (if (= why RO-AMBIGUOUS) (ev 'span) (resolve-no-span))))
+    (str-into out " :name ")
+    (diag-write-string out (symbol-as-view (ev 'name)))
+    (str-into out " :role :" (resolve-role-name (ev 'role)) " :kind ")
+    (if (= (kind 'len) 0) (str-into out "nil") (str-into out ":" kind))
+    (str-into out " :target " target " :why ")
+    (if (= why RO-ATTRIBUTED) (str-into out "nil") (str-into out ":" (resolve-outcome-name why)))
+    (str-into out " :macro ")
+    (if (symbol-none? (ev 'macro)) (str-into out "nil") (diag-write-string out (symbol-as-view (ev 'macro))))
+    (resolve-write-span out "call-" (ev 'call))
+    (str-into out " :via ")
+    (if (= via VIA-NONE) (str-into out "nil") (str-into out ":" (resolve-via-name via)))
+    (str-into out "}\n")))
+
+; The occurrences at one span: one record, `:ambiguous` when they disagree.
+(defstruct RGroup ev:&REvent meaning:Symbol kind:StrView kconf:bool conf:bool via:i32)
+
+(defn resolve-tally (role:i32 o:i32):void
+  (let (t:&(Vector i64) ((rs) 'tally)
+        ti:usize (as usize (+ (* role RO-COUNT) o)))
+    (set t ti (+ (t ti) 1))))
+
+; One record in the order its first occurrence was met: a span's group, or a line.
+(defstruct RSlot group:?&RGroup line:Symbol)
+
+(defn resolve-write-refs (out:&String):void
+  (let (st:&ResolveState (rs)
+        evs:&(Vector &REvent) (st 'events)
+        groups:&(HashMap Symbol &RGroup) (new (HashMap Symbol &RGroup) g-arena)
+        slots:&(Vector &RSlot) (new (Vector &RSlot) g-arena)
+        framed:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
+    (dotimes (i (count evs))
+      (let (ev:&REvent (evs i))
+        (resolve-settle-kind ev)
+        (when (and (= (ev 'outcome) RO-MACRO) (!= (ev 'exp) null)) (resolve-trace-event ev))))
+    (dotimes (i (count evs))
+      (let (ev:&REvent (evs i))
+        (assoc framed (ev 'ufk) 1)
+        (when (and (!= (ev 'self) null) (= (ev 'outcome) RO-ATTRIBUTED))
+          (let (b:&RBind (unsafe/cast &RBind (ev 'self)))
+            (set! (b 'file) (resolve-ev-path ev))
+            (set! (b 'start) ((ev 'span) 'start))
+            (set! (b 'end) ((ev 'span) 'end))
+            (set! (b 'ok) true)))))
+    ; Spanned records merge by span; the rest are their line, written once.
+    (dotimes (i (count evs))
+      (let (ev:&REvent (evs i))
+        (if (= (ev 'outcome) RO-ATTRIBUTED)
+          (when (not (resolve-self-ref? ev))
+            (let (k:Symbol (symbol-intern (fstr (resolve-ev-path ev) "\n" (as i64 ((ev 'span) 'start)) "\n"
+                                                (as i64 ((ev 'span) 'end))))
+                  m:Symbol (symbol-intern (fstr (ev 'role) "\n" (ev 'kind) "\n" (resolve-target-text ev) "\n"
+                                                (resolve-sym-text (ev 'ident)))))
+              (match (get groups k)
+                ((some g)
+                  (do (when (!= (g 'meaning) m)
+                        (set! (g 'conf) true)
+                        (when (or (!= (g 'kind) (ev 'kind)) (!= ((g 'ev) 'role) (ev 'role)))
+                          (set! (g 'kconf) true)))
+                      (when (< (ev 'via) (g 'via)) (set! (g 'via) (ev 'via)))))
+                (none
+                  (let (g:&RGroup (new RGroup g-arena)
+                        sl:&RSlot (new RSlot g-arena))
+                    (set! (g 'ev) ev)
+                    (set! (g 'meaning) m)
+                    (set! (g 'kind) (ev 'kind))
+                    (set! (g 'via) (ev 'via))
+                    (set! (sl 'group) g)
+                    (assoc groups k g)
+                    (conj slots sl))))))
+          (let (tmp:&String (new String g-arena))
+            (resolve-write-ref tmp ev (ev 'kind) (symbol-as-view (resolve-target-text ev)) (ev 'outcome) VIA-NONE)
+            (let (line:Symbol (symbol-intern (string-as-view tmp)))
+              (when (resolve-first? line)
+                (let (sl:&RSlot (new RSlot g-arena))
+                  (set! (sl 'line) line)
+                  (resolve-tally (ev 'role) (ev 'outcome))
+                  (conj slots sl))))))))
+    (dotimes (i (count slots))
+      (let (sl:&RSlot (slots i))
+        (if (= (sl 'group) null)
+          (str-into out (symbol-as-view (sl 'line)))
+          (let (g:&RGroup (unsafe/cast &RGroup (sl 'group)))
+            (if (g 'conf)
+              (do (resolve-write-ref out (g 'ev) (if (g 'kconf) "" (g 'kind)) "nil" RO-AMBIGUOUS (g 'via))
+                  (resolve-tally ((g 'ev) 'role) RO-AMBIGUOUS))
+              (do (resolve-write-ref out (g 'ev) (g 'kind) (symbol-as-view (resolve-target-text (g 'ev)))
+                                     RO-ATTRIBUTED (g 'via))
+                  (resolve-tally ((g 'ev) 'role) RO-ATTRIBUTED)
+                  (let (vt:&(Vector i64) (st 'vtally))
+                    (set vt (as usize (g 'via)) (+ (vt (as usize (g 'via))) 1)))))))))
+    ; Prescan lookups emission never repeated, by file, role, name and key.
+    (let (only:i64 0
+          ufs:&(Vector Symbol) (st 'ufs))
+      (dotimes (i (count ufs))
+        (match (get framed (ufs i))
+          ((some v) 0)
+          ; A prescan's lookup, its position unknown: recorded rather than lost.
+          (none (let (ev:&REvent ((st 'ufevs) i))
+                  (resolve-settle-kind ev)
+                  (set! only (+ only 1))
+                  (resolve-write-ref out ev (ev 'kind) (symbol-as-view (resolve-target-text ev))
+                                     RO-PRESCAN VIA-NONE)
+                  (resolve-tally (ev 'role) RO-PRESCAN)))))
+      (set! (st 'unframed-only) only))))
+
+(defn resolve-write-coverage (out:&String):void
+  (let (st:&ResolveState (rs)
+        tot:&(Vector i64) (new (Vector i64) g-arena)
+        vt:&(Vector i64) (st 'vtally))
+    (dotimes (o RO-COUNT)
+      (let (n:i64 0)
+        (dotimes (r RREF-COUNT)
+          (set! n (+ n ((st 'tally) (as usize (+ (* r RO-COUNT) o))))))
+        (conj tot n)))
+    (str-into out "{:record :coverage :attributed " (tot 0) " :ambiguous " (tot 1)
+              " :no-span " (+ (tot 2) (+ (tot 3) (+ (tot 4) (+ (tot 5) (+ (tot 6) (tot 7))))))
+              " :why {:macro " (tot 2) " :instance " (tot 3) " :generated " (tot 4)
+              " :absent " (tot 5) " :prescan " (tot 6) " :mismatch " (tot 7) "} :unframed " (st 'unframed)
+              " :unframed-only " (st 'unframed-only) " :roles {")
+    (dotimes (r RREF-COUNT)
+      (when (> r 0) (str-into out " "))
+      (str-into out ":" (resolve-role-name r) " {")
+      (dotimes (o RO-COUNT)
+        (when (> o 0) (str-into out " "))
+        (str-into out ":" (resolve-outcome-name o) " " ((st 'tally) (as usize (+ (* r RO-COUNT) o)))))
+      (str-into out "}"))
+    (str-into out "} :via {")
+    (dotimes (v VIA-COUNT)
+      (when (> v 0)
+        (when (> v 1) (str-into out " "))
+        (str-into out ":" (resolve-via-name v) " " (vt (as usize v)))))
+    (str-into out "}}\n")))
+
+(defn resolve-write-report (unit:Symbol):void
+  (let (st:&ResolveState (rs)
+        out:&String (new String g-arena)
+        hs:&(Vector &RDef) (st 'heads))
+    (str-into out "{:record :report :version 4 :unit ")
+    (diag-write-string out (symbol-as-view unit))
+    (str-into out "}\n")
+    (dotimes (i (count hs))
+      (resolve-write-def out (hs i)))
+    (resolve-write-refs out)
+    (resolve-write-coverage out)
+    (emit-all stdout out)))

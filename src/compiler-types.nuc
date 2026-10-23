@@ -643,6 +643,8 @@
   ; A C header's integer constant, which any Nucleus definition of the name
   ; displaces (`cheader-define-int-const`, `cconst-yield`).
   c-const:i32
+  ; `--resolve`: the local's binder span, an `RBind` (src/resolve.nuc); null otherwise.
+  rs-bind:ptr
   ; Appended at the END deliberately: inserting a field mid-struct shifts the
   ; GEP index of every field after it in every function that touches one, which
   ; would bury this change's real bootstrap diff under hundreds of unrelated
@@ -1116,7 +1118,9 @@
   context:StrView
   ns:Symbol
   path:Symbol
-  imports:?&ImportVec)
+  imports:?&ImportVec
+  ; A stamped instance's template definition, which `--resolve` names as its source.
+  (src ?&Node))
 
 ; Stage 15 W8 G-3 (design/global-init.md §5): a queued *runtime* global
 ; initializer — a `defvar` whose initializer G-1/G-2 could not render as a
@@ -1137,7 +1141,9 @@
   ; Stage 20 L6: the global's `@name`, so a compile-time mirror can ask whether
   ; the globals it copied have a pending initializer without re-deriving the
   ; namespace mangling (macro-call-linking.md §5.7).
-  ir-name:Symbol)
+  ir-name:Symbol
+  ; The `defvar` that queued it: `--resolve` names it as the drained code's call.
+  (src ?&Node))
 
 (defstruct MacroDef
   name:Symbol

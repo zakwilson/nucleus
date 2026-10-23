@@ -534,6 +534,8 @@
                                     scope:&Scope line:i32):&Val
   (let (cc:&Node (unsafe/cast &Node call)
         elem:ptr (ty 'elem))
+    (when (!= g-resolve 0)
+      (resolve-note-at RREF-ARM (as ?&Node call) (- argi 1) arm "arm" (type-spelling (as ?&Type ty))))
     (if (= layout LAYOUT-NICHE-MAYBE)
       ; --- rule 2: nullable pointer, null = none ---
       (if (= arm "some")
@@ -623,11 +625,19 @@
           (when (< ai 0)
             (die-at (node-line arm-node (cc 'line))
               (fstr "no arm '" arm "' on '" (udef-display udd) "'")))
+          (when (!= g-resolve 0) (resolve-note-at RREF-ARM (as ?&Node call) armi arm "arm" (udd 'name)))
           (return (emit-union-construct (as ptr udd) ai call (+ armi 1) scope)))))))
 
 (defn emit-make (call:ptr scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (return (emit-union-lit call scope (parse-type-from-node (node-at cc 1) (cc 'line)) 2))))
+
+; As `union-lit-type`, for a head its caller records as the call's `:head`.
+(defn union-lit-type-quiet (head:?&Node line:i32):?&Type
+  (resolve-quiet-enter)
+  (let (t:?&Type (union-lit-type head line))
+    (resolve-quiet-leave)
+    (return t)))
 
 ; The union `head` names, tagged or niche, or null for any other type.
 (defn union-lit-type (head:?&Node line:i32):?&Type
@@ -903,6 +913,11 @@
     (intern-node (udd 'name))))
 
 (defn union-target-rewrite (form:ptr target:?&Type):ptr
+  (let (r:ptr (union-target-rewrite-in form target))
+    (when (!= g-resolve 0) (resolve-map-shifted form r))
+    (return r)))
+
+(defn union-target-rewrite-in (form:ptr target:?&Type):ptr
   (when (= form null) (return form))
   (when (= target null) (return form))
   ; Niche-ERRPTR target (unions.md §6 rule 3): the target type is a bare pointer,
@@ -980,7 +995,9 @@
   (let (n:&Node (unsafe/cast &Node form))
     (when (and (= (n 'kind) NODE-LIST)
                (= (-> (node-at form 0) (unsafe/cast &Node _) (_ 's)) "err"))
-      (return (union-target-rewrite (node-cons 'err! (node-rest n) (n 'line)) target))))
+      (let (bang:ptr (node-cons 'err! (node-rest n) (n 'line)))
+        (when (!= g-resolve 0) (resolve-map-shifted form bang))
+        (return (union-target-rewrite bang target)))))
   (return (union-target-rewrite form target)))
 
 ; `none`, or a list headed by `some`/`ok`/`err`/`err!`.
@@ -1118,7 +1135,8 @@
           (emit g-body-stream "match.c" id "." ci ":\n"))
         (set! g-block-term 0)
         (let (inner:&Scope (scope-new scope)
-              tmark:i32 (narrow-mark))
+              tmark:i32 (narrow-mark)
+              rsd:usize (resolve-push-clause call (+ ci 2)))
           ; Payload binders (defunion clauses only).
           (when (and (!= ud null) (= is-def 0))
             (let (ai:i32 (aref (unsafe/cast &i32 clause-val) ci)
@@ -1140,6 +1158,7 @@
                 (set! bv (emit-node form inner)))
               (set! bcur (node-rest (unsafe/cast &Node bcur))))
             (emit-scope-cleanups inner)
+            (resolve-pop-to rsd)
             (let (bterm:i32 g-block-term)
               (when (= bterm 0)
                 ; Stage 14 NS-3: a match arm ending in a string literal collapses
@@ -1628,6 +1647,8 @@
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: no arm '" (pat 's) "' on '" (udef-display udd) "'")))
+                      (when (!= g-resolve 0)
+                        (resolve-note-at RREF-ARM (as ?&Node clause) 0 (pat 's) "arm" (udd 'name)))
                       (when (!= ((invoke (udd 'arms) ai:usize) 'nfields) 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: arm '" (pat 's)
@@ -1643,6 +1664,8 @@
                         (when (< ai 0)
                           (die-at (node-line (as ptr an) (clause 'line))
                             (fstr "match: no arm '" (an 's) "' on '" (udef-display udd) "'")))
+                        (when (!= g-resolve 0)
+                          (resolve-note-at RREF-ARM (as ?&Node pat) 0 (an 's) "arm" (udd 'name)))
                         (when (!= (- (node-len (as ptr pat)) 1)
                                   ((invoke (udd 'arms) ai:usize) 'nfields))
                           (die-at (node-line (as ptr pat) (clause 'line))

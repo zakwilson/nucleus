@@ -55,6 +55,7 @@
       (set! (sym 'ir-name) ir-name)
       (set! (sym 'is-local) is-local)
       (set! (sym 'home) s)
+      (when (and (!= g-resolve 0) (!= (sc 'parent) null)) (resolve-note-binder sym name))
       (set! (sc 'len) (+ (sc 'len) 1))
       (when (= (as ptr sc) (as ptr g-globals)) (assoc g-globals-index name (- (sc 'len) 1)))
       (return sym))))

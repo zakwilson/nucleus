@@ -730,7 +730,7 @@
             (node-list4 (intern-node (symbol-intern "memcpy")) (intern-node name) (intern-node tmp)
                         (node-int (as i64 (abi-sizeof (as ptr ty)))) line)
             (node-list3 (intern-node (symbol-intern "set!")) (intern-node name) (intern-node tmp) line))
-          name (symbol-intern (prev 'ir-name)) line)
+          name (symbol-intern (prev 'ir-name)) line cc)
         (set! g-repl-global-redef 1)
         (return true)))
     (return false)))

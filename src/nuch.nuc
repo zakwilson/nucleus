@@ -853,7 +853,8 @@
               "defmacro"
                 (emit-defmacro (as ptr f))
               ; `def-rmacro` is the reader's, already applied while reading.
-              0)))))
+              0)
+            (when (!= g-resolve 0) (resolve-note-def (as ptr f) h))))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).
   (finalize-generics))))

@@ -161,6 +161,8 @@
             (return (if (= i 0) SLOT-HEAD SLOT-FIELD))
           (= hs "fn")
             (return (if (= i 0) SLOT-HEAD SLOT-TYPE))
+          (= hs "array")
+            (return (cond (= i 0) SLOT-HEAD (= i 1) SLOT-TYPE true SLOT-VALUE))
           (= hs "BoxedFn")
             (return (cond (= i 0) SLOT-HEAD (= i 1) SLOT-TYPES true SLOT-TYPE)))
     (return SLOT-TYPE)))

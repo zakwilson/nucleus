@@ -1,0 +1,9 @@
+; Rename one local variable, by resolution (design/stage26-refactoring/overview.md §4.10).
+;
+;   build/nucleusc --run scripts/stage26/rename-local.nuc -- src/foo.nuc:120:9 count
+;   build/nucleusc --run scripts/stage26/rename-local.nuc -- --apply src/foo.nuc:120:9 count
+
+(import-use nucleus.refactor)
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (rename-local-main argc argv)))

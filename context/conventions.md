@@ -4852,7 +4852,10 @@ O(1) but it copies on its first push. That makes it wrong as a mutation target
 writes anything per step — `stamp-macro-lines` stamped a rest's line and then
 discarded it, leaving every element past the first unstamped and breaking line
 attribution tree-wide. Recurse by index (`node-at` over `node-len`) whenever the
-walk touches the node.
+walk touches the node. **It is also wrong as an identity reference.** Each call
+returns a new header, so `(= x (node-rest n))` is false whenever the result is
+non-null. Bind the rest once and compare against that binding. `desugar` made
+this mistake and copied every list it walked (Stage 26 RR-0).
 
 Two things this makes easy to get wrong:
 
@@ -7696,3 +7699,51 @@ questions that decide it are functions both CALL: `callable-place-route` (the
 `callable-value-head-sym` (the `emit-dispatch` head question). A new routing
 rule in `emit-callable-value` needs a matching arm in `callable-place-route`,
 or `&(x sel)` materializes a copy of something that is not a field.
+
+## `--resolve` hooks sit on the emitting path, never on code the prescans share
+
+`--resolve` (src/resolve.nuc, design/stage26-refactoring/overview.md §4.9)
+maps definers to source spans by `Node` address, so only the trees that are
+EMITTED are registered. Those are main's root read and do-import's two reads,
+through `read-emitting-raw` and `desugar-emitting`. Pass 1 and pass 2 re-read
+every import through `apply-leading-ns`, `desugar` and
+`read-source-or-die`. A hook placed in any of these fires for prescan trees
+that have no `Syn`, and those records come out `:trace :none`. That is why the
+`ns` hook is in `emit-toplevel-forms` and not in `apply-leading-ns`.
+
+- **A new emitting read** must go through `read-emitting-raw`, or its
+  definers lose their spans.
+- **A new definer head** needs a `resolve-def-kind` row. `resolve-census.nuc`
+  catches one you miss: it fails when a slot-table definer has no record.
+- **A top-level macro expansion** registers its origin on EVERY fresh list
+  inside it (`resolve-inherit`), not just the outermost. `macmap` expands to a
+  `macrolet` whose body is spliced and expanded again, and those inner calls
+  are lists the expansion built.
+
+## `--resolve` reference events: frames, quiet regions, guards
+
+`(rs)` is an unchecked cast of a state that only exists under `--resolve`, so
+any hook or frame helper must test `g-resolve` before calling it. If it does
+not, an ordinary build segfaults, and the census found one (`emit-defunion`'s
+arm frame).
+
+- **A new path that resolves a name for emission** needs an event hook. If it
+  has none, the occurrence gets no record, which rename treats as a refusal.
+  `resolve-census.nuc` lists such occurrences under its "other" classes.
+- **A new speculative re-read** (type inference, matching, a conformance
+  check, stamping) must run inside `resolve-quiet-enter`/`-leave`. If it does
+  not, it reports names in the wrong frame, as extra `:absent` records or as
+  a record against the wrong elem.
+- **A rewrite that rebuilds a list before emitting it** must map the copy
+  (`resolve-map-copies`, `-shifted`, `-offset`, `-picks`, `-closure`). If it
+  does not, its names report `:generated`. The rationale is in
+  design/stage26-refactoring/overview.md §8 RR-2 and RR-3.
+- **A new way for compiled code to make a symbol** (a quote, a string literal,
+  a new compile-time body kind) must reach `resolve-note-mint`, and a new
+  compile-time body must sit inside `resolve-ct-enter`/`-leave`. A missing mint
+  is not a refusal: the expansion trace then gives a template literal the span
+  of an operand that merely shares its spelling, which is a wrong record.
+
+## A `defunion`'s name is a plain struct until its arms register
+
+`prescan-struct-names` registers a `defunion`'s backing `StructDef` with `udef` null so that signatures can name the type; `udef` is attached only by `defunion-register` (the layout prescan, or emission when the layout is deferred). So a lookup made during the signature prescan cannot tell a union from a struct by `udef`. Anything that records the distinction (the `--resolve` report's `:kind`) must read it when the compile ends: keep the `StructDef`, not the answer (`resolve-note-aggregate`, `src/resolve.nuc`).

@@ -441,4 +441,3 @@
     (if (= calls null)
       `(do)
       `(macrolet ((__macmap ~params ~tmpl)) ~@calls))))
-

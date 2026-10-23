@@ -1201,6 +1201,7 @@
 (import-use ct-fault)
 (import-use nucleus.read)
 (import-use nucleus.slots)
+(import-use resolve)
 
 ; Stage 10 C3: condition class for recoverable malformed top-level forms that
 ; the compiler validates at definition time (e.g. a malformed `(deferror …)`).
@@ -1857,6 +1858,13 @@
     (require-name-slot node "a declared name" line)))
 
 (defn extract-name-and-type (node:?&Node out-name:&Symbol line:i32):?&Type
+  (when (or (= g-resolve 0) (!= g-rs-quiet 0)) (return (extract-name-and-type-in node out-name line)))
+  (let (d:usize (resolve-push-decl node)
+        t:?&Type (extract-name-and-type-in node out-name line))
+    (resolve-pop-to d)
+    (return t)))
+
+(defn extract-name-and-type-in (node:?&Node out-name:&Symbol line:i32):?&Type
   ; W5f: an empty list `()` in a declaration position names nothing. Every
   ; caller — `(struct …)`/`(union …)` members, defstruct fields, defn params,
   ; let/with bindings, defunion arm fields — reaches this shared chokepoint, and
@@ -2235,7 +2243,12 @@
     (when (= (nn 'kind) NODE-STR)   (set! v (emit-string n null)))
     (when (= (nn 'kind) NODE-SYM)   (set! v (emit-symbol-ref n scope g-form-line)))
     (when (= (nn 'kind) NODE-KEYWORD) (set! v (emit-keyword n scope)))
-    (when (= (nn 'kind) NODE-LIST)  (set! v (emit-list n scope)))
+    (when (= (nn 'kind) NODE-LIST)
+      (if (= g-resolve 0)
+        (set! v (emit-list n scope))
+        (let (d:usize (resolve-push n))
+          (set! v (emit-list n scope))
+          (resolve-pop-to d))))
     ; Rung 3: the type a node contributes to its parent is the shared node-type
     ; rule's answer, so codegen and the (non-emitting) type pass cannot drift —
     ; a mismatch corrupts the next bootstrap and is caught at once. node-type
@@ -2245,6 +2258,18 @@
     ; Restore last: node-type raises its own diagnostics (the retired-spelling
     ; checks in node-type-call) and must see this node's line too.
     (set! g-form-line saved-form-line)
+    (return v)))
+
+; Elem `i` of `l`; under `--resolve`, a name `l` repeats is placed at this elem.
+(defn emit-node-at (l:?&Node i:i32 scope:&Scope):&Val
+  (return (emit-node-as l i (node-at l i) scope)))
+
+; `n`, which a rewrite may have made from elem `i` of `l`, placed as that elem.
+(defn emit-node-as (l:?&Node i:i32 n:?&Node scope:&Scope):&Val
+  (when (= g-resolve 0) (return (emit-node n scope)))
+  (let (d:usize (resolve-push-elem l i SLOT-VALUE)
+        v:&Val (emit-node n scope))
+    (resolve-pop-to d)
     (return v)))
 
 ; Stage 14 LW-4: the *truthful* width of an integer literal whose value is `v`
@@ -2419,6 +2444,7 @@
       (return rv))))
 
 (defn emit-string (n:?&Node target:?&Type):&Val
+  (when (!= g-resolve 0) (resolve-note-mint ((unsafe/cast &Node n) 's) (!= (in-jit-module) 0) g-cur-fname))
   (let (nn:(ptr Node) n
         id:i32 (intern-string (symbol-as-view (nn 's)))
         slen:i32 ((invoke g-strs (as usize id)) 'len)
@@ -2592,6 +2618,8 @@
   (set! g-node-ctor-used 1)
   (require-node-runtime (node-line (as ptr n) g-form-line) "quote")
   (let (nn:?&Node n)
+    (when (and (!= g-resolve 0) (or (= (nn 'kind) NODE-SYM) (= (nn 'kind) NODE-KEYWORD) (= (nn 'kind) NODE-STR)))
+      (resolve-note-mint (nn 's) (!= (in-jit-module) 0) g-cur-fname))
     (when (= (nn 'kind) NODE-SYM)
       (let (sid:i32 (intern-string (symbol-as-view (nn 's)))
             ir-len:i32 (+ ((invoke g-strs (as usize sid)) 'len) 1)
@@ -2761,7 +2789,7 @@
       (let (elem:?&Node (node-at lc i))
         (if (and (= level 1) (!= (qq-is-tagged elem 'unquote-splice) 0))
           (let (inner:?&Node (node-at elem 1)
-                a:&Val (emit-node inner scope))
+                a:&Val (emit-node-at elem 1 scope))
             (qq-require-node-operand a inner 1 (node-line elem (lc 'line)))
             (emit g-body-stream "  call void " (core-link-name "node-extend") "(ptr " acc ", ptr " (a 'val) ")\n"))
           (let (head:&Val (emit-qq-form elem scope level))
@@ -2781,7 +2809,7 @@
     (when (!= (qq-is-tagged form 'unquote) 0)
       (when (= level 1)
         (let (inner:?&Node (node-at form 1)
-              v:&Val (emit-node inner scope))
+              v:&Val (emit-node-at form 1 scope))
           (qq-require-node-operand v inner 0 (fn 'line))
           (return v)))
       (return (emit-qq-tagged form scope (- level 1))))
@@ -2795,7 +2823,9 @@
     (when (!= (node-len call) 2) (die-at (cc 'line) "quasiquote: expects 1 arg"))
     (let (tmpl:?&Node (node-at call 1))
       (when (and (!= g-qq-resolve 0) (!= (in-jit-module) 0))
-        (set! tmpl (qq-resolve tmpl (cc 'line))))
+        (let (mark:usize (resolve-qq-mark))
+          (set! tmpl (qq-resolve tmpl (cc 'line)))
+          (resolve-qq-flush call 1 mark)))
       (return (emit-qq-form tmpl scope 1)))))
 
 ; One field of a by-value struct Val, as IR text: `path` is the extractvalue index
@@ -4099,6 +4129,7 @@
   (let (nn:(ptr Node) n)
     (if-some (sym (scope-lookup scope lookup-name))
       (do
+        (when (!= g-resolve 0) (resolve-note-sym n lookup-name sym))
         (when (!= (sym 'moved) 0)
           (die-at (node-line n line) (fstr "use after move: '" (nn 's) "'")))
         (when (!= (sym 'is-const) 0)
@@ -4512,6 +4543,7 @@
         (when (= sym null)
           (die-at (node-line (as ptr fn-node) (cc 'line)) (fstr "defcast: unknown function '"
                                                                 (fn-node 's) "'")))
+        (when (!= g-resolve 0) (resolve-note-sym (as ?&Node fn-node) (fn-node 's) (unsafe/cast &Sym sym)))
         (let (ss:(ptr Sym) sym
               ft:(ptr Type) (ss 'type))
           (when (!= (ft 'kind) TY-FN)
@@ -4899,8 +4931,8 @@
         bop:(ptr BinOp) op)
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) (fstr (bop 'name) " expects 2 args")))
-    (let (a:&Val (emit-node (node-at cc 1) scope)
-          b:&Val (emit-node (node-at cc 2) scope)
+    (let (a:&Val (emit-node-at call 1 scope)
+          b:&Val (emit-node-at call 2 scope)
           ts:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
           ns:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
       ; No overload exists here, so a struct-literal operand has nothing to compare it by value.
@@ -6884,6 +6916,7 @@
       (if-some (sym (scope-lookup scope (rn 's)))
         (let (sk:i32 (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
           (when (and (= (sym 'is-const) 0) (or (= sk TY-STRUCT) (= sk TY-UNION)))
+            (when (!= g-resolve 0) (resolve-note-sym rn (rn 's) sym))
             (when (!= (sym 'moved) 0)
               (die-at (node-line rnode line) (fstr "use after move: '" (rn 's) "'")))
             (let (rt:&Type (make-type TY-PTR))
@@ -6923,6 +6956,7 @@
           (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "_get"))
         (let (sd:(ptr StructDef) ((pt 'elem) 'sdef)
               idx:i32 (struct-field-index sd (fn-node 's)))
+          (when (!= g-resolve 0) (resolve-note-field (node-at cc 2) (fn-node 's) (sd 'name)))
           ; W3a: an opaque type has no fields at all, so "no field 'x'" would be
           ; a misleading answer — the layout is simply not visible here.
           (reject-opaque-type (pt 'elem) (node-line (as ptr fn-node) (cc 'line))
@@ -7096,6 +7130,7 @@
         (return (emit-computed-field n scope cv sd sel-node line
                                      (invoke-address-hint n sel-node (callee-val 'type)))))
       (let (idx:i32 (struct-field-index sd (lit 's)))
+        (when (!= g-resolve 0) (resolve-note-field sel-node (lit 's) (sd 'name)))
         (when (< idx 0)
           ; AN-2: an anonymous member's own field, same rule as `_get`.
           (let (afr:?&FieldRef (struct-field-ref sd (lit 's)))
@@ -7566,17 +7601,17 @@
   (let (cc:&Node call)
     (when (!= (node-len cc) 4) (die-at (cc 'line) "set!: (aref a i) place expects an index and a value"))
     (reject-readonly-place (node-at cc 1) scope (cc 'line))
-    (let (p:&Val (emit-node (node-at cc 1) scope))
+    (let (p:&Val (emit-node-at cc 1 scope))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
         (die-at (cc 'line) "set!: (aref a i) place: operand must be typed pointer"))
       (require-derefable (p 'type) (cc 'line) "set!")
-      (let (idx:&Val (emit-node (node-at cc 2) scope))
+      (let (idx:&Val (emit-node-at cc 2 scope))
         (when (= (is-int-type (idx 'type)) 0)
           (die-at (cc 'line) "set!: (aref a i) place: index must be integer"))
         (let (idxp:StrView (gep-index-ir idx))
           (let (elem:?&Type ((p 'type) 'elem)
-                v:&Val (maybe-box-into-slot (emit-node (node-at cc 3) scope) elem scope (cc 'line))
+                v:&Val (maybe-box-into-slot (emit-node-at cc 3 scope) elem scope (cc 'line))
                 coerced:ptr (coerce-int-val v elem (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line) "set!: (aref a i) place: value type mismatch"))
@@ -7628,6 +7663,13 @@
       (return (alloc-val ty-char (fstr (symbol-byte-at (arg 's) 0)))))))
 
 (defn emit-ref (call:?&Node scope:&Scope):&Val
+  (when (= g-resolve 0) (return (emit-ref-in call scope)))
+  (let (d:usize (resolve-depth)
+        v:&Val (emit-ref-in call scope))
+    (resolve-pop-to d)
+    (return v)))
+
+(defn emit-ref-in (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     ; An arity overload, not a new dispatch: 1-arg is an operand's address, 2-arg
     ; is a field's (dot-forms.md §3). `node-type-ref` splits on the same arity.
@@ -7645,7 +7687,15 @@
     (while (and (!= cur null) (= (node-kind cur) NODE-LIST) (> (node-len cur) 0)
                 (= (node-kind (node-at cur 0)) NODE-SYM))
       (if-some (mdef (find-macro (-> (node-at cur 0) (unsafe/cast &Node _) (_ 's))))
-        (set! cur (desugar (expand-macro-call cur mdef)))
+        (do
+          ; `--resolve`: the caller pops these frames once the expansion is emitted.
+          (when (!= g-resolve 0)
+            (resolve-push cur)
+            (resolve-note-macro cur mdef))
+          (let (raw:ptr (expand-macro-call cur mdef)
+                ex:ptr (desugar raw))
+            (when (!= g-resolve 0) (resolve-map-copies raw ex))
+            (set! cur ex)))
         (return cur)))
     (return cur)))
 
@@ -7653,6 +7703,7 @@
   (let (sym:?&Sym (scope-lookup scope (target 's)))
     (when (= sym null)
       (die-at line (fstr "ref: undefined '" (target 's) "'")))
+    (when (!= g-resolve 0) (resolve-note-sym target (target 's) (unsafe/cast &Sym sym)))
     (when (!= (sym 'is-const) 0)
       (die-at line
         (fstr "ref: constant '" (target 's)
@@ -8041,13 +8092,13 @@
 (defn emit-ptr-set (call:&Node scope:&Scope):&Val
   (let (cc:&Node call)
     (when (!= (node-len cc) 3) (die-at (cc 'line) "set!: (deref p) place expects a value"))
-    (let (p:&Val (emit-node (node-at cc 1) scope))
+    (let (p:&Val (emit-node-at cc 1 scope))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
         (die-at (cc 'line) "set!: (deref p) place: operand must be typed pointer"))
       (require-derefable (p 'type) (cc 'line) "set!")
       (let (elem:?&Type ((p 'type) 'elem)
-            v:&Val (maybe-box-into-slot (emit-node (node-at cc 2) scope) elem scope (cc 'line))
+            v:&Val (maybe-box-into-slot (emit-node-at cc 2 scope) elem scope (cc 'line))
             coerced:ptr (coerce-int-val v elem (cc 'line)))
         (when (= coerced null)
           (die-at (cc 'line) "set!: (deref p) place: value type mismatch"))
@@ -8098,6 +8149,7 @@
               ; AN-2: null unless the name came from an anonymous member, in
               ; which case it, not `idx`, carries the field's type and path.
               afr:?&FieldRef null)
+          (when (!= g-resolve 0) (resolve-note-field (node-at cc 2) (fn-node 's) (sd 'name)))
           (reject-cycle-pending-sdef sd (node-line (as ptr fn-node) (cc 'line))
                                      "field assignment")
           (union-field-guard sd (cc 'line) ".set!")
@@ -8187,9 +8239,11 @@
       (while (< i nargs)
         (let (an:ptr (node-at cc (+ i 1))
               lw:StrView (lit-form-what an)
+              rsd:usize (resolve-push-elem call (+ i 1) SLOT-VALUE)
               v:&Val (if (= lw "")
                        (emit-node (arg-target-rewrite an (fn-param-type ft0 i)) scope)
                        (emit-arg-with-want an scope (literal-param-want (fn-param-type ft0 i) lw (cc 'line)))))
+          (resolve-pop-to rsd)
           (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing :optional args, emitting each default
@@ -8203,7 +8257,9 @@
           (let (oi:i32 nargs)
             (while (< oi np)
               (let (default-node:ptr (aref (unsafe/cast &ptr (ft0 'opt-defaults)) (- oi required))
+                    rsd:usize (resolve-push-generated (as ?&Node default-node))
                     v:&Val (emit-node default-node scope))
+                (resolve-pop-to rsd)
                 (memcpy (unsafe/ptr+ (unsafe/cast &Val args) oi) v (sizeof Val)))
               (inc! oi))
             (set! nargs np))))
@@ -8840,6 +8896,13 @@
 ; bare type symbol or a parenthesised list-form type (`(ref T)`, per the
 ; colon-paren caveat) are also accepted.
 (defn fn-parse-ret-type (node:?&Node line:i32):&Type
+  (when (or (= g-resolve 0) (= node null)) (return (fn-parse-ret-type-in node line)))
+  (let (d:usize (resolve-push-decl-as node SLOT-RETURN)
+        t:&Type (fn-parse-ret-type-in node line))
+    (resolve-pop-to d)
+    (return t)))
+
+(defn fn-parse-ret-type-in (node:?&Node line:i32):&Type
   (when (= node null) (return ty-void))
   (let (nn:?&Node node)
     (when (= (nn 'kind) NODE-KEYWORD) (return (parse-type-name (nn 's) line)))
@@ -8918,6 +8981,7 @@
                     after-params:ptr (node-cons params-node after-ret line)
                     after-name:ptr (node-cons (intern-node lifted) after-params line)
                     defn-form:ptr (node-cons 'defn after-name line))
+                (when (!= g-resolve 0) (resolve-map-offset call defn-form 1 1 VIA-CLOSURE))
                 (conj g-mono-worklist
                       (mono-job-here defn-form
                         (fstr "while emitting lambda " lifted " (defined at " g-source-path ":"
@@ -9302,12 +9366,11 @@
 ; and emit-defn re-derives the identical ir-name from defn-ir-name; its body is
 ; emitted by drain-mono-worklist, exactly as a parametric stamp is (mirrors
 ; generic-instantiate). `params-node` is the lambda's param list; the env type
-; is prepended as the `self` receiver. Returns nothing — the caller already has
-; the env value.
+; is prepended as the `self` receiver. Returns the queued form.
 (defn fn-make-invoke-method (env-sd:(ptr StructDef) caps:?&Node params-node:?&Node
                                   ret-node:?&Node ret:?&Type
                                   param-types:ptr param-names:ptr nparams:i32
-                                  body-list:?&Node line:i32 mode:i32):void
+                                  body-list:?&Node line:i32 mode:i32):ptr
   ; Receiver-extended param Type* array: [(ref Env), p0, p1, …]. This is the
   ; exact signature generic-find-method-exact / defn-ir-name will match on.
   (let (self-ty:ptr (fn-env-ref-type env-sd)
@@ -9351,7 +9414,8 @@
           (conj g-mono-worklist
                 (mono-job-here defn-form
                   (fstr "while emitting closure invoke " mangled " (defined at " g-source-path
-                        ":" line ")"))))))))
+                        ":" line ")")))
+          (return defn-form))))))
 
 ; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
 ; mode 0/1 (vfn/mfn — at least one field is a Drop type):
@@ -9842,6 +9906,7 @@
   ; write. `examples/w9-dyn-ns.nuc` boxes exactly that case.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (resolve-quiet-enter)
     (let (proto:Symbol (dyn-proto-of box-ty)
           nargs:i32 (dyn-nargs-of box-ty)
           markers:ptr (dyn-arg-markers box-ty)
@@ -9853,6 +9918,7 @@
               (if (= (dyn-sig-safety pp i nargs) DYN-CALLABLE)
                 (dyn-vtable-method-irname-in concrete-ty pp i markers nargs subj line)
                 (symbol-none))))
+      (resolve-quiet-leave)
       (set! g-type-key-ok saved)
       (return out))))
 
@@ -10200,7 +10266,9 @@
                           (intern-node struct-name) line)
             saved-key-ok:i32 g-type-key-ok
             sz-val:&Val (do (set! g-type-key-ok 1)
+                               (resolve-quiet-enter)
                                (let (t:&Val (emit-node sz-node scope))
+                                 (resolve-quiet-leave)
                                  (set! g-type-key-ok saved-key-ok)
                                  t))
             blk:StrView (new-tmp))
@@ -10718,6 +10786,16 @@
 ; a non-owned capture is bitwise-copied since move == copy when nothing disarms).
 (defn fn-emit-env-value (env-sd:?&StructDef caps:?&Node scope:&Scope
                                  out-owns-drop:&i32 line:i32 mode:i32 alloc-aptr:StrView):&Val
+  (when (= g-resolve 0)
+    (return (fn-emit-env-value-in env-sd caps scope out-owns-drop line mode alloc-aptr)))
+  ; `--resolve`: the env's reads of the captures are the compiler's, not the source's.
+  (let (d:usize (resolve-push-generated null)
+        v:&Val (fn-emit-env-value-in env-sd caps scope out-owns-drop line mode alloc-aptr))
+    (resolve-pop-to d)
+    (return v)))
+
+(defn fn-emit-env-value-in (env-sd:?&StructDef caps:?&Node scope:&Scope
+                                 out-owns-drop:&i32 line:i32 mode:i32 alloc-aptr:StrView):&Val
   (let (sd:&StructDef (unsafe/cast &StructDef env-sd)
         slot:StrView (new-tmp))
     (if (= mode 2)
@@ -10920,8 +10998,9 @@
                 body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
-            (fn-make-invoke-method env-sd caps-head params-node ret-node ret
-                                   param-types param-names nparams body-list line 0)
+            (let (inv:ptr (fn-make-invoke-method env-sd caps-head params-node ret-node ret
+                                                 param-types param-names nparams body-list line 0))
+              (when (!= g-resolve 0) (resolve-map-closure call inv 2 scope)))
             ; Determine ownership up front by scanning the env field types: if any
             ; field is a Drop type, the closure owns its cloned resources, so
             ; synthesize its `drop` + record the (Env, Drop) conformance BEFORE the
@@ -11001,8 +11080,9 @@
                 body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
-            (fn-make-invoke-method env-sd caps-head params-node ret-node ret
-                                   param-types param-names nparams body-list line 1)
+            (let (inv:ptr (fn-make-invoke-method env-sd caps-head params-node ret-node ret
+                                                 param-types param-names nparams body-list line 1))
+              (when (!= g-resolve 0) (resolve-map-closure call inv 2 scope)))
             ; Pre-scan env field types: if any field is a Drop type, the closure
             ; owns the moved resource, so synthesize its `drop` + record the
             ; (Env, Drop) conformance BEFORE the env value is emitted (a with-
@@ -11067,11 +11147,11 @@
           (let (fn-sym:ptr (as ptr (intern-node (symbol-intern "fn")))
                 body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _) (unsafe/cast &Node _) (node-rest _)))
-            (return (emit-fn
-                      (node-cons fn-sym
-                        (node-cons params-node
-                          (node-cons ret-node body-list line) line) line)
-                      scope))))
+            (let (f:&Node (node-cons fn-sym
+                            (node-cons params-node
+                              (node-cons ret-node body-list line) line) line))
+              (when (!= g-resolve 0) (resolve-map-offset call f -1 2 VIA-REWRITE))
+              (return (emit-fn f scope)))))
         ; --- Emit the allocator operand once; validate it is a (ref Alloc) ---
         (let (alloc-val:&Val (emit-node alloc-node scope)
               alloc-ty:&Type (unsafe/cast &Type (alloc-val 'type)))
@@ -11100,8 +11180,9 @@
             (let (env-sd:ptr (fn-make-env-struct caps-head scope line 2 (alloc-val 'type))
                   body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _) (unsafe/cast &Node _) (node-rest _)))
-              (fn-make-invoke-method env-sd caps-head params-node ret-node ret
-                                     param-types param-names nparams body-list line 2)
+              (let (inv:ptr (fn-make-invoke-method env-sd caps-head params-node ret-node ret
+                                                   param-types param-names nparams body-list line 2))
+                (when (!= g-resolve 0) (resolve-map-closure call inv 3 scope)))
               ; A cfn always owns its (heap) env storage, so it always conforms to
               ; Drop and gets a synthesized drop that frees the env via the stored
               ; handle. Record the (Env, Drop) conformance BEFORE the env value is
@@ -11371,6 +11452,13 @@
 ; (a return-only-tyvar generic constructor can't fill its tyvar from `(ref S)`),
 ; retry with the pointee `S` (probe 2) and arm materialization iff it resolves
 ; to by-value `S`.
+; Elem `i` of `l` as a binding init, placed under `--resolve`.
+(defn tc3-emit-binding-init-as (l:?&Node i:i32 n:?&Node scope:&Scope ty:?&Type line:i32):&Val
+  (let (d:usize (resolve-push-elem l i SLOT-VALUE)
+        v:&Val (tc3-emit-binding-init n scope ty line))
+    (resolve-pop-to d)
+    (return v)))
+
 (defn tc3-emit-binding-init (bval-node:?&Node scope:&Scope ty:?&Type line:i32):&Val
   ; TC-5: target-type the init form against the declared slot type — rewrites
   ; `(arm args…)`/none/ok/err into (make Type arm …) when ty is a defunion/niche.
@@ -11460,7 +11548,7 @@
               ; self-compilation (byte-identical bootstrap, no refresh).
               (when (and (= ty null)
                          (= ((unsafe/cast &Node bname) 'kind) NODE-SYM))
-                (set! pre-v (as ptr (emit-node bval-node inner)))
+                (set! pre-v (as ptr (emit-node-as binds (+ i 1) bval-node inner)))
                 (set! ty ((unsafe/cast &Val pre-v) 'type)))
               (when (= ty null)
                 (die-at (node-line bname (cc 'line)) (fstr "let: missing :type on '" name "'")))
@@ -11485,7 +11573,7 @@
                                   ; coercion for a declared (ref S)). CE-1 bare
                                   ; bindings took the pre-v path (no declared
                                   ; type) and inherit the surrounding want.
-                                  (tc3-emit-binding-init bval-node inner ty
+                                  (tc3-emit-binding-init-as binds (+ i 1) bval-node inner ty
                                     (node-line bval-node (cc 'line)))
                                   (unsafe/cast &Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
@@ -11503,7 +11591,9 @@
                   (let (cv:&Val (unsafe/cast &Val coerced))
                     (emit g-body-stream "  store " (type-to-ir ty) " " (cv 'val) ", ptr " slot
                           ", align " align "\n")
-                    (let (sym:&Sym (scope-define inner name ty slot 1))
+                    (let (rsb:usize (resolve-push-elem binds i SLOT-BINDER)
+                          sym:&Sym (scope-define inner name ty slot 1))
+                      (resolve-pop-to rsb)
                       ; Stage 10 escape analysis: a binding initialized from a
                       ; tainted value aliases the same resource (§2.2). Stage 13
                       ; L1: also inherit the frame-region flag.
@@ -11527,7 +11617,7 @@
               (when (= j (- (node-len cc) 1))
                 (set! g-want-type my-want)
                 (set! cur (union-target-rewrite cur my-want)))
-              (set! last (emit-node cur inner)))
+              (set! last (emit-node-as call j cur inner)))
             (inc! j))
           ; Fire (defer …) cleanups registered on this scope (no-op otherwise:
           ; let itself never arms one).
@@ -11744,7 +11834,7 @@
                   (set! next-lbl fall-lbl)
                   (set! has-fallthrough 1))
                 (set! next-lbl (fstr "cond.test" id "." (+ i 1))))
-              (let (test:&Val (condition-bool (emit-node (as ptr test-node) scope)
+              (let (test:&Val (condition-bool (emit-node-as call (+ 1 (* i 2)) (as ptr test-node) scope)
                                    (node-line (as ptr test-node) (cc 'line)) "cond"))
                 (emit g-body-stream "  br i1 " (test 'val) ", label %" then-lbl ", label %"
                       next-lbl "\n"))
@@ -11760,7 +11850,7 @@
           ; union; recursion into nested control forms happens via emit-node.
           (set! g-want-type my-want)
           (set! body-node (union-target-rewrite body-node my-want))
-          (let (bv:&Val (emit-node body-node scope)
+          (let (bv:&Val (emit-node-as call (+ 2 (* i 2)) body-node scope)
                 bterm:i32 g-block-term)
             (when (= bterm 0)
               ; A string-literal branch joins as a StrView, or as CStr under a CStr want.
@@ -11950,22 +12040,27 @@
     ; A writable collection takes precedence over the field write, which is the
     ; read path's rule with `set` in place of `get`/`invoke`.
     (let (sc:ptr (set-place-call place v line scope))
-      (when (!= sc null) (return (emit-node sc scope))))
+      (when (!= sc null)
+        (when (!= g-resolve 0)
+          (if (= (node-len place) 3)
+            (resolve-map-picks sc place 1 place 2 call 2)
+            (resolve-map-picks sc place 0 place 1 call 2)))
+        (return (emit-node sc scope))))
     (let (plen:i32 (node-len place)
           hd:?&Node (node-at place 0))
       (when (and (!= hd null) (= ((unsafe/cast &Node hd) 'kind) NODE-SYM))
         (let (h:Symbol ((unsafe/cast &Node hd) 's))
           (when (and (= h "deref") (= plen 2))
-            (return (emit-ptr-set
-                      (node-list3 (intern-node (symbol-intern "ptr-set!"))
-                        (node-at place 1) v line)
-                      scope)))
+            (let (c:&Node (node-list3 (intern-node (symbol-intern "ptr-set!"))
+                            (node-at place 1) v line))
+              (when (!= g-resolve 0) (resolve-map-picks c place 1 call 2 null 0))
+              (return (emit-ptr-set c scope))))
           (when (and (= h "aref") (= plen 3))
-            (return (emit-aset
-                      (node-list4 (intern-node (symbol-intern "aset!"))
-                        (node-at place 1)
-                        (node-at place 2) v line)
-                      scope)))
+            (let (c:&Node (node-list4 (intern-node (symbol-intern "aset!"))
+                            (node-at place 1)
+                            (node-at place 2) v line))
+              (when (!= g-resolve 0) (resolve-map-picks c place 1 place 2 call 2))
+              (return (emit-aset c scope))))
           (when (and (or (= h "_get") (= h "get")) (= plen 3))
             (return (emit-member-place (node-at place 1) (node-at place 2) v line scope)))))
       ; Head position `(recv 'f)` is the idiomatic member READ, so it is the
@@ -12039,6 +12134,7 @@
                      (as &Symbol &set-type-ignored))
         (if-some (sym (scope-lookup scope set-name))
           (do
+          (when (!= g-resolve 0) (resolve-note-sym target set-name sym))
           ; A store into `constant` storage faults at run time.
           (when (or (!= (sym 'readonly-global) 0) (!= (sym 'is-const) 0))
             (die-at (node-line (as ptr target) (cc 'line)) (fstr "set!: cannot assign to '"
@@ -12059,7 +12155,7 @@
                    (maybe-box-into-slot
                      (let (save-want:ptr g-want-type)
                        (set! g-want-type (sym 'type))
-                       (let (vv:&Val (emit-node (union-target-rewrite (node-at cc 2) (sym 'type)) scope))
+                       (let (vv:&Val (emit-node-as call 2 (union-target-rewrite (node-at cc 2) (sym 'type)) scope))
                          (set! g-want-type save-want)
                          vv))
                      (sym 'type) scope (cc 'line))
@@ -12223,6 +12319,7 @@
                      (as &Symbol &nm)
                      (as &Symbol &type-ignored))
         (let (sym:?&Sym (scope-lookup scope nm))
+          (when (and (!= g-resolve 0) (!= sym null)) (resolve-note-sym target nm (unsafe/cast &Sym sym)))
           (when (and (!= sym null) (or (!= (sym 'is-const) 0) (!= (sym 'readonly-global) 0)))
             (die-at (node-line (as ptr target) (cc 'line))
               (fstr op-name ": cannot assign to '" nm "' -- it is a constant")))
@@ -12402,6 +12499,13 @@
 ; address, a pointer value, or a temporary's slot (address-of-expressions.md §4
 ; Q2). `pre` is the receiver when the caller already had to emit it.
 (defn emit-place-receiver (rnode:ptr scope:&Scope line:i32 pre:?&Val):&Val
+  (when (= g-resolve 0) (return (emit-place-receiver-in rnode scope line pre)))
+  (let (d:usize (resolve-depth)
+        v:&Val (emit-place-receiver-in rnode scope line pre))
+    (resolve-pop-to d)
+    (return v)))
+
+(defn emit-place-receiver-in (rnode:ptr scope:&Scope line:i32 pre:?&Val):&Val
   (let (rn:&Node (unsafe/cast &Node (ref-operand-expand rnode))
         v:?&Val pre)
     (when (= v null)
@@ -12438,6 +12542,7 @@
       (let (sd:&StructDef (unsafe/cast &StructDef ((pt 'elem) 'sdef))
             idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
             afr:?&FieldRef null)
+        (when (!= g-resolve 0) (resolve-note-field sel (fn-node 's) (sd 'name)))
         (reject-cycle-pending-sdef (as ptr sd)
                                    (node-line (as ptr fn-node) line)
                                    "field address")
@@ -12621,7 +12726,7 @@
                   (fstr "struct literal: field '" (fname-node 's) "' specified twice")))
               (set! (aref (unsafe/cast &i32 seen) fidx) 1)
               (let (ftype:ptr ((field-at (sdef 'fields) fidx) 'type)
-                    v:&Val (maybe-box-into-slot (emit-node (arg-target-rewrite vexpr ftype) scope)
+                    v:&Val (maybe-box-into-slot (emit-node-as arg 1 (arg-target-rewrite vexpr ftype) scope)
                                                 ftype scope (cc 'line))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
@@ -12635,7 +12740,7 @@
               (when (>= pos-idx nfields)
                 (die-at (node-line (as ptr arg) (cc 'line)) "struct literal: too many positional initializers"))
               (let (ftype:ptr ((field-at (sdef 'fields) pos-idx) 'type)
-                    v:&Val (maybe-box-into-slot (emit-node (arg-target-rewrite arg ftype) scope)
+                    v:&Val (maybe-box-into-slot (emit-node-as call (+ 1 i) (arg-target-rewrite arg ftype) scope)
                                                 ftype scope (cc 'line))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
@@ -12945,8 +13050,10 @@
       (return (as ptr (node-list-done b))))))
 
 (defn emit-macro-expand (call:?&Node scope:&Scope macro-def:?&MacroDef):&Val
-  (let (result:ptr (expand-macro-call call macro-def))
-    (return (emit-node (desugar result) scope))))
+  (let (result:ptr (expand-macro-call call macro-def)
+        ex:ptr (desugar result))
+    (when (!= g-resolve 0) (resolve-map-copies result ex))
+    (return (emit-node ex scope))))
 
 ; ============================================================
 ; List dispatch
@@ -13079,7 +13186,14 @@
 
 ; The want a collection-literal argument takes from its parameter (§5.4): the
 ; one candidate whose parameter there is a `Const` of the literal's shape.
+; `--resolve`: the candidates' signatures are re-read here, not referenced.
 (defn literal-arg-want (g:&Generic nn:&Node nargs:i32 i:i32 scope:&Scope what:StrView):?&Type
+  (resolve-quiet-enter)
+  (let (r:?&Type (literal-arg-want-in g nn nargs i scope what))
+    (resolve-quiet-leave)
+    (return r)))
+
+(defn literal-arg-want-in (g:&Generic nn:&Node nargs:i32 i:i32 scope:&Scope what:StrView):?&Type
   (let (ctmpl:Symbol (lit-const-tmpl (if (= what "map") 1 0) what)
         ats:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
         found:?&Type null
@@ -13145,9 +13259,11 @@
           (when (!= (arg-sum-ctor anode) 0)
             (set! anode (arg-target-rewrite anode (generic-arg-target g nargs i))))
           (let (lw:StrView (lit-form-what anode)
+                rsd:usize (resolve-push-elem n (+ i 1) SLOT-VALUE)
                 v:&Val (if (= lw "")
                          (emit-node anode scope)
                          (emit-arg-with-want anode scope (literal-arg-want g nn nargs i scope lw))))
+            (resolve-pop-to rsd)
             (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
             (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
             (set! (aref (unsafe/cast &ptr arg-nodes) i) anode))))
@@ -13161,8 +13277,10 @@
           (when (!= dbox null)
             (let (sidx:i32 (dyn-method-slot dbox (g 'name)))
               (when (>= sidx 0)
+                (when (!= g-resolve 0) (resolve-note-head n "dyn-method" (g 'name)))
                 (return (emit-dyn-forward dbox args nargs sidx scope (nn 'line))))))))
       (let (m:&Method (generic-resolve g argtypes arg-nodes nargs (nn 'line) want scope))
+        (when (!= g-resolve 0) (resolve-note-method n (g 'name) m))
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line)))))))
 
@@ -13179,12 +13297,16 @@
         arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
-            v:&Val (emit-node anode scope))
+            v:&Val (emit-node-at n (+ i 1) scope))
         (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
         (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
         (set! (aref (unsafe/cast &ptr arg-nodes) i) anode)))
     (let (vt:ptr null
           m:?&Method (operator-resolve g argtypes arg-nodes nargs scope &vt))
+      (when (!= g-resolve 0)
+        (if (= m null)
+          (resolve-note-head n "operator" (g 'name))
+          (resolve-note-method n (g 'name) (unsafe/cast &Method m))))
       (when (!= m null)
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line))))
@@ -13528,6 +13650,7 @@
       (when (and type-only (not (qq-type-kind? (hit 'kind)))) (return name))
       (let (full:Symbol (qq-full-name name hit line))
         (when (!= g-report-qq 0) (qq-report line "rewrite" name hit (symbol-as-view full)))
+        (when (!= g-resolve 0) (resolve-qq-hit name (hit 'kind) (hit 'payload) full))
         (return full)))
     (return name)))
 
@@ -13652,11 +13775,13 @@
         changed:bool false)
     (dotimes (i (node-len lst))
       (let (e:?&Node (node-at lst i)
+            mark:usize (resolve-qq-mark)
             r:?&Node (if (if (= stride 0) (= i 0) (= (% i stride) 0))
                        (qq-resolve-binder e line)
                        (qq-resolve-node e (if (= (node-kind e) NODE-LIST)
                                             (qq-ret-index (qq-head (unsafe/cast &Node e))) -1)
                                         line)))
+        (resolve-qq-flush lst i mark)
         (when (!= (as ptr r) (as ptr e)) (set! changed true))
         (node-push out r)))
     (when changed (return out))
@@ -13769,6 +13894,7 @@
     (when (!= g-report-qq 0) (qq-report-binders lst h here))
     (dotimes (i n)
       (let (e:?&Node (node-at lst i)
+            mark:usize (resolve-qq-mark)
             r:?&Node e)
         (cond (and (= i 1) (qq-union-lit? lst)) 0
               (= i (qq-binder-slot h))
@@ -13781,7 +13907,9 @@
                       armc:bool false)
                   (dotimes (j (node-len arm))
                     (let (ae:?&Node (node-at arm j)
+                          mark:usize (resolve-qq-mark)
                           ar:?&Node (if (= j 0) ae (qq-resolve-node ae -1 here)))
+                      (resolve-qq-flush arm j mark)
                       (when (!= (as ptr ar) (as ptr ae)) (set! armc true))
                       (node-push na ar)))
                   (when armc (set! r na)))
@@ -13795,6 +13923,7 @@
                 (set! r (qq-resolve-node e (if (= (node-kind e) NODE-LIST)
                                              (qq-ret-index (qq-head (unsafe/cast &Node e))) -1)
                                          here)))
+        (resolve-qq-flush lst i mark)
         (when (!= (as ptr r) (as ptr e)) (set! changed true))
         (node-push out r)))
     (when changed (return out))
@@ -14019,10 +14148,13 @@
               m:&Method (as &Method (invoke (g 'methods) 0)))
           (when (= (m 'kind) METHOD-INTRINSIC)
             (if (= (g 'mangled) 0)
-              (return (emit-binop n scope (m 'binop)))
+              (do
+                (when (!= g-resolve 0) (resolve-note-head n "operator" (g 'name)))
+                (return (emit-binop n scope (m 'binop))))
               (return (emit-operator-dispatch n scope g (m 'binop)))))
           (when (!= (g 'mangled) 0)
             (when-some (sm (generic-c-sole-at-arity g (- (node-len n) 1)))
+              (when (!= g-resolve 0) (resolve-note-method n (g 'name) sm))
               (return (emit-call n scope (method-call-sym (g 'name) sm))))
             (return (emit-generic-call n scope g)))
           ; A solitary (unmangled, non-intrinsic) generic is ALSO bound in
@@ -14057,16 +14189,26 @@
       (let (sym:&Sym (unsafe/cast &Sym (hit 'payload)))
         (when (and (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind) (= _ TY-FN))
                    (= (sym 'is-local) 0))
+          (when (!= g-resolve 0) (resolve-note-head n "function" (sym 'name)))
           (return (emit-call n scope sym)))
-        (return (emit-callable-value n scope (emit-symbol-ref head scope ((unsafe/cast &Node n) 'line))))))
+        (let (rsd:usize (resolve-push-elem n 0 SLOT-HEAD)
+              hv:&Val (emit-symbol-ref head scope ((unsafe/cast &Node n) 'line)))
+          (resolve-pop-to rsd)
+          (return (emit-callable-value n scope hv)))))
     ; A union's name constructs one of its arms: (Shape rect 3.0 4.0).
     (when (or (and (= k BK-STRUCT) (!= ((unsafe/cast &StructDef (hit 'payload)) 'udef) null))
               (= k BK-TYPE-ALIAS))
-      (if-some (ut (union-lit-type head ((unsafe/cast &Node n) 'line)))
-        (return (emit-union-lit n scope ut 1))
+      (if-some (ut (union-lit-type-quiet head ((unsafe/cast &Node n) 'line)))
+        (do
+          (when (!= g-resolve 0)
+            (if (= k BK-STRUCT)
+              (resolve-note-head n "union" ((unsafe/cast &StructDef (hit 'payload)) 'name))
+              (resolve-note-head n "type-alias" ((unsafe/cast &TypeAlias (hit 'payload)) 'name))))
+          (return (emit-union-lit n scope ut 1)))
         0))
     ; struct-name-as-constructor (S init...) -> &S compound literal.
     (when (= k BK-STRUCT)
+      (when (!= g-resolve 0) (resolve-note-head n "struct" ((unsafe/cast &StructDef (hit 'payload)) 'name)))
       (return (emit-struct-lit n scope (unsafe/cast &StructDef (hit 'payload)))))
     ; Stage 11: bare (Template arg ...) with a struct-template name in head
     ; position is ambiguous (type arg vs first field value) and is an error.
@@ -14702,7 +14844,9 @@
         ; reaches. The two scans were otherwise identical (both first-match,
         ; both content comparison).
         (if-some (mdef (find-macro h))
-          (return (emit-macro-expand n scope (as ptr mdef)))
+          (do
+            (when (!= g-resolve 0) (resolve-note-macro n mdef))
+            (return (emit-macro-expand n scope (as ptr mdef))))
           0)
         (when (and (= hp 'gensym) (= (node-len nn) 1))
           (let (tmp:StrView (new-tmp))
@@ -15213,6 +15357,17 @@
 ; `encl` is the enclosing form's line, blamed when a sub-node has none of its own
 ; (interned symbols carry line 0 — context/conventions.md).
 (defn const-fold-int (n:?&Node out:&i64 encl:i32):i32
+  (when (and (!= g-resolve 0) (= g-rs-quiet 0))
+    (resolve-quiet-enter)
+    (let (r:i32 (const-fold-int n out encl))
+      (resolve-quiet-leave)
+      ; Quiet for the macro cells it expands; a bare constant is a reference of the caller's.
+      (when (and (!= r 0) (= (node-kind n) NODE-SYM))
+        (let (nm:Symbol (symbol-none) ignored:Symbol (symbol-none))
+          (split-typed ((unsafe/cast &Node n) 's) (as &Symbol &nm) (as &Symbol &ignored))
+          (let (sym:?&Sym (scope-lookup g-globals nm))
+            (when (!= sym null) (resolve-note-sym n nm (unsafe/cast &Sym sym))))))
+      (return r)))
   (when (= n null) (return 0))
   ; Expand the head to fixpoint at every level: `(+ a b)` is a MACRO call, and
   ; the tail-wrapping expansion means an operand is frequently a CELL rather than
@@ -15322,6 +15477,7 @@
     (let (sym:?&Sym (scope-lookup g-globals (tn 's)))
       (when (= sym null)
         (die-at line (fstr "defvar: ref: undefined '" (tn 's) "'")))
+      (when (!= g-resolve 0) (resolve-note-sym target (tn 's) (unsafe/cast &Sym sym)))
       ; A `defconst` / `defenum` member / `deferror` id is a compile-time value
       ; with no storage, so there is no address to take.
       (when (or (!= (sym 'is-const) 0) (symbol-none? (symbol-intern (sym 'ir-name))))
@@ -15395,7 +15551,9 @@
           (let (t:&Type (parse-type-from-node (as ptr hd) (node-line (as ptr nn) 0)))
             (return (if (and (= (t 'kind) TY-STRUCT) (= (t 'sdef) (as ptr sd))) 1 0)))))
       (when (!= (hd 'kind) NODE-SYM) (return 0))
-      (when (= (struct-lookup-ref (hd 's)) (as ptr sd)) (return 1))
+      (when (= (struct-lookup-ref (hd 's)) (as ptr sd))
+        (when (!= g-resolve 0) (resolve-note-head (as ?&Node nn) "struct" (sd 'name)))
+        (return 1))
       (return 0))))
 
 ; Distribute an `(array T e…)` literal's elements into `slots` (length `n`,
@@ -15899,6 +16057,7 @@
           (die-at (node-line init encl) "defvar: false requires bool type"))
         (return "false"))
       (let (sym:?&Sym (scope-lookup g-globals (nn 's)))
+        (when (and (!= g-resolve 0) (!= sym null)) (resolve-note-sym init (nn 's) (unsafe/cast &Sym sym)))
         (when (and (!= sym null) (!= (sym 'is-const) 0) (!= (sym 'const-node) null))
           (return (defvar-init-ir (sym 'const-node) ty encl)))
         (when (and (!= sym null) (!= (sym 'is-const) 0))
@@ -15990,7 +16149,10 @@
                     (return (float-literal-ir-at (symbol-as-view (arg 's)) ty)))))))
           ; `&g` — the address of another global.
           (when (and (= hd0 'ref) (= nargs0 1))
-            (return (defvar-ref-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))
+            (let (rsd:usize (resolve-push-elem nn 1 SLOT-VALUE)
+                  r:StrView (defvar-ref-ir (node-at (as ptr nn) 1) ty (node-line init encl)))
+              (resolve-pop-to rsd)
+              (return r))))))
     ; An integer destination folds an arbitrary integer constant expression. The
     ; result is an untyped literal of that value, so it faces the SAME
     ; `int-literal-fits` gate the written literal above faces — a folded
@@ -16101,13 +16263,14 @@
 ; the initializer at drain time is located at the `defvar` the user wrote —
 ; interned symbols (the `set!` head and the target name) have no line of their
 ; own (context/conventions.md).
-(defn defvar-queue-init (name:Symbol irn:Symbol init:?&Node line:i32):void
+(defn defvar-queue-init (name:Symbol irn:Symbol init:?&Node line:i32 src:?&Node):void
   (init-queue-form (node-list3 (intern-node (symbol-intern "set!")) (intern-node name) init line)
-                   name irn line))
+                   name irn line src))
 
-(defn init-queue-form (form:?&Node name:Symbol irn:Symbol line:i32):void
+(defn init-queue-form (form:?&Node name:Symbol irn:Symbol line:i32 src:?&Node):void
   (let (job:&InitJob (new InitJob g-arena))
     (set! (job 'form) form)
+    (set! (job 'src) src)
     (set! (job 'ns) g-current-ns)
     (set! (job 'path) g-source-path)
     (set! (job 'imports) g-file-imports)
@@ -16389,7 +16552,7 @@
       ; element must be constant regardless of order, and it keeps the
       ; better "init must be a compile-time constant" diagnostic.
       (defvar-check-init-order init-node name (cc 'line))
-      (defvar-queue-init name (symbol-intern ir-name) init-node (cc 'line)))
+      (defvar-queue-init name (symbol-intern ir-name) init-node (cc 'line) cc))
     ; No initializer (or a runtime one, whose slot starts at zero and is
     ; filled by @__nucleus_init): the type's zero. G-2 moved the
     ; three-bucket rule (pointers `null`, aggregates `zeroinitializer` —
@@ -17208,7 +17371,10 @@
         (set! g-out g-def-stream)
         (let (cur:ptr arms)
           (while (> (node-len cur) 0)
-            (emit-defn (union-ctor-form (name-node 's) (node-first (unsafe/cast &Node cur)) (cc 'line)))
+            ; `--resolve`: the minted constructor's types are the arm's own atoms.
+            (let (rsd:usize (resolve-push-minted (node-first (unsafe/cast &Node cur)) SLOT-ARM))
+              (emit-defn (union-ctor-form (name-node 's) (node-first (unsafe/cast &Node cur)) (cc 'line)))
+              (resolve-pop-to rsd))
             (set! cur (node-rest (unsafe/cast &Node cur)))))
         (set! (ud 'ctors-emitted) 1)
         (set! g-out saved-out)))))
@@ -17569,6 +17735,7 @@
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
           (set! g-cur-fname
             (strview-drop-bytes (symbol-as-view (defn-ir-name fname param-types nparams ret)) 1))
+          (when (!= g-resolve 0) (resolve-note-link call g-cur-fname))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
           (set! g-fn-ret-abi (abi-classify ret))
@@ -18064,7 +18231,9 @@
             (set! g-source-path (job 'path))
             (set! g-file-imports (job 'imports))
             (set! g-form-line (job 'line))
-            (emit-node (as ptr (job 'form)) fn-scope)))
+            (let (rsd:usize (resolve-push-generated (job 'src)))
+              (emit-node (as ptr (job 'form)) fn-scope)
+              (resolve-pop-to rsd))))
         (set! i (+ i (as usize 1)))))
     (when (= g-block-term 0)
       (emit g-body-stream "  ret void\n"))
@@ -18204,6 +18373,8 @@
   ; §5.5: the REPL records spans too, against a buffer cleared at each prompt —
   ; stale offsets, not corrupt ones. It reaches the same end by its own route
   ; (repl-preamble-declare-progdefn) and must not grow a second one.
+  (when (!= g-resolve 0)
+    (dotimes (i (count roots)) (resolve-mint-reach (roots i))))
   (when (!= g-interactive 0) (return 1))
   (when (= (count roots) 0) (return 1))
   ; §5.9: every span in `g-def-buf` was ABI-lowered for `g-target`, and the
@@ -18214,12 +18385,16 @@
     (return (ct-mirror-refuse "cross-target" (invoke roots (as usize 0)))))
   ; L6: a flush NESTS — an initializer emitted with `emit-node` expands macros,
   ; and those flush too — so these are restored, not merely reset (§7 L6).
+  (when (!= g-resolve 0) (resolve-mirror-enter))
   (let (sd:&(Vector &ProgDefn) g-ctm-defs
         sdc:&(Vector &ProgDefn) g-ctm-decls
         ss:&(Vector Symbol) g-ctm-seen
         sg:&(Vector &ProgGlobal) g-ctm-globals
         sgd:&(Vector &ProgGlobal) g-ctm-gdecls
         r:i32 (ct-mirror-flush-1 roots line))
+    (when (!= g-resolve 0)
+      (resolve-mirror-leave)
+      (dotimes (i (count g-ctm-defs)) (resolve-mint-reach ((invoke g-ctm-defs (as usize i)) 'ir-name))))
     (set! g-ctm-defs sd)
     (set! g-ctm-decls sdc)
     (set! g-ctm-seen ss)
@@ -18393,7 +18568,8 @@
                   (when (= bh "extern")
                      (set! is-tl 1) (set! g-out &ct-decl) (emit-extern (as ptr bf)))
                   (when (= bh "defn")
-                     (set! is-tl 1) (set! g-out &ct-def) (emit-defn (as ptr bf)))))
+                     (set! is-tl 1) (set! g-out &ct-def) (emit-defn (as ptr bf)))
+                  (when (and (!= g-resolve 0) (!= is-tl 0)) (resolve-note-def (as ptr bf) bh))))
               (when (and (= is-tl 0) (< nexpr 256))
                  (set! (aref (unsafe/cast &ptr expr-forms) nexpr) (as ptr bf))
                     (inc! nexpr)))
@@ -18622,6 +18798,7 @@
             (die-at (ff 'line) "defmacro: macro table full"))
           (let (mdef:&MacroDef (new MacroDef g-arena))
             (set! (mdef 'name) macro-key)
+            (when (!= g-resolve 0) (resolve-note-link form (symbol-as-view jit-name)))
             (set! (mdef 'jit-name) jit-name)
             (set! (mdef 'num-params) pcount)
             (set! (mdef 'variadic) variadic)
@@ -18647,7 +18824,9 @@
             ; Stage 20 L4: it writes `ct-roots`, so the record has to be in scope.
             (let (saved-qq:i32 g-qq-resolve)
               (set! g-qq-resolve 1)
+              (resolve-ct-enter form jit-name)
               (compile-macro-body mdef jit-name macro-name pnames pcount form 3 0)
+              (resolve-ct-leave)
               (set! g-qq-resolve saved-qq))))))))
 
 ; Compile a macro body into its own JIT module and add it to the JIT. Shared by
@@ -18864,7 +19043,9 @@
           saved:&FnState (push-function-state)
           saved-qq:i32 g-qq-resolve)
       (set! g-qq-resolve 1)
+      (resolve-ct-enter e jit-name)
       (compile-macro-body mdef jit-name who null 0 form 1 1)
+      (resolve-ct-leave)
       (set! g-qq-resolve saved-qq)
       (pop-function-state saved))
     (when (= (ct-mirror-flush (mdef 'ct-roots) line) 0)
@@ -18963,7 +19144,9 @@
             (let (saved:&FnState (push-function-state)
                   saved-qq:i32 g-qq-resolve)
               (set! g-qq-resolve 0)
+              (resolve-ct-enter b jit-name)
               (compile-macro-body mdef jit-name mname pnames pcount b 2 0)
+              (resolve-ct-leave)
               (set! g-qq-resolve saved-qq)
               (pop-function-state saved))))))))
 
@@ -19146,11 +19329,14 @@
 (defn read-source-or-report (text:StrView table:&(Vector RMacro)):!&Node
   (match (read-all-with-macros text table)
     ((err e)
-      (let (note:StrView (e 'note))
-        (when (> (note 'len) 0) (diag-stage-note note))
-        (report-at (e 'line) (e 'msg))
-        (return (err! parse-error))))
+      (do (report-read-error e)
+          (return (err! parse-error))))
     ((ok forms) (return (ok forms)))))
+
+(defn report-read-error (e:ReadError):void
+  (let (note:StrView (e 'note))
+    (when (> (note 'len) 0) (diag-stage-note note))
+    (report-at (e 'line) (e 'msg))))
 
 ; Batch entry: the diagnostic is already printed, so a syntax error just aborts
 ; the build. A REPL import unwinds instead, as `die-at` does, so a failed
@@ -19161,6 +19347,17 @@
     ((err e) (do (when (!= g-interactive 0) (repl-throw))
                  (exit 1)
                  (return null)))))
+
+; A read whose tree is emitted: under `--resolve` it is a syntax-mode read
+; (design/stage26-refactoring/overview.md §4.9); the prescans' re-reads are not.
+(defn read-emitting-raw (text:StrView path:Symbol):&Node
+  (when (= g-resolve 0) (return (read-source-or-die text)))
+  (return (resolve-read text path)))
+
+(defn desugar-emitting (raw:&Node):ptr
+  (let (forms:ptr (desugar raw))
+    (when (!= g-resolve 0) (resolve-note-top-copies raw (as ?&Node forms)))
+    (return forms)))
 
 ; ============================================================
 ; Desugar pass — split colon-typed symbols into lists
@@ -20167,6 +20364,8 @@
                         (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-source-or-die (string-as-view &src)))))
                           (apply-early-set-ir-prefix ifs)
+                          ; An unsited re-read, which this file's emission repeats: a prescan at any depth.
+                          (let (uf:RUnframe (resolve-unframe-enter))
                           (if (!= (str-ends-with path ".nuch") 0)
                             ; W9 item 29: a header's own registrars, in
                             ; register-only mode. See prescan-nuch-signatures.
@@ -20199,7 +20398,8 @@
                               ; Nothing else registered here depends on a layout,
                               ; so nothing pre-order needs is lost.
                               (prescan-struct-layouts ifs)
-                              (prescan-union-layouts ifs))))
+                              (prescan-union-layouts ifs)))
+                          (resolve-unframe-leave uf)))
                         (drop &src))
                       (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
                       (set! g-prescan-inflight (import-list-pop g-prescan-inflight))
@@ -20473,7 +20673,9 @@
           (set! g-source-path (job 'path))
           (set! g-file-imports (job 'imports))
           (set! g-form-line (job 'line))
-          (emit-node (as ptr (job 'form)) fn-scope)))
+          (let (rsd:usize (resolve-push-generated (job 'src)))
+            (emit-node (as ptr (job 'form)) fn-scope)
+            (resolve-pop-to rsd))))
       (set! g-init-fn-active 0))
     (set! g-current-ns save-ns)
     (set! g-source-path save-path)
@@ -20615,7 +20817,9 @@
     (match (macro-in-other-namespace-message "unknown top-level form" h true)
       (none 0) ((some mac-ns) (die-at (f 'line) mac-ns)))
     (die-at (f 'line) (fstr "unknown top-level form: " h)))
-  (let (ex:ptr (desugar-form (macroexpand-form f -1)))
+  (let (raw:ptr (macroexpand-form f -1)
+        ex:ptr (desugar-form raw))
+    (when (!= g-resolve 0) (resolve-note-expansion f (as ?&Node raw) (as ?&Node ex) h))
     (when (or (= ex null)
               (!= ((unsafe/cast &Node ex) 'kind) NODE-LIST)
               (= (node-len ex) 0))
@@ -20670,6 +20874,8 @@
   ; Stage 12: a leading `(ns NAME)` sets the unit's namespace BEFORE the
   ; prescans register any names, so global keys (and forward references) are
   ; qualified consistently from the first definition onward.
+  (when (and (!= g-resolve 0) (!= (is-leading-ns forms) 0))
+    (resolve-note-def (node-first (unsafe/cast &Node forms)) (symbol-intern "ns")))
   (set! forms (apply-leading-ns forms))
   (when (= g-toplevel-depth 1) (set! g-root-forms forms))
   ; Stage 12 N4: apply a leading `set-ir-prefix` before prescans so
@@ -20783,7 +20989,8 @@
               (die-at (node-line (as ptr f) ((unsafe/cast &Node forms) 'line))
                       "top-level form must be a list starting with a symbol"))
         (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
-              hp:ptr (-> f (node-at _ 0)))
+              hp:ptr (-> f (node-at _ 0))
+              rsd:usize (if (= g-resolve 0) 0 (resolve-push-frame (as ?&Node f) -1 SLOT-TOP 0)))
           (case hp
             'ns
               ; A leading `ns` is consumed by apply-leading-ns before the loop;
@@ -20838,7 +21045,9 @@
             ; here only so the emit pass, the one point where privacy is armed,
             ; reaches the registration (container-type-sugar.md §3.4).
             'deftype
-              (register-type-alias (as ptr f) 0)
+              (do (register-type-alias (as ptr f) 0)
+                  ; Only an imported file's prescan read the body, from an unsited copy.
+                  (when (!= g-resolve 0) (alias-body-check f)))
             'defcast
               (emit-defcast (as ptr f))
             'extern
@@ -20851,7 +21060,9 @@
             'extend
               (emit-extend (as ptr f))
             'compile-time
-              (emit-compile-time (as ptr f))
+              (do (resolve-ct-enter f (symbol-none))
+                  (emit-compile-time (as ptr f))
+                  (resolve-ct-leave))
             'defmacro
               (emit-defmacro (as ptr f))
             'def-rmacro
@@ -20890,6 +21101,7 @@
             'deftype-
               (do (set! g-defining-private 1)
                   (register-type-alias (as ptr f) 1)
+                  (when (!= g-resolve 0) (alias-body-check f))
                   (set! g-defining-private 0))
             'defn-
               (do (set! g-defining-private 1)
@@ -20938,7 +21150,9 @@
                 (when (!= (count g-macrolet-stack) 0)
                   (remove-at g-macrolet-stack
                              (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1)))))
-            (set! redo (toplevel-expand-macro forms fi f h)))))
+            (set! redo (toplevel-expand-macro forms fi f h)))
+          (resolve-pop-to rsd)
+          (when (!= g-resolve 0) (resolve-note-def (as ptr f) h))))
       ; `redo` means a top-level macro expansion rewrote this position: dispatch
       ; it again instead of advancing past it. The list grew, so re-measure.
       (if (!= redo 0)
@@ -21378,7 +21592,7 @@
                         (set! g-current-ns g-ns-user)
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
-                        (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
+                        (let (forms:ptr (desugar-emitting (read-emitting-raw (string-as-view &src) path)))
                           (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                           (drop &src)))
                       (set! g-importing (import-list-pop g-importing))
@@ -21503,7 +21717,7 @@
                   (set! g-current-ns g-ns-user)
                   (set! g-ns-seen 0)
                   (set! g-file-imports null)
-                  (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
+                  (let (forms:ptr (desugar-emitting (read-emitting-raw (string-as-view &src) path)))
                     ; Process imported forms
                     (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                     ; Free imported source buffer
@@ -22303,6 +22517,8 @@
         v:StrView (string-as-view ir))
     (cond (!= g-emit-llvm 0)
             (emit stdout v)
+          (!= g-resolve 0)
+            (resolve-write-report source-file)
           (!= g-run 0)
             (exit (run-module (as ptr (v 'data)) (as i64 (v 'len)) source-file))
           true
@@ -22403,6 +22619,8 @@
                 (set! g-dump-ast 1)
               (= argview "--report-qq-resolution")
                 (set! g-report-qq 1)
+              (= argview "--resolve")
+                (set! g-resolve 1)
               (= argview "--emit-cheader")
                 (set! g-header-request 2)
               (or (= argview "--emit-llvm") (= argview "-S"))
@@ -22511,13 +22729,28 @@
       (set! g-run-argc (+ (- argc run-from) 1))
       (set! g-run-argv (run-program-argv source-file argv run-from argc)))
 
+    (when (!= g-resolve 0)
+      (let (clash:StrView "")
+        (cond (!= g-interactive 0) (set! clash "-i")
+              (!= g-run 0) (set! clash "--run")
+              (!= g-emit-llvm 0) (set! clash "--emit-llvm")
+              (!= g-emit-obj 0) (set! clash "-c")
+              (not (symbol-none? g-output-path)) (set! clash "-o")
+              (!= g-header-request 0) (set! clash "--emit-nuch/--emit-cheader")
+              (!= g-dump-ast 0) (set! clash "--dump-ast")
+              true 0)
+        (when (not (str-empty? &clash))
+          (eprint "nucleusc: --resolve writes its report to stdout and cannot be combined with " clash "\n")
+          (return 2)))
+      (resolve-arm))
+
     ; REPL mode
     (when (!= g-interactive 0)
        (repl-main) (return 0))
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--resolve] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
     (set! g-source-path source-file)
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
@@ -22528,7 +22761,7 @@
       (target-init)
       (assert-compiler-arena-backed)
 
-      (let (raw-forms:&Node (read-source-or-die (string-as-view &src)))
+      (let (raw-forms:&Node (read-emitting-raw (string-as-view &src) g-source-path))
 
         ; Before `desugar` and before the prelude is prepended: what the reader
         ; alone produced, one top-level form per line.
@@ -22540,7 +22773,7 @@
               (set! cur (node-rest cur))))
           (return 0))
 
-      (let (forms:ptr (desugar raw-forms))
+      (let (forms:ptr (desugar-emitting raw-forms))
 
         ; Apply the standard prelude unless the source begins with
         ; (exclude-prelude).

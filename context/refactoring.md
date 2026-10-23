@@ -93,6 +93,40 @@ rewritten by the same rules, escapes re-applied. Pass it when a migration
 changes syntax that tests spell inside strings. `(in-string? self)` restricts
 a rule to them. Check the summary's "skipped" count.
 
+### Renaming a local: `rename-local`
+
+To rename one local variable or parameter in a `.nuc`/`.nuch` file, use
+`scripts/stage26/rename-local.nuc` rather than Edit or a rule. It edits exactly
+the occurrences the compiler resolved to that binder (docs/refactoring.md,
+"Renaming a local"):
+
+```
+build/nucleusc --run scripts/stage26/rename-local.nuc -- --root src/nucleusc.nuc src/foo.nuc:120:14 count
+```
+
+Dry run first, then `--apply`. A file in `src/` needs `--root src/nucleusc.nuc`
+(it does not compile alone); each run resolves the whole unit, about 10 s for
+the compiler. A refusal names the blocking site. Rename there by hand, or pick
+another name; do not work around it. After renaming in a file with a generated
+`.nuch`, run `scripts/check-headers.sh --fix`. Globals, fields and macros are
+not renamed by it.
+
+### Renaming a definition: `rename-global`
+
+For a top-level definition (function with its overloads, global, constant,
+struct, union, type alias, macro) use `scripts/stage26/rename-global.nuc`
+(docs/refactoring.md, "Renaming a definition"):
+
+```
+build/nucleusc --run scripts/stage26/rename-global.nuc -- --root src/nucleusc.nuc --root tests/nuctests.nuc src/scope.nuc:40:7 scope-find
+```
+
+Name every unit that may use it with `--root`; a unit left out is not
+checked. Resolving the compiler costs about 10 s and 1 GB per root. Library
+definitions the compiler names by spelling, and globals it shares with macro
+bodies (`:host`), refuse; that is the design, not a bug to route around. Regenerate
+headers afterwards as the tool says.
+
 ### Where a tool lives, and checking a port
 
 A one-off tool goes in `scripts/stageN/*.nuc` for the current stage, with a

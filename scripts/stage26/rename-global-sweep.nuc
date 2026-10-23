@@ -1,0 +1,457 @@
+; The rename-global no-op gate (design/stage26-refactoring/overview.md §4.11, §8 RR-5).
+;
+;   rename-global-sweep forward MAP [--edit P]... [--report R]... [--skip N] [--collide N] [--only LO HI] ROOT...
+;       every renameable definition read by the ROOTs renamed to RNMG<k>X<old>, in
+;       place, one `RNMG<k>X<old> old key` line per rename in MAP; refusals by class.
+;       --skip and --collide misdirect the Nth rename, for the gate's own check.
+;   rename-global-sweep ir IN OUT      IN with every RNMG<k>X deleted, string lengths kept right
+;   rename-global-sweep back MAP [--report R]... ROOT...   each fresh name renamed back by the tool
+;   rename-global-sweep unmap FILE...  each leftover RNMG<k>X deleted, in place
+;
+; A fresh name is the old one behind a prefix, so each link spelling of it is the
+; old one's behind the same prefix, and deleting the prefix maps the IR back.
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.intern)
+(import-use nucleus.syntax)
+(import-use nucleus.allocator)
+(import-use nucleus.arena)
+(import-use nucleus.string-split)
+(import-use nucleus.create)
+(import-use nucleus.refactor)
+
+(defvar g-classes:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-class-names:&(Vector StrView) (new (Vector StrView) heap))
+(defvar g-failures:i64 0)
+; A refused definition's name, which stays: --collide renames into it.
+(defvar g-kept:StrView "")
+
+(defn arg (argv:ptr i:i32):StrView
+  (return (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
+
+(defn fail (what:String):void
+  (set! g-failures (+ g-failures 1))
+  (eprint (string-as-view &what) "\n"))
+
+; A refusal's reason with its quoted names and qualified keys blanked, so reasons group.
+(defn class-of (why:StrView):StrView
+  (let (out:&String (alloca String)
+        n:usize (why 'len)
+        i:usize 0)
+    (init out)
+    (while (< i n)
+      (let (c:i32 (as i32 (aref (why 'data) (as i64 i)))
+            prev:i32 (if (= i 0) 32 (as i32 (aref (why 'data) (as i64 (- i 1)))))
+            j:usize i)
+        (while (and (< j n) (not (rn-boundary? (as i32 (aref (why 'data) (as i64 j)))))) (set! j (+ j 1)))
+        (cond (and (= c 39) (or (= prev 32) (= prev 40)))
+                (do (str-into out "'_'")
+                    (set! i (+ i 1))
+                    (while (and (< i n) (!= (aref (why 'data) (as i64 i)) 39)) (set! i (+ i 1)))
+                    (set! i (+ i 1)))
+              (and (> j i) (or (= prev 32) (= prev 40))
+                   (or (strview-contains (edit-slice why i j) "/") (strview-contains (edit-slice why i j) ".nuc")
+                       (strview-has-prefix (edit-slice why i j) "RNMG")))
+                (do (str-into out "_") (set! i j))
+              true (do (str-into out (edit-slice why i (+ i 1))) (set! i (+ i 1))))))
+    (return (edit-arena-str out))))
+
+(defn classify (why:StrView):void
+  (let (c:StrView (class-of why)
+        k:Symbol (symbol-intern c))
+    (match (get g-classes k)
+      ((some n) (assoc g-classes k (+ n 1)))
+      (none (do (conj g-class-names c) (assoc g-classes k 1))))))
+
+(defn print-classes ():void
+  (dotimes (i (count g-class-names))
+    (match (get g-classes (symbol-intern (g-class-names i)))
+      ((some n) (print "  " n "\t" (g-class-names i) "\n"))
+      (none 0))))
+
+(defn new-vec ():&(Vector StrView)
+  (let (v:&(Vector StrView) (unsafe/cast &(Vector StrView) (arena-alloc (sizeof (Vector StrView)))))
+    (init v (handle g-arena))
+    (return v)))
+
+; Each ROOT's report: a --report whose :unit names it, else `build/nucleusc --resolve ROOT`.
+(defn load-roots (roots:&(Vector StrView) reports:&(Vector StrView)):&(Vector &RgRoot)
+  (let (rs:&(Vector &RgRoot) (unsafe/cast &(Vector &RgRoot) (arena-alloc (sizeof (Vector &RgRoot))))
+        empty:&(Vector StrView) (new-vec))
+    (init rs (handle g-arena))
+    (dotimes (k (as i64 (count reports)))
+      (match (rg-read-report (reports (as usize k)))
+        ((err why) (fail (str (reports (as usize k)) ": " why)))
+        ((ok rep) (conj rs (rename-global-root (rep 'unit) rep false)))))
+    (dotimes (k (as i64 (count roots)))
+      (let (name:StrView (roots (as usize k))
+            have:bool false)
+        (dotimes (j (as i64 (count rs)))
+          (when (= ((rs (as usize j)) 'name) name) (set! have true)))
+        (when (not have)
+          (match (report-run "build/nucleusc" name empty)
+            ((err why) (fail (str name ": " why)))
+            ((ok rep) (conj rs (rename-global-root name rep false)))))))
+    (return rs)))
+
+(defn print-refusal (rs:&(Vector &RgRoot) p:&RgPlan):void
+  (rg-print-site (p 'refused) (rg-src rs (p 'refused)) ((p 'refusal) 'at) ((p 'refusal) 'reason)))
+
+; Every planned site applied, each file once, in place.
+(defn apply-all (rs:&(Vector &RgRoot) plans:&(Vector &RgPlan)):void
+  (let (all:&RgPlan (rg-plan-new "" ""))
+    (dotimes (i (as i64 (count plans)))
+      (let (p:&RgPlan (plans (as usize i))
+            ss:&(Vector RgSite) (ref p 'sites))
+        (dotimes (k (as i64 (count ss))) (conj (ref all 'sites) (ss (as usize k))))))
+    (let (files:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64))))
+          ss:&(Vector RgSite) (ref all 'sites))
+      (init files (handle g-arena))
+      (dotimes (i (as i64 (count ss)))
+        (let (path:StrView ((ss (as usize i)) 'path))
+          (when (not (rg-seen? files (symbol-intern path)))
+            (assoc files (symbol-intern path) 1)
+            (when-some (f (rg-src rs path))
+              (let (e:&Edits (alloca Edits))
+                (set! @e (edits-new))
+                (dotimes (j (as i64 (count plans)))
+                  (let (p:&RgPlan (plans (as usize j))
+                        ps:&(Vector RgSite) (ref p 'sites))
+                    (dotimes (k (as i64 (count ps)))
+                      (let (x:RgSite (ps (as usize k)))
+                        (when (= (x 'path) path) (edit-span e (x 'q) (x 'qe) (p 'new)))))))
+                (match (edits-apply (f 'src) e)
+                  ((err x) (fail (str path ": the edits do not apply: " (x 'msg))))
+                  ((ok t) (let (tx:String t)
+                            (match (rw-write-file path (string-as-view &tx))
+                              ((err e2) (fail (str "cannot write " path)))
+                              ((ok) (do)))
+                            (drop &tx))))
+                (drop e)))))))))
+
+; --only LO HI: rename the LOth up to the HIth renameable definition only, to bisect a failure.
+(defvar g-only-lo:i64 -1)
+(defvar g-only-hi:i64 -1)
+(defvar g-nok:i64 0)
+
+(defn forward (mapf:StrView roots:&(Vector StrView) reports:&(Vector StrView) opts:&RgOpts skip:i64 collide:i64):void
+  (let (rs:&(Vector &RgRoot) (load-roots roots reports)
+        plans:&(Vector &RgPlan) (unsafe/cast &(Vector &RgPlan) (arena-alloc (sizeof (Vector &RgPlan))))
+        seen:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64))))
+        m:String (str "")
+        k:i64 0
+        cands:i64 0
+        refused:i64 0
+        sites:i64 0)
+    (init plans (handle g-arena))
+    (init seen (handle g-arena))
+    (dotimes (ri (as i64 (count rs)))
+      (let (r:&RgRoot (rs (as usize ri))
+            ds:&(Vector RDef) (ref ((r 'ctx) 'rep) 'defs))
+        (dotimes (di (as i64 (count ds)))
+          (let (d:RDef (ds (as usize di))
+                sk:Symbol (rp-key (d 'file) (d 'start) (d 'end)))
+            (when (and (>= (d 'start) 0) (strview-has-suffix (d 'file) ".nuc")
+                       (not (strview-has-prefix (d 'file) "/")) (rg-editable? (d 'file) opts)
+                       (!= (d 'kind) "namespace")
+                       (not (rg-seen? seen sk)))
+              (set! cands (+ cands 1))
+              (let (fresh:StrView (rp-arena-text (str "RNMG" k "X" (d 'name)))
+                    p:&RgPlan (rename-global-plan rs (d 'file) (as usize (d 'start)) fresh opts))
+                (set! k (+ k 1))
+                ; Every :def of the key in every root is one candidate.
+                (dotimes (rj (as i64 (count rs)))
+                  (when-some (v (rp-list (ref (rs (as usize rj)) 'key-defs) (symbol-intern (p 'key))))
+                    (dotimes (x (as i64 (count v)))
+                      (let (dd:RDef ((ref (((rs (as usize rj)) 'ctx) 'rep) 'defs) (v (as usize x))))
+                        (assoc seen (rp-key (dd 'file) (dd 'start) (dd 'end)) 1)))))
+                (assoc seen sk 1)
+                (when (rg-plan-ok? p) (set! g-nok (+ g-nok 1)))
+                (if (and (rg-plan-ok? p) (or (< g-only-lo 0) (and (>= (- g-nok 1) g-only-lo) (< (- g-nok 1) g-only-hi))))
+                  (do (when (= (as i64 (count plans)) skip)
+                        (let (ss:&(Vector RgSite) (ref p 'sites))
+                          (when (>= (count ss) 2)
+                            (let (x:RgSite (ss (- (count ss) 1)))
+                              (eprint "skip: " (x 'path) " byte " (x 'q) " keeps '" (p 'old) "' (renamed to "
+                                      (p 'new) ")\n")
+                              (remove-at ss (- (count ss) 1))))))
+                      (conj plans p)
+                      (set! sites (+ sites (as i64 (count (ref p 'sites)))))
+                      (str-into &m (p 'new) " " (p 'old) " " (p 'key) "\n"))
+                  (do (set! refused (+ refused 1))
+                      (when (= (p 'kind) "function") (set! g-kept (p 'old)))
+                      (classify ((p 'refusal) 'reason))
+                      (print-refusal rs p)))))))))
+    ; After the loop, so any refused function's name will do, not only one met before candidate N.
+    (when (and (>= collide 0) (< collide (as i64 (count plans))) (> (g-kept 'len) 0))
+      (let (p:&RgPlan (plans (as usize collide)))
+        (eprint "collide: '" (p 'old) "' renamed to '" g-kept "', another definition's name\n")
+        (set! (p 'new) g-kept)))
+    (apply-all rs plans)
+    (match (rw-write-file mapf (string-as-view &m))
+      ((err e) (fail (str "cannot write " mapf)))
+      ((ok) (do)))
+    (drop &m)
+    (print "forward: " cands " definitions, " (count plans) " renamed at " sites " sites, " refused " refused\n")
+    (print-classes)))
+
+(defn read-map (path:StrView):&(Vector StrView)
+  (let (v:&(Vector StrView) (new-vec))
+    (match (rw-read-file path)
+      ((err e) (fail (str "cannot read " path)))
+      ((ok t) (let (tx:String t
+                    text:StrView (edit-arena-str &tx)
+                    it:LineIter (strview-lines &text))
+                (while (not (lines-iter-done &it))
+                  (let (line:StrView (lines-iter-next &it))
+                    (when (> (line 'len) 0) (conj v line)))))))
+    (return v)))
+
+(defn field (line:StrView n:i32):StrView
+  (let (i:usize 0
+        f:i32 0
+        start:usize 0)
+    (while (<= i (line 'len))
+      (when (or (= i (line 'len)) (= (aref (line 'data) (as i64 i)) 32))
+        (when (= f n) (return (edit-slice line start i)))
+        (set! f (+ f 1))
+        (set! start (+ i 1)))
+      (set! i (+ i 1)))
+    (return "")))
+
+(defn back (mapf:StrView roots:&(Vector StrView) reports:&(Vector StrView) opts:&RgOpts):void
+  (let (rs:&(Vector &RgRoot) (load-roots roots reports)
+        es:&(Vector StrView) (read-map mapf)
+        plans:&(Vector &RgPlan) (unsafe/cast &(Vector &RgPlan) (arena-alloc (sizeof (Vector &RgPlan))))
+        refused:i64 0
+        sites:i64 0)
+    (init plans (handle g-arena))
+    (dotimes (i (as i64 (count es)))
+      (let (fresh:StrView (field (es (as usize i)) 0)
+            old:StrView (field (es (as usize i)) 1)
+            hit:bool false)
+        (dotimes (ri (as i64 (count rs)))
+          (when (not hit)
+            (match (get (ref (((rs (as usize ri)) 'ctx) 'rep) 'def-names) (symbol-intern fresh))
+              ((some di)
+                (let (d:RDef ((ref (((rs (as usize ri)) 'ctx) 'rep) 'defs) di))
+                  (set! hit true)
+                  (let (p:&RgPlan (rename-global-plan rs (d 'file) (as usize (d 'start)) old opts))
+                    (if (rg-plan-ok? p)
+                      (do (conj plans p) (set! sites (+ sites (as i64 (count (ref p 'sites))))))
+                      (do (set! refused (+ refused 1))
+                          (classify ((p 'refusal) 'reason))
+                          (print-refusal rs p))))))
+              (none 0))))
+        (when (not hit) (fail (str fresh ": no definition of this name in the renamed roots")))))
+    (apply-all rs plans)
+    (print "back: " (count es) " fresh names, " (count plans) " renamed back at " sites " sites, " refused
+           " refused (left to unmap)\n")
+    (print-classes)))
+
+; Whether `t` at `i` starts `RNMG<digits>X`; its length, or 0.
+(defn fresh-at (t:StrView i:usize):usize
+  (when (or (> (+ i 6) (t 'len)) (!= (edit-slice t i (+ i 4)) "RNMG")) (return 0))
+  (let (j:usize (+ i 4))
+    (while (and (< j (t 'len)) (>= (aref (t 'data) (as i64 j)) 48) (<= (aref (t 'data) (as i64 j)) 57))
+      (set! j (+ j 1)))
+    (when (or (= j (+ i 4)) (>= j (t 'len)) (!= (aref (t 'data) (as i64 j)) 88)) (return 0))
+    (return (+ (- j i) 1))))
+
+; `t` without its fresh prefixes; `n` counts the bytes deleted.
+(defn unprefix (t:StrView n:&i64):StrView
+  (let (out:String (str "")
+        i:usize 0
+        from:usize 0)
+    (while (< i (t 'len))
+      (let (k:usize (fresh-at t i))
+        (if (> k 0)
+          (do (str-into &out (edit-slice t from i))
+              (set! @n (+ @n (as i64 k)))
+              (set! i (+ i k))
+              (set! from i))
+          (set! i (+ i 1)))))
+    (str-into &out (edit-slice t from (t 'len)))
+    (return (rp-arena-text out))))
+
+(defn eq-at (t:StrView):?usize
+  (let (n:StrView " = ")
+    (return (strview-find &t &n))))
+
+(defn digits-before (t:StrView end:usize):usize
+  (let (i:usize end)
+    (while (and (> i 0) (>= (aref (t 'data) (as i64 (- i 1))) 48) (<= (aref (t 'data) (as i64 (- i 1))) 57))
+      (set! i (- i 1)))
+    (return i)))
+
+; IR with the fresh prefixes deleted: a `c"…"` constant that held one is shorter,
+; so its `[N x i8]` is too, where it is defined and wherever it is named.
+(defn ir-map (in:StrView outp:StrView):void
+  (let (text:StrView "")
+    (match (rw-read-file in)
+      ((err e) (do (fail (str "cannot read " in)) (return)))
+      ((ok t) (let (tx:String t) (set! text (edit-arena-str &tx)))))
+    (let (lens:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64))))
+          lines:&(Vector StrView) (new-vec)
+          it:LineIter (strview-lines &text)
+          out:String (str ""))
+      (init lens (handle g-arena))
+      (while (not (lines-iter-done &it))
+        (let (line:StrView (lines-iter-next &it)
+              n:i64 0
+              u:StrView (unprefix line &n)
+              q:StrView " c\""
+              nc:i64 0)
+          ; Only the bytes deleted inside the string's `c"…"` shorten it; the name and section do not.
+          (match (strview-find &line &q)
+            ((some j) (unprefix (strview-drop-bytes line j) &nc))
+            (none 0))
+          (set! n nc)
+          (when (and (> n 0) (strview-has-prefix u "@"))
+            (match (eq-at u)
+              ((some j) (assoc lens (symbol-intern (strview-take-bytes u j)) n))
+              (none 0)))
+          (conj lines u)))
+      (dotimes (i (as i64 (count lines)))
+        (when (> i 0) (str-into &out "\n"))
+        (str-into &out (fix-lengths (lines (as usize i)) lens)))
+      (when (and (strview-has-suffix text "\n") (not (strview-has-suffix (string-as-view &out) "\n")))
+        (str-into &out "\n"))
+      (match (rw-write-file outp (anon-canon (string-as-view &out)))
+        ((err e) (fail (str "cannot write " outp)))
+        ((ok) (do)))
+      (drop &out))))
+
+; Each `[N x i8]` that sizes a shortened constant, made `[N-d x i8]`: on its own
+; definition line, and before `, ptr @NAME` where it is named.
+(defn fix-lengths (line:StrView lens:&(HashMap Symbol i64)):StrView
+  (when (= (count lens) 0) (return line))
+  (let (out:String (str "")
+        i:usize 0
+        from:usize 0
+        own:i64 0)
+    (when (strview-has-prefix line "@")
+      (match (eq-at line)
+        ((some j) (match (get lens (symbol-intern (strview-take-bytes line j)))
+                    ((some d) (set! own d))
+                    (none 0)))
+        (none 0)))
+    (while (< i (line 'len))
+      (if (and (<= (+ i 6) (line 'len)) (= (edit-slice line i (+ i 6)) " x i8]"))
+        (let (b:usize (digits-before line i)
+              d:i64 own
+              rest:StrView (strview-drop-bytes line (+ i 6)))
+          (when (and (= d 0) (strview-has-prefix rest ", ptr @"))
+            (let (tail:StrView (strview-drop-bytes rest 6)
+                  e:usize 0)
+              (while (and (< e (tail 'len)) (not (or (= (aref (tail 'data) (as i64 e)) 44)
+                                                     (= (aref (tail 'data) (as i64 e)) 32)
+                                                     (= (aref (tail 'data) (as i64 e)) 41))))
+                (set! e (+ e 1)))
+              (match (get lens (symbol-intern (strview-take-bytes tail e)))
+                ((some x) (set! d x))
+                (none 0))))
+          (when (strview-has-prefix rest " c\"") (set! d own))
+          (if (and (> d 0) (< b i))
+            (let (nv:i64 (rn-digits (edit-slice line b i)))
+              (str-into &out (edit-slice line from b) (- nv d))
+              (set! from i)
+              (set! i (+ i 6)))
+            (set! i (+ i 6))))
+        (set! i (+ i 1))))
+    (str-into &out (edit-slice line from (line 'len)))
+    (return (rp-arena-text out))))
+
+; Each distinct `__anon_<kind>_h<hash>` numbered by first appearance: the hash is
+; of its members' type names, which a rename changes.
+(defn anon-canon (t:StrView):StrView
+  (let (out:String (str "")
+        ids:&(HashMap Symbol i64) (unsafe/cast &(HashMap Symbol i64) (arena-alloc (sizeof (HashMap Symbol i64))))
+        i:usize 0
+        from:usize 0)
+    (init ids (handle g-arena))
+    (while (< i (t 'len))
+      (let (h:usize (anon-hash-at t i))
+        (if (> h 0)
+          (let (j:usize h)
+            (while (and (< j (t 'len)) (hex? (as i32 (aref (t 'data) (as i64 j))))) (set! j (+ j 1)))
+            (let (k:Symbol (symbol-intern (edit-slice t i j))
+                  n:i64 (as i64 (count ids)))
+              (match (get ids k)
+                ((some x) (set! n x))
+                (none (assoc ids k n)))
+              (str-into &out (edit-slice t from i) (edit-slice t i h) "N" n)
+              (set! i j)
+              (set! from j)))
+          (set! i (+ i 1)))))
+    (str-into &out (edit-slice t from (t 'len)))
+    (return (rp-arena-text out))))
+
+(defn hex? (c:i32):bool
+  (return (or (and (>= c 48) (<= c 57)) (and (>= c 97) (<= c 102)))))
+
+; Where the hash of `__anon_<letters>_h<hex>` at `i` starts, or 0.
+(defn anon-hash-at (t:StrView i:usize):usize
+  (when (or (> (+ i 9) (t 'len)) (!= (edit-slice t i (+ i 7)) "__anon_")) (return 0))
+  (let (j:usize (+ i 7))
+    (while (and (< j (t 'len)) (>= (aref (t 'data) (as i64 j)) 97) (<= (aref (t 'data) (as i64 j)) 122))
+      (set! j (+ j 1)))
+    (when (or (= j (+ i 7)) (> (+ j 3) (t 'len)) (!= (edit-slice t j (+ j 2)) "_h")
+              (not (hex? (as i32 (aref (t 'data) (as i64 (+ j 2)))))))
+      (return 0))
+    (return (+ j 2))))
+
+(defn unmap-files (argc:i32 argv:ptr i0:i32):void
+  (let (i:i32 i0)
+    (while (< i argc)
+      (let (path:StrView (arg argv i))
+        (match (rw-read-file path)
+          ((err e) (fail (str "cannot read " path)))
+          ((ok t) (let (tx:String t
+                        n:i64 0
+                        u:StrView (unprefix (string-as-view &tx) &n))
+                    (when (> n 0)
+                      (match (rw-write-file path u)
+                        ((err e) (fail (str "cannot write " path)))
+                        ((ok) (do))))
+                    (drop &tx)))))
+      (set! i (+ i 1)))))
+
+(defn main (argc:i32 argv:ptr):int
+  (when (< argc 2) (eprint "usage: rename-global-sweep forward|ir|back|unmap ...\n") (return 2))
+  (let (mode:StrView (arg argv 1)
+        opts:&RgOpts (unsafe/cast &RgOpts (arena-alloc (sizeof RgOpts)))
+        roots:&(Vector StrView) (new-vec)
+        reports:&(Vector StrView) (new-vec)
+        skip:i64 -1
+        collide:i64 -1
+        i:i32 3)
+    (set! (opts 'compiler) "build/nucleusc")
+    (set! (opts 'compiler-src) "src")
+    (set! (opts 'ir-check) false)
+    (init (ref opts 'edit) (handle g-arena))
+    (cond (= mode "ir") (do (ir-map (arg argv 2) (arg argv 3)) (return (if (> g-failures 0) 1 0)))
+          (= mode "unmap") (do (unmap-files argc argv 2) (return (if (> g-failures 0) 1 0))))
+    (while (< i argc)
+      (let (a:StrView (arg argv i)
+            more:bool (< (+ i 1) argc))
+        (cond (and more (= a "--edit")) (do (conj (ref opts 'edit) (arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--report")) (do (conj reports (arg argv (+ i 1))) (set! i (+ i 1)))
+              (and more (= a "--only")) (do (set! g-only-lo (rn-digits (arg argv (+ i 1))))
+                                            (set! g-only-hi (rn-digits (arg argv (+ i 2))))
+                                            (set! i (+ i 2)))
+              (and more (= a "--skip")) (do (set! skip (rn-digits (arg argv (+ i 1)))) (set! i (+ i 1)))
+              (and more (= a "--collide")) (do (set! collide (rn-digits (arg argv (+ i 1)))) (set! i (+ i 1)))
+              true (conj roots a)))
+      (set! i (+ i 1)))
+    (cond (= mode "forward") (forward (arg argv 2) roots reports opts skip collide)
+          (= mode "back") (back (arg argv 2) roots reports opts)
+          true (do (eprint "rename-global-sweep: unknown mode " mode "\n") (return 2)))
+    (return (if (> g-failures 0) 1 0))))

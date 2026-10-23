@@ -2,8 +2,8 @@
 ;
 ; RF-1: the reader's syntax mode; RF-2: colon chains as data; RF-3a: edits, the
 ; sugared printer, path globs and the directory walk; RF-3b: `defrewrite`;
-; RF-4: `nucleusc --run`; RF-6: operand slots. Every unit but the expansion
-; errors and RF-4's runs in process: a syntax read is a library call, and its
+; RF-4: `nucleusc --run`; RF-6: operand slots; RR-1: `nucleusc --resolve`'s
+; definition records. Every unit but the expansion errors, RF-4's and RR-1's runs in process: a syntax read is a library call, and its
 ; answer is a value to compare against `read-all`'s. The whole-corpus claims are
 ; scripts/stage26/syn-corpus.nuc's, and the rules' are the sweep replays'.
 
@@ -23,6 +23,10 @@
 (import-use nucleus.file)
 (import-use nucleus.create)
 (import-use nucleus.process)
+(import-use nucleus.edn)
+(import-use nucleus.string-split)
+(import-use nucleus.allocator)
+(import-use nucleus.hashmap)
 
 (defn rf-read (src:StrView):!&SynFile
   (match (read-syntax-all src)
@@ -1209,4 +1213,1389 @@
         (let (c:!void (check-eq (string-as-view &got) "11111111111100000"))
           (drop &got)
           (try c)))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RR-1: `nucleusc --resolve`, definitions (design/stage26-refactoring/overview.md §4.9)
+; ---------------------------------------------------------------------------
+
+; The report on stdout, after a clean compile.
+(defn rr1-resolve (path:StrView):!String
+  (let (o:Output (try (rf4-nucleusc "--resolve" path "" "")))
+    (try (check-eq (string-as-view (ref o 'err)) ""))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 0 "--resolve status"))
+    (let (out:String (str (string-as-view (ref o 'out))))
+      (drop &o)
+      (return (ok out)))))
+
+; A string, keyword, symbol, boolean or nil slot's spelling; "<absent>" for a missing key.
+(defn rr1-get (m:?&Node k:StrView):StrView
+  (let (v:?&Node (edn-get m k))
+    (when (= v null) (return "<absent>"))
+    (when (= (edn-kind v) EDN-INT) (return "<int>"))
+    (return (symbol-as-view ((unsafe/cast &Node v) 's)))))
+
+(defn rr1-int (m:?&Node k:StrView):i64
+  (let (v:?&Node (edn-get m k))
+    (when (!= (edn-kind v) EDN-INT) (return -1))
+    (return ((unsafe/cast &Node v) 'i))))
+
+; Every line is one EDN map; the :def records.
+(defn rr1-defs (out:StrView):!&(Vector &Node)
+  (let (it:LineIter (strview-lines &out)
+        v:&(Vector &Node) (new (Vector &Node) heap))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (> (line 'len) 0)
+          (match (edn-parse line)
+            ((err e) (fail! "not one EDN value: " (quoted line)))
+            ((ok m) (do (when (!= (edn-kind m) EDN-MAP) (fail! "not a map: " (quoted line)))
+                        (when (= (rr1-get m "record") "def") (conj v (unsafe/cast &Node m)))))))))
+    (return (ok v))))
+
+(defn rr1-count (recs:&(Vector &Node) file:StrView name:StrView form:StrView):usize
+  (let (n:usize 0)
+    (dotimes (i (count recs))
+      (let (m:&Node (recs i))
+        (when (and (= (rr1-get m "file") file) (= (rr1-get m "name") name) (= (rr1-get m "form") form))
+          (set! n (+ n 1)))))
+    (return n)))
+
+(defn rr1-def (recs:&(Vector &Node) file:StrView name:StrView form:StrView):!&Node
+  (let (n:usize (rr1-count recs file name form))
+    (when (!= n 1) (fail! n " records for " form " " name " in " file)))
+  (dotimes (i (count recs))
+    (let (m:&Node (recs i))
+      (when (and (= (rr1-get m "file") file) (= (rr1-get m "name") name) (= (rr1-get m "form") form))
+        (return (ok m)))))
+  (fail! "unreachable"))
+
+; The span is the name's own bytes in `src`, and :line/:col are where they start.
+(defn rr1-check-span (src:StrView m:&Node):!void
+  (let (start:i64 (rr1-int m "start")
+        end:i64 (rr1-int m "end")
+        line:i64 1
+        col:i64 1)
+    (try (check (and (>= start 0) (> end start) (<= end (as i64 (src 'len)))) "a span inside the file"))
+    (try (check-eq (strview-take-bytes (strview-drop-bytes src (as usize start)) (as usize (- end start)))
+                   (rr1-get m "name")))
+    (dotimes (i start)
+      (if (= (aref (src 'data) i) 10)
+        (do (set! line (+ line 1)) (set! col 1))
+        (set! col (+ col 1))))
+    (try (check-eq-int (rr1-int m "line") line "line"))
+    (try (check-eq-int (rr1-int m "col") col "col"))
+    (return (ok))))
+
+(defn rr1-check-def (recs:&(Vector &Node) src:StrView file:StrView name:StrView form:StrView
+                     key:StrView kind:StrView private:StrView):!&Node
+  (let (m:&Node (try (rr1-def recs file name form)))
+    (try (check-eq (rr1-get m "key") key))
+    (try (check-eq (rr1-get m "kind") kind))
+    (try (check-eq (rr1-get m "private") private))
+    (try (check-eq (rr1-get m "origin") "source"))
+    (try (check-eq (rr1-get m "trace") "exact"))
+    (try (rr1-check-span src m))
+    (return (ok m))))
+
+(defn rr2-last-line (text:StrView):StrView
+  (let (it:LineIter (strview-lines &text)
+        last:StrView "")
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (> (line 'len) 0) (set! last line))))
+    (return last)))
+
+; Every slot, in order, as one line: the format is a contract within its version.
+(deftest rr1-resolve-format
+  (let (src:StrView "(defn sq (x:i32):i32 (return (* x x)))\n(defn main ():i32 (return (sq 3)))\n"
+        p:String (try (test-write-file "rr1a.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        ov:StrView (string-as-view &out)
+        head:String (str "{:record :report :version 4 :unit " (quoted pv) "}\n")
+        file:String (str "{:record :file :file " (quoted pv) " :header false}")
+        sq:String (str "{:record :def :file " (quoted pv) " :start 6 :end 8 :line 1 :col 7 :name \"sq\" :ns \"user\" :key \"sq\" :kind :function :form \"defn\" :link \"sq\" :host false :private false :origin :source :trace :exact :macro nil :call-start nil :call-end nil :call-line nil :call-col nil}"))
+    (try (check (strview-has-prefix ov (string-as-view &head)) "the :report record comes first"))
+    (try (check-line ov (string-as-view &file)))
+    (try (check-line ov (string-as-view &sq)))
+    (let (x:String (str "{:record :ref :file " (quoted pv) " :start 10 :end 11 :line 1 :col 11 :name \"x\" :role :binder :kind :local :target {:file " (quoted pv) " :start 10 :end 11} :why nil :macro nil :call-start nil :call-end nil :call-line nil :call-col nil :via :desugar}"))
+      (try (check-line ov (string-as-view &x)))
+      (drop &x))
+    (try (check (strview-has-prefix (rr2-last-line ov) "{:record :coverage ") "the :coverage record comes last"))
+    (try (check-match ov "{:record :coverage :attributed * :ambiguous * :no-span * :why {:macro * :instance * :generated * :absent * :prescan * :mismatch 0} :unframed * :unframed-only * :roles {:local {:attributed * :ambiguous * :macro * :instance * :generated * :absent * :prescan * :mismatch *} :binder {*} :global {*} :head {*} :type {*} :field {*} :arm {*} :macro {*}} :via {:desugar * :rewrite * :instance * :closure * :expansion * :template *}}"))
+    (let (recs:&(Vector &Node) (try (rr1-defs ov)))
+      (try (rr1-check-def recs src pv "main" "defn" "main" "function" "false"))
+      ; The prelude's files are in the unit, so their definitions are in the report.
+      (try (check (> (rr1-count recs "lib/nucleus/core.nuc" "nucleus.core" "ns") 0) "the prelude's ns")))
+    (drop &sq) (drop &file) (drop &head) (drop &out) (drop &p))
+  (return (ok)))
+
+; One record per definer form, the name's segment 0 under attributes, types and
+; a template head; overloads share a key; a compile-time body's definers count.
+(deftest rr1-resolve-kinds
+  (let (src:StrView "(defconst K 3)
+(defvar :volatile trap:i32 0)
+(defvar- hidden-v:i32 1)
+(extern ext-sym:i32)
+(defstruct (Box T) v:T)
+(defstruct Pt x:i32 y:i32)
+(defunion Sh (circle r:i32) dot)
+(defenum Color RED GREEN)
+(deferror oops \"oops\")
+(deftype Count i32)
+(defprotocol Area (area (self:&Self):i32))
+(defmacro twice (x) `(do ~x ~x))
+(declare rr1-ext (x:i32) :i32)
+(defn mag (p:&Pt):i32 (return (p 'x)))
+(defn mag (b:&(Box i32)):i32 (return (b 'v)))
+(defn sized (n:i32):(Box i32) (return ((Box i32) n)))
+(compile-time (defn ct-helper ():void (return)))
+(defn main ():i32 (return 0))
+"
+        p:String (try (test-write-file "rr1k.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        recs:&(Vector &Node) (try (rr1-defs (string-as-view &out))))
+    (try (rr1-check-def recs src pv "K" "defconst" "K" "const" "false"))
+    (try (rr1-check-def recs src pv "trap" "defvar" "trap" "var" "false"))
+    (let (m:&Node (try (rr1-def recs pv "hidden-v" "defvar-")))
+      (try (check-eq (rr1-get m "private") "true"))
+      (try (check-match (rr1-get m "key") "#p*/hidden-v")))
+    (try (rr1-check-def recs src pv "ext-sym" "extern" "ext-sym" "var" "false"))
+    (try (rr1-check-def recs src pv "Box" "defstruct" "Box" "struct" "false"))
+    (try (rr1-check-def recs src pv "Pt" "defstruct" "Pt" "struct" "false"))
+    (try (rr1-check-def recs src pv "Sh" "defunion" "Sh" "union" "false"))
+    (try (rr1-check-def recs src pv "Color" "defenum" "Color" "enum" "false"))
+    (try (rr1-check-def recs src pv "oops" "deferror" "oops" "error" "false"))
+    (try (rr1-check-def recs src pv "Count" "deftype" "Count" "type-alias" "false"))
+    (try (rr1-check-def recs src pv "Area" "defprotocol" "Area" "protocol" "false"))
+    (try (rr1-check-def recs src pv "twice" "defmacro" "twice" "macro" "false"))
+    (try (rr1-check-def recs src pv "rr1-ext" "declare" "rr1-ext" "function" "false"))
+    (try (rr1-check-def recs src pv "sized" "defn" "sized" "function" "false"))
+    (try (rr1-check-def recs src pv "ct-helper" "defn" "ct-helper" "function" "false"))
+    (try (check-eq-int (as i64 (rr1-count recs pv "mag" "defn")) 2 "one record per overload"))
+    (dotimes (i (count recs))
+      (let (m:&Node (recs i))
+        (when (and (= (rr1-get m "file") pv) (= (rr1-get m "name") "mag"))
+          (try (check-eq (rr1-get m "key") "mag"))
+          (try (rr1-check-span src m)))))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; Keys across namespaces and privacy, each import's records at its own path,
+; and a header's.
+(deftest rr1-resolve-namespaces
+  (let (lib:StrView "(ns rr1geo)
+(defstruct Pt x:i32 y:i32)
+(defn norm (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn- helper ():i32 (return 1))
+(defstruct- Hid z:i32)
+(defmacro twice (x) `(do ~x ~x))
+"
+        hdr:StrView "(declare rr1-hdecl (i32) :i32)\n"
+        lp:String (try (test-write-file "rr1geo.nuc" lib))
+        hp:String (try (test-write-file "rr1h.nuch" hdr))
+        lpv:StrView (string-as-view &lp)
+        hpv:StrView (string-as-view &hp)
+        root:String (str "(import-use rr1geo)\n(import-use " (quoted hpv) ")\n(defn- helper ():i32 (return 2))\n(defstruct- Mine a:i32)\n(defn main ():i32 (return (helper)))\n")
+        rp:String (try (test-write-file "rr1ns.nuc" (string-as-view &root)))
+        rpv:StrView (string-as-view &rp)
+        rv:StrView (string-as-view &root)
+        out:String (try (rr1-resolve rpv))
+        ov:StrView (string-as-view &out)
+        recs:&(Vector &Node) (try (rr1-defs ov))
+        lf:String (str "{:record :file :file " (quoted lpv) " :header false}")
+        hf:String (str "{:record :file :file " (quoted hpv) " :header true}"))
+    (try (check-line ov (string-as-view &lf)))
+    (try (check-line ov (string-as-view &hf)))
+    (let (m:&Node (try (rr1-check-def recs lib lpv "rr1geo" "ns" "rr1geo" "namespace" "false")))
+      (try (check-eq (rr1-get m "ns") "rr1geo")))
+    (let (m:&Node (try (rr1-check-def recs lib lpv "Pt" "defstruct" "rr1geo/Pt" "struct" "false")))
+      (try (check-eq (rr1-get m "ns") "rr1geo")))
+    (try (rr1-check-def recs lib lpv "norm" "defn" "rr1geo/norm" "function" "false"))
+    ; Private in a namespace is the namespace's key; in `user`, the file's own.
+    (try (rr1-check-def recs lib lpv "helper" "defn-" "rr1geo/helper" "function" "true"))
+    (try (rr1-check-def recs lib lpv "Hid" "defstruct-" "rr1geo/Hid" "struct" "true"))
+    (try (rr1-check-def recs lib lpv "twice" "defmacro" "rr1geo/twice" "macro" "false"))
+    (try (rr1-check-def recs hdr hpv "rr1-hdecl" "declare" "rr1-hdecl" "function" "false"))
+    (let (m:&Node (try (rr1-def recs rpv "helper" "defn-")))
+      (try (check-eq (rr1-get m "ns") "user"))
+      (try (check-match (rr1-get m "key") "#p*/helper"))
+      (try (rr1-check-span rv m)))
+    (try (rr1-check-def recs rv rpv "Mine" "defstruct-" "Mine" "struct" "true"))
+    (try (rr1-check-def recs rv rpv "main" "defn" "main" "function" "false"))
+    (drop &hf) (drop &lf) (drop &out) (drop &rp) (drop &root) (drop &hp) (drop &lp))
+  (return (ok)))
+
+(defn rr1-check-macro (recs:&(Vector &Node) src:StrView file:StrView name:StrView form:StrView
+                       macro:StrView trace:StrView call:StrView):!void
+  (let (m:&Node (try (rr1-def recs file name form))
+        cs:i64 (rr1-int m "call-start")
+        ce:i64 (rr1-int m "call-end"))
+    (try (check-eq (rr1-get m "origin") "macro"))
+    (try (check-eq (rr1-get m "macro") macro))
+    (try (check-eq (rr1-get m "trace") trace))
+    (try (check-eq (strview-take-bytes (strview-drop-bytes src (as usize cs)) (as usize (- ce cs))) call))
+    (if (= trace "arg")
+      (try (rr1-check-span src m))
+      (try (check-eq-int (rr1-int m "start") -1 "no span")))
+    (return (ok))))
+
+; A definer a top-level macro produced: traced to the one operand atom that
+; spells its name, else no span; a list the macro returns is the caller's own.
+(deftest rr1-resolve-macros
+  (let (src:StrView "(defmacro mk (n) `(defn ~n ():i32 (return 1)))
+(mk made)
+(defmacro mk-fixed () `(defn fixed-name ():i32 (return 2)))
+(mk-fixed)
+(defmacro mk-two (a b) `(defn ~a ():i32 (return 3)))
+(mk-two dup dup)
+(defmacro mk-do (a b) `(do (defn ~a ():i32 (return 4)) (defconst ~b 5)))
+(mk-do first-fn second-k)
+(defmacro keep (form) form)
+(keep (defn kept ():i32 (return 6)))
+(defmacro outer (n) `(mk ~n))
+(outer deep)
+(defn main ():i32 (return 0))
+"
+        p:String (try (test-write-file "rr1m.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        recs:&(Vector &Node) (try (rr1-defs (string-as-view &out))))
+    (try (rr1-check-macro recs src pv "made" "defn" "mk" "arg" "(mk made)"))
+    (try (rr1-check-macro recs src pv "fixed-name" "defn" "mk-fixed" "absent" "(mk-fixed)"))
+    (try (rr1-check-macro recs src pv "dup" "defn" "mk-two" "ambiguous" "(mk-two dup dup)"))
+    (try (rr1-check-macro recs src pv "first-fn" "defn" "mk-do" "arg" "(mk-do first-fn second-k)"))
+    (try (rr1-check-macro recs src pv "second-k" "defconst" "mk-do" "arg" "(mk-do first-fn second-k)"))
+    (try (rr1-check-def recs src pv "kept" "defn" "kept" "function" "false"))
+    (try (rr1-check-macro recs src pv "deep" "defn" "outer" "arg" "(outer deep)"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; The report goes to stdout alone, and a failed compile writes none.
+(deftest rr1-resolve-refusals
+  (let (p:String (try (test-write-file "rr1r.nuc" "(defn main ():i32 (return 0))\n"))
+        pv:StrView (string-as-view &p)
+        o:Output (try (rf4-nucleusc "--resolve" "--emit-llvm" pv "")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "--resolve with --emit-llvm"))
+    (try (check-contains (string-as-view (ref o 'err)) "--resolve writes its report to stdout and cannot be combined with --emit-llvm"))
+    (drop &o)
+    (set! o (try (rf4-nucleusc "--resolve" "-o" "x.bin" pv)))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "--resolve with -o"))
+    (try (check-contains (string-as-view (ref o 'err)) "cannot be combined with -o"))
+    (drop &o)
+    (drop &p))
+  (let (p:String (try (test-write-file "rr1e.nuc" "(defn f ():i32 (return 0))\n(defn main ():i32 (return (no-such-fn)))\n"))
+        o:Output (try (rf4-nucleusc "--resolve" (string-as-view &p) "" "")))
+    (try (check-eq-int (as i64 (exit-code (ref o 'status))) 1 "a failed compile"))
+    (try (check-eq (string-as-view (ref o 'out)) ""))
+    (try (check-contains (string-as-view (ref o 'err)) "no-such-fn"))
+    (drop &o)
+    (drop &p))
+  (return (ok)))
+
+; A prelude file compiled as the root is read for emission twice (the root
+; hoist); each definition still has one record.
+(deftest rr1-resolve-root-hoist
+  (let (src:String (try (read-file "lib/nucleus/macros.nuc"))
+        sv:StrView (string-as-view &src)
+        out:String (try (rr1-resolve "lib/nucleus/macros.nuc"))
+        recs:&(Vector &Node) (try (rr1-defs (string-as-view &out))))
+    (try (rr1-check-def recs sv "lib/nucleus/macros.nuc" "nucleus.macros" "ns" "nucleus.macros" "namespace" "false"))
+    (try (rr1-check-def recs sv "lib/nucleus/macros.nuc" "macfoldr" "defmacro" "nucleus.macros/macfoldr" "macro" "false"))
+    (drop &out) (drop &src))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RR-2: `--resolve`, references (design/stage26-refactoring/overview.md §4.9)
+; ---------------------------------------------------------------------------
+
+; The records of one kind.
+(defn rr2-recs (out:StrView what:StrView):!&(Vector &Node)
+  (let (it:LineIter (strview-lines &out)
+        v:&(Vector &Node) (new (Vector &Node) heap))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (> (line 'len) 0)
+          (match (edn-parse line)
+            ((err e) (fail! "not one EDN value: " (quoted line)))
+            ((ok m) (when (= (rr1-get m "record") what) (conj v (unsafe/cast &Node m))))))))
+    (return (ok v))))
+
+; `k` bytes into occurrence `nth` (from 0) of `needle`.
+(defn rr2-at (src:StrView needle:StrView nth:i32 k:i64):!i64
+  (let (from:usize 0
+        i:i32 0)
+    (while (<= i nth)
+      (let (rest:StrView (strview-drop-bytes src from))
+        (match (strview-find &rest &needle)
+          ((some j) (do (when (= i nth) (return (ok (+ (as i64 (+ from j)) k))))
+                        (set! from (+ from (+ j 1)))
+                        (set! i (+ i 1))))
+          (none (fail! "no occurrence " nth " of " (quoted needle)))))))
+  (fail! "unreachable"))
+
+(defn rr2-count (refs:&(Vector &Node) file:StrView role:StrView start:i64):usize
+  (let (n:usize 0)
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "file") file) (= (rr1-get m "role") role) (= (rr1-int m "start") start))
+          (set! n (+ n 1)))))
+    (return n)))
+
+; The one :ref of `role` at `start`: its name's own bytes, of `kind`, with no :why;
+; `target` is the key, or "" for a local's span, checked by the caller.
+(defn rr2-ref (refs:&(Vector &Node) src:StrView file:StrView role:StrView start:i64 name:StrView
+               kind:StrView target:StrView):!&Node
+  (let (n:usize (rr2-count refs file role start))
+    (when (!= n 1) (fail! n " :ref " role " records at " start " for " (quoted name))))
+  (dotimes (i (count refs))
+    (let (m:&Node (refs i))
+      (when (and (= (rr1-get m "file") file) (= (rr1-get m "role") role) (= (rr1-int m "start") start))
+        (try (check-eq (rr1-get m "name") name))
+        (try (check-eq (rr1-get m "kind") kind))
+        (try (check-eq (rr1-get m "why") "nil"))
+        (when (!= (target 'len) 0) (try (check-eq (rr1-get m "target") target)))
+        (try (rr1-check-span src m))
+        (return (ok m)))))
+  (fail! "unreachable"))
+
+; A local or binder at `start` whose target is the binder at `binder`.
+(defn rr2-local (refs:&(Vector &Node) src:StrView file:StrView role:StrView start:i64 name:StrView
+                 binder:i64):!void
+  (let (m:&Node (try (rr2-ref refs src file role start name "local" ""))
+        t:?&Node (edn-get m "target"))
+    (try (check-eq (rr1-get t "file") file))
+    (try (check-eq-int (rr1-int t "start") binder "the binder's start"))
+    (try (check-eq-int (rr1-int t "end") (+ binder (as i64 (name 'len))) "the binder's end"))
+    (return (ok))))
+
+(defn rr2-none-why (refs:&(Vector &Node) file:StrView why:StrView):usize
+  (let (n:usize 0)
+    (dotimes (i (count refs))
+      (when (and (= (rr1-get (refs i) "file") file) (= (rr1-get (refs i) "why") why)) (set! n (+ n 1))))
+    (return n)))
+
+; Every role, each placed on its own name.
+(deftest rr2-resolve-roles
+  (let (src:StrView "(defstruct Pt x:i32 y:i32)
+(defunion Sh (circle r:i32) dot)
+(defvar counter:i32 0)
+(defn add (a:i32 b:i32):i32 (return (_+ a b)))
+(defn pos (k:i32):!i32 (return (ok k)))
+(defn area (s:Sh):i32
+  (match s
+    ((circle r) (return r))
+    (dot (return 0))))
+(defn main ():i32
+  (let (p:Pt (Pt 1 2)
+        q:&Pt &p)
+    (when (> counter 0) (return 1))
+    (return (add (q 'x) (area (Sh circle 3))))))
+"
+        p:String (try (test-write-file "rr2a.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        ba:i64 (try (rr2-at src "(a:i32" 0 1))
+        br:i64 (try (rr2-at src "(circle r)" 0 8))
+        bq:i64 (try (rr2-at src "q:&Pt" 0 0)))
+    (try (rr2-local refs src pv "binder" ba "a" ba))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ a b)" 0 4)) "a" ba))
+    (try (rr2-local refs src pv "binder" br "r" br))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(return r)" 0 8)) "r" br))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(q 'x)" 0 1)) "q" bq))
+    (try (rr2-ref refs src pv "global" (try (rr2-at src "counter 0" 0 0)) "counter" "var" "counter"))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(add (q" 0 1)) "add" "function" "add"))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(_+ a b)" 0 1)) "_+" "operator" "_+"))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(Pt 1 2)" 0 1)) "Pt" "struct" "Pt"))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(Sh circle 3)" 0 1)) "Sh" "union" "Sh"))
+    (try (rr2-ref refs src pv "type" (try (rr2-at src "p:Pt" 0 2)) "Pt" "struct" "Pt"))
+    (try (rr2-ref refs src pv "type" (try (rr2-at src "q:&Pt" 0 3)) "Pt" "struct" "Pt"))
+    (try (rr2-ref refs src pv "type" (try (rr2-at src "s:Sh" 0 2)) "Sh" "union" "Sh"))
+    (try (rr2-ref refs src pv "field" (try (rr2-at src "(q 'x)" 0 4)) "x" "field" "Pt"))
+    (try (rr2-ref refs src pv "arm" (try (rr2-at src "((circle r)" 0 2)) "circle" "arm" "Sh"))
+    (try (rr2-ref refs src pv "arm" (try (rr2-at src "(dot (return" 0 1)) "dot" "arm" "Sh"))
+    (try (rr2-ref refs src pv "arm" (try (rr2-at src "(Sh circle 3)" 0 4)) "circle" "arm" "Sh"))
+    (try (rr2-ref refs src pv "macro" (try (rr2-at src "(when" 0 1)) "when" "macro" "nucleus.macros/when"))
+    ; `(ok k)` is emitted as the compiler's rewrite of it, placed back on the source.
+    (try (rr2-ref refs src pv "arm" (try (rr2-at src "(ok k)" 0 1)) "ok" "arm" "nucleus.core/Result.i32.Err"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(ok k)" 0 4)) "k" (try (rr2-at src "(k:i32)" 0 1))))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "mismatch")) 0 "no mismatch record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A name twice in one list is two records, each on its own atom; an inner
+; binder shadows from its body on, not in its own value.
+(deftest rr2-resolve-duplicates
+  (let (src:StrView "(defn f2 (a:i32 b:i32):i32 (return b))
+(defn g (x:i32):i32
+  (let (x:i32 (f2 x x))
+    (return x)))
+(defn main ():i32 (return (g 1)))
+"
+        p:String (try (test-write-file "rr2d.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        outer:i64 (try (rr2-at src "(x:i32)" 0 1))
+        inner:i64 (try (rr2-at src "(x:i32 (f2" 0 1)))
+    (try (rr2-local refs src pv "binder" outer "x" outer))
+    (try (rr2-local refs src pv "binder" inner "x" inner))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(f2 x x)" 0 4)) "x" outer))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(f2 x x)" 0 6)) "x" outer))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(return x)" 0 8)) "x" inner))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(f2 x x)" 0 1)) "f2" "function" "f2"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A chain's names: the binder is segment 0, a type is its segment's body.
+(deftest rr2-resolve-chains
+  (let (src:StrView "(defstruct Pt x:i32)
+(defn h (p:?&Pt n:i32):i32
+  (if-some (q p) (return (q 'x)) (return n)))
+(defn main ():i32 (let (k:&Pt (Pt 1)) (return (h k 2))))
+"
+        p:String (try (test-write-file "rr2c.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        bp:i64 (try (rr2-at src "p:?&Pt" 0 0))
+        bn:i64 (try (rr2-at src "n:i32" 0 0)))
+    (try (rr2-local refs src pv "binder" bp "p" bp))
+    (try (rr2-local refs src pv "binder" bn "n" bn))
+    (try (rr2-ref refs src pv "type" (try (rr2-at src "p:?&Pt" 0 4)) "Pt" "struct" "Pt"))
+    (try (rr2-ref refs src pv "type" (try (rr2-at src "k:&Pt" 0 3)) "Pt" "struct" "Pt"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(q p)" 0 3)) "p" bp))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(return n)" 0 8)) "n" bn))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; What a macro's expansion resolves has no span yet: `:why :macro` and the call.
+(deftest rr2-resolve-macro-output
+  (let (src:StrView "(defn f2 (a:i32 b:i32):i32 (return b))
+(defmacro twice-of (e) `(f2 ~e ~e))
+(defn main ():i32 (let (v:i32 1) (return (twice-of v))))
+"
+        p:String (try (test-write-file "rr2m.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        call:i64 (try (rr2-at src "(twice-of v)" 0 0))
+        heads:i32 0)
+    (try (rr2-ref refs src pv "macro" (+ call 1) "twice-of" "macro" "twice-of"))
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "role") "head") (= (rr1-get m "target") "f2") (= (rr1-get m "why") "macro"))
+          (set! heads (+ heads 1))
+          (try (check-eq-int (rr1-int m "start") -1 "no span"))
+          (try (check-eq (rr1-get m "macro") "twice-of"))
+          (try (check-eq-int (rr1-int m "call-start") call "the call's start"))
+          (try (check-eq-int (rr1-int m "call-end") (+ call 12) "the call's end")))))
+    (try (check-eq-int (as i64 heads) 1 "one head record for the minted f2"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A macro that returns an atom: `'k` is the interned `k` its operand spells too,
+; so konst's is ambiguous; same's is the operand it was handed (RR-3).
+(deftest rr2-resolve-macro-atom
+  (let (src:StrView "(defmacro konst (e) 'k)
+(defmacro same (e) e)
+(defn main ():i32
+  (let (k:i32 5)
+    (return (_+ (konst k) (same k)))))
+"
+        p:String (try (test-write-file "rr2k.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        n:i32 0)
+    (try (check-eq-int (as i64 (rr2-count refs pv "local" (try (rr2-at src "(konst k)" 0 7)))) 0 "konst's operand"))
+    (let (m:&Node (try (rr2-ref refs src pv "local" (try (rr2-at src "(same k)" 0 6)) "k" "local" "")))
+      (try (check-eq (rr1-get m "via") "expansion"))
+      (try (check-eq (rr1-get m "macro") "same")))
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "file") pv) (= (rr1-get m "role") "local") (= (rr1-get m "name") "k")
+                   (= (rr1-int m "start") -1))
+          (set! n (+ n 1))
+          (try (check-eq (rr1-get m "why") "ambiguous"))
+          (try (check-eq (rr1-get m "macro") "konst")))))
+    (try (check-eq-int (as i64 n) 1 "konst's record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; Inference resolves `(pick y y)` before emission; only emission reports it, so
+; each `y` is one record on its own atom and nothing is ambiguous.
+(deftest rr2-resolve-suppression
+  (let (src:StrView "(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.allocator)
+(defn pick (a:T b:T :where (Any T)):T (return a))
+(defconst K (* 2 3))
+(defstruct Pt x:i32)
+(defn size (p:Pt):i32 (return 1))
+(defn size (n:i32):i32 (return n))
+(defn main ():i32
+  (let (y:i32 K
+        v (pick y y)
+        vs:&(Vector i32) (new (Vector i32) heap))
+    (conj vs v)
+    (return (size v))))
+"
+        p:String (try (test-write-file "rr2s.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        by:i64 (try (rr2-at src "y:i32" 0 0))
+        n:i32 0
+        alloc:i32 0)
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(pick y y)" 0 6)) "y" by))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(pick y y)" 0 8)) "y" by))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(pick y y)" 0 1)) "pick" "function" "pick"))
+    (try (rr2-ref refs src pv "global" (try (rr2-at src "y:i32 K" 0 6)) "K" "const" "K"))
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "file") pv) (or (= (rr1-get m "name") "y") (= (rr1-get m "name") "pick")))
+          (set! n (+ n 1)))
+        (when (and (= (rr1-get m "file") pv) (= (rr1-get m "name") "Alloc")) (set! alloc (+ alloc 1)))))
+    ; The binder, two locals and the head.
+    (try (check-eq-int (as i64 n) 4 "records naming y or pick"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    ; Matching `(size v)` re-reads both signatures, and `new`'s `init` call its
+    ; `a:Alloc`; none of them is a reference here.
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "absent")) 0 "no absent record"))
+    (try (check-eq-int (as i64 alloc) 0 "records naming Alloc"))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(size v)" 0 1)) "size" "function" "size"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; The root hoist reads a prelude file twice for emission (node.nuc has code, not
+; only macros); each line is written once, a no-span one (edn.nuc's) too.
+(defn rr2-distinct-refs (text:StrView):!i32
+  (let (it:LineIter (strview-lines &text)
+        seen:&(HashMap Symbol i32) (new (HashMap Symbol i32) heap)
+        refs:i32 0)
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (strview-has-prefix line "{:record :ref ")
+          (set! refs (+ refs 1))
+          (match (get seen (symbol-intern line))
+            ((some k) (fail! "written twice: " line))
+            (none (assoc seen (symbol-intern line) 1))))))
+    (return (ok refs))))
+
+(deftest rr2-resolve-root-hoist
+  (let (out:String (try (rr1-resolve "lib/nucleus/node.nuc"))
+        refs:i32 (try (rr2-distinct-refs (string-as-view &out))))
+    (try (check (> refs 0) "the prelude's references"))
+    (drop &out))
+  (let (out:String (try (rr1-resolve "lib/nucleus/edn.nuc"))
+        refs:i32 (try (rr2-distinct-refs (string-as-view &out))))
+    (try (check (> refs 0) "edn.nuc's references"))
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RR-3: tracing through the copies the compiler makes (overview.md §4.9, §8 RR-3)
+; ---------------------------------------------------------------------------
+
+; The one :ref of `role` at `start`, whose :via is `via` ("nil" for none).
+(defn rr3-via (refs:&(Vector &Node) file:StrView role:StrView start:i64 via:StrView):!void
+  (dotimes (i (count refs))
+    (let (m:&Node (refs i))
+      (when (and (= (rr1-get m "file") file) (= (rr1-get m "role") role) (= (rr1-int m "start") start))
+        (try (check-eq (rr1-get m "via") via))
+        (return (ok)))))
+  (fail! "no :ref " role " at " start))
+
+; A desugared definition is a positional copy: each binder and use lands on its own
+; atom; a rewritten `ok` and the `set!`/`aref` rewrite to `aset!` keep their operands.
+(deftest rr3-resolve-desugar
+  (let (src:StrView "(defn mid (a:i32 b:i32 c:i32):i32 (return (_+ a (_+ b c))))
+(defn pos (k:i32):!i32 (return (ok k)))
+(defn main ():i32
+  (let (arr:(ptr i32) (alloca i32 4)
+        i:i32 1
+        v:i32 7)
+    (set! (aref arr i) v)
+    (pos 1)
+    (return (mid (aref arr i) v (mk 3)))))
+(defstruct One x:i32)
+(defn mk (a:i32):i32 (let (o:One (One a)) (return (o 'x))))
+(defn wrap (a:i32):One (return (One a)))
+"
+        p:String (try (test-write-file "rr3d.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        ba:i64 (try (rr2-at src "a:i32" 0 0))
+        bb:i64 (try (rr2-at src "b:i32" 0 0))
+        bc:i64 (try (rr2-at src "c:i32" 0 0))
+        barr:i64 (try (rr2-at src "arr:" 0 0))
+        bi:i64 (try (rr2-at src "i:i32 1" 0 0))
+        bv:i64 (try (rr2-at src "v:i32 7" 0 0))
+        set:i64 (try (rr2-at src "(set! (aref arr i) v)" 0 0)))
+    (try (rr2-local refs src pv "binder" ba "a" ba))
+    (try (rr2-local refs src pv "binder" bb "b" bb))
+    (try (rr2-local refs src pv "binder" bc "c" bc))
+    (try (rr3-via refs pv "binder" bb "desugar"))
+    ; The return type is an elem of the `defn` list `desugar` copied, placed through it.
+    (try (rr3-via refs pv "type" (try (rr2-at src "):One" 0 2)) "desugar"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ a (" 0 4)) "a" ba))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ b c)" 0 4)) "b" bb))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ b c)" 0 6)) "c" bc))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(ok k)" 0 4)) "k" (try (rr2-at src "(k:i32)" 0 1))))
+    (try (rr3-via refs pv "local" (try (rr2-at src "(ok k)" 0 4)) "rewrite"))
+    ; `(set! (aref arr i) v)` is emitted as `(aset! arr i v)`, a copy of its atoms.
+    (try (rr2-local refs src pv "local" (+ set 12) "arr" barr))
+    (try (rr2-local refs src pv "local" (+ set 16) "i" bi))
+    (try (rr2-local refs src pv "local" (+ set 19) "v" bv))
+    (try (rr3-via refs pv "local" (+ set 12) "rewrite"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A generic's instances are copies of its text: what they agree on is one record on
+; the template's atom; what they disagree on is :ambiguous there, never one of them.
+(deftest rr3-resolve-instances
+  (let (src:StrView "(defstruct Pt x:i32)
+(defn size (p:Pt):i32 (return 1))
+(defn size (n:i32):i32 (return n))
+(defn helper (n:i32):i32 (return n))
+(defn measure (v:T :where (Any T)):i32
+  (let (s:i32 (size v))
+    (return (helper s))))
+(defn one (w:T :where (Any T)):i32 (return (size w)))
+(defn main ():i32
+  (let (p:Pt (Pt 1))
+    (return (_+ (_+ (measure p) (measure 2)) (one 3)))))
+"
+        p:String (try (test-write-file "rr3i.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        bv:i64 (try (rr2-at src "v:T" 0 0))
+        bs:i64 (try (rr2-at src "s:i32 (size" 0 0))
+        sz:i64 (try (rr2-at src "(size v)" 0 1)))
+    (try (rr2-local refs src pv "binder" bv "v" bv))
+    (try (rr3-via refs pv "binder" bv "instance"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(size v)" 0 6)) "v" bv))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(helper s)" 0 8)) "s" bs))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(helper s)" 0 1)) "helper" "function" "helper"))
+    (try (rr3-via refs pv "head" (try (rr2-at src "(helper s)" 0 1)) "instance"))
+    ; Pt's instance calls one `size`, i32's the other.
+    (try (check-eq-int (as i64 (rr2-count refs pv "head" sz)) 1 "one record at measure's size"))
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "file") pv) (= (rr1-get m "role") "head") (= (rr1-int m "start") sz))
+          (try (check-eq (rr1-get m "why") "ambiguous"))
+          (try (check-eq (rr1-get m "target") "nil"))
+          (try (check-eq (rr1-get m "via") "instance"))
+          (try (rr1-check-span src m)))))
+    ; One instance: one meaning.
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(size w)" 0 1)) "size" "function" "size"))
+    ; A substituted type variable is in no instance's text.
+    (try (check-eq-int (as i64 (rr2-count refs pv "type" (+ bv 2))) 0 "no record on T"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 1 "one ambiguous record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A template's literal that shares an operand's spelling is the macro's own name:
+; tracing it to the operand would rename the wrong thing, so it is :ambiguous.
+(deftest rr3-resolve-template-literal
+  (let (src:StrView "(defmacro with-tmp (e) `(let (tmp:i32 1) (_+ tmp ~e)))
+(defmacro mkc (tag) `(defn fixed-c ():i32 (return 7)))
+(mkc fixed-c)
+(defmacro pass (e) e)
+(defn main ():i32
+  (let (tmp:i32 2)
+    (return (_+ (_+ (with-tmp tmp) (fixed-c)) (pass tmp)))))
+"
+        p:String (try (test-write-file "rr3t.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        ov:StrView (string-as-view &out)
+        refs:&(Vector &Node) (try (rr2-recs ov "ref"))
+        recs:&(Vector &Node) (try (rr1-defs ov))
+        bt:i64 (try (rr2-at src "tmp:i32 2" 0 0))
+        op:i64 (try (rr2-at src "(with-tmp tmp)" 0 10))
+        amb:i32 0)
+    (try (check-eq-int (as i64 (rr2-count refs pv "binder" op)) 0 "no binder on the operand"))
+    (try (check-eq-int (as i64 (rr2-count refs pv "local" op)) 0 "no local on the operand"))
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (and (= (rr1-get m "file") pv) (= (rr1-get m "name") "tmp") (= (rr1-get m "macro") "with-tmp"))
+          (try (check-eq (rr1-get m "why") "ambiguous"))
+          (try (check-eq-int (rr1-int m "start") -1 "no span"))
+          (set! amb (+ amb 1)))))
+    (try (check-eq-int (as i64 amb) 2 "the macro's binder and its use"))
+    ; RR-1 traced fixed-c's definition to the operand that happens to spell it.
+    (try (rr1-check-macro recs src pv "fixed-c" "defn" "mkc" "ambiguous" "(mkc fixed-c)"))
+    ; A macro that mints nothing hands its operand through.
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(pass tmp)" 0 6)) "tmp" bt))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; An operand list the expansion emits in place has records of its own, so its atoms
+; are no candidates: the binder the macro builds from `k` traces to the operand `k`.
+(deftest rr3-resolve-passed-operand
+  (let (src:StrView "(defmacro bind-as (n init body) `(let (~n ~init) ~body))
+(defn main ():i32
+  (return (bind-as k 3 (_+ k k))))
+"
+        p:String (try (test-write-file "rr3p.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        bk:i64 (try (rr2-at src "(bind-as k" 0 9)))
+    (try (rr2-local refs src pv "binder" bk "k" bk))
+    (try (rr3-via refs pv "binder" bk "expansion"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ k k)" 0 4)) "k" bk))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ k k)" 0 6)) "k" bk))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A closure's body is a rewrite: a captured name is the outer binder's :local, and
+; the lambda's own names land on its text.
+(deftest rr3-resolve-closure
+  (let (src:StrView "(defn main ():i32
+  (let (n:i32 5
+        f (vfn (x:i32):i32 (_+ x n)))
+    (return (f 1))))
+"
+        p:String (try (test-write-file "rr3c.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        bn:i64 (try (rr2-at src "n:i32" 0 0))
+        bx:i64 (try (rr2-at src "x:i32" 0 0))
+        use:i64 (try (rr2-at src "(_+ x n)" 0 6)))
+    (try (rr2-local refs src pv "local" use "n" bn))
+    (try (rr3-via refs pv "local" use "closure"))
+    (try (rr2-local refs src pv "binder" bx "x" bx))
+    (try (rr3-via refs pv "binder" bx "closure"))
+    (try (rr2-local refs src pv "local" (try (rr2-at src "(_+ x n)" 0 4)) "x" bx))
+    (try (rr2-ref refs src pv "head" (try (rr2-at src "(_+ x n)" 0 1)) "_+" "operator" "_+"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "ambiguous")) 0 "no ambiguous record"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; The names a defunion's constructors mint are the union's, not the text's.
+(deftest rr3-resolve-minted
+  (let (src:StrView "(defunion Sh (circle r:i32) dot)
+(deferror oops \"oops\")
+(defn bad (n:i32):!i32 (when (> n 0) (return (err! oops))) (return (ok n)))
+(defn main ():i32 (bad 1) (return 0))
+"
+        p:String (try (test-write-file "rr3u.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        decl-end:i64 (try (rr2-at src "dot)" 0 4))
+        gen:i32 0)
+    (dotimes (i (count refs))
+      (let (m:&Node (refs i))
+        (when (= (rr1-get m "file") pv)
+          (when (and (>= (rr1-int m "start") 0) (< (rr1-int m "start") decl-end))
+            (fail! "a record inside the defunion: " (rr1-get m "name")))
+          (when (= (rr1-get m "why") "generated") (set! gen (+ gen 1))))))
+    (try (check (> gen 0) "the constructors' names are :generated"))
+    (try (check-eq-int (as i64 (rr2-none-why refs pv "absent")) 0 "no absent record"))
+    (try (rr2-ref refs src pv "global" (try (rr2-at src "(err! oops)" 0 6)) "oops" "const" "oops"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; A template's name the quasiquote resolves at definition is a reference where it
+; is written, once, however often the macro expands.
+(deftest rr3-resolve-template-site
+  (let (src:StrView "(defn helper (n:i32):i32 (return n))
+(defmacro call-helper (e) `(helper ~e))
+(defn main ():i32 (return (_+ (call-helper 1) (call-helper 2))))
+"
+        p:String (try (test-write-file "rr3q.nuc" src))
+        pv:StrView (string-as-view &p)
+        out:String (try (rr1-resolve pv))
+        refs:&(Vector &Node) (try (rr2-recs (string-as-view &out) "ref"))
+        at:i64 (try (rr2-at src "`(helper" 0 2)))
+    (try (rr2-ref refs src pv "head" at "helper" "function" "helper"))
+    (try (rr3-via refs pv "head" at "template"))
+    (drop &out) (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RR-4: rename-local over a --resolve report (§4.10)
+; ---------------------------------------------------------------------------
+
+; `src` written to `file` and resolved; the local at `needle`'s `nth` occurrence
+; plus `k` renamed to `new` in process.
+(defn rr4-rename (file:StrView src:StrView needle:StrView nth:i32 k:i64 new:StrView):!RenameResult
+  (let (p:String (try (test-write-file file src))
+        pv:StrView (edit-arena-str &p)
+        out:String (try (rr1-resolve pv))
+        at:i64 (try (rr2-at src needle nth k)))
+    (match (report-parse (string-as-view &out))
+      ((err e) (do (drop &out) (fail! "report-parse refused the report: " e)))
+      ((ok rep)
+        (let (ctx:&RnCtx (rename-ctx-new rep false)
+              r:RenameResult (rename-local ctx pv src (as usize at) new))
+          (drop &out)
+          (return (ok r)))))))
+
+(defn rr4-ok (r:RenameResult want:StrView):!void
+  (match r
+    ((err x) (fail! "refused at " (x 'at) ": " (x 'reason)))
+    ((ok t) (let (tx:String t
+                  res:!void (check-eq (string-as-view &tx) want))
+              (drop &tx)
+              (return res)))))
+
+(defn rr4-refused (r:RenameResult why:StrView):!void
+  (match r
+    ((err x) (return (check-contains (x 'reason) why)))
+    ((ok t) (let (tx:String t)
+              (drop &tx)
+              (fail! "renamed, but expected a refusal: " why)))))
+
+; Named from a reference, the binder and every reference change, nothing else.
+(deftest rr4-rename-basic
+  (let (src:StrView "(defn main ():i32
+  (let (n:i32 2
+        m:i32 (_+ n 1))
+    (return (_+ m n))))
+")
+    (try (rr4-ok (try (rr4-rename "rr4a.nuc" src "(_+ m n)" 0 6 "total"))
+                 "(defn main ():i32
+  (let (total:i32 2
+        m:i32 (_+ total 1))
+    (return (_+ m total))))
+"))
+    (try (rr4-refused (try (rr4-rename "rr4a.nuc" src "main" 0 0 "go")) "is a definition"))
+    (try (rr4-refused (try (rr4-rename "rr4a.nuc" src "n:i32" 0 0 "a:b")) "plain symbol"))
+    (try (rr4-refused (try (rr4-rename "rr4a.nuc" src "n:i32" 0 0 "let")) "built-in form")))
+  (return (ok)))
+
+; A chain-sugared binder keeps its type; a sigil-led reference keeps its sigil.
+(deftest rr4-rename-chain-sugar
+  (let (src:StrView "(defn f (x:i32 p:(ptr i32)):i32
+  (set! @p x)
+  (return (_+ x 1)))
+(defn main ():i32 (let (v:i32 0) (return (f 2 &v))))
+")
+    (try (rr4-ok (try (rr4-rename "rr4b.nuc" src "x:i32" 0 0 "y"))
+                 "(defn f (y:i32 p:(ptr i32)):i32
+  (set! @p y)
+  (return (_+ y 1)))
+(defn main ():i32 (let (v:i32 0) (return (f 2 &v))))
+"))
+    (try (rr4-ok (try (rr4-rename "rr4b.nuc" src "&v" 0 1 "w"))
+                 "(defn f (x:i32 p:(ptr i32)):i32
+  (set! @p x)
+  (return (_+ x 1)))
+(defn main ():i32 (let (w:i32 0) (return (f 2 &w))))
+")))
+  (return (ok)))
+
+; Inward: a binder of the new name inside the scope. Outward: the renamed binder
+; would sit inside a binder of the new name, used there or not.
+(deftest rr4-rename-shadowing
+  (let (src:StrView "(defn main ():i32
+  (let (a:i32 1)
+    (let (b:i32 2)
+      (_+ a b))
+    (let (c:i32 3) c)
+    (return a)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4c.nuc" src "a:i32" 0 0 "b")) "already occurs in the binder's scope"))
+    (try (rr4-refused (try (rr4-rename "rr4c.nuc" src "c:i32" 0 0 "a")) "the renamed binder would shadow it"))
+    (try (rr4-ok (try (rr4-rename "rr4c.nuc" src "c:i32" 0 0 "b"))
+                 "(defn main ():i32
+  (let (a:i32 1)
+    (let (b:i32 2)
+      (_+ a b))
+    (let (b:i32 3) b)
+    (return a)))
+")))
+  (return (ok)))
+
+; A global the scope uses, or one it does not: the compiler writes calls too.
+(deftest rr4-rename-global-capture
+  (let (src:StrView "(defvar g:i32 5)
+(defn h ():i32 (return 1))
+(defn main ():i32
+  (let (x:i32 (_+ g 1))
+    (return x)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4d.nuc" src "x:i32" 0 0 "g")) "'g' names a definition of the unit"))
+    (try (rr4-refused (try (rr4-rename "rr4d.nuc" src "x:i32" 0 0 "h")) "names a definition of the unit")))
+  (return (ok)))
+
+; An operand a macro moves is edited. The new name refuses where an expansion
+; in scope binds it, or where a macro's definition spells it at all.
+(deftest rr4-rename-macro-call
+  (let (src:StrView "(defmacro twice (e) `(_+ ~e ~e))
+(defmacro with-acc (e) `(let (acc:i32 1) (_+ acc ~e)))
+(defmacro noted (e) `(do \"tag\" ~e))
+(defn main ():i32
+  (let (k:i32 2)
+    (return (_+ (twice k) (noted (with-acc k))))))
+")
+    (try (rr4-ok (try (rr4-rename "rr4e.nuc" src "k:i32" 0 0 "j"))
+                 "(defmacro twice (e) `(_+ ~e ~e))
+(defmacro with-acc (e) `(let (acc:i32 1) (_+ acc ~e)))
+(defmacro noted (e) `(do \"tag\" ~e))
+(defn main ():i32
+  (let (j:i32 2)
+    (return (_+ (twice j) (noted (with-acc j))))))
+"))
+    (try (rr4-refused (try (rr4-rename "rr4e.nuc" src "k:i32" 0 0 "acc"))
+                      "code the compiler or a macro wrote here uses 'acc'"))
+    (try (rr4-refused (try (rr4-rename "rr4e.nuc" src "k:i32" 0 0 "tag"))
+                      "definition spells 'tag', which its expansion here could capture")))
+  (return (ok)))
+
+; Two operands of one call spell the name, so the trace cannot say which one the
+; expansion read: :ambiguous, refused.
+(deftest rr4-rename-ambiguous
+  (let (src:StrView "(defn sq (x:i32):i32 (return (* x x)))
+(defn main ():i32 (return (sq 3)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4f.nuc" src "x:i32" 0 0 "y")) "ambiguous")))
+  (return (ok)))
+
+; Two instances disagree about the member `'fst` names, so its one spanned record
+; is :ambiguous; a local spelled like it refuses although the member is no local.
+(deftest rr4-rename-ambiguous-spanned
+  (let (src:StrView "(defstruct (Pair A B) fst:A snd:B)
+(defn pair-first (p:&(Pair A B)):A
+  (let (fst:A (p 'fst))
+    (return fst)))
+(defn main ():i32
+  (let (a:(Pair i32 i32) ((Pair i32 i32) 1 2)
+        b:(Pair i64 i64) ((Pair i64 i64) 3 4))
+    (pair-first &a)
+    (pair-first &b)
+    (return 0)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4m.nuc" src "fst:A (p" 0 0 "first"))
+                      "means different things in different copies of the code")))
+  (return (ok)))
+
+; Text the compiler never resolved: an operand a macro drops, a discard, and (with
+; the flag) a program in a string.
+(deftest rr4-rename-unrecorded
+  (let (src:StrView "(defmacro ignore (e) `0)
+(defn main ():i32
+  (let (x:i32 1)
+    (ignore x)
+    (return x)))
+"
+        disc:StrView "(defn main ():i32
+  (let (x:i32 1)
+    #_(_+ x 2)
+    (return x)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4g.nuc" src "x:i32" 0 0 "y")) "this 'x' has no record"))
+    (try (rr4-refused (try (rr4-rename "rr4h.nuc" disc "x:i32" 0 0 "y")) "a #_ form in the binder's scope")))
+  (return (ok)))
+
+; Only version 4 is read, and a report must be whole.
+(deftest rr4-report-version
+  (let (head:StrView "{:record :report :version 4 :unit \"u.nuc\"}\n"
+        cov:StrView "{:record :coverage :attributed 0}\n")
+    (match (report-parse "{:record :report :version 3 :unit \"u.nuc\"}\n{:record :coverage}\n")
+      ((ok r) (fail! "a version 3 report was read"))
+      ((err e) (try (check-contains e "the report is version 3; this library reads version 4"))))
+    (match (report-parse "{:record :report :version 5 :unit \"u.nuc\"}\n{:record :coverage}\n")
+      ((ok r) (fail! "a version 5 report was read"))
+      ((err e) (try (check-contains e "version 5"))))
+    (let (cut:String (str head "{:record :file :file \"u.nuc\"}\n")
+          odd:String (str head "{:record :span :file \"u.nuc\"}\n" cov)
+          whole:String (str head cov))
+      (match (report-parse (string-as-view &cut))
+        ((ok r) (fail! "a report with no :coverage was read"))
+        ((err e) (try (check-contains e "does not end with its :coverage record"))))
+      (match (report-parse (string-as-view &odd))
+        ((ok r) (fail! "a report with an unknown record was read"))
+        ((err e) (try (check-contains e "unknown record :span"))))
+      (match (report-parse (string-as-view &whole))
+        ((ok r) (try (check-eq (r 'unit) "u.nuc")))
+        ((err e) (fail! "a whole version 4 report was refused: " e)))
+      (drop &cut) (drop &odd) (drop &whole)))
+  (return (ok)))
+
+; Renamed, resolved again and renamed back: the original bytes.
+(deftest rr4-rename-and-back
+  (let (src:StrView "(defn f (x:i32 y:i32):i32
+  (let (s:i32 (_+ x y))
+    (dotimes (i 3) (set! s (_+ s i)))
+    (return s)))
+(defn main ():i32 (return (f 1 2)))
+"
+        once:String (str ""))
+    (match (try (rr4-rename "rr4i.nuc" src "s:i32" 0 0 "acc"))
+      ((err x) (fail! "refused at " (x 'at) ": " (x 'reason)))
+      ((ok t) (do (drop &once) (set! once t))))
+    (try (check-contains (string-as-view &once) "(acc:i32 (_+ x y))"))
+    (let (mid:StrView (string-as-view &once))
+      (try (rr4-ok (try (rr4-rename "rr4i.nuc" mid "acc:i32" 0 0 "s")) src)))
+    (drop &once))
+  (return (ok)))
+
+; A macro that quotes its operand makes the spelling program data, so the trace
+; refuses it (§4.9 rule 3) and the rename refuses in turn.
+(deftest rr4-rename-quoted-operand
+  (let (src:StrView "(import-use nucleus.node)
+(defmacro keep-name (v) `(do '~v ~v))
+(defn main ():i32
+  (let (k:i32 2)
+    (return (keep-name k))))
+")
+    (try (rr4-refused (try (rr4-rename "rr4j.nuc" src "k:i32" 0 0 "j")) "an occurrence of 'k' has no span")))
+  (return (ok)))
+
+; A closure's environment reads its captures in code the compiler writes, with no
+; span and no binder named: neither the capture nor a new name spelled like it moves.
+(deftest rr4-rename-generated
+  (let (src:StrView "(defn f ():i32
+  (let (n:i32 5
+        g (vfn (x:i32):i32 (_+ x n)))
+    (return (g 1))))
+(defn main ():i32
+  (let (m:i32 (f))
+    (return m)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4k.nuc" src "n:i32" 0 0 "q")) "has no span (:why generated)"))
+    (try (rr4-refused (try (rr4-rename "rr4k.nuc" src "m:i32" 0 0 "n"))
+                      "code the compiler wrote uses 'n' where the report cannot place it")))
+  (return (ok)))
+
+; A report of other text is refused before anything is planned.
+(deftest rr4-rename-stale-report
+  (let (src:StrView "(defn main ():i32
+  (let (n:i32 2)
+    (return n)))
+"
+        moved:StrView ";
+(defn main ():i32
+  (let (n:i32 2)
+    (return n)))
+"
+        p:String (try (test-write-file "rr4l.nuc" src))
+        pv:StrView (edit-arena-str &p)
+        out:String (try (rr1-resolve pv)))
+    (match (report-parse (string-as-view &out))
+      ((err e) (do (drop &out) (fail! "report-parse refused the report: " e)))
+      ((ok rep)
+        (let (ctx:&RnCtx (rename-ctx-new rep false))
+          (try (rr4-refused (rename-local ctx pv moved (as usize (try (rr2-at moved "n:i32" 0 0))) "k")
+                            "the report does not match the file")))))
+    (drop &out))
+  (return (ok)))
+
+; `str`'s expansion binds and reads its own `p`, which no source binder names: a
+; local `p` around the call cannot be told apart from it, so it does not move.
+(deftest rr4-rename-unbound-read
+  (let (src:StrView "(import-use nucleus.string)
+(import-use nucleus.fmt)
+(defn main ():i32
+  (let (p:String (str \"a\" \"b\"))
+    (drop &p)
+    (return 0)))
+")
+    (try (rr4-refused (try (rr4-rename "rr4n.nuc" src "p:String" 0 0 "q"))
+                      "reads a local 'p' whose binder it does not name")))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RR-5: rename-global over one report per root (§4.11)
+; ---------------------------------------------------------------------------
+
+(defstruct Rr5Run (roots &(Vector &RgRoot)) (plan &RgPlan))
+
+; Each of `roots` resolved and read as a rename-global root.
+(defn rr5-roots (roots:&(Vector StrView)):!&(Vector &RgRoot)
+  (let (rs:&(Vector &RgRoot) (new (Vector &RgRoot) heap))
+    (dotimes (i (count roots))
+      (let (out:String (try (rr1-resolve (roots i))))
+        (match (report-parse (edit-arena-str &out))
+          ((err e) (fail! "report-parse refused the report: " e))
+          ((ok rep) (conj rs (rename-global-root (roots i) rep false))))))
+    (return (ok rs))))
+
+(defn rr5-opts ():&RgOpts
+  (let (o:&RgOpts (unsafe/cast &RgOpts (heap-allocate-zeroed (as usize (sizeof RgOpts)) (as usize 8))))
+    (set! (o 'compiler) (compiler-path))
+    (set! (o 'compiler-src) "src")
+    (set! (o 'ir-check) true)
+    (init (ref o 'edit))
+    (return o)))
+
+; The definition at `needle`'s `nth` occurrence plus `k` in `file` (text `src`), renamed to `new`.
+(defn rr5-plan (rs:&(Vector &RgRoot) file:StrView src:StrView needle:StrView nth:i32 k:i64 new:StrView):!Rr5Run
+  (let (at:i64 (try (rr2-at src needle nth k)))
+    (return (ok (Rr5Run rs (rename-global-plan rs file (as usize at) new (rr5-opts)))))))
+
+(defn rr5-refused (r:Rr5Run why:StrView):!void
+  (let (p:&RgPlan (r 'plan))
+    (when (rg-plan-ok? p) (fail! "renamed, but expected a refusal: " why))
+    (return (check-contains ((p 'refusal) 'reason) why))))
+
+; Each file's text after the rename, in `files` order; a file the plan leaves alone keeps its text.
+(defn rr5-apply (r:Rr5Run files:&(Vector StrView) srcs:&(Vector StrView)):!&(Vector StrView)
+  (let (p:&RgPlan (r 'plan))
+    (when (not (rg-plan-ok? p))
+      (fail! "refused in " (p 'refused) " at " ((p 'refusal) 'at) ": " ((p 'refusal) 'reason)))
+    (let (outs:&(Vector RgOut) (rename-global-apply (r 'roots) p)
+          res:&(Vector StrView) (new (Vector StrView) heap))
+      (when (not (rg-plan-ok? p)) (fail! "apply refused: " ((p 'refusal) 'reason)))
+      (dotimes (i (count files))
+        (let (t:StrView (srcs i))
+          (dotimes (j (count outs))
+            (when (= ((outs j) 'path) (files i)) (set! t ((outs j) 'text))))
+          (conj res t)))
+      (return (ok res)))))
+
+(defn rr5-write (name:StrView src:StrView):!StrView
+  (let (p:String (try (test-write-file name src)))
+    (return (ok (edit-arena-str &p)))))
+
+(defn rr5-no-roots ():&(Vector &RgRoot)
+  (return (new (Vector &RgRoot) heap)))
+
+(defn rr5-one (s:StrView):&(Vector StrView)
+  (let (v:&(Vector StrView) (new (Vector StrView) heap))
+    (conj v s)
+    (return v)))
+
+(defn rr5-two (a:StrView b:StrView):&(Vector StrView)
+  (let (v:&(Vector StrView) (rr5-one a))
+    (conj v b)
+    (return v)))
+
+(defn rr5-replace (t:StrView old:StrView new:StrView):String
+  (let (out:String (str "")
+        rest:StrView t)
+    (while true
+      (match (strview-find &rest &old)
+        ((some j) (do (str-into &out (strview-take-bytes rest j) new)
+                      (set! rest (strview-drop-bytes rest (+ j (old 'len))))))
+        (none (do (str-into &out rest) (return out)))))
+    (return out)))
+
+(defn rr5-lib ():StrView
+  (return "(ns rr5p)
+(defn foo (n:i32):i32 (return (_+ n 1)))
+(defn twice-foo (n:i32):i32 (return (foo (foo n))))
+"))
+
+(defn rr5-main ():StrView
+  (return "(import-prefixed rr5p p)
+(defn main ():i32 (return (p/foo 1)))
+"))
+
+; Two files, two namespaces: the definition, a bare reference in its namespace and a
+; qualified one across it, which keeps its qualifier.
+(deftest rr5-rename-two-files
+  (let (lp:StrView (try (rr5-write "rr5p.nuc" (rr5-lib)))
+        mp:StrView (try (rr5-write "rr5a.nuc" (rr5-main)))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one mp)))
+        r:Rr5Run (try (rr5-plan rs lp (rr5-lib) "foo (n" 0 0 "bump"))
+        got:&(Vector StrView) (try (rr5-apply r (rr5-two lp mp) (rr5-two (rr5-lib) (rr5-main)))))
+    (try (check-eq (got 0) "(ns rr5p)
+(defn bump (n:i32):i32 (return (_+ n 1)))
+(defn twice-foo (n:i32):i32 (return (bump (bump n))))
+"))
+    (try (check-eq (got 1) "(import-prefixed rr5p p)
+(defn main ():i32 (return (p/bump 1)))
+")))
+  (return (ok)))
+
+; Named from a qualified reference, every member of an overload set moves together.
+(deftest rr5-rename-overloads
+  (let (src:StrView "(defn area (x:i32):i32 (return (_* x x)))
+(defn area (x:f64):f64 (return x))
+(defn main ():i32 (area 2.0) (return (area 3)))
+"
+        p:StrView (try (rr5-write "rr5o.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p)))
+        r:Rr5Run (try (rr5-plan rs p src "(area 3)" 0 1 "size"))
+        got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+    (try (check-eq (got 0) "(defn size (x:i32):i32 (return (_* x x)))
+(defn size (x:f64):f64 (return x))
+(defn main ():i32 (size 2.0) (return (size 3)))
+")))
+  (return (ok)))
+
+; A type in every spelling: a field, a constructor, a chain-sugared binder, a
+; return keyword and a template's argument.
+(deftest rr5-rename-type
+  (let (src:StrView "(import-use nucleus.vector)
+(defstruct Foo a:i32)
+(defstruct Box (f Foo))
+(defn mk ():Foo (return (Foo 1)))
+(defn get-a (x:Foo):i32 (return (x 'a)))
+(defn none-of (v:&(Vector Foo)):i32 (return 0))
+(defn main ():i32 (let (f:Foo (mk)) (return (get-a f))))
+"
+        p:StrView (try (rr5-write "rr5t.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p)))
+        r:Rr5Run (try (rr5-plan rs p src "Foo a:" 0 0 "Bar"))
+        got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+    (try (check-eq (got 0) "(import-use nucleus.vector)
+(defstruct Bar a:i32)
+(defstruct Box (f Bar))
+(defn mk ():Bar (return (Bar 1)))
+(defn get-a (x:Bar):i32 (return (x 'a)))
+(defn none-of (v:&(Vector Bar)):i32 (return 0))
+(defn main ():i32 (let (f:Bar (mk)) (return (get-a f))))
+")))
+  (return (ok)))
+
+; A macro and its calls; its link name is a JIT symbol, checked like any other.
+(deftest rr5-rename-macro
+  (let (src:StrView "(defmacro twice (e) `(_+ ~e ~e))
+(defn main ():i32 (return (twice 2)))
+"
+        p:StrView (try (rr5-write "rr5m.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p)))
+        r:Rr5Run (try (rr5-plan rs p src "twice (e)" 0 0 "double"))
+        got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+    (try (check-eq (got 0) "(defmacro double (e) `(_+ ~e ~e))
+(defn main ():i32 (return (double 2)))
+")))
+  (return (ok)))
+
+; A new name another definition holds, or one a local in a renamed site's scope binds.
+(deftest rr5-rename-collision
+  (let (src:StrView "(defn foo (n:i32):i32 (return n))
+(defn other ():i32 (return 2))
+(defn g (bump:i32):i32 (return (foo bump)))
+(defn main ():i32 (return (g (other))))
+"
+        p:StrView (try (rr5-write "rr5c.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p))))
+    (try (rr5-refused (try (rr5-plan rs p src "foo (n" 0 0 "other")) "'other' names a definition of root"))
+    (try (rr5-refused (try (rr5-plan rs p src "foo (n" 0 0 "bump")) "'bump' already occurs here")))
+  (return (ok)))
+
+; An occurrence the compiler never resolved: an operand a macro drops.
+(deftest rr5-rename-unrecorded
+  (let (src:StrView "(defmacro ignore (e) `0)
+(defn foo ():i32 (return 1))
+(defn main ():i32 (ignore (foo)) (return (foo)))
+"
+        p:StrView (try (rr5-write "rr5u.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p))))
+    (try (rr5-refused (try (rr5-plan rs p src "foo ()" 0 0 "bar")) "this 'foo' has no record")))
+  (return (ok)))
+
+; Two roots that read the definition's file under different keys: a report from
+; another build of the library, doctored here.
+(deftest rr5-roots-disagree
+  (let (lp:StrView (try (rr5-write "rr5p.nuc" (rr5-lib)))
+        mp:StrView (try (rr5-write "rr5a.nuc" (rr5-main)))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one mp)))
+        out:String (try (rr1-resolve mp))
+        bad:String (rr5-replace (string-as-view &out) "\"rr5p/foo\"" "\"rr5p/fob\""))
+    (match (report-parse (edit-arena-str &bad))
+      ((err e) (fail! "report-parse refused the doctored report: " e))
+      ((ok rep) (conj rs (rename-global-root "doctored" rep false))))
+    (try (rr5-refused (try (rr5-plan rs lp (rr5-lib) "foo (n" 0 0 "bump"))
+                      "the roots disagree on the definition's key"))
+    (drop &out) (drop &bad))
+  (return (ok)))
+
+; A report of another version is refused before it is read.
+(deftest rr5-report-version
+  (let (p:StrView (try (rr5-write "rr5v.edn" "{:record :report :version 3 :unit \"u.nuc\"}\n{:record :coverage}\n")))
+    (match (rg-read-report p)
+      ((ok r) (fail! "a version 3 report was read"))
+      ((err e) (try (check-contains e "the report is version 3; this library reads version 4")))))
+  (return (ok)))
+
+; Renamed, written, resolved again and renamed back: the original bytes in every file.
+(deftest rr5-rename-and-back
+  (let (lp:StrView (try (rr5-write "rr5p.nuc" (rr5-lib)))
+        mp:StrView (try (rr5-write "rr5a.nuc" (rr5-main)))
+        files:&(Vector StrView) (rr5-two lp mp)
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one mp)))
+        r:Rr5Run (try (rr5-plan rs lp (rr5-lib) "foo (n" 0 0 "bump"))
+        mid:&(Vector StrView) (try (rr5-apply r files (rr5-two (rr5-lib) (rr5-main)))))
+    (try (rr5-write "rr5p.nuc" (mid 0)))
+    (try (rr5-write "rr5a.nuc" (mid 1)))
+    (let (rs2:&(Vector &RgRoot) (try (rr5-roots (rr5-one mp)))
+          r2:Rr5Run (try (rr5-plan rs2 lp (mid 0) "bump (n" 0 0 "foo"))
+          back:&(Vector StrView) (try (rr5-apply r2 files mid)))
+      (try (check-eq (back 0) (rr5-lib)))
+      (try (check-eq (back 1) (rr5-main)))))
+  (return (ok)))
+
+; A C function only a header declares is in the IR and nowhere else; `@bar-baz` does not name `bar`.
+(deftest rr5-ir-check
+  (let (src:StrView "(import-use \"stdio.h\")
+(defn bar-baz ():i32 (return 2))
+(defn foo ():i32 (return 1))
+(defn main ():i32 (return (_+ (foo) (bar-baz))))
+"
+        p:StrView (try (rr5-write "rr5i.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p))))
+    (try (rr5-refused (try (rr5-plan rs p src "foo ()" 0 0 "memccpy")) "IR names a symbol 'memccpy'"))
+    (let (r:Rr5Run (try (rr5-plan rs p src "foo ()" 0 0 "bar"))
+          got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+      (try (check-contains (got 0) "(_+ (bar) (bar-baz))"))))
+  (return (ok)))
+
+; A `:host` global refuses, a `:host` function renames: the report doctored, as a library's would read.
+(deftest rr5-host
+  (let (src:StrView "(defvar counter:i64 0)
+(defn bump ():i64 (set! counter (_+ counter 1)) (return counter))
+(defn main ():i32 (bump) (return 0))
+"
+        p:StrView (try (rr5-write "rr5h.nuc" src))
+        out:String (try (rr1-resolve p))
+        a:String (rr5-replace (string-as-view &out) ":link \"counter\" :host false" ":link \"counter\" :host true")
+        b:String (rr5-replace (string-as-view &a) ":link \"bump\" :host false" ":link \"bump\" :host true")
+        rs:&(Vector &RgRoot) (rr5-no-roots))
+    (match (report-parse (edit-arena-str &b))
+      ((err e) (fail! "report-parse refused the doctored report: " e))
+      ((ok rep) (conj rs (rename-global-root p rep false))))
+    (try (rr5-refused (try (rr5-plan rs p src "counter:" 0 0 "tally")) "macro bodies share the compiler's own 'counter'"))
+    (let (r:Rr5Run (try (rr5-plan rs p src "bump ()" 0 0 "tick-up"))
+          got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+      (try (check-contains (got 0) "(defn main ():i32 (tick-up) (return 0))")))
+    (drop &out) (drop &a) (drop &b))
+  (return (ok)))
+
+; A stale header is found by its C identifier, bare or namespaced, its asm label or a comment.
+(deftest rr5-header-scan
+  (when (not (rg-header-spells? "lib/m.h" "int32_t square(int32_t x);\n" "square")) (fail! "a bare C name"))
+  (when (rg-header-spells? "lib/m.h" "int32_t squared(int32_t x);\n" "square") (fail! "a longer C name"))
+  (when (not (rg-header-spells? "lib/g.h" "int32_t geom__area(int32_t w);\n" "area")) (fail! "a namespaced C name"))
+  (when (not (rg-header-spells? "lib/q.h" "bool nuc_full_QMARK(void) asm(\"nuc_full_QMARK\");\n" "full?"))
+    (fail! "a nuc_ name"))
+  (when (not (rg-header-spells? "lib/b.h" "/* box-set: generic template; not exported */\n" "box-set"))
+    (fail! "a comment"))
+  (when (not (rg-header-spells? "lib/g.nuch" "(declare area ((w i32)) :i32)\n" "area")) (fail! "a .nuch"))
+  (when (rg-header-spells? "lib/g.nuch" "(declare geom__area)\n" "area") (fail! "a .nuch's C spelling"))
+  (return (ok)))
+
+; A union and the constructors its arms mint, `Shape-circle` with it; the arm stays.
+(deftest rr5-rename-union
+  (let (src:StrView "(defunion Shape (circle r:i32) dot)
+(defn area (s:Shape):i32 (match s ((circle r) (return r)) (dot (return 0))))
+(defn main ():i32 (return (_+ (area (Shape-circle 2)) (area (Shape dot)))))
+"
+        p:StrView (try (rr5-write "rr5n.nuc" src))
+        rs:&(Vector &RgRoot) (try (rr5-roots (rr5-one p)))
+        r:Rr5Run (try (rr5-plan rs p src "Shape (circle" 0 0 "Form"))
+        got:&(Vector StrView) (try (rr5-apply r (rr5-one p) (rr5-one src))))
+    (try (check-eq (got 0) "(defunion Form (circle r:i32) dot)
+(defn area (s:Form):i32 (match s ((circle r) (return r)) (dot (return 0))))
+(defn main ():i32 (return (_+ (area (Form-circle 2)) (area (Form dot)))))
+")))
   (return (ok)))

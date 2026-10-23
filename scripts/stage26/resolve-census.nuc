@@ -1,0 +1,906 @@
+; The resolution report's coverage gate (design/stage26-refactoring/overview.md
+; §4.9, §8 RR-1 to RR-3).
+;
+;   for f in src/nucleusc.nuc examples/*.nuc scripts/stage26/*.nuc lib/nucleus/*.nuc; do
+;     build/nucleusc --resolve $f > reports/$(echo $f | tr / _).edn; done
+;   build/nucleusc --run scripts/stage26/resolve-census.nuc -- reports/*.edn
+;
+; Definitions: every top-level definer the slot table finds has exactly one :def
+; on its name's segment 0. References: every :ref with a span sits on one chain
+; segment of an atom, and that segment's text is its :name; one with no span says
+; why, and :mismatch is a failure; a local's target is a :binder record; no line
+; repeats in a report; a version 3 record's :via agrees with where its span is;
+; a version 4 :def's :link spells its name's IR token, and no two definitions of
+; one report share a link unless one declares the other or both declare a C symbol. Then every symbol atom
+; in code, over the distinct files, is classed by how many records its segment 0
+; has; two is a failure. Exits 1 on any failure. Versions 2 and 3 are read too,
+; for a before-and-after table.
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.node)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
+(import-use nucleus.read)
+(import-use nucleus.syntax)
+(import-use nucleus.slots)
+(import-use nucleus.edn)
+(import-use nucleus.string-split)
+(import-use nucleus.create)
+(import-use nucleus.allocator)
+
+(defvar g-reports:i64 0)
+(defvar g-empty:i64 0)
+(defvar g-file-reads:i64 0)
+(defvar g-definers:i64 0)
+(defvar g-mapped:i64 0)
+(defvar g-records:i64 0)
+(defvar g-on-syn:i64 0)
+(defvar g-macro-arg:i64 0)
+(defvar g-absent:i64 0)
+(defvar g-ambiguous:i64 0)
+(defvar g-failures:i64 0)
+(defvar g-report:StrView "")
+(defvar g-refs:i64 0)
+(defvar g-ref-on-seg:i64 0)
+(defvar g-local-targets:i64 0)
+(defvar g-coverage-lines:i64 0)
+(defvar g-version:i64 0)
+; Version 4 :def links: checked, nil by kind and form, and the defs owning each link per report.
+(defvar g-links:i64 0)
+(defvar g-hosts:i64 0)
+(defvar g-link-nil:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-link-nil-names:&(Vector StrView) (new (Vector StrView) heap))
+; Spanned version 3 records whose :via is checked once every file's regions are known.
+(defstruct PendingVia path:StrView start:i64 via:StrView call-start:i64 call-end:i64 macro:StrView)
+(defvar g-pending:&(Vector PendingVia) (new (Vector PendingVia) heap))
+(defvar g-via-checked:i64 0)
+; Segment starts inside a quasiquote template's data; `fn`-family forms' spans by file;
+; each list's head end by (path, start); top-level forms by file.
+(defvar g-tmpl:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defstruct Span start:i64 end:i64 head:StrView)
+(defvar g-lambdas:&(HashMap Symbol &(Vector Span)) (new (HashMap Symbol &(Vector Span)) heap))
+(defvar g-tops:&(HashMap Symbol &(Vector Span)) (new (HashMap Symbol &(Vector Span)) heap))
+(defvar g-head-end:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-files:&(HashMap Symbol &SynFile) (new (HashMap Symbol &SynFile) heap))
+; Every chain segment's name text of every atom: (path, start) to end.
+(defvar g-segs:&(HashMap Symbol usize) (new (HashMap Symbol usize) heap))
+; Distinct :ref lines across the reports, and their tallies by role and why.
+(defvar g-ref-lines:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-tally:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+; Per span start (path, start): the distinct records on it, and how many.
+(defvar g-span-rec:&(HashMap Symbol Symbol) (new (HashMap Symbol Symbol) heap))
+(defvar g-span-n:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+; Spans with a record that is not :via :instance: only an instance may mean one
+; thing in one unit and another elsewhere. And (path, start, report) → identity.
+(defvar g-span-mixed:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-span-rep:&(HashMap Symbol Symbol) (new (HashMap Symbol Symbol) heap))
+; Macro call heads, by (path, start) of the head's name.
+(defvar g-macro-heads:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+; Files a report read for emission, distinct.
+(defvar g-emitted:&(Vector StrView) (new (Vector StrView) heap))
+(defvar g-emitted-set:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-atoms:&(HashMap Symbol usize) (new (HashMap Symbol usize) heap))
+(defvar g-heads:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+; Per file, the source forms that :instance and :generated records name: a
+; template whose instances were emitted, or a defaulted parameter.
+(defstruct Iv start:i64 end:i64 instance:bool)
+(defvar g-ivs:&(HashMap Symbol &(Vector Iv)) (new (HashMap Symbol &(Vector Iv)) heap))
+(defvar g-iv-seen:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+; Span starts (path, start) that carry a :ref, for "this form has none".
+(defvar g-ref-starts:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+
+(defn fail (what:StrView):void
+  (set! g-failures (+ g-failures 1))
+  (eprint g-report ": " what "\n"))
+
+(defn fail (what:String):void
+  (fail (string-as-view &what)))
+
+(defn key-of (s:String):Symbol
+  (return (symbol-intern (string-as-view &s))))
+
+(defn read-whole (path:StrView):!String
+  (let (fh:File (try (file-open-read &path))
+        text:String (try (file-read-to-string &fh)))
+    (drop &fh)
+    (return (ok text))))
+
+(defn rec-text (m:?&Node k:StrView):StrView
+  (let (v:?&Node (edn-get m k))
+    (when (or (= (edn-kind v) EDN-STR) (= (edn-kind v) EDN-KEYWORD))
+      (return (symbol-as-view ((unsafe/cast &Node v) 's))))
+    (return "")))
+
+; Anything but the symbol `true` reads as false, so a missing slot fails the check.
+(defn rec-bool (m:?&Node k:StrView):bool
+  (let (v:?&Node (edn-get m k))
+    (return (and (= (edn-kind v) EDN-BOOL) (= (symbol-as-view ((unsafe/cast &Node v) 's)) "true")))))
+
+(defn rec-int (m:?&Node k:StrView):i64
+  (let (v:?&Node (edn-get m k))
+    (when (= (edn-kind v) EDN-INT) (return ((unsafe/cast &Node v) 'i)))
+    (return -1)))
+
+(defn span-key (path:StrView start:usize end:usize):Symbol
+  (return (key-of (str path "\n" (as i64 start) "\n" (as i64 end)))))
+
+; Chain segment 0 of the atom a name position leads to: a list name's head, a
+; fuse's atom, or the atom itself.
+(defn name-atom (k:&Syn):?&Syn
+  (let (cur:&Syn k)
+    (while (and (or (= (cur 'kind) SYN-LIST) (= (cur 'kind) SYN-FUSE))
+                (> (count (ref cur 'kids)) 0))
+      (set! cur ((ref cur 'kids) 0)))
+    (when (!= (cur 'kind) SYN-ATOM) (return null))
+    (return cur)))
+
+(defn seg0-end (f:&SynFile a:&Syn):usize
+  (let (c:&Chain (chain-segments (syn-text f a)))
+    (return (+ (a 'start) ((chain-seg c 0) 'end)))))
+
+(defn seg0-start (f:&SynFile a:&Syn):usize
+  (let (c:&Chain (chain-segments (syn-text f a)))
+    (return (+ (a 'start) ((chain-seg c 0) 'start)))))
+
+(defn bump-in (m:&(HashMap Symbol i64) k:Symbol):void
+  (match (get m k)
+    ((some n) (assoc m k (+ n 1)))
+    (none (assoc m k 1))))
+
+; Every symbol atom's segment 0, by start, for "a record sits on a Syn"; and
+; each segment's name, its body or all of segment 0, for a :ref.
+(defn index-atoms (path:StrView f:&SynFile s:&Syn):void
+  (when (and (= (s 'kind) SYN-ATOM) (= (node-kind (s 'node)) NODE-SYM))
+    (assoc g-atoms (key-of (str path "\n" (as i64 (seg0-start f s))))
+           (seg0-end f s)))
+  (when (and (= (s 'kind) SYN-ATOM)
+             (or (= (node-kind (s 'node)) NODE-SYM) (= (node-kind (s 'node)) NODE-KEYWORD)))
+    (let (c:&Chain (chain-segments (syn-text f s)))
+      (dotimes (i (count (ref c 'segs)))
+        (let (g:ChainSeg (chain-seg c i))
+          (assoc g-segs (key-of (str path "\n" (as i64 (+ (s 'start) (g 'body))))) (+ (s 'start) (g 'end)))
+          (when (= i 0)
+            (assoc g-segs (key-of (str path "\n" (as i64 (+ (s 'start) (g 'start))))) (+ (s 'start) (g 'end))))))))
+  (when (and (= (s 'kind) SYN-LIST) (> (count (ref s 'kids)) 0))
+    (assoc g-head-end (key-of (str path "\n" (as i64 (s 'start)))) (as i64 (((ref s 'kids) 0) 'end)))
+    (let (h:StrView (slot-head (s 'node)))
+      (when (or (= h "fn") (= h "vfn") (= h "mfn") (= h "cfn"))
+        (push-span g-lambdas path (Span (as i64 (s 'start)) (as i64 (s 'end)) h)))))
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (dotimes (i (count ks)) (index-atoms path f (ks i)))))
+
+(defn push-span (m:&(HashMap Symbol &(Vector Span)) path:StrView sp:Span):void
+  (match (get m (symbol-intern path))
+    ((some v) (conj v sp))
+    (none (let (v:&(Vector Span) (new (Vector Span) heap))
+            (conj v sp)
+            (assoc m (symbol-intern path) v)))))
+
+; The span in `m`'s list for `path` that holds `at`, innermost last.
+; Start -1 when none does.
+(defn span-at (m:&(HashMap Symbol &(Vector Span)) path:StrView at:i64):Span
+  (let (r:Span (Span -1 -1 ""))
+    (match (get m (symbol-intern path))
+      ((some v) (dotimes (i (count v))
+                  (when (and (>= at ((v i) 'start)) (< at ((v i) 'end)))
+                    (set! r (v i)))))
+      (none 0))
+    (return r)))
+
+(defn syn-file-of (path:StrView):?&SynFile
+  (let (k:Symbol (symbol-intern path))
+    (match (get g-files k)
+      ((some f) (return (as ptr f)))
+      (none 0))
+    (match (read-whole path)
+      ((err e) (return null))
+      ((ok text)
+        (let (kept:&String (new String heap))
+          (str-into kept (string-as-view &text))
+          (drop &text)
+          (match (read-syntax-all (string-as-view kept))
+            ((err e) (return null))
+            ((ok f) (do (assoc g-files k f)
+                        (let (fs:&(Vector &Syn) (ref f 'forms))
+                          (dotimes (i (count fs))
+                            (push-span g-tops path (Span (as i64 ((fs i) 'start)) (as i64 ((fs i) 'end))
+                                                         (slot-head ((fs i) 'node))))
+                            (index-atoms path f (fs i))))
+                        (return (as ptr f))))))))))
+
+; A definer by the slot table: its first operand is a name or a binder. The
+; module forms share that row shape and define nothing; `ns` defines a namespace.
+(defn definer? (h:StrView):bool
+  (when (or (= h "") (= h "import") (= h "import-use") (= h "import-only")
+            (= h "import-prefixed") (= h "require") (= h "require-ct") (= h "export")
+            (= h "set-ir-prefix") (= h "unsafe/import-private"))
+    (return false))
+  (let (a:i32 ((form-slots-of h) 'a))
+    (return (or (= a SLOT-NAME) (= a SLOT-BINDER)))))
+
+(defn bump (h:StrView):void
+  (let (k:Symbol (symbol-intern h))
+    (match (get g-heads k)
+      ((some n) (assoc g-heads k (+ n 1)))
+      (none (assoc g-heads k 1)))))
+
+(defn check-definer (path:StrView f:&SynFile s:&Syn counts:&(HashMap Symbol i64)):void
+  (let (n:?&Node (s 'node)
+        h:StrView (slot-head n))
+    (when (not (definer? h)) (return))
+    (set! g-definers (+ g-definers 1))
+    (let (k:i32 1)
+      (when ((form-slots n) 'attrs)
+        (while (and (< k (node-len n)) (= (node-kind (node-at n k)) NODE-KEYWORD))
+          (set! k (+ k 1))))
+      (let (kid:?&Syn (syn-kid-for-elem s k)
+            a:?&Syn (if (= kid null) null (name-atom (unsafe/cast &Syn kid))))
+        (when (= a null)
+          (fail (str path ":" (s 'line) ":" (s 'col) ": " h ": no name atom"))
+          (return))
+        (let (at:&Syn (unsafe/cast &Syn a)
+              start:usize (seg0-start f at)
+              end:usize (seg0-end f at)
+              got:i64 0)
+          (match (get counts (span-key path start end)) ((some c) (set! got c)) (none 0))
+          (if (= got 1)
+            (do (set! g-mapped (+ g-mapped 1)) (bump h))
+            (fail (str path ":" (at 'line) ":" (at 'col) ": " h " '" (syn-slice f start end)
+                       "': " got " record(s) for the name's span"))))))))
+
+; Top-level forms, and the operands the slot table keeps at top level
+; (`compile-time`, `do`).
+(defn walk-top (path:StrView f:&SynFile s:&Syn counts:&(HashMap Symbol i64)):void
+  (when (!= (s 'kind) SYN-LIST) (return))
+  (check-definer path f s counts)
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (dotimes (i (count ks))
+      (let (k:&Syn (ks i)
+            j:i32 (syn-elem-index s k))
+        (when (and (>= j 0) (= (slot-of-elem SLOT-TOP (s 'node) j) SLOT-TOP))
+          (walk-top path f k counts))))))
+
+; A record on span start `k`: count it once per distinct identity.
+(defn note-span (k:Symbol ident:Symbol inst:bool):void
+  (when (not inst) (assoc g-span-mixed k 1))
+  (let (seen:Symbol (symbol-none))
+    (match (get g-span-rec k) ((some r) (set! seen r)) (none 0))
+    (cond (symbol-none? seen) (do (assoc g-span-rec k ident) (assoc g-span-n k 1))
+          (!= seen ident)
+            ; Two different records on one span: kept as a count, read by the atom pass.
+            (let (sk:Symbol (key-of (str (symbol-as-view k) "\n" (symbol-as-view ident))))
+              (match (get g-span-rec sk)
+                ((some r) 0)
+                (none (do (assoc g-span-rec sk ident) (bump-in g-span-n k))))))))
+
+(defn check-record (m:?&Node counts:&(HashMap Symbol i64)):void
+  (set! g-records (+ g-records 1))
+  (let (path:StrView (rec-text m "file")
+        name:StrView (rec-text m "name")
+        trace:StrView (rec-text m "trace")
+        form:StrView (rec-text m "form")
+        start:i64 (rec-int m "start")
+        end:i64 (rec-int m "end"))
+    (when (!= (strview-has-suffix form "-") (rec-bool m "private"))
+      (fail (str path ": " form " " name ": :private disagrees with the head")))
+    ; Only a macro's name may lack a span; :none and :mismatch are the mapping's own failures.
+    (when (< start 0)
+      (cond (= trace "absent") (set! g-absent (+ g-absent 1))
+            (= trace "ambiguous") (set! g-ambiguous (+ g-ambiguous 1))
+            true (fail (str path ": " form " " name ": no span, trace " trace)))
+      (return))
+    (cond (= trace "arg") (set! g-macro-arg (+ g-macro-arg 1))
+          (!= trace "exact") (fail (str path ": " form " " name ": a span with trace " trace)))
+    (let (k:Symbol (span-key path (as usize start) (as usize end)))
+      (match (get counts k)
+        ((some c) (assoc counts k (+ c 1)))
+        (none (assoc counts k 1))))
+    (note-span (key-of (str path "\n" start)) (key-of (str "def " (rec-text m "key"))) false)
+    (let (f:?&SynFile (syn-file-of path))
+      (when (= f null)
+        (fail (str path ": cannot read the file a record names"))
+        (return))
+      (match (get g-atoms (key-of (str path "\n" start)))
+        ((some e)
+          (if (and (= (as i64 e) end)
+                   (= (syn-slice (unsafe/cast &SynFile f) (as usize start) (as usize end)) name))
+            (set! g-on-syn (+ g-on-syn 1))
+            (fail (str path ":" start ": record '" name "' is not its atom's segment 0"))))
+        (none (fail (str path ":" start ": record '" name "' points at no symbol atom")))))))
+
+(defn has? (m:&(HashMap Symbol i64) k:Symbol):bool
+  (match (get m k)
+    ((some n) (return true))
+    (none (return false))))
+
+(defn ref-ident (m:?&Node):Symbol
+  (let (t:?&Node (edn-get m "target"))
+    (when (= (edn-kind t) EDN-MAP)
+      (return (key-of (str (rec-text m "role") " " (rec-text m "kind") " " (rec-text t "file") ":"
+                           (rec-int t "start")))))
+    (return (key-of (str (rec-text m "role") " " (rec-text m "kind") " " (rec-text m "target"))))))
+
+; A target span of a local or binder must be a binder record's own span here.
+(defn check-ref (m:?&Node line:StrView binders:&(HashMap Symbol i64)):void
+  (set! g-refs (+ g-refs 1))
+  (when (>= (rec-int m "start") 0)
+    (let (k:Symbol (key-of (str (rec-text m "file") "\n" (rec-int m "start") "\n" g-reports))
+          id:Symbol (ref-ident m))
+      (match (get g-span-rep k)
+        ((some r) (when (!= r id)
+                    (fail (str (rec-text m "file") ":" (rec-int m "start") ": two records for '"
+                               (rec-text m "name") "' in one report"))))
+        (none (assoc g-span-rep k id)))))
+  (when (has? g-ref-lines (symbol-intern line)) (return))
+  (assoc g-ref-lines (symbol-intern line) 1)
+  (let (path:StrView (rec-text m "file")
+        name:StrView (rec-text m "name")
+        role:StrView (rec-text m "role")
+        why:StrView (rec-text m "why")
+        via:StrView (rec-text m "via")
+        start:i64 (rec-int m "start")
+        end:i64 (rec-int m "end"))
+    (bump-in g-tally (key-of (str role " " (if (< start 0) why (if (= why "") "attributed" why)))))
+    (when (>= g-version 3)
+      (when (= (edn-get m "via") null)
+        (fail (str path ": :ref '" name "' has no :via")))
+      (when (and (!= via "") (!= via "desugar") (!= via "rewrite") (!= via "instance") (!= via "closure")
+                 (!= via "expansion") (!= via "template"))
+        (fail (str path ": :ref '" name "' has an unknown :via " via)))
+      (when (and (< start 0) (!= via ""))
+        (fail (str path ": :ref '" name "' has no span and :via " via)))
+      (when (>= start 0)
+        (when (= why "") (bump-in g-tally (key-of (str "via " (if (= via "") "nil" via)))))
+        (conj g-pending (PendingVia path start via (rec-int m "call-start") (rec-int m "call-end")
+                                    (rec-text m "macro")))))
+    (when (< start 0)
+      (cond (or (= why "macro") (= why "instance") (= why "generated") (= why "absent")
+                (= why "ambiguous") (and (= why "prescan") (>= g-version 3)))
+              0
+            true (fail (str path ": :ref '" name "' " role ": no span, why " why)))
+      (let (cs:i64 (rec-int m "call-start")
+            ce:i64 (rec-int m "call-end"))
+        (when (and (or (= why "instance") (= why "generated")) (>= cs 0)
+                   (not (has? g-iv-seen (key-of (str path "\n" cs "\n" ce)))))
+          (assoc g-iv-seen (key-of (str path "\n" cs "\n" ce)) 1)
+          (let (iv:Iv (Iv cs ce (= why "instance")))
+            (match (get g-ivs (symbol-intern path))
+              ((some v) (conj v iv))
+              (none (let (v:&(Vector Iv) (new (Vector Iv) heap))
+                      (conj v iv)
+                      (assoc g-ivs (symbol-intern path) v)))))))
+      (return))
+    ; Version 3: instances or traces that disagree keep the span (§4.9).
+    (when (and (!= why "") (not (and (= why "ambiguous") (>= g-version 3))))
+      (fail (str path ":" start ": :ref '" name "' has a span and :why " why)))
+    (let (f:?&SynFile (syn-file-of path))
+      (when (= f null)
+        (fail (str path ": cannot read the file a :ref names"))
+        (return))
+      (match (get g-segs (key-of (str path "\n" start)))
+        ((some e)
+          (if (and (= (as i64 e) end)
+                   (= (syn-slice (unsafe/cast &SynFile f) (as usize start) (as usize end)) name))
+            (set! g-ref-on-seg (+ g-ref-on-seg 1))
+            (fail (str path ":" start ": :ref '" name "' (" role ") is not a segment's name, text '"
+                       (syn-slice (unsafe/cast &SynFile f) (as usize start) (as usize end)) "'"))))
+        (none (fail (str path ":" start ": :ref '" name "' (" role ") points at no segment")))))
+    (note-span (key-of (str path "\n" start)) (ref-ident m) (= via "instance"))
+    (assoc g-ref-starts (key-of (str path "\n" start)) 1)
+    (when (= role "macro") (assoc g-macro-heads (key-of (str path "\n" start)) 1))
+    (let (t:?&Node (edn-get m "target"))
+      (when (and (= (edn-kind t) EDN-MAP) (or (= role "local") (= role "binder")))
+        (set! g-local-targets (+ g-local-targets 1))
+        (let (tk:Symbol (key-of (str (rec-text t "file") "\n" (rec-int t "start") "\n" (rec-int t "end")))
+              tf:?&SynFile (syn-file-of (rec-text t "file")))
+          (when (not (has? binders tk))
+            (fail (str path ":" start ": :ref '" name "' (" role ") targets no :binder record")))
+          (when (and (!= tf null)
+                     (!= (syn-slice (unsafe/cast &SynFile tf) (as usize (rec-int t "start")) (as usize (rec-int t "end")))
+                         name))
+            (fail (str path ":" start ": :ref '" name "' (" role ") targets a binder spelled otherwise"))))))))
+
+(defn check-report (text:StrView):void
+  (let (it:LineIter (strview-lines &text)
+        files:&(Vector StrView) (new (Vector StrView) heap)
+        recs:&(Vector &Node) (new (Vector &Node) heap)
+        refs:&(Vector &Node) (new (Vector &Node) heap)
+        ref-text:&(Vector StrView) (new (Vector StrView) heap)
+        binders:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap)
+        mine:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap)
+        coverage:i64 0
+        counts:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap)
+        unit:StrView ""
+        lines:i64 0)
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (> (line 'len) 0)
+          (match (edn-parse line)
+            ((err e) (fail (str "line " (+ lines 1) " is not EDN")))
+            ((ok m)
+              (let (r:StrView (rec-text m "record"))
+                (cond (= lines 0)
+                        (if (and (= r "report") (>= (rec-int m "version") 2) (<= (rec-int m "version") 4))
+                          (do (set! unit (rec-text m "unit"))
+                              (set! g-version (rec-int m "version")))
+                          (fail "the first record is not a version 2, 3 or 4 :report"))
+                      (= r "file") (conj files (rec-text m "file"))
+                      (= r "def") (conj recs (unsafe/cast &Node m))
+                      (= r "ref")
+                        (do (when (has? mine (symbol-intern line)) (fail (str "a :ref written twice: " line)))
+                            (assoc mine (symbol-intern line) 1)
+                            (conj refs (unsafe/cast &Node m))
+                            (conj ref-text line)
+                            (when (and (= (rec-text m "role") "binder") (>= (rec-int m "start") 0))
+                              (assoc binders (key-of (str (rec-text m "file") "\n" (rec-int m "start") "\n"
+                                                          (rec-int m "end")))
+                                     1)))
+                      (= r "coverage") (set! coverage (+ coverage 1))
+                      true (fail (str "unknown record :" r))))))
+          (set! lines (+ lines 1)))))
+    (when (= lines 0)
+      (set! g-empty (+ g-empty 1))
+      (eprint g-report ": empty (the compile failed)\n")
+      (return))
+    (let (seen-unit:bool false)
+      (dotimes (i (count files))
+        (when (= (files i) unit) (set! seen-unit true)))
+      (when (not seen-unit) (fail "no :file record for the unit")))
+    (when (!= coverage 1) (fail (str coverage " :coverage records, not 1")))
+    (set! g-coverage-lines (+ g-coverage-lines coverage))
+    (dotimes (i (count recs)) (check-record (recs i) counts))
+    (when (>= g-version 4) (check-links recs))
+    (dotimes (i (count refs)) (check-ref (refs i) (ref-text i) binders))
+    (dotimes (i (count files))
+      (let (k:Symbol (symbol-intern (files i)))
+        (when (not (has? g-emitted-set k))
+          (assoc g-emitted-set k 1)
+          (conj g-emitted (files i)))))
+    (dotimes (i (count files))
+      (let (path:StrView (files i)
+            f:?&SynFile (syn-file-of path))
+        (set! g-file-reads (+ g-file-reads 1))
+        (if (= f null)
+          (fail (str path ": cannot read or syntax-read the file"))
+          (let (sf:&SynFile (unsafe/cast &SynFile f)
+                fs:&(Vector &Syn) (ref sf 'forms))
+            (dotimes (j (count fs)) (walk-top path sf (fs j) counts))))))))
+
+; ---- version 4 links ----
+
+; `ir-name-token`'s spelling of a name, and `sanitize-for-ir`'s (src/format.nuc).
+(defn ir-token (name:StrView):StrView
+  (let (out:&String (new String heap))
+    (when (and (> (name 'len) 0) (>= (aref (name 'data) 0) 48) (<= (aref (name 'data) 0) 57))
+      (str-into out "_"))
+    (dotimes (k (as i64 (name 'len)))
+      (let (c:i32 (as i32 (aref (name 'data) k)))
+        (cond (= c 63) (str-into out "_QMARK")
+              (= c 33) (str-into out "_BANG")
+              true (str-into out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1)))))
+    (return (string-as-view out))))
+
+(defn ir-sanitize (name:StrView):StrView
+  (let (out:&String (new String heap))
+    (dotimes (k (as i64 (name 'len)))
+      (let (c:i32 (as i32 (aref (name 'data) k)))
+        (if (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57)) (= c 95) (= c 46))
+          (str-into out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1))
+          (str-into out "_"))))
+    (return (string-as-view out))))
+
+; `op-name-token`'s mnemonic for an operator method (src/generics.nuc).
+(defn op-mnemonic (name:StrView):StrView
+  (cond (= name "_+") (return "add") (= name "_-") (return "sub") (= name "_*") (return "mul")
+        (= name "_/") (return "div") (= name "%") (return "rem") (= name "=") (return "eq")
+        (= name "!=") (return "ne") (= name "<") (return "lt") (= name "<=") (return "le")
+        (= name ">") (return "gt") (= name ">=") (return "ge") (= name "bit-and") (return "band")
+        (= name "bit-or") (return "bor") (= name "bit-xor") (return "bxor") (= name "bit-shl") (return "bshl")
+        (= name "bit-shr") (return "bshr"))
+  (return ""))
+
+; A link spells its name as a defn does, as an overload's base does, or as a macro's JIT name does.
+(defn link-spells? (link:StrView name:StrView):bool
+  (let (t:StrView (ir-token name)
+        op:StrView (op-mnemonic name))
+    (when (and (> (op 'len) 0) (strview-contains link op)) (return true))
+    (return (if (strview-has-prefix link "__macro_")
+              (strview-contains link (ir-sanitize name))
+              (or (strview-contains link t) (strview-contains link (ir-sanitize t)))))))
+
+(defn note-nil-link (kind:StrView form:StrView):void
+  (let (c:StrView (str-of-head (str-of-head kind " ") form)
+        k:Symbol (symbol-intern c))
+    (match (get g-link-nil k)
+      ((some n) (assoc g-link-nil k (+ n 1)))
+      (none (do (conj g-link-nil-names c) (assoc g-link-nil k 1))))))
+
+; A declaration names a definition's symbol: a C one, or a forward one of the unit's.
+(defn declaring-form? (form:StrView):bool
+  (return (or (= form "declare") (= form "extern") (= form "defmethod"))))
+
+(defn check-links (recs:&(Vector &Node)):void
+  (let (owner:&(HashMap Symbol usize) (new (HashMap Symbol usize) heap))
+    (dotimes (i (count recs))
+      (let (m:&Node (recs i)
+            v:?&Node (edn-get m "link")
+            name:StrView (rec-text m "name")
+            kind:StrView (rec-text m "kind")
+            form:StrView (rec-text m "form"))
+        (let (h:?&Node (edn-get m "host"))
+          (cond (or (= h null) (!= (edn-kind h) EDN-BOOL))
+                  (fail (str (rec-text m "file") ": :def '" name "' has no boolean :host"))
+                (= (symbol-as-view ((unsafe/cast &Node h) 's)) "true")
+                  (do (set! g-hosts (+ g-hosts 1))
+                      (when (or (= v null) (!= (edn-kind v) EDN-STR))
+                        (fail (str (rec-text m "file") ": :def '" name "' is :host with no link"))))
+                true 0))
+        (cond (= v null) (fail (str (rec-text m "file") ": :def '" name "' has no :link slot"))
+              (!= (edn-kind v) EDN-STR) (note-nil-link kind form)
+              true
+                (let (link:StrView (rec-text m "link")
+                      lk:Symbol (symbol-intern link))
+                  (set! g-links (+ g-links 1))
+                  (when (not (link-spells? link name))
+                    (fail (str (rec-text m "file") ": :def '" name "' links as '" link "', which does not spell it")))
+                  (match (get owner lk)
+                    ((some j)
+                      (let (o:&Node (recs j))
+                        (cond (and (declaring-form? form) (declaring-form? (rec-text o "form"))) 0
+                              (!= (rec-text o "key") (rec-text m "key"))
+                                (fail (str (rec-text m "file") ": :def '" name "' (" (rec-text m "key") ") and '"
+                                           (rec-text o "name") "' (" (rec-text o "key") ") share the link " link))
+                              (not (or (declaring-form? form) (declaring-form? (rec-text o "form"))))
+                                (fail (str (rec-text m "file") ": two definitions of " (rec-text m "key")
+                                           " share the link " link)))))
+                    (none (assoc owner lk i)))))))))
+
+; ---- every symbol atom in code ----
+
+(defvar g-classes:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap))
+(defvar g-class-names:&(Vector StrView) (new (Vector StrView) heap))
+(defvar g-code-atoms:i64 0)
+(defvar g-one:i64 0)
+
+; Per class, its subclasses (a head, a slot) in first-seen order.
+(defvar g-subs:&(HashMap Symbol &(Vector StrView)) (new (HashMap Symbol &(Vector StrView)) heap))
+
+(defn classify (c:StrView):void
+  (let (k:Symbol (symbol-intern c))
+    (when (not (has? g-classes k)) (conj g-class-names c))
+    (bump-in g-classes k)))
+
+(defn classify (c:StrView sub:StrView):void
+  (classify c)
+  (let (k:Symbol (key-of (str c "\n" sub)))
+    (when (not (has? g-classes k))
+      (match (get g-subs (symbol-intern c))
+        ((some v) (conj v sub))
+        (none (let (v:&(Vector StrView) (new (Vector StrView) heap))
+                (conj v sub)
+                (assoc g-subs (symbol-intern c) v)))))
+    (bump-in g-classes k)))
+
+(defn class-count (k:Symbol):i64
+  (match (get g-classes k)
+    ((some n) (return n))
+    (none (return 0))))
+
+; A class and its `top` largest subclasses.
+(defn print-class (c:StrView top:i32):void
+  (print "  " c ": " (class-count (symbol-intern c)) "\n")
+  (match (get g-subs (symbol-intern c))
+    ((some v)
+      (let (taken:&(HashMap Symbol i64) (new (HashMap Symbol i64) heap)
+            shown:i32 0
+            rest:i64 0)
+        (while (< shown top)
+          (let (best:i64 0
+                bi:i64 -1)
+            (dotimes (i (count v))
+              (let (n:i64 (class-count (key-of (str c "\n" (v i)))))
+                (when (and (> n best) (not (has? taken (symbol-intern (v i)))))
+                  (set! best n)
+                  (set! bi (as i64 i)))))
+            (if (< bi 0)
+              (set! shown top)
+              (do (assoc taken (symbol-intern (v (as usize bi))) 1)
+                  (print "      " (v (as usize bi)) ": " best "\n")
+                  (set! shown (+ shown 1))))))
+        (dotimes (i (count v))
+          (when (not (has? taken (symbol-intern (v i))))
+            (set! rest (+ rest (class-count (key-of (str c "\n" (v i))))))))
+        (when (> rest 0) (print "      (the rest): " rest "\n"))))
+    (none 0)))
+
+(defn builtin-type? (t:StrView):bool
+  (return (or (= t "i8") (= t "i16") (= t "i32") (= t "i64") (= t "i128") (= t "ui8") (= t "ui16")
+              (= t "ui32") (= t "ui64") (= t "u8") (= t "u16") (= t "u32") (= t "u64") (= t "usize")
+              (= t "ssize") (= t "isize") (= t "f32") (= t "f64") (= t "bool") (= t "void") (= t "ptr")
+              (= t "int") (= t "char") (= t "CStr") (= t "ref") (= t "Maybe") (= t "dyn") (= t "fn")
+              (= t "BoxedFn") (= t "array") (= t "struct") (= t "union") (= t "Const") (= t "Self")
+              (= t "Result") (= t "Err") (= t "float") (= t "double") (= t "long") (= t "short")
+              (= t "uint") (= t "Any") (= t "Valid"))))
+
+; A head with a row in the slot table; a call's row is all SLOT-UNKNOWN.
+(defn builtin-form? (h:StrView):bool
+  (let (r:FormSlots (form-slots-of h))
+    (return (or (!= (r 'a) SLOT-UNKNOWN) (!= (r 'b) SLOT-UNKNOWN) (!= (r 'c) SLOT-UNKNOWN)
+                (!= (r 'rest) SLOT-UNKNOWN)))))
+
+(defn literal-sym? (t:StrView):bool
+  (return (or (= t "true") (= t "false") (= t "null") (= t "none") (= t "_"))))
+
+; 1 when `at` is inside a template an :instance record names, 2 a :generated one, else 0.
+(defn within-iv (path:StrView at:i64):i32
+  (match (get g-ivs (symbol-intern path))
+    ((some v)
+      (let (r:i32 0)
+        (dotimes (i (count v))
+          (let (iv:Iv (v i))
+            (when (and (>= at (iv 'start)) (< at (iv 'end)))
+              (if (iv 'instance) (return 1) (set! r 2)))))
+        (return r)))
+    (none (return 0))))
+
+; `quiet`: the atom's top-level form (a defn's body) has no :ref — a template no use
+; instantiated, or code the unit never emitted.
+(defvar g-form-quiet:bool false)
+; Under a capturing closure, whose lifted body is a copy: its records are :generated.
+(defvar g-in-closure:bool false)
+; The innermost macro call's head, for the class's breakdown.
+(defvar g-macro-head:StrView "")
+
+(defn declaration-head? (h:StrView):bool
+  (return (or (= h "declare") (= h "defprotocol") (= h "defprotocol-") (= h "extern") (= h "deftype")
+              (= h "deftype-"))))
+
+; One atom in slot `slot`; `macro`: a macro call encloses it.
+(defn check-atom (path:StrView f:&SynFile a:&Syn slot:i32 macro:bool head:StrView):void
+  (when (!= (node-kind (a 'node)) NODE-SYM) (return))
+  (when (or (= slot SLOT-QUOTED) (= slot SLOT-TEMPLATE) (= slot SLOT-ATTR) (= slot SLOT-TOP)
+            (= slot SLOT-INLINE))
+    (return))
+  (let (text:StrView (syn-text f a)
+        c:&Chain (chain-segments text)
+        g:ChainSeg (chain-seg c 0)
+        body:StrView (chain-body c 0)
+        n:i64 0)
+    (let (k0:Symbol (key-of (str path "\n" (as i64 (+ (a 'start) (g 'body))))))
+      (match (get g-span-n k0) ((some k) (set! n k)) (none 0))
+      (when (and (= n 0) (!= (g 'start) (g 'body)))
+        (set! k0 (key-of (str path "\n" (as i64 (+ (a 'start) (g 'start))))))
+        (match (get g-span-n k0) ((some k) (set! n k)) (none 0)))
+      (when (and (> n 1) (not (has? g-span-mixed k0)))
+        (classify "one record per unit: a template whose instances differ between units")
+        (set! g-code-atoms (+ g-code-atoms 1))
+        (return)))
+    (set! g-code-atoms (+ g-code-atoms 1))
+    (cond (= n 1) (do (set! g-one (+ g-one 1)) (classify "one record"))
+          (> n 1) (do (classify "more than one record")
+                      (fail (str path ":" (a 'line) ":" (a 'col) ": '" body "' has " n " distinct records")))
+          (literal-sym? body) (classify "none: a literal (true false null none _)")
+          (= slot SLOT-NAME) (classify "none: a name that is no binder (a member, an arm, a module)")
+          (= slot SLOT-FIELD) (classify "none: a struct or union member")
+          (and (= slot SLOT-HEAD) (builtin-form? body))
+            (classify "none: a built-in form's head")
+          (and (or (= slot SLOT-TYPE) (= slot SLOT-RETURN) (= slot SLOT-TYPES)) (builtin-type? body))
+            (classify "none: a built-in type")
+          (or (= slot SLOT-TYPE) (= slot SLOT-RETURN) (= slot SLOT-TYPES))
+            (classify "none: another type (a type variable, or not resolved here)")
+          (= (within-iv path (as i64 (a 'start))) 1)
+            (classify "none: inside a generic template (its records are :instance)" head)
+          (= (within-iv path (as i64 (a 'start))) 2)
+            (classify "none: inside a parameter default (its records are :generated)" head)
+          (and (declaration-head? head) (or (= slot SLOT-BINDER) (= slot SLOT-DECL-PARAMS) (= slot SLOT-PARAMS)))
+            (classify "none: a declaration's parameter (declare, a protocol signature, extern)" head)
+          g-form-quiet (classify "none: in a top-level form, or a defn body, with no :ref (an uninstantiated template, or code not emitted)" head)
+          g-in-closure (classify "none: inside a closure's lifted body (its records are :generated)")
+          macro (classify "none: inside a macro call (RR-3)" g-macro-head)
+          (= slot SLOT-HEAD) (classify "none: other head" body)
+          true (classify "none: other" (str-of-head (str-of-head "in " head) (str-of-slot slot))))))
+
+(defn str-of-head (pre:StrView h:StrView):StrView
+  (let (s:&String (new String heap))
+    (str-into s pre h)
+    (return (string-as-view s))))
+
+(defn str-of-slot (k:i32):StrView
+  (return (str-of-head " slot " (slot-name k))))
+
+; `s` is in slot `own`; `macro`: inside a macro call; `head`: the top-level form's head.
+(defn walk-code (path:StrView f:&SynFile s:&Syn own:i32 macro:bool head:StrView):void
+  (when (and (= (s 'kind) SYN-ATOM) (= own SLOT-TEMPLATE)
+             (or (= (node-kind (s 'node)) NODE-SYM) (= (node-kind (s 'node)) NODE-KEYWORD)))
+    (let (c:&Chain (chain-segments (syn-text f s)))
+      (dotimes (i (count (ref c 'segs)))
+        (let (g:ChainSeg (chain-seg c i))
+          (assoc g-tmpl (key-of (str path "\n" (as i64 (+ (s 'start) (g 'body))))) 1)
+          (assoc g-tmpl (key-of (str path "\n" (as i64 (+ (s 'start) (g 'start))))) 1)))))
+  (cond (= (s 'kind) SYN-ATOM) (check-atom path f s own macro head)
+        (or (= own SLOT-QUOTED) (= own SLOT-TEMPLATE))
+          ; Data, except what an unquote evaluates.
+          (do
+          (when (and (= (s 'kind) SYN-PREFIX) (= own SLOT-TEMPLATE)
+                     (or (= (slot-head (s 'node)) "unquote") (= (slot-head (s 'node)) "unquote-splice")))
+            (dotimes (i (count (ref s 'kids)))
+              (walk-code path f ((ref s 'kids) i) SLOT-VALUE macro head)))
+          (when (not (and (= (s 'kind) SYN-PREFIX)
+                          (or (= (slot-head (s 'node)) "unquote") (= (slot-head (s 'node)) "unquote-splice"))))
+            (dotimes (i (count (ref s 'kids)))
+              (walk-code path f ((ref s 'kids) i) own macro head))))
+        true
+          (let (n:?&Node (s 'node)
+                ks:&(Vector &Syn) (ref s 'kids)
+                m:bool macro
+                mh:StrView g-macro-head)
+            (when (and (> (count ks) 0) (= (node-kind n) NODE-LIST))
+              (let (k0:&Syn (ks 0))
+                (when (= (k0 'kind) SYN-ATOM)
+                  (let (c:&Chain (chain-segments (syn-text f k0)))
+                    (when (or (has? g-macro-heads (key-of (str path "\n" (as i64 (+ (k0 'start) ((chain-seg c 0) 'start))))))
+                              (has? g-macro-heads (key-of (str path "\n" (as i64 (+ (k0 'start) ((chain-seg c 0) 'body)))))))
+                      (set! m true)
+                      (set! mh (syn-text f k0)))))))
+            (let (was:bool g-in-closure
+                  wmh:StrView g-macro-head
+                  h:StrView (if (= (node-kind n) NODE-LIST) (slot-head n) ""))
+              (when (or (= h "mfn") (= h "cfn") (= h "vfn")) (set! g-in-closure true))
+              (set! g-macro-head mh)
+              (dotimes (i (count ks))
+                (let (k:&Syn (ks i)
+                      j:i32 (syn-elem-index s k)
+                      sl:i32 (cond (and (= (s 'kind) SYN-FUSE) (= i 0)) (slot-of-elem own n 0)
+                                   (< j 0) own
+                                   true (slot-of-elem own n j)))
+                  (walk-code path f k sl m head)))
+              (set! g-in-closure was)
+              (set! g-macro-head wmh)))))
+
+; Does any atom under `s` carry a :ref?
+(defn has-ref? (path:StrView f:&SynFile s:&Syn):bool
+  (when (= (s 'kind) SYN-ATOM)
+    (let (c:&Chain (chain-segments (syn-text f s)))
+      (dotimes (i (count (ref c 'segs)))
+        (let (g:ChainSeg (chain-seg c i))
+          (when (or (has? g-ref-starts (key-of (str path "\n" (as i64 (+ (s 'start) (g 'body))))))
+                    (has? g-ref-starts (key-of (str path "\n" (as i64 (+ (s 'start) (g 'start)))))))
+            (return true))))
+      (return false)))
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (dotimes (i (count ks))
+      (when (has-ref? path f (ks i)) (return true))))
+  (return false))
+
+; A definition's body: the elems the slot table calls values, after its signature.
+(defn body-has-ref? (path:StrView f:&SynFile s:&Syn):bool
+  (let (ks:&(Vector &Syn) (ref s 'kids))
+    (dotimes (i (count ks))
+      (let (j:i32 (syn-elem-index s (ks i)))
+        (when (and (> j 0) (= (slot-of-elem SLOT-TOP (s 'node) j) SLOT-VALUE)
+                   (has-ref? path f (ks i)))
+          (return true)))))
+  (return false))
+
+(defn module-form? (h:StrView):bool
+  (return (or (= h "import") (= h "import-use") (= h "import-only") (= h "import-prefixed")
+              (= h "require") (= h "require-ct") (= h "export") (= h "set-ir-prefix")
+              (= h "unsafe/import-private") (= h "ns") (= h "exclude-prelude"))))
+
+(defn check-atoms ():void
+  (dotimes (i (count g-emitted))
+    (let (path:StrView (g-emitted i)
+          f:?&SynFile (syn-file-of path))
+      (when (!= f null)
+        (let (sf:&SynFile (unsafe/cast &SynFile f)
+              fs:&(Vector &Syn) (ref sf 'forms))
+          (dotimes (j (count fs))
+            (let (s:&Syn (fs j)
+                  h:StrView (slot-head (s 'node)))
+              (when (not (module-form? h))
+                (set! g-form-quiet (if (or (= h "defn") (= h "defn-"))
+                                     (not (body-has-ref? path sf s))
+                                     (not (has-ref? path sf s))))
+                (walk-code path sf s SLOT-TOP false h)))))))))
+
+; Where a record's :via says it was found must hold of the text there.
+(defn check-via (p:PendingVia):void
+  (let (path:StrView (p 'path)
+        at:i64 (p 'start)
+        via:StrView (p 'via)
+        tm:bool (has? g-tmpl (key-of (str path "\n" at))))
+    (set! g-via-checked (+ g-via-checked 1))
+    (cond (= via "template")
+            (when (not tm) (fail (str path ":" at ": a :via :template record outside a template")))
+          tm (fail (str path ":" at ": a :via " (if (= via "") "nil" via) " record inside a template's data"))
+          (= via "expansion")
+            (let (he:i64 -1)
+              (match (get g-head-end (key-of (str path "\n" (p 'call-start)))) ((some e) (set! he e)) (none 0))
+              (when (or (= (p 'macro) "") (< at he) (>= at (p 'call-end)))
+                (fail (str path ":" at ": a :via :expansion record outside its call's operands"))))
+          (= via "closure")
+            (when (< ((span-at g-lambdas path at) 'start) 0)
+              (fail (str path ":" at ": a :via :closure record outside any fn, vfn, mfn or cfn")))
+          (= via "instance")
+            (let (h:StrView ((span-at g-tops path at) 'head))
+              (when (not (or (= h "defn") (= h "defn-") (= h "extend")))
+                (fail (str path ":" at ": a :via :instance record outside a defn"))))
+          true 0)))
+
+(defn check-vias ():void
+  (dotimes (i (count g-pending)) (check-via (g-pending i))))
+
+(defn main (argc:i32 argv:ptr):int
+  (let (i:i32 1)
+    (while (< i argc)
+      (let (path:StrView (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i))))
+        (set! g-report path)
+        (set! g-reports (+ g-reports 1))
+        (match (read-whole path)
+          ((ok text) (check-report (string-as-view &text)))
+          ((err e) (fail "cannot read the report"))))
+      (set! i (+ i 1)))
+    (print "reports:  " g-reports " (" g-empty " empty: the compile failed)\n"
+           "files:    " g-file-reads " file read(s) checked, " (count g-files) " distinct\n"
+           "definers: " g-definers " at top level by the slot table, " g-mapped " mapped to exactly one record\n")
+    (print "  by head:")
+    (let (heads:&(Vector StrView) (new (Vector StrView) heap))
+      (conj heads "defn") (conj heads "defn-") (conj heads "declare") (conj heads "defvar")
+      (conj heads "defvar-") (conj heads "extern") (conj heads "defconst") (conj heads "defconst-")
+      (conj heads "defstruct") (conj heads "defstruct-") (conj heads "defunion") (conj heads "defunion-")
+      (conj heads "defenum") (conj heads "defenum-") (conj heads "deferror") (conj heads "deftype")
+      (conj heads "deftype-") (conj heads "defprotocol") (conj heads "defprotocol-")
+      (conj heads "defmacro") (conj heads "defmacro-") (conj heads "ns")
+      (dotimes (j (count heads))
+        (match (get g-heads (symbol-intern (heads j)))
+          ((some n) (print " " (heads j) " " n))
+          (none 0))))
+    (print "\nrecords:  " g-records " :def record(s); " g-on-syn " on a symbol atom's segment 0 ("
+           g-macro-arg " traced through a macro argument)\n"
+           "  no span: " g-absent " absent, " g-ambiguous " ambiguous (macro-made names)\n")
+    (print "host:     " g-hosts " :def record(s) the compiler shares with macro bodies\n")
+    (print "links:    " g-links " :def record(s) with a :link; nil by kind and head:")
+    (dotimes (j (count g-link-nil-names))
+      (match (get g-link-nil (symbol-intern (g-link-nil-names j)))
+        ((some n) (print " " (g-link-nil-names j) " " n))
+        (none 0)))
+    (print "\n")
+    (print "refs:     " g-refs " :ref record(s), " (count g-ref-lines) " distinct; " g-ref-on-seg
+           " of those with a span sit on a segment's name; " g-local-targets " local targets checked\n"
+           "  distinct :ref records by role and outcome:\n")
+    (let (roles:&(Vector StrView) (new (Vector StrView) heap)
+          whys:&(Vector StrView) (new (Vector StrView) heap))
+      (conj roles "local") (conj roles "binder") (conj roles "global") (conj roles "head")
+      (conj roles "type") (conj roles "field") (conj roles "arm") (conj roles "macro")
+      (conj whys "attributed") (conj whys "ambiguous") (conj whys "macro") (conj whys "instance")
+      (conj whys "generated") (conj whys "absent") (conj whys "prescan")
+      (dotimes (r (count roles))
+        (print "    " (roles r) ":")
+        (dotimes (w (count whys))
+          (match (get g-tally (key-of (str (roles r) " " (whys w))))
+            ((some n) (print " " (whys w) " " n))
+            (none 0)))
+        (print "\n")))
+    (check-atoms)
+    (check-vias)
+    (print "via:      " g-via-checked " spanned record(s) checked against where they sit:")
+    (let (vs:&(Vector StrView) (new (Vector StrView) heap))
+      (conj vs "nil") (conj vs "desugar") (conj vs "rewrite") (conj vs "instance") (conj vs "closure")
+      (conj vs "expansion") (conj vs "template")
+      (dotimes (j (count vs))
+        (match (get g-tally (key-of (str "via " (vs j))))
+          ((some n) (print " " (vs j) " " n))
+          (none 0))))
+    (print "\n")
+    (print "atoms:    " g-code-atoms " symbol atoms in code over " (count g-emitted) " distinct files; "
+           g-one " with exactly one record\n")
+    (dotimes (i (count g-class-names)) (print-class (g-class-names i) 30))
+    (print "failures: " g-failures "\n")
+    (return (if (and (= g-failures 0) (> g-definers 0)) 0 1))))

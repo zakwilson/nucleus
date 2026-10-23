@@ -475,6 +475,8 @@
   ; `Vector`) closing together. Identity under `user` → byte-identical.
   (let (sd:ptr (struct-lookup-ref name))
     (when (!= sd null)
+      (when (!= g-resolve 0)
+        (resolve-note-aggregate name (unsafe/cast &StructDef sd)))
       ; A niche defunion (unions.md §6 rules 2/3) resolves to its bare-pointer
       ; niche type, not the (dead) backing struct — union-instance-type decides.
       (let (ud:?&UnionDef ((unsafe/cast &StructDef sd) 'udef))
@@ -488,6 +490,7 @@
   ; apart (§3.2), which is why `type-spelling` is deliberately not taught aliases.
   (if-some (ta (type-alias-lookup-ref name))
     (do
+      (when (!= g-resolve 0) (resolve-note-type name "type-alias" (ta 'name)))
       ; §3.7: a parametric alias used bare would otherwise expand to a body full
       ; of free tyvars and fail as `unknown type: T`, naming the wrong thing.
       (when (!= (ta 'ntv) 0)
@@ -513,6 +516,7 @@
   ; below says so in its own words.
   (if-some (td (c-typedef-find name))
     (when (!= (td 'ty) null)
+      (when (!= g-resolve 0) (resolve-note-type name "c-type" name))
       ; The Type arrives already built, which is the one case `parse-type-from-
       ; node`'s g-array-ok gate never sees; answer it here with the words the
       ; `(array T N)` spelling gives. `reject-array-type` stays the backstop.
@@ -1724,6 +1728,14 @@
 
 ; An alias body is its file's text: another file's is read there, blamed at its own line.
 (defn alias-body-type (ta:&TypeAlias body:ptr line:i32):&Type
+  (when (!= g-resolve 0)
+    (resolve-quiet-enter)
+    (let (t:&Type (alias-body-type-in ta body line))
+      (resolve-quiet-leave)
+      (return t)))
+  (return (alias-body-type-in ta body line)))
+
+(defn alias-body-type-in (ta:&TypeAlias body:ptr line:i32):&Type
   (when (not (alias-foreign? ta)) (return (parse-type-from-node body line)))
   (let (array-ok:i32 g-array-ok
         ctx:StrView (foreign-read-context (ta 'src-file) "type alias" (ta 'name) line)
@@ -1984,8 +1996,12 @@
   (let (utt:?&UnionTemplate ut
         nargs:i32 (- (node-len use-node) 1)
         argts:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
+    (when (!= g-resolve 0)
+      (resolve-note-at RREF-TYPE (as ?&Node use-node) 0 (node-head-sym use-node) "union" ((unsafe/cast &UnionTemplate ut) 'name)))
     (dotimes (i nargs)
-      (set! (aref (unsafe/cast &ptr argts) i) (parse-type-from-node (node-at use-node (+ i 1)) line)))
+      (let (rsd:usize (resolve-push-type-arg (as ?&Node use-node) (+ i 1)))
+        (set! (aref (unsafe/cast &ptr argts) i) (parse-type-from-node (node-at use-node (+ i 1)) line))
+        (resolve-pop-to rsd)))
     (return (union-template-stamp-types ut argts nargs line))))
 
 ; Stamp a template instance from already-parsed argument Type*s. Shared by the
@@ -1999,7 +2015,9 @@
 ; permission rather than a global relaxation.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (when (!= g-resolve 0) (resolve-quiet-enter))
     (let (t:&Type (union-template-stamp-types-in ut argts nargs line))
+      (when (!= g-resolve 0) (resolve-quiet-leave))
       (set! g-type-key-ok saved)
       (return t))))
 
@@ -2054,7 +2072,9 @@
 (defn struct-template-stamp-types (st:?&StructTemplate argts:ptr nargs:i32 line:i32):&Type
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
+    (when (!= g-resolve 0) (resolve-quiet-enter))
     (let (t:&Type (struct-template-stamp-types-in st argts nargs line))
+      (when (!= g-resolve 0) (resolve-quiet-leave))
       (set! g-type-key-ok saved)
       (return t))))
 
@@ -2147,8 +2167,12 @@
   (let (stt:?&StructTemplate st
         nargs:i32 (- (node-len use-node) 1)
         argts:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+    (when (!= g-resolve 0)
+      (resolve-note-at RREF-TYPE (as ?&Node use-node) 0 (node-head-sym use-node) "struct" ((unsafe/cast &StructTemplate st) 'name)))
     (dotimes (i nargs)
-      (set! (aref (unsafe/cast &ptr argts) i) (parse-type-from-node (node-at use-node (+ i 1)) line)))
+      (let (rsd:usize (resolve-push-type-arg (as ?&Node use-node) (+ i 1)))
+        (set! (aref (unsafe/cast &ptr argts) i) (parse-type-from-node (node-at use-node (+ i 1)) line))
+        (resolve-pop-to rsd)))
     (return (struct-template-stamp-types st argts nargs line))))
 
 ; ============================================================
@@ -2338,6 +2362,13 @@
     (die-at line "void has no pointee: write ptr for an untyped pointer")))
 
 (defn parse-type-from-node (node:ptr line:i32):&Type
+  (when (or (= g-resolve 0) (!= g-rs-quiet 0)) (return (parse-type-from-node-in node line)))
+  (let (rsd:usize (resolve-push-type (as ?&Node node))
+        t:&Type (parse-type-from-node-in node line))
+    (resolve-pop-to rsd)
+    (return t)))
+
+(defn parse-type-from-node-in (node:ptr line:i32):&Type
   ; W9 item 45: `()` in a type position is a NULL node (W5f), and it names no
   ; type — the same answer this function gives any other node it cannot read,
   ; from the caller's line since there is no node to blame. One guard here is

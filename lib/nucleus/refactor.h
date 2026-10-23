@@ -351,3 +351,517 @@ bool nuc_rw_form_splice_QMARK(struct nuc_RwForm* f, struct nuc_Node* /* nullable
 void nuc_rw_pat_holes(struct nuc_RwForm* f, struct nuc_Node* at, struct nuc_Node* /* nullable */ p, bool last) asm("nuc_rw-pat-holes");
 void nuc_rw_tmpl_check(struct nuc_RwForm* f, struct nuc_Node* at, struct nuc_Node* /* nullable */ t, int32_t level, bool in_list) asm("nuc_rw-tmpl-check");
 struct nuc_RwForm* nuc_rw_parse_rule(struct nuc_Node* r) asm("nuc_rw-parse-rule");
+#define REPORT_VERSION 4
+typedef struct nuc_RRef {
+    struct nuc_StrView file;
+    int64_t start;
+    int64_t end;
+    struct nuc_StrView name;
+    struct nuc_StrView role;
+    struct nuc_StrView kind;
+    struct nuc_StrView tfile;
+    int64_t tstart;
+    int64_t tend;
+    struct nuc_StrView tkey;
+    struct nuc_StrView why;
+    struct nuc_StrView macro;
+    int64_t cstart;
+    int64_t cend;
+    int64_t cline;
+    int64_t ccol;
+    struct nuc_StrView via;
+} nuc_RRef;
+
+typedef struct nuc_RDef {
+    struct nuc_StrView file;
+    int64_t start;
+    int64_t end;
+    struct nuc_StrView name;
+    struct nuc_StrView ns;
+    struct nuc_StrView key;
+    struct nuc_StrView kind;
+    struct nuc_StrView form;
+    struct nuc_StrView link;
+    struct nuc_StrView macro;
+    bool private_;
+    bool host;
+} nuc_RDef;
+
+#ifndef NUC_INST_nuc_Vector_nuc_StrView
+#define NUC_INST_nuc_Vector_nuc_StrView
+typedef struct nuc_Vector_nuc_StrView {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_StrView;
+#endif
+
+#ifndef NUC_INST_nuc_Vector_nuc_RDef
+#define NUC_INST_nuc_Vector_nuc_RDef
+typedef struct nuc_Vector_nuc_RDef {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RDef;
+#endif
+
+#ifndef NUC_INST_nuc_Vector_nuc_RRef
+#define NUC_INST_nuc_Vector_nuc_RRef
+typedef struct nuc_Vector_nuc_RRef {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RRef;
+#endif
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_i64
+#define NUC_INST_nuc_HashMap_nuc_Symbol_i64
+typedef struct nuc_HashMap_nuc_Symbol_i64 {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_i64;
+#endif
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_Vector_usize
+#define NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_Vector_usize
+typedef struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_pnuc_Vector_usize;
+#endif
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_usize
+#define NUC_INST_nuc_HashMap_nuc_Symbol_usize
+typedef struct nuc_HashMap_nuc_Symbol_usize {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_usize;
+#endif
+
+typedef struct nuc_Report {
+    struct nuc_StrView unit;
+    struct nuc_Vector_nuc_StrView files;
+    struct nuc_Vector_nuc_RDef defs;
+    struct nuc_Vector_nuc_RRef refs;
+    struct nuc_HashMap_nuc_Symbol_i64 spans;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize targets;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize calls;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize loose;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize by_file;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize defs_by_file;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize calls_by_file;
+    struct nuc_HashMap_nuc_Symbol_usize def_names;
+    struct nuc_HashMap_nuc_Symbol_usize macros;
+} nuc_Report;
+
+typedef struct nuc_ReportResult {
+    int32_t tag;
+    union {
+        struct nuc_Report* ok;
+        struct nuc_StrView err;
+    } payload;
+} nuc_ReportResult;
+
+enum nuc_ReportResult_tag {
+    nuc_ReportResult_ok = 0,
+    nuc_ReportResult_err = 1
+};
+
+struct nuc_StrView nuc_rp_text(struct nuc_Node* /* nullable */ m, struct nuc_StrView k) asm("nuc_rp-text");
+int64_t nuc_rp_int(struct nuc_Node* /* nullable */ m, struct nuc_StrView k) asm("nuc_rp-int");
+bool nuc_rp_bool(struct nuc_Node* /* nullable */ m, struct nuc_StrView k) asm("nuc_rp-bool");
+struct nuc_Symbol nuc_rp_key(struct nuc_StrView path, int64_t start, int64_t end) asm("nuc_rp-key");
+struct nuc_StrView nuc_rp_arena_text(struct nuc_String s) asm("nuc_rp-arena-text");
+void nuc_rp_push(struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize* m, struct nuc_Symbol k, size_t i) asm("nuc_rp-push");
+#ifndef NUC_INST_nuc_Vector_usize
+#define NUC_INST_nuc_Vector_usize
+typedef struct nuc_Vector_usize {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_usize;
+#endif
+
+struct nuc_Vector_usize* /* nullable */ nuc_rp_list(struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize* m, struct nuc_Symbol k) asm("nuc_rp-list");
+struct nuc_RRef nuc_rp_ref(struct nuc_Node* /* nullable */ m) asm("nuc_rp-ref");
+void nuc_rp_add_ref(struct nuc_Report* r, struct nuc_Node* /* nullable */ m) asm("nuc_rp-add-ref");
+void nuc_rp_add_def(struct nuc_Report* r, struct nuc_Node* /* nullable */ m) asm("nuc_rp-add-def");
+struct nuc_Report* nuc_report_new(void) asm("nuc_report-new");
+bool nuc_rp_skip_QMARK(struct nuc_StrView line, struct nuc_Vector_nuc_StrView* needles) asm("nuc_rp-skip_QMARK");
+struct nuc_ReportResult nuc_report_parse(struct nuc_StrView text) asm("nuc_report-parse");
+struct nuc_ReportResult nuc_report_parse_for(struct nuc_StrView text, struct nuc_Vector_nuc_StrView* only) asm("nuc_report-parse-for");
+struct nuc_ReportResult nuc_report_run(struct nuc_StrView compiler, struct nuc_StrView root, struct nuc_Vector_nuc_StrView* only) asm("nuc_report-run");
+bool nuc_report_reads_QMARK(struct nuc_Report* r, struct nuc_StrView path) asm("nuc_report-reads_QMARK");
+typedef struct nuc_RnFile {
+    struct nuc_StrView path;
+    struct nuc_StrView src;
+    struct nuc_SynFile* syn;
+    struct nuc_Vector_usize strays;
+} nuc_RnFile;
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_RnFile
+#define NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_RnFile
+typedef struct nuc_HashMap_nuc_Symbol_pnuc_RnFile {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_pnuc_RnFile;
+#endif
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_HashMap_nuc_Symbol_i64
+#define NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_HashMap_nuc_Symbol_i64
+typedef struct nuc_HashMap_nuc_Symbol_pnuc_HashMap_nuc_Symbol_i64 {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_pnuc_HashMap_nuc_Symbol_i64;
+#endif
+
+typedef struct nuc_RnCtx {
+    struct nuc_Report* rep;
+    bool in_strings;
+    struct nuc_HashMap_nuc_Symbol_pnuc_RnFile files;
+    struct nuc_HashMap_nuc_Symbol_pnuc_HashMap_nuc_Symbol_i64 spelled;
+} nuc_RnCtx;
+
+struct nuc_RnCtx* nuc_rename_ctx_new(struct nuc_Report* rep, bool in_strings) asm("nuc_rename-ctx-new");
+typedef struct nuc_Refusal {
+    size_t at;
+    struct nuc_StrView reason;
+} nuc_Refusal;
+
+typedef struct nuc_RnPlan {
+    struct nuc_StrView path;
+    struct nuc_StrView old;
+    struct nuc_StrView new_;
+    struct nuc_SynSpan binder;
+    struct nuc_Vector_nuc_SynSpan sites;
+    struct nuc_Refusal refusal;
+} nuc_RnPlan;
+
+bool nuc_rn_plan_ok_QMARK(struct nuc_RnPlan* p) asm("nuc_rn-plan-ok_QMARK");
+struct nuc_Syn* /* nullable */ nuc_rn_kid_holding(struct nuc_Vector_pnuc_Syn* ks, size_t start, size_t end) asm("nuc_rn-kid-holding");
+struct nuc_Syn* /* nullable */ nuc_rn_syn_at(struct nuc_SynFile* f, size_t start, size_t end) asm("nuc_rn-syn-at");
+struct nuc_StrView nuc_rn_src_at(struct nuc_RnFile* f, int64_t start, int64_t end) asm("nuc_rn-src-at");
+struct nuc_Vector_usize* nuc_rn_in_file(struct nuc_Report* rep, struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize* m, struct nuc_StrView path) asm("nuc_rn-in-file");
+struct nuc_Refusal nuc_rn_file_load(struct nuc_RnCtx* ctx, struct nuc_StrView path, struct nuc_StrView src) asm("nuc_rn-file-load");
+struct nuc_RnFile* /* nullable */ nuc_rn_file(struct nuc_RnCtx* ctx, struct nuc_StrView path) asm("nuc_rn-file");
+struct nuc_RnFile* /* nullable */ nuc_rn_file_or_read(struct nuc_RnCtx* ctx, struct nuc_StrView path) asm("nuc_rn-file-or-read");
+#ifndef NUC_INST_nuc_Vector_nuc_Symbol
+#define NUC_INST_nuc_Vector_nuc_Symbol
+typedef struct nuc_Vector_nuc_Symbol {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_Symbol;
+#endif
+
+typedef struct nuc_RnScan {
+    struct nuc_RnCtx* ctx;
+    struct nuc_RnFile* f;
+    struct nuc_StrView old;
+    struct nuc_StrView new_;
+    struct nuc_Syn* region;
+    struct nuc_Refusal refusal;
+    struct nuc_Vector_nuc_Symbol macros;
+    struct nuc_Vector_usize macro_at;
+} nuc_RnScan;
+
+void nuc_rn_refuse(struct nuc_RnScan* sc, size_t at, struct nuc_StrView why) asm("nuc_rn-refuse");
+bool nuc_rn_refused_QMARK(struct nuc_RnScan* sc) asm("nuc_rn-refused_QMARK");
+struct nuc_RRef nuc_rn_rec(struct nuc_RnScan* sc, size_t i) asm("nuc_rn-rec");
+bool nuc_rn_boundary_QMARK(int32_t c) asm("nuc_rn-boundary_QMARK");
+bool nuc_rn_token_in_QMARK(struct nuc_StrView t, struct nuc_StrView name) asm("nuc_rn-token-in_QMARK");
+bool nuc_rn_spellable_QMARK(struct nuc_StrView t) asm("nuc_rn-spellable_QMARK");
+bool nuc_rn_spells_QMARK(struct nuc_StrView t, struct nuc_StrView name) asm("nuc_rn-spells_QMARK");
+void nuc_rn_check_old(struct nuc_RnScan* sc, size_t b, size_t e) asm("nuc_rn-check-old");
+void nuc_rn_scan_atom(struct nuc_RnScan* sc, struct nuc_Syn* s, bool in_macro) asm("nuc_rn-scan-atom");
+void nuc_rn_scan_string(struct nuc_RnScan* sc, struct nuc_Syn* s, bool in_macro) asm("nuc_rn-scan-string");
+void nuc_rn_note_macro(struct nuc_RnScan* sc, struct nuc_StrView key, size_t at) asm("nuc_rn-note-macro");
+void nuc_rn_scan_calls(struct nuc_RnScan* sc, struct nuc_Syn* s) asm("nuc_rn-scan-calls");
+void nuc_rn_scan_call_rec(struct nuc_RnScan* sc, struct nuc_RRef x, size_t at) asm("nuc_rn-scan-call-rec");
+bool nuc_rn_unbound_local_QMARK(struct nuc_RRef x) asm("nuc_rn-unbound-local_QMARK");
+bool nuc_rn_macro_call_QMARK(struct nuc_RnScan* sc, struct nuc_Syn* s) asm("nuc_rn-macro-call_QMARK");
+void nuc_rn_scan(struct nuc_RnScan* sc, struct nuc_Syn* s, bool in_macro) asm("nuc_rn-scan");
+bool nuc_rn_code_slot_QMARK(int32_t k) asm("nuc_rn-code-slot_QMARK");
+struct nuc_Syn* nuc_rn_region(struct nuc_Syn* a) asm("nuc_rn-region");
+void nuc_rn_spellings_of(struct nuc_RnFile* f, struct nuc_Syn* s, struct nuc_HashMap_nuc_Symbol_i64* out) asm("nuc_rn-spellings-of");
+int32_t nuc_rn_macro_spells(struct nuc_RnCtx* ctx, struct nuc_Symbol key, struct nuc_StrView name) asm("nuc_rn-macro-spells");
+bool nuc_rn_ident_text_QMARK(struct nuc_StrView t) asm("nuc_rn-ident-text_QMARK");
+struct nuc_StrView nuc_rn_bad_name(struct nuc_StrView t) asm("nuc_rn-bad-name");
+bool nuc_rn_builtin_type_QMARK(struct nuc_StrView t) asm("nuc_rn-builtin-type_QMARK");
+struct nuc_RnPlan* nuc_rn_fail(struct nuc_RnPlan* p, size_t at, struct nuc_StrView why) asm("nuc_rn-fail");
+struct nuc_RnPlan* nuc_rename_local_plan(struct nuc_RnCtx* ctx, struct nuc_StrView path, size_t at, struct nuc_StrView new_) asm("nuc_rename-local-plan");
+struct nuc_RnPlan* nuc_rn_plan_binder(struct nuc_RnCtx* ctx, struct nuc_RnFile* f, struct nuc_RnPlan* p, size_t bs, size_t be) asm("nuc_rn-plan-binder");
+void nuc_rn_check_sites(struct nuc_RnScan* sc, struct nuc_RnPlan* p, struct nuc_Symbol bkey) asm("nuc_rn-check-sites");
+void nuc_rn_check_outer(struct nuc_RnScan* sc, size_t bs, size_t be) asm("nuc_rn-check-outer");
+void nuc_rn_check_loose(struct nuc_RnScan* sc) asm("nuc_rn-check-loose");
+void nuc_rn_check_strays(struct nuc_RnScan* sc) asm("nuc_rn-check-strays");
+void nuc_rn_check_discards(struct nuc_RnScan* sc) asm("nuc_rn-check-discards");
+bool nuc_rn_enclosed_by_macro_QMARK(struct nuc_RnScan* sc, struct nuc_Syn* rg) asm("nuc_rn-enclosed-by-macro_QMARK");
+void nuc_rn_check_macros(struct nuc_RnScan* sc) asm("nuc_rn-check-macros");
+typedef struct nuc_RenameResult {
+    int32_t tag;
+    union {
+        struct nuc_String ok;
+        struct nuc_Refusal err;
+    } payload;
+} nuc_RenameResult;
+
+enum nuc_RenameResult_tag {
+    nuc_RenameResult_ok = 0,
+    nuc_RenameResult_err = 1
+};
+
+void nuc_rename_edits_add(struct nuc_Edits* e, struct nuc_RnPlan* p) asm("nuc_rename-edits-add");
+struct nuc_RenameResult nuc_rename_edits_apply(struct nuc_StrView src, struct nuc_Edits* e, size_t at) asm("nuc_rename-edits-apply");
+struct nuc_RenameResult nuc_rename_local_apply(struct nuc_StrView src, struct nuc_RnPlan* p) asm("nuc_rename-local-apply");
+struct nuc_Refusal nuc_rename_file_load(struct nuc_RnCtx* ctx, struct nuc_StrView path, struct nuc_StrView src) asm("nuc_rename-file-load");
+struct nuc_RenameResult nuc_rename_local(struct nuc_RnCtx* ctx, struct nuc_StrView path, struct nuc_StrView src, size_t at, struct nuc_StrView new_) asm("nuc_rename-local");
+int64_t nuc_rn_offset(struct nuc_StrView src, int64_t line, int64_t col) asm("nuc_rn-offset");
+int64_t nuc_rn_line(struct nuc_StrView src, size_t at) asm("nuc_rn-line");
+void nuc_rn_print_site(struct nuc_StrView path, struct nuc_StrView src, size_t at, struct nuc_StrView what) asm("nuc_rn-print-site");
+int64_t nuc_rn_digits(struct nuc_StrView t) asm("nuc_rn-digits");
+int32_t nuc_rn_usage(void) asm("nuc_rn-usage");
+int32_t nuc_rename_local_main(int32_t argc, void* argv) asm("nuc_rename-local-main");
+int32_t nuc_rn_main(struct nuc_StrView path, int64_t line, int64_t col, struct nuc_StrView new_, bool apply, bool in_strings, struct nuc_StrView root, struct nuc_StrView report, struct nuc_StrView compiler) asm("nuc_rn-main");
+int32_t nuc_rn_main_with(struct nuc_StrView path, struct nuc_StrView src, int64_t line, int64_t col, struct nuc_StrView new_, bool apply, bool in_strings, struct nuc_ReportResult res) asm("nuc_rn-main-with");
+enum RgWhat {
+    RgWhat_RG_ATOM = 0,
+    RgWhat_RG_DATA = 1,
+    RgWhat_RG_LIST = 2
+};
+
+typedef struct nuc_RgOcc {
+    struct nuc_StrView path;
+    size_t b;
+    size_t e;
+    size_t q;
+    int32_t what;
+    struct nuc_Syn* syn;
+} nuc_RgOcc;
+
+typedef struct nuc_RgText {
+    struct nuc_StrView path;
+    size_t at;
+    struct nuc_StrView text;
+} nuc_RgText;
+
+typedef struct nuc_RgOpts {
+    struct nuc_StrView compiler;
+    struct nuc_StrView compiler_src;
+    bool ir_check;
+    struct nuc_Vector_nuc_StrView edit;
+} nuc_RgOpts;
+
+#ifndef NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc
+#define NUC_INST_nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc
+typedef struct nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc {
+    uint8_t* keys;
+    uint8_t* vals;
+    uint8_t* states;
+    size_t count;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc;
+#endif
+
+#ifndef NUC_INST_nuc_Vector_nuc_RgText
+#define NUC_INST_nuc_Vector_nuc_RgText
+typedef struct nuc_Vector_nuc_RgText {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RgText;
+#endif
+
+typedef struct nuc_RgRoot {
+    struct nuc_StrView name;
+    struct nuc_RnCtx* ctx;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc occ;
+    struct nuc_Vector_nuc_RgText texts;
+    struct nuc_HashMap_nuc_Symbol_usize def_spans;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize key_refs;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize key_defs;
+    struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize loose;
+    struct nuc_HashMap_nuc_Symbol_usize links;
+    size_t nfiles;
+    struct nuc_StrView ir;
+    bool ir_read;
+    struct nuc_Refusal refusal;
+    struct nuc_StrView refused;
+} nuc_RgRoot;
+
+struct nuc_StrView nuc_rg_bare(struct nuc_StrView name) asm("nuc_rg-bare");
+struct nuc_StrView nuc_rg_template_key(struct nuc_StrView key) asm("nuc_rg-template-key");
+struct nuc_StrView nuc_rg_ir_token(struct nuc_StrView name) asm("nuc_rg-ir-token");
+struct nuc_StrView nuc_rg_ir_sanitize(struct nuc_StrView name) asm("nuc_rg-ir-sanitize");
+struct nuc_Vector_nuc_StrView* nuc_rg_link_spellings(struct nuc_StrView name) asm("nuc_rg-link-spellings");
+void nuc_rg_push_occ(struct nuc_HashMap_nuc_Symbol_pnuc_Vector_nuc_RgOcc* m, struct nuc_Symbol k, struct nuc_RgOcc o) asm("nuc_rg-push-occ");
+#ifndef NUC_INST_nuc_Vector_nuc_RgOcc
+#define NUC_INST_nuc_Vector_nuc_RgOcc
+typedef struct nuc_Vector_nuc_RgOcc {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RgOcc;
+#endif
+
+struct nuc_Vector_nuc_RgOcc* /* nullable */ nuc_rg_occ(struct nuc_RgRoot* r, struct nuc_StrView name) asm("nuc_rg-occ");
+struct nuc_StrView nuc_rg_head_text(struct nuc_RnFile* f, struct nuc_Syn* s) asm("nuc_rg-head-text");
+int64_t nuc_rg_list_from(struct nuc_RnFile* f, struct nuc_Syn* s) asm("nuc_rg-list-from");
+bool nuc_rg_type_keyword_QMARK(struct nuc_Syn* s) asm("nuc_rg-type-keyword_QMARK");
+void nuc_rg_index_atom(struct nuc_RgRoot* r, struct nuc_RnFile* f, struct nuc_Syn* s, bool in_macro, bool list) asm("nuc_rg-index-atom");
+void nuc_rg_index_spelling(struct nuc_RgRoot* r, struct nuc_RnFile* f, struct nuc_Syn* s, struct nuc_StrView t) asm("nuc_rg-index-spelling");
+void nuc_rg_index_string(struct nuc_RgRoot* r, struct nuc_RnFile* f, struct nuc_Syn* s, bool data) asm("nuc_rg-index-string");
+void nuc_rg_index(struct nuc_RgRoot* r, struct nuc_RnScan* sc, struct nuc_Syn* s, bool in_macro, bool in_def, bool list) asm("nuc_rg-index");
+void nuc_rg_index_file(struct nuc_RgRoot* r, struct nuc_RnFile* f) asm("nuc_rg-index-file");
+void nuc_rg_index_report(struct nuc_RgRoot* r) asm("nuc_rg-index-report");
+struct nuc_RgRoot* nuc_rg_root_refuse(struct nuc_RgRoot* r, struct nuc_StrView path, size_t at, struct nuc_StrView why) asm("nuc_rg-root-refuse");
+struct nuc_RgRoot* nuc_rename_global_root(struct nuc_StrView name, struct nuc_Report* rep, bool in_strings) asm("nuc_rename-global-root");
+typedef struct nuc_RgSite {
+    struct nuc_StrView path;
+    size_t b;
+    size_t e;
+    size_t q;
+    size_t qe;
+} nuc_RgSite;
+
+#ifndef NUC_INST_nuc_Vector_nuc_RgSite
+#define NUC_INST_nuc_Vector_nuc_RgSite
+typedef struct nuc_Vector_nuc_RgSite {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RgSite;
+#endif
+
+typedef struct nuc_RgPlan {
+    struct nuc_StrView old;
+    struct nuc_StrView new_;
+    struct nuc_StrView key;
+    struct nuc_StrView kind;
+    struct nuc_Vector_nuc_RgSite sites;
+    struct nuc_Refusal refusal;
+    struct nuc_StrView refused;
+    struct nuc_Vector_nuc_StrView headers;
+} nuc_RgPlan;
+
+bool nuc_rg_plan_ok_QMARK(struct nuc_RgPlan* p) asm("nuc_rg-plan-ok_QMARK");
+struct nuc_RgPlan* nuc_rg_fail(struct nuc_RgPlan* p, struct nuc_StrView path, size_t at, struct nuc_StrView why) asm("nuc_rg-fail");
+struct nuc_RRef nuc_rg_ref(struct nuc_RgRoot* r, size_t i) asm("nuc_rg-ref");
+struct nuc_RDef nuc_rg_def(struct nuc_RgRoot* r, size_t i) asm("nuc_rg-def");
+struct nuc_Vector_usize* /* nullable */ nuc_rg_list(struct nuc_HashMap_nuc_Symbol_pnuc_Vector_usize* m, struct nuc_StrView k) asm("nuc_rg-list");
+bool nuc_rg_edits_QMARK(struct nuc_StrView kind, struct nuc_StrView role, struct nuc_StrView rk) asm("nuc_rg-edits_QMARK");
+bool nuc_rg_kind_in_scope_QMARK(struct nuc_StrView kind) asm("nuc_rg-kind-in-scope_QMARK");
+bool nuc_rg_declaring_QMARK(struct nuc_StrView form) asm("nuc_rg-declaring_QMARK");
+struct nuc_Syn* /* nullable */ nuc_rg_top_form(struct nuc_RgRoot* r, struct nuc_StrView path, size_t start, size_t end) asm("nuc_rg-top-form");
+bool nuc_rg_in_definer_QMARK(struct nuc_RgRoot* r, struct nuc_StrView key, struct nuc_StrView path, int64_t cs, int64_t ce) asm("nuc_rg-in-definer_QMARK");
+bool nuc_rg_has_site_in_QMARK(struct nuc_Vector_nuc_RgSite* sites, struct nuc_StrView path, size_t start, size_t end) asm("nuc_rg-has-site-in_QMARK");
+bool nuc_rg_template_site_QMARK(struct nuc_RgRoot* r, struct nuc_StrView key, struct nuc_Vector_nuc_RgSite* sites) asm("nuc_rg-template-site_QMARK");
+bool nuc_rg_positional_name_QMARK(struct nuc_RgOcc o) asm("nuc_rg-positional-name_QMARK");
+void nuc_rg_check_occ(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_StrView kind, struct nuc_StrView old, size_t len, struct nuc_RgOcc o, struct nuc_Vector_nuc_RgSite* out) asm("nuc_rg-check-occ");
+bool nuc_rg_member_QMARK(struct nuc_RRef x) asm("nuc_rg-member_QMARK");
+void nuc_rg_check_key_refs(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_StrView old, struct nuc_StrView dkey, struct nuc_Vector_nuc_RgSite* out) asm("nuc_rg-check-key-refs");
+void nuc_rg_check_loose_old(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_StrView old) asm("nuc_rg-check-loose-old");
+struct nuc_StrView nuc_rg_relink(struct nuc_StrView link, struct nuc_StrView old, struct nuc_StrView new_) asm("nuc_rg-relink");
+struct nuc_StrView nuc_rg_relink_any(struct nuc_StrView link, struct nuc_StrView old, struct nuc_StrView new_) asm("nuc_rg-relink-any");
+bool nuc_rg_ir_char_QMARK(int32_t c) asm("nuc_rg-ir-char_QMARK");
+bool nuc_rg_ir_has_QMARK(struct nuc_StrView ir, struct nuc_StrView tok) asm("nuc_rg-ir-has_QMARK");
+struct nuc_StrView nuc_rg_root_ir(struct nuc_RgRoot* r, struct nuc_RgOpts* opts) asm("nuc_rg-root-ir");
+void nuc_rg_check_new_name(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView new_) asm("nuc_rg-check-new-name");
+void nuc_rg_check_new(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_RgOpts* opts) asm("nuc_rg-check-new");
+extern struct nuc_HashMap_nuc_Symbol_i64* /* nullable */ nuc_g_rg_fixed asm("nuc_g-rg-fixed");
+extern struct nuc_StrView nuc_g_rg_fixed_dir asm("nuc_g-rg-fixed-dir");
+extern int64_t nuc_g_rg_fixed_files asm("nuc_g-rg-fixed-files");
+struct nuc_HashMap_nuc_Symbol_i64* nuc_rg_fixed(void) asm("nuc_rg-fixed");
+void nuc_rg_fixed_add(struct nuc_StrView t) asm("nuc_rg-fixed-add");
+void nuc_rg_fixed_text(struct nuc_StrView t) asm("nuc_rg-fixed-text");
+void nuc_rg_fixed_walk(struct nuc_SynFile* f, struct nuc_Syn* s) asm("nuc_rg-fixed-walk");
+bool nuc_rg_fixed_load(struct nuc_StrView dir) asm("nuc_rg-fixed-load");
+bool nuc_rg_core_ns_QMARK(struct nuc_StrView ns) asm("nuc_rg-core-ns_QMARK");
+struct nuc_StrView nuc_rg_core_refusal(struct nuc_RDef d, struct nuc_RgOpts* opts) asm("nuc_rg-core-refusal");
+struct nuc_StrView nuc_rg_key_at(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView path, size_t at) asm("nuc_rg-key-at");
+struct nuc_StrView nuc_rg_key_in(struct nuc_RgRoot* r, struct nuc_RgRoot* r0, struct nuc_StrView key0, struct nuc_Vector_usize* ds0, struct nuc_RgPlan* p) asm("nuc_rg-key-in");
+void nuc_rg_root_sites(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_StrView kind, struct nuc_RgOpts* opts, struct nuc_Vector_nuc_RgSite* out) asm("nuc_rg-root-sites");
+struct nuc_StrView nuc_rg_old_bad(struct nuc_StrView old, struct nuc_StrView bad) asm("nuc_rg-old-bad");
+void nuc_rg_check_name(struct nuc_RgRoot* r, struct nuc_RgPlan* p, struct nuc_StrView key, struct nuc_StrView kind, struct nuc_StrView old, struct nuc_StrView dkey, struct nuc_Vector_nuc_RgSite* out) asm("nuc_rg-check-name");
+struct nuc_Vector_nuc_StrView* nuc_rg_union_arms(struct nuc_RgRoot* r, struct nuc_StrView key) asm("nuc_rg-union-arms");
+bool nuc_rg_editable_QMARK(struct nuc_StrView path, struct nuc_RgOpts* opts) asm("nuc_rg-editable_QMARK");
+struct nuc_StrView nuc_rg_sig(struct nuc_Vector_nuc_RgSite* sites, struct nuc_StrView path) asm("nuc_rg-sig");
+struct nuc_RgPlan* nuc_rg_plan_new(struct nuc_StrView old, struct nuc_StrView new_) asm("nuc_rg-plan-new");
+#ifndef NUC_INST_nuc_Vector_pnuc_RgRoot
+#define NUC_INST_nuc_Vector_pnuc_RgRoot
+typedef struct nuc_Vector_pnuc_RgRoot {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_pnuc_RgRoot;
+#endif
+
+struct nuc_RgPlan* nuc_rename_global_plan(struct nuc_Vector_pnuc_RgRoot* roots, struct nuc_StrView path, size_t at, struct nuc_StrView new_, struct nuc_RgOpts* opts) asm("nuc_rename-global-plan");
+bool nuc_rg_seen_QMARK(struct nuc_HashMap_nuc_Symbol_i64* m, struct nuc_Symbol k) asm("nuc_rg-seen_QMARK");
+#ifndef NUC_INST_nuc_Vector_pnuc_Vector_nuc_RgSite
+#define NUC_INST_nuc_Vector_pnuc_Vector_nuc_RgSite
+typedef struct nuc_Vector_pnuc_Vector_nuc_RgSite {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_pnuc_Vector_nuc_RgSite;
+#endif
+
+struct nuc_RgPlan* nuc_rg_merge(struct nuc_RgPlan* p, struct nuc_Vector_pnuc_RgRoot* roots, struct nuc_Vector_pnuc_Vector_nuc_RgSite* parts, struct nuc_RgOpts* opts) asm("nuc_rg-merge");
+typedef struct nuc_RgOut {
+    struct nuc_StrView path;
+    struct nuc_StrView text;
+} nuc_RgOut;
+
+struct nuc_RnFile* /* nullable */ nuc_rg_src(struct nuc_Vector_pnuc_RgRoot* roots, struct nuc_StrView path) asm("nuc_rg-src");
+#ifndef NUC_INST_nuc_Vector_nuc_RgOut
+#define NUC_INST_nuc_Vector_nuc_RgOut
+typedef struct nuc_Vector_nuc_RgOut {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct nuc_dynref_nucleus_allocator_Allocator alloc;
+} nuc_Vector_nuc_RgOut;
+#endif
+
+struct nuc_Vector_nuc_RgOut* nuc_rename_global_apply(struct nuc_Vector_pnuc_RgRoot* roots, struct nuc_RgPlan* p) asm("nuc_rename-global-apply");
+bool nuc_rg_c_char_QMARK(int32_t c) asm("nuc_rg-c-char_QMARK");
+bool nuc_rg_c_has_QMARK(struct nuc_StrView text, struct nuc_StrView tok) asm("nuc_rg-c-has_QMARK");
+bool nuc_rg_header_spells_QMARK(struct nuc_StrView h, struct nuc_StrView text, struct nuc_StrView old) asm("nuc_rg-header-spells_QMARK");
+void nuc_rename_global_headers(struct nuc_RgPlan* p) asm("nuc_rename-global-headers");
+void nuc_rg_print_site(struct nuc_StrView path, struct nuc_RnFile* /* nullable */ f, size_t at, struct nuc_StrView what) asm("nuc_rg-print-site");
+int32_t nuc_rg_usage(void) asm("nuc_rg-usage");
+struct nuc_ReportResult nuc_rg_read_report(struct nuc_StrView file) asm("nuc_rg-read-report");
+int32_t nuc_rename_global_main(int32_t argc, void* argv) asm("nuc_rename-global-main");
+int32_t nuc_rg_main(struct nuc_StrView path, int64_t line, int64_t col, struct nuc_StrView new_, bool apply, bool in_strings, struct nuc_Vector_nuc_StrView* roots, struct nuc_Vector_nuc_StrView* reports, struct nuc_RgOpts* opts) asm("nuc_rg-main");

@@ -444,3 +444,272 @@ as a different tree.
 `glob-files` and `walk-dir` in `nucleus.file` list files recursively in a
 fixed, bytewise order. `glob-files` takes bash-style `globstar` patterns such as
 `lib/**/*.nuc` ([io.md](io.md#walking-and-globs)).
+
+## Reading a resolution report
+
+`nucleusc --resolve FILE` compiles the unit and writes what it resolved to
+stdout instead of IR ([compiler.md](compiler.md#compiler-flags)). The format is
+**unstable**. The first line names its version, and a tool should refuse a
+version it was not written for:
+
+```
+{:record :report :version 4 :unit "geo.nuc"}
+{:record :file :file "geo.nuc" :header false}
+{:record :def :file "geo.nuc" :start 15 :end 19 :line 2 :col 7 :name "norm" :ns "geo" :key "geo/norm" :kind :function :form "defn" :link "geo__norm" :host false :private false :origin :source :trace :exact :macro nil :call-start nil :call-end nil :call-line nil :call-col nil}
+{:record :ref :file "geo.nuc" :start 21 :end 22 :line 2 :col 13 :name "p" :role :binder :kind :local :target {:file "geo.nuc" :start 21 :end 22} :why nil :macro nil :call-start nil :call-end nil :call-line nil :call-col nil :via :desugar}
+…
+{:record :coverage :attributed 1210 :ambiguous 0 :no-span 388 :why {:macro 370 :instance 12 :generated 6 :absent 0 :prescan 0 :mismatch 0} :unframed 41 :unframed-only 0 :roles {…} :via {…}}
+```
+
+Each line is one EDN map. Read a line with `edn-parse` and a slot with
+`edn-get` ([edn.md](edn.md)). The `:record` keyword says what kind of record
+it is, and no slot is ever left out: an absent value is `nil`. The report has
+five kinds of record:
+- `:report`, which comes first.
+- `:file`, one for each file the unit read, with `:header true` for a `.nuch`.
+- `:def`, one for each top-level definition, including those in the prelude
+  and the imports.
+- `:ref`, one for each occurrence of a name the compiler resolved while
+  emitting the unit.
+- `:coverage`, which comes last and counts the `:ref` records.
+
+`:file` and `:def` records come in the order the compiler met them. Then come
+the `:ref` records, in the order each occurrence was first met, and last the
+`:why :prescan` records (below).
+
+A `:def` record's `:start`/`:end` is a half-open byte range covering the name
+alone: `norm` in `(defn norm …)`, `x` in `x:i32`, and `Vector` in
+`(defstruct (Vector T) …)`. `:line`/`:col` give its start, counting from 1.
+These are the same offsets that `read-syntax-all` gives the file's `Syn`
+nodes, so a tool can join the two. The `Syn` whose span equals a record's span
+is the atom that spells the name.
+
+`:key` is the name the compiler stores the definition under, and it is the same
+for every definition of that name: `geo/norm` in namespace `geo`, and plain
+`norm` in `user`. A private value in `user` gets a `#pN/` prefix that is
+numbered per compile, so it identifies the definition only within one report.
+The overloads of one function share a key.
+
+`:link` is the symbol the definition emits, which tells the overloads of one
+key apart (`"geo__norm.i32"`), or `nil` when it emits none (a generic or
+template, a protocol, an enum, a namespace, a literal `defconst`, a type
+alias, a `deferror`). `:host` is `true` when a macro body calls the compiler's
+own copy of the definition instead of the program's: a library function or
+global the running compiler exports, such as `intern-node` or `g-arena`.
+
+A definition that a macro produced has `:origin :macro`, `:macro` naming the
+macro, and `:call-start`/`:call-end` locating the call. When exactly one
+operand of the call spelled the name, that operand's span is the record's span
+(`:trace :arg`). Otherwise the span is `nil`, with `:trace :absent` (the macro
+made the name up) or `:trace :ambiguous` (several operands spell it, or the
+macro's own code spells it too, so the operand may be a coincidence). A tool
+that edits names should treat a `nil` span as a name it cannot move.
+
+### References
+
+A `:ref` record's `:role` says what kind of name it is, `:kind` which registry
+answered, and `:target` what the name means:
+
+| `:role` | the name | `:target` |
+|---|---|---|
+| `:local` | a value naming a local variable or parameter | the binder's span, `{:file :start :end}` |
+| `:binder` | the binder itself: in `let`, a parameter list, a `match` pattern | its own span |
+| `:global` | a value naming a top-level `defvar`, `defconst` or function | the definition's `:key` |
+| `:head` | a call's head: a function, an operator, a struct or union constructor | the `:key` of what the call reached |
+| `:type` | a type name, `Pt` in `p:?&Pt` | the type's `:key`; for an instance of a template, the template's |
+| `:field` | a member selector, `x` in `(p 'x)` | the struct's key |
+| `:arm` | a union arm, in a constructor or a `match` pattern | the union's key |
+| `:macro` | a macro call's head | the macro's `:key` |
+
+A `:key` target is the `:key` of a `:def` record, so the two join. A
+`:local`'s target is the span of a `:binder` record, so every reference to one
+variable shares a target, and a variable that shadows another has its own. The
+span is the name's own bytes: `Pt` in `p:?&Pt`, `x` in `x:i32`, `x` in `'x`.
+`(f x x)` gives two records, one on each `x`. Built-in forms (`let`, `set!`)
+and built-in types (`i32`) are not names and have no record.
+
+**One record per occurrence.** The compiler works on copies of what it read,
+and may resolve one occurrence several times: in each instance of a generic
+function, or in each copy a rewrite made. All of those are one record at the
+occurrence's span. When they disagree (two instances of a generic reach
+different overloads, or a member of two different stamped structs) the record
+keeps its span and has `:why :ambiguous` and `:target nil`, and `:kind nil`
+when even the kind differs. The occurrence is certain; what it means is not.
+
+`:via` says which copy the occurrence was found in:
+
+| `:via` | found |
+|---|---|
+| `nil` | in a list the reader made |
+| `:desugar` | in the compiler's copy of a definition, such as the binder `x` of `x:i32` |
+| `:rewrite` | in a form the compiler rebuilt around the source's elements: `(ok v)`, `err!`, `(set! (aref a i) v)` |
+| `:instance` | in a generic function's body; the record stands for every instance |
+| `:closure` | in a closure's body (`fn`, `vfn`, `mfn`, `cfn`) |
+| `:expansion` | in a macro's expansion, traced to the call's operand (below) |
+| `:template` | in a macro's quasiquote template, at the template's own atom |
+
+A record with no span has `:via nil`.
+
+**Names a macro carried out of its call.** A name in an expansion is given the
+span of the call's operand that spells it, with `:via :expansion`, and keeps
+`:macro` and `:call-*`. The compiler does this only when it can be sure: exactly
+one operand atom spells the name, no string or keyword operand does, and
+nothing the macro ran could have spelled it itself. The last condition covers
+the macro's templates and quoted symbols, the string literals it compiled, the
+macros it expanded in turn, every `compile-time` block, and every function a
+macro body calls. Nor may the expansion hold the name as data, a quoted
+symbol or a string, since a macro that quotes or prints its operand makes the
+spelling part of the program. When any of these fails, the record has no span
+and `:why :ambiguous`. A name that no operand spells keeps `:why :macro`.
+
+A macro's template resolves its names where the macro is defined
+([macros.md](macros.md#a-templates-names-mean-the-macro-files-names)). Each
+such name in a template has a record of its own, at the template's atom, with
+`:via :template`, so renaming a function also finds its spellings in the
+templates that call it.
+
+**Closures.** A closure's body is a copy, too, and its records are the source's.
+A variable the closure captures is a `:local` whose target is the binder
+outside the closure.
+
+Some references have no span (`:start` is `nil`), and `:why` says why:
+- `:macro`: a macro's expansion made the name: no operand of the call spells
+  it. `:macro` and `:call-start`/`:call-end` locate the call.
+- `:instance`: the name is in the body of a generic function but not in its
+  text, such as a type the instance substituted for a type parameter.
+  `:call-*` locates the generic definition when it can.
+- `:generated`: code the compiler wrote, such as a default argument, a
+  closure's reads of what it captured, or the constructors a `defunion` makes.
+- `:ambiguous`: the name came out of a macro call, and the compiler cannot tell
+  which operand, if any, it came from.
+- `:absent`: a name the compiler spelled itself.
+- `:prescan`: a name the compiler resolved only while scanning the unit ahead
+  of emission, such as a signature in a generic that is never instantiated.
+  `:file` is the file it was reading.
+- `:mismatch`: a defect in the report; please report it.
+
+A tool that renames should refuse when an occurrence it would rename has no
+record, has one with no span, or has one with `:why :ambiguous`.
+
+The last line, `:coverage`, counts the `:ref` records: `:attributed` (with a
+span), `:ambiguous` (with a span or without), and `:no-span`, which `:why`
+splits further, with the same counts per role under `:roles`. `:via` counts
+the attributed records by copy. `:unframed` counts names the compiler resolved
+during its early passes over the unit. Emission nearly always resolves them
+again, and those are the records. `:unframed-only` counts the ones it did not,
+which are the `:prescan` records.
+
+## Renaming a local
+
+`scripts/stage26/rename-local.nuc` renames one local variable or parameter,
+using a resolution report, so it edits exactly the occurrences the compiler
+resolved to that binder:
+
+```
+build/nucleusc --run scripts/stage26/rename-local.nuc -- src/foo.nuc:120:14 count
+build/nucleusc --run scripts/stage26/rename-local.nuc -- --apply src/foo.nuc:120:14 count
+```
+
+The first argument is `PATH:LINE:COL` of the binder or of any reference to it
+(the column counts bytes from 1), and the second is the new name. Each site is
+printed as `path:line:col: rename-local: old -> new`, followed by a summary
+line. Nothing is written without `--apply`. A refusal is one line,
+`path:line:col: rename-local: reason`, at the site that caused it. The exit
+status is 0 when the rename is made, or would be, 1 when it is refused, and 2
+for a bad argument.
+
+| Option | Meaning |
+|---|---|
+| `--apply` | write the file (`--dry-run`, the default, does not) |
+| `--root FILE` | the unit to resolve, when the file does not compile alone: `--root src/nucleusc.nuc` for a file in `src/` |
+| `--report FILE` | use a saved `--resolve` report instead of running the compiler; one that does not match the file is refused |
+| `--compiler PATH` | the compiler to run, `build/nucleusc` by default |
+| `--in-strings` | also refuse when a string literal's program text spells either name |
+
+Only the name's own bytes change: `x:i32` becomes `y:i32`, `&x` becomes `&y`,
+and a qualifier or type in the same atom stays as written. When the file has a
+generated `.nuch` beside it, regenerate the header afterwards.
+
+**Refusals.** The tool refuses whenever it cannot prove the rename is exact:
+- The position is not a local's binder or reference (a definition, a global, a
+  field, a macro), or the file is not `.nuc`/`.nuch`.
+- The new name is not one plain symbol; it is a literal, `_`, `self`, a name
+  starting with `__`, a built-in form or type, or the name of any definition
+  in the unit.
+- An occurrence of the old name inside the binder's form has no record, has
+  one with no span, or has one with `:why :ambiguous`. That includes text the
+  compiler never resolved: an operand a macro drops, a `#_` form, a keyword or
+  string inside a macro call, and with `--in-strings` a program in a string.
+- The new name already occurs inside the binder's form, a binder of the new
+  name encloses this one, code the compiler or a macro wrote nearby uses it,
+  or the definition of a macro expanded there spells it.
+
+A refusal leaves the file untouched. Rename by hand there, or rename to a
+different name.
+
+The library entry points are in `nucleus.refactor`: `report-run` or
+`report-parse` to get a `Report`, then `rename-ctx-new`, `rename-file-load` and
+`rename-local`. `rename-local` returns the renamed text or a `Refusal` with its
+byte offset and reason.
+
+## Renaming a definition
+
+`scripts/stage26/rename-global.nuc` renames one top-level definition (a
+function and all its overloads, a global, a constant, an error, a struct, a
+union, a type alias or a macro) in every file of the units you name:
+
+```
+build/nucleusc --run scripts/stage26/rename-global.nuc -- --root src/nucleusc.nuc src/scope.nuc:40:7 scope-find
+build/nucleusc --run scripts/stage26/rename-global.nuc -- --apply --root a.nuc --root b.nuc lib/x.nuc:3:7 y
+```
+
+`PATH:LINE:COL` is any definition of the name or any reference to it. Each
+`--root` is a unit that may use the definition: the tool resolves each one,
+and every file a root read is checked. A rename is only as complete as the
+roots: a unit you did not name is not looked at, and the tool prints how many
+files each root read. Output, `--apply`, the refusal line and the exit status
+are as for `rename-local`.
+
+| Option | Meaning |
+|---|---|
+| `--apply` | write the files (`--dry-run`, the default, does not) |
+| `--root FILE` | a unit that may use the definition; repeat for each one. Without one, `PATH` is the root |
+| `--report FILE` | a saved `--resolve` report for the root its `:unit` names |
+| `--edit PATH` | only these files may be edited: a file, a directory or a glob; repeat for more. A site outside them is refused |
+| `--compiler PATH` | the compiler to run, `build/nucleusc` by default |
+| `--compiler-src DIR` | the compiler's source, `src` by default, which the core-library check reads |
+| `--no-ir-check` | skip compiling each root to look for the new name among its symbols |
+| `--in-strings` | also refuse when a string literal's program text spells the name |
+
+A qualified reference keeps its qualifier: `p/foo` becomes `p/bar`. A type is
+renamed in every spelling: `x:Foo`, `(Vector Foo)`, `&Foo`, a return type
+`(f ()):Foo`, a constructor `(Foo 1)`. Renaming a union renames its arms'
+constructors with it, `Shape-circle` becoming `Form-circle`. A field or union
+arm spelled like the definition stays.
+
+**Refusals.** Besides `rename-local`'s rules about unrecorded, spanless and
+`:ambiguous` occurrences, which apply to every file a root read:
+- A protocol, a namespace, an `extern` (a C symbol), a definition the roots
+  only `declare`, one a macro call made, and `main`.
+- A definition of the prelude (`nucleus.core`, `nucleus.macros`); one of
+  another `nucleus.*` library whose name the compiler's source spells in a
+  string or a template; and a global with `:host true`, whose state macro
+  bodies share with the compiler (a `:host` function is renamed).
+- The new name is a definition's name anywhere in the unit (any namespace), a
+  link name the unit emits, a symbol of a root's IR (a C function a header
+  declares and no code calls), or a name spelled in any file a root read: a
+  local it would capture, a macro template's free name.
+- An `import-only` or `export` list that spells the name: rename it there by
+  hand.
+- The roots disagree: they read the definition's file under different keys,
+  or give one file different sites.
+- A site is in a `.nuch` (headers are regenerated, not edited), in a file
+  outside `--edit`, or in a file the compiler found through the library path
+  (an absolute path) that `--edit` does not name.
+
+After a rename, the tool lists each committed generated header that spells
+the old name. Regenerate them with `scripts/check-headers.sh --fix`.
+
+The library entry points are `rename-global-root` (one per root's `Report`),
+`rename-global-plan` and `rename-global-apply`, which returns each edited
+file's new text.
