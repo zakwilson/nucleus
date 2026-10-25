@@ -8,3 +8,5 @@ rc
 rg
 (import-use "tests/fixtures/g3-repl-lib.nuc")
 (g3-rlib-get)
+(import-use "tests/fixtures/g3-repl-vec.nuc")
+(g3-rvec-at 2)

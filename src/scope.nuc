@@ -349,16 +349,21 @@
 (defn in-jit-module ():i32
   (return (if (!= (as ptr g-decl-out) (as ptr &g-decl-stream)) 1 0)))
 
-; Stage 20 L1: is a byte offset taken now an offset into the program's own
-; definition buffer? `g-out` is also pointed at a macro/CT module's private
-; stream, at an `import-ct` sink, and at the REPL's per-entry buffers, and an
-; offset recorded against any of those is garbage a mirror would splice into a
-; JIT module (design/stage20-macros/macro-call-linking.md §5.1).
+; Stage 20 L1: is a byte offset taken now an offset into a buffer a mirror can
+; copy from? 1 for the program's definitions, 2 for `g-ct-def-buf`, 0 for a
+; macro/CT module's private stream or the REPL's per-entry buffers
+; (design/stage20-macros/macro-call-linking.md §5.1).
 (defn ct-span-recordable ():i32
   (when (= (as ptr g-out) null) (return 0))
+  (when (and (= (as ptr g-out) (as ptr &g-ct-def-buf)) (= (as ptr g-def-stream) (as ptr &g-ct-def-buf))
+             (= (in-jit-module) 0))
+    (return 2))
   (when (!= (as ptr g-out) (as ptr g-def-stream-program)) (return 0))
   (when (!= (as ptr g-def-stream-program) (as ptr &g-def-buf)) (return 0))
   (return 1))
+
+(defn ct-span-len ():usize
+  (return (if (= (ct-span-recordable) 2) (byte-len &g-ct-def-buf) (byte-len &g-def-buf))))
 
 ; §3.1 condition 1: is `path` a file under the library root this invocation
 ; resolved the prelude through? A directory prefix, so a root of `lib` does not
@@ -398,7 +403,7 @@
 ; record — null whenever it declined, which is exactly when nothing may write
 ; `ir-end` (a second emission of one ir-name must not pair its end with the
 ; first's start).
-(defn program-defn-record (irn:Symbol ret:?&Type ptypes:ptr nparams:i32 variadic:i32):?&ProgDefn
+(defn program-defn-record (irn:Symbol name:Symbol ret:?&Type ptypes:ptr nparams:i32 variadic:i32):?&ProgDefn
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return null))
@@ -410,10 +415,11 @@
                  'nparams  nparams
                  'variadic variadic
                  'from-lib (path-under-ct-lib-root g-source-path)
-                 'ir-start (if (!= (ct-span-recordable) 0)
-                             (byte-len &g-def-buf)
-                             (as usize 0))
-                 'ir-end   (as usize 0))
+                 'ir-start (if (!= (ct-span-recordable) 0) (ct-span-len) (as usize 0))
+                 'ir-end   (as usize 0)
+                 'ct-buf   (if (= (ct-span-recordable) 2) 1 0)
+                 'ns       g-current-ns
+                 'name     name)
     (conj g-program-defns pd)
     (return pd)))
 
@@ -422,7 +428,10 @@
 (defn program-defn-note-end (pd:?&ProgDefn):void
   (when (= (as ptr pd) null) (return))
   (when (= (ct-span-recordable) 0) (return))
-  (set! ((unsafe/cast &ProgDefn pd) 'ir-end) (byte-len &g-def-buf)))
+  (set! ((unsafe/cast &ProgDefn pd) 'ir-end) (ct-span-len))
+  ; A linked library's definition is in its object; the program declares it.
+  (when (and (= (ct-span-recordable) 2) (ct-linked? g-source-path))
+    (progdefn-declare-to &g-def-buf (unsafe/cast &ProgDefn pd))))
 
 ; Stage 20 L6, the `defvar` half of the three above. Same contract in every
 ; respect: idempotent by ir-name, null when it declined, and `ir-start ==
@@ -434,7 +443,7 @@
         (return pg))))
   (return null))
 
-(defn program-global-record (irn:Symbol is-const:i32):?&ProgGlobal
+(defn program-global-record (irn:Symbol name:Symbol is-const:i32):?&ProgGlobal
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-global-lookup irn)) null) (return null))
@@ -444,10 +453,11 @@
                  'ty-ir    (symbol-none)
                  'is-const is-const
                  'from-lib (path-under-ct-lib-root g-source-path)
-                 'ir-start (if (!= (ct-span-recordable) 0)
-                             (byte-len &g-def-buf)
-                             (as usize 0))
-                 'ir-end   (as usize 0))
+                 'ir-start (if (!= (ct-span-recordable) 0) (ct-span-len) (as usize 0))
+                 'ir-end   (as usize 0)
+                 'ct-buf   (if (= (ct-span-recordable) 2) 1 0)
+                 'ns       g-current-ns
+                 'name     name)
     (conj g-program-globals pg)
     (return pg)))
 
@@ -458,4 +468,6 @@
   (when (= (as ptr pg) null) (return))
   (set! ((unsafe/cast &ProgGlobal pg) 'ty-ir) (symbol-intern ty-ir))
   (when (= (ct-span-recordable) 0) (return))
-  (set! ((unsafe/cast &ProgGlobal pg) 'ir-end) (byte-len &g-def-buf)))
+  (set! ((unsafe/cast &ProgGlobal pg) 'ir-end) (ct-span-len))
+  (when (and (= (ct-span-recordable) 2) (ct-linked? g-source-path))
+    (ct-mirror-global-declare-to &g-def-buf (unsafe/cast &ProgGlobal pg))))

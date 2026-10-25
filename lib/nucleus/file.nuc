@@ -334,6 +334,145 @@
   (return (err! io-open-failed)))
 
 ; ---------------------------------------------------------------------------
+; File metadata, rename, remove, and paths (design/stage27-build/plan.md BT-1)
+; ---------------------------------------------------------------------------
+
+(import-use "stdlib.h")
+
+(defconst FILE-KIND-OTHER 0)
+(defconst FILE-KIND-REG 1)
+(defconst FILE-KIND-DIR 2)
+
+; Nanoseconds, not seconds: two writes in one second must still compare as changed.
+(defstruct FileStat mtime-ns:i64 size:i64 kind:i32)
+
+(defn c-path (path:&StrView):String
+  (let (p:&String (alloca String))
+    (init p)
+    (string-push-str-unchecked p path)
+    (return @p)))
+
+; `stat`, so a symlink reports its target.
+(defn file-stat (path:StrView):!FileStat
+  (let (p:String (c-path &path)
+        sb:&stat (as &stat (alloca stat 1))
+        rc:i32 (stat (string-as-cstr &p) sb))
+    (drop &p)
+    (when (!= rc 0) (return (err! io-stat-failed)))
+    (let (fmt:i32 (bit-and (as i32 (sb 'st_mode)) S_IFMT)
+          t:timespec (sb 'st_mtim))
+      (return (ok (FileStat (+ (* (as i64 (t 'tv_sec)) 1000000000) (as i64 (t 'tv_nsec)))
+                            (as i64 (sb 'st_size))
+                            (cond (= fmt S_IFREG) FILE-KIND-REG
+                                  (= fmt S_IFDIR) FILE-KIND-DIR
+                                  true FILE-KIND-OTHER)))))))
+
+(defn file-exists? (path:StrView):bool
+  (match (file-stat path)
+    ((ok s) (return true))
+    ((err e) (return false))))
+
+; Atomic within one filesystem, which is what replace-by-rename relies on.
+(defn rename-file (from:StrView to:StrView):!void
+  (let (a:String (c-path &from)
+        b:String (c-path &to)
+        rc:i32 (rename (string-as-cstr &a) (string-as-cstr &b)))
+    (drop &a)
+    (drop &b)
+    (when (!= rc 0) (return (err! io-rename-failed)))
+    (return (ok))))
+
+; A file, or an empty directory.
+(defn remove-file (path:StrView):!void
+  (let (p:String (c-path &path)
+        rc:i32 (unlink (string-as-cstr &p)))
+    (when (!= rc 0) (set! rc (rmdir (string-as-cstr &p))))
+    (drop &p)
+    (when (!= rc 0) (return (err! io-remove-failed)))
+    (return (ok))))
+
+; Absolute, with every symlink, `.` and `..` resolved; the path must exist.
+(defn real-path (path:StrView):!String
+  (let (p:String (c-path &path)
+        r:?&i8 (realpath (string-as-cstr &p) null))
+    (drop &p)
+    (match r
+      (none (return (err! io-path-failed)))
+      ((some q)
+        (let (v:StrView (strview-from-cstr (as CStr q))
+              out:String (c-path &v))
+          (free (as ptr q))
+          (return (ok out)))))))
+
+; The running executable, through `/proc/self/exe` (Linux; plan.md D-LINUX).
+(defn exe-path ():!String
+  (return (real-path "/proc/self/exe")))
+
+; ---------------------------------------------------------------------------
+; Tracked reads (plan.md BT-2 P3). A macro body runs in the compiler's process,
+; so a read through here lands in the buffer the compiler's `--depfile` lists.
+; A direct `open`/`fopen` is not tracked.
+; ---------------------------------------------------------------------------
+
+; Lazily allocated: a library global with a run-time initializer would run in
+; every program that links this file.
+(defvar g-tracked-reads:?&String null)
+
+(defn track-read (path:StrView):void
+  (when (= g-tracked-reads null)
+    (let (s:&String (unsafe/cast &String (malloc (sizeof String))))
+      (init s)
+      (set! g-tracked-reads s)))
+  (let (b:&String (unsafe/cast &String g-tracked-reads)
+        z:&ui8 (as &ui8 (alloca ui8 1)))
+    (set! (aref z 0) 0)
+    (string-push-str-unchecked b &path)
+    (string-push-bytes-raw b z 1)))
+
+; Every tracked path, each followed by a NUL byte.
+(defn tracked-reads ():StrView
+  (when (= g-tracked-reads null) (return ""))
+  (return (string-as-view (unsafe/cast &String g-tracked-reads))))
+
+; The whole file, as bytes, with the path tracked first so a failed read still
+; makes the output depend on the file appearing.
+(defn read-file-tracked (path:StrView):!String
+  (track-read path)
+  (let (f:File (try (file-open-read &path))
+        r:!String (file-read-to-string &f))
+    (drop &f)
+    (return r)))
+
+; An environment variable, or none when it is unset or empty.
+(defn env-var (name:StrView):?StrView
+  (let (n:String (c-path &name)
+        v:?&i8 (getenv (string-as-cstr &n)))
+    (drop &n)
+    (match v
+      (none (return (none)))
+      ((some q)
+        (let (sv:StrView (strview-from-cstr (as CStr q)))
+          (when (= (sv 'len) 0) (return (none)))
+          (return (some sv)))))))
+
+; The XDG base directory spec ignores a relative value, so only an absolute one wins.
+(defn xdg-home-dir (fallback:StrView):!String
+  (match (env-var "HOME")
+    ((some h) (return (ok (str h "/" fallback))))
+    (none (return (err! io-path-failed)))))
+
+(defn xdg-dir (var:StrView fallback:StrView):!String
+  (match (env-var var)
+    ((some v)
+      (if (= (aref (v 'data) 0) 47)
+        (return (ok (c-path &v)))
+        (return (xdg-home-dir fallback))))
+    (none (return (xdg-home-dir fallback)))))
+
+(defn xdg-config-home ():!String (return (xdg-dir "XDG_CONFIG_HOME" ".config")))
+(defn xdg-cache-home ():!String (return (xdg-dir "XDG_CACHE_HOME" ".cache")))
+
+; ---------------------------------------------------------------------------
 ; Globs and the recursive walk (design/stage26-refactoring/overview.md §8 RF-3a)
 ; ---------------------------------------------------------------------------
 

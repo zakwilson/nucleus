@@ -19,6 +19,7 @@
 (import-use nucleus.create)
 (import-use nucleus.file)
 (import-use nucleus.process)
+(import-use nucleus.build.pkg)
 
 ; ============================================================
 ; Non-local exit — the protected call and its throw. The callback shape and the
@@ -1134,16 +1135,10 @@
                     ; anything an import queues after that tail drain.
                     (repl-flush-mono (f 'line))
                     (drain-pending-union-irs)
-                    ; G-3 (§4.5): an imported file's `defvar` with a run-time
-                    ; initializer queues exactly as a directly typed one does,
-                    ; and `drain-init-worklist` deliberately leaves it alone
-                    ; under `g-interactive`. Drain it here, into this module,
-                    ; and call it after the JIT — otherwise the import would
-                    ; register an `llvm.global_ctors` entry ORC never runs and
-                    ; the global would silently read back its zero (measured).
-                    (let (init-sym:Symbol (repl-emit-init-fn))
-                      (repl-jit-module (f 'line))
-                      (repl-run-init-fn init-sym (f 'line)))
+                    ; G-3 (§4.5): an imported `defvar`'s run-time initializer is
+                    ; left queued under `g-interactive`; it runs from a module of
+                    ; its own below, since ORC never runs `llvm.global_ctors`.
+                    (repl-jit-module (f 'line))
                     ; R3 (D7): a stamp, a lifted lambda and a closure
                     ; invoke/drop are emitted into this module by the drain at
                     ; the tail of emit-toplevel-forms, and none of them is a
@@ -1203,6 +1198,16 @@
                                         (emit g-repl-preamble sep "..."))))
                                   (emit g-repl-preamble ")\n"))))))
                         (inc! si)))
+                    ; Last, because an initializer can stamp what nothing else
+                    ; did (a collection literal's `init`), and that stamp may
+                    ; call anything the import defined: its declare has to be
+                    ; in the preamble first.
+                    (when (< g-init-drained (count g-init-worklist))
+                      (open-module-streams)
+                      (let (init-sym:Symbol (repl-emit-init-fn))
+                        (repl-flush-mono (f 'line))
+                        (repl-jit-module (f 'line))
+                        (repl-run-init-fn init-sym (f 'line))))
                     ; Nothing new on any of the four registries an import can
                     ; grow means `do-import` returned on a dedup gate.
                     (let (fresh:i32 0)
@@ -2219,104 +2224,29 @@
               fail:StrView (repl-library-load name))
           (when (not (str-empty? &fail))
             (eprint "error: -l" name ": " fail "\n")
-            (exit 1)))))))
+            (exit 1))))))
+  ; Lenient: `libm.so` is a linker script dlopen refuses, and libm is already in
+  ; the process. A symbol that is truly missing still fails at its lookup.
+  (dotimes (i (count g-creq-libs))
+    (repl-library-load (invoke g-creq-libs i))))
 
-; One `pkg-config <mode> <pkgs…>` child, stdout into `out` and its diagnosis
-; into `errs`. -1 = did not spawn.
-(defn repl-pkg-config-run (pkgs:&(Vector Symbol) mode:StrView
-                           out:&String errs:&String):i32
-  (let (c:Command (command "pkg-config")
-        status:i32 -1)
-    (command-arg &c mode)
-    (dotimes (i (count pkgs))
-      (command-arg &c (symbol-as-view (invoke pkgs i))))
-    (command-capture &c true)
-    (match (spawn &c)
-      ((ok p)
-       (match (process-capture &p out errs)
-         (ok
-          (match (process-wait &p)
-            ((ok st) (set! status (exit-code &st)))
-            ((err e) (set! status -1))))
-         ((err e) (set! status -1))))
-      ((err e) (set! status -1)))
-    (drop &c)
-    (return status)))
-
-; Split pkg-config's output on whitespace. A backslash escapes the byte after
-; it — a path with a space prints as `with\ space` (probed with pkgconf 2.x).
-(defn repl-pkg-config-words (out:&String into:&(Vector Symbol)):void
-  (let (v:StrView (string-as-view out)
-        n:i64 (as i64 (v 'len))
-        w:String (make String)
-        i:i64 0)
-    (while (< i n)
-      (let (c:i32 (text-byte-at v i))
-        (cond (and (= c 92) (< (+ i 1) n))
-                (do (inc! i)
-                    (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) i) 1))
-              (or (= c 32) (= c 9) (= c 10) (= c 13))
-                (do (when (> (byte-len &w) 0)
-                      (conj into (symbol-intern (string-as-view &w))))
-                    (string-clear &w))
-              true
-                (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) i) 1)))
-      (inc! i))
-    (when (> (byte-len &w) 0)
-      (conj into (symbol-intern (string-as-view &w))))
-    (drop &w)))
-
-; The child's diagnosis, or its exit code when it said nothing. pkg-config
-; puts the line that matters first (`Package 'x' was not found …`).
-(defn repl-pkg-config-failure (errs:&String status:i32):StrView
-  (let (ev:StrView (string-as-view errs))
-    (when (> (ev 'len) 0)
-      (match (strview-find-byte &ev 10)
-        ((some k) (return (fstr "pkg-config: " (strview-take-bytes ev k))))
-        (none (return (fstr "pkg-config: " ev)))))
-    ; `spawn` reports an exec that failed as exit 127 with nothing said.
-    (when (or (< status 0) (= status 127)) (return "pkg-config: not found"))
-    (return (fstr "pkg-config: exited " status))))
-
-; Both children succeed before anything is applied, then the batch order: cflags,
-; `-L`, `-l`. What the REPL cannot use (`-pthread`) is named once, not dropped.
+; Both children succeed before anything is applied (nucleus.build.pkg), then the
+; batch order: cflags, `-L`, `-l`. What the REPL cannot use (`-pthread`) is named
+; once, not dropped.
 (defn repl-pkg-config (pkgs:&(Vector Symbol) line:i32):void
-  (let (cf:String (make String) cf-err:String (make String)
-        lb:String (make String) lb-err:String (make String)
-        ok:i32 1)
-    (let (st:i32 (repl-pkg-config-run pkgs "--cflags" &cf &cf-err))
-      (when (!= st 0)
-        (repl-error line (repl-pkg-config-failure &cf-err st))
-        (set! ok 0)))
-    (when (!= ok 0)
-      (let (st:i32 (repl-pkg-config-run pkgs "--libs" &lb &lb-err))
-        (when (!= st 0)
-          (repl-error line (repl-pkg-config-failure &lb-err st))
-          (set! ok 0))))
-    (when (!= ok 0)
-      (let (cflags:&(Vector Symbol) (new (Vector Symbol) g-arena)
-            libs:&(Vector Symbol) (new (Vector Symbol) g-arena)
-            dirs:&(Vector Symbol) (new (Vector Symbol) g-arena)
-            names:&(Vector Symbol) (new (Vector Symbol) g-arena)
-            other:&(Vector Symbol) (new (Vector Symbol) g-arena))
-        (repl-pkg-config-words &cf cflags)
-        (repl-pkg-config-words &lb libs)
-        (dotimes (i (count libs))
-          (let (w:StrView (symbol-as-view (invoke libs i)))
-            (cond (strview-has-prefix w "-L")
-                    (conj dirs (symbol-intern (strview-drop-bytes w 2)))
-                  (strview-has-prefix w "-l")
-                    (conj names (symbol-intern (strview-drop-bytes w 2)))
-                  true
-                    (conj other (invoke libs i)))))
-        (repl-apply-cflags cflags)
-        (when (!= (repl-apply-dirs dirs "library-path" g-library-paths
+  (let (pf:PkgFlags (pkg-flags)
+        msg:String (pkg-config-query pkgs &pf))
+    (if (> (byte-len &msg) 0)
+      (repl-error line (fstr (string-as-view &msg)))
+      (do
+        (repl-apply-cflags (ref pf 'cflags))
+        (when (!= (repl-apply-dirs (ref pf 'lib-dirs) "library-path" g-library-paths
                                    "  library path: " line) 0)
-          (when (!= (repl-apply-libs names line) 0)
-            (dotimes (i (count other))
-              (emit stderr "  skipped: " (invoke other i) "\n"))))))
-    (drop &cf) (drop &cf-err)
-    (drop &lb) (drop &lb-err)))
+          (when (!= (repl-apply-libs (ref pf 'libs) line) 0)
+            (dotimes (i (count (ref pf 'other)))
+              (emit stderr "  skipped: " (invoke (ref pf 'other) i) "\n"))))))
+    (drop &msg)
+    (drop &pf)))
 
 ; REPL main loop
 (defn repl-main ():void

@@ -4260,3 +4260,316 @@ corpus units read, and `lib/mapiterlib.nuch`, which
 `tests/fixtures/mapiterlib.nuc`. Two of those units were renamed from
 `w9-cheader-committed-*` to `w9-cheader-lib-*`. 1559 tests pass from a tree with
 no headers, and the bootstrap converges.
+
+## Stage 27 — build tool options analysis (2026-10-24)
+
+[stage27-build/overview.md](stage27-build/overview.md) compares Ninja, a
+bespoke tool, generated Makefiles, CMake and Meson as the backend for
+`nucleus build`/`run`/`run-repl`. It recommends a bespoke frontend and
+executor, with a Ninja emitter kept as an option, and lists the prerequisites
+any backend needs (P1–P5: finding the stdlib relative to the compiler, a
+depfile, recorded compile-time reads, pkg-config as a library, an import scan).
+Q1–Q5 were ruled 2026-10-24: one binary for now (to revisit once more of the
+compiler is in libraries); a bespoke executor with a graph that could be
+written out for another backend; the file is `build.edn`; builds tell the user
+to run `nucleus init` and never write the file themselves; no escape hatch
+until EDN starts needing one. Q6 was ruled the same day, and §8 is now the library design: self-describing
+`.nuch` headers (H1–H4), `nucleus install` with a C-style layout plus a `.pc`
+file and an EDN manifest, the lookup order (build-local.edn, build.edn, the
+user registry, installed libraries with `.nuch` before `.h`, then the stdlib),
+prebuilt consumption, and the options for C-choice conflicts. Tests in the
+container found four gaps, P6–P9: a `.nuch` drops its C header imports (a
+consumer fails with `unknown type: z_stream`), no link requirement is recorded
+even for a source dependency, a header-only library's macro can't call
+library code (`JIT lookup failed`), and `nucleusc app.nuc` loses the
+source-directory search that `./app.nuc` gets. Q6g–Q6m were then ruled: requirement sets resolved automatically, with an
+early error only when nothing fits (§8.8); compile-time code compiled from the
+installed source; per-target (multiarch) installs; the stdlib installed
+through `nucleus install`; no lock file; `--library-paths` adds, with an
+opt-out of the default registry. §8.3.1 weighs declaring C needs in `.nuc`
+source (Q6f, open). §8.9 designs the config merge: decode each file into the
+typed struct first, then merge field by field (intersecting requirement
+sets), with new `merge`/`merge-with` in `nucleus.coll`. Q6f–Q6r were then
+ruled: requirement sets on the import itself plus a shipped header→package
+table, `--no-user-registry`, `:cflags` append, `build-local.edn` narrows unless an
+`unsafe/` key widens, and the configuration is typed. `unsafe/` keys are
+allowed in every file and always warn (Q6t). Linking `libnucleus.a` by
+default was ruled and then reversed the same day, because it costs the
+import-path split, per-target archives in `make`, and lost inlining at `-O1`+.
+Programs keep inlining the stdlib from source. On 2026-10-25, Q6s ruled that
+third-party libraries also default to their installed source. Prebuilt is
+opt-in (`:prebuilt true`) or for libraries installed `--no-source`. No
+questions are open. Nothing is built.
+
+## Stage 27 — build plan written (2026-10-25)
+
+[stage27-build/plan.md](stage27-build/plan.md) plans the ruled design as
+BT-0 … BT-11. BT-0 through BT-4 are compiler and library groundwork, and each
+is useful on its own. BT-5 is the first phase with a runnable `nucleus`.
+BT-7 adds `nucleus install`. BT-10 adds the prebuilt opt-in. The plan takes
+nine defaults (D-ENTRY … D-LINUX) for the user to confirm or overturn. Nothing
+is built.
+
+## Stage 27 — BT-0 … BT-3 built (2026-10-25, uncommitted)
+
+D-CONV was confirmed, with `build.edn` overrides for `:entry`,
+`:source-root` and `:name` added to it. The four compiler and library
+groundwork phases of [stage27-build/plan.md](stage27-build/plan.md) are built.
+Each phase has a *Built* note there.
+
+- **BT-0.** The compiler finds the library beside its own executable
+  (`<exe-dir>/../lib/`, then `../share/nucleus/lib/`), ahead of
+  `$NUCLEUS_LIB`. A bare `nucleusc app.nuc` searches `.` as `./app.nuc` does.
+- **BT-1.**
+  - `merge`/`merge-with` in `nucleus.combinators`.
+  - `file-stat`, `rename-file`, `remove-file`, `real-path`, `exe-path`,
+    `env-var` and the XDG directories in `nucleus.file`.
+  - `nucleus.build.version`, a port of pkgconf's comparison, checked
+    against pkg-config itself.
+- **BT-2.**
+  - `--depfile=` lists every source file, header, table and tracked
+    macro read.
+  - `read-file-tracked` is the compile-time read primitive.
+  - `--list-imports` prints the unit's import closure as EDN.
+- **BT-3.**
+  - `nucleus.build.pkg`; the REPL's `pkg-config` form now uses it.
+  - The `--pkg-config=` and `--link-lib=` flags.
+  - `:pkg-config`/`:libs` annotations on C header imports. They are
+    intersected across the closure and picked by `pkg-config --exists`.
+  - The shipped header table `nucleus/c-packages.edn`, which a user table
+    can replace entry by entry.
+
+The BT-3 wiring briefly segfaulted the compiler on any `macmap` expansion. Its
+new `desugar-form` hook passed a non-symbol head (`symbol-none`) to
+`list-imports-head?`, and comparing a none `Symbol` with a string literal
+dereferences null. That function now checks first. The suite has 16 new units
+(`tests/suite-build.nuc`) and the `comb-merge` example. New docs:
+[docs/build.md](../docs/build.md), plus sections in compiler.md, toplevel.md,
+io.md, macros.md and collections.md.
+
+## Stage 27 — BT-4 header format v1 built (2026-10-25, uncommitted)
+
+`.nuch` headers now record what a consumer needs to use them with nothing
+but the header, an object and `-I`. Details and departures are in the *Built*
+note in [stage27-build/plan.md](stage27-build/plan.md).
+
+- **H1.** C header imports are written into the header and load when it is
+  imported. Each is annotated with the package this build applied for it.
+- **H2.** `(c-requires {:pkg-config [...] :libs [...]})`. The consumer's
+  closure walk applies it before the compile.
+- **H3.** `(library NAME "VERSION" :build-id … :header-format 1)`, from
+  `--library=` and `--build-id=`. It goes after `(ns …)`, because the
+  importer honors `ns` only as the first form. A newer format is refused.
+- **H4.** A header that exports a macro writes `(require-ct LIB)` for each
+  library its source imports. In a header, `require-ct` loads.
+
+All three of §8.1's gaps are now units that pass:
+- gap 1, `unknown type`;
+- gap 2, the link, against a real `libfakez.a` found through a `.pc` file;
+- gap 3's `node-int` half.
+
+`make lib-headers` regenerates all 41 stdlib headers. The other half of gap 3,
+a macro calling its library's own code, waits for BT-10. Docs: compiler.md
+"What a header records about its library", plus the `--library=` and
+`--build-id=` flags.
+
+## Stage 27 — BT-5 `nucleus` core built (2026-10-25, uncommitted)
+
+`nucleus` runs. It is `nucleusc` under another name: `main` dispatches on
+`argv[0]`, `make` writes the `build/nucleus` symlink, and `make install` writes
+`$PREFIX/bin/nucleus`. Departures are in the *Built* note in
+[stage27-build/plan.md](stage27-build/plan.md).
+
+- **Commands.** `build`, `run` (in-process `--run`; built and executed when
+  there are `:c-sources`), `run-repl` and `clean`, with `-j`, `-O` and
+  `--target=`.
+- **`nucleus.build.config`.** `build.edn` and `build-local.edn` are decoded
+  with a file:line on every value, then merged per overview.md §8.9. A
+  misspelled key is an error at its line.
+- **`nucleus.build.graph` and `nucleus.build.exec`.** Edges with command
+  hashes. The executor follows D-STALE: the command, the compiler's hash, and
+  the depfile's read set, re-hashed only when mtime or size moved. Records go
+  in `build/.nucleus-log.edn`. Outputs are written to `.tmp` and renamed.
+  Edges run in parallel through `spawn`/`wait-any`.
+- **Compiler flags.** `--c-require=` and `--c-require-unsafe=` carry a
+  config's requirement sets into the intersection. `--c-requirements-of=`
+  gives `-i` a closure to resolve. The depfile parser moved into
+  `nucleus.build.exec`, and `src/deps.nuc` uses it.
+
+The default `-j` needed `sysconf(_SC_NPROCESSORS_ONLN)`, which the C importer
+skips as a private `_` name. `src/build-tool.nuc` reaches it through
+`unsafe/import-private`. Five new units. Docs: [docs/build.md](../docs/build.md)
+now covers the tool, `build.edn` and staleness, and compiler.md has the three
+new flags.
+
+## Stage 27 — BT-6 resolution and `nucleus init` built (2026-10-25, uncommitted)
+
+The tool now chooses C packages itself, before any compile, and passes its
+picks to the compiler as `--pkg-config=`. Departures are in the *Built* note
+in [stage27-build/plan.md](stage27-build/plan.md).
+
+- **`nucleus.build.resolve`.** §8.8 resolution:
+  - sets are intersected per header;
+  - alternatives that aren't installed are dropped;
+  - the order comes from the most binding source (config, then the
+    project's annotations, then dependencies', then the table, then the
+    index);
+  - a depth-first search checks each pick's `Requires:` against the other
+    headers.
+
+  A pick that wasn't every set's first choice gets a note saying why. An
+  impossible header gets an early error listing every set's source.
+- **`nucleus.build.index`.** For each package, its own include directories
+  and requires, cached in `$XDG_CACHE_HOME/nucleus/pkg-index.edn` and keyed by
+  the pkg-config path. A header found on clang's own include path is never
+  looked up. `pkg-config-requires` was added to `nucleus.build.pkg`.
+- **Discovery.** `nucleusc --list-imports` over the entry file supplies the
+  annotations and the headers.
+- **`nucleus init`** writes `build.edn` for headers that several packages
+  provide: the first alternative is kept and the others are commented out. A
+  zero-config build that meets such a header stops and points at `init`.
+- **Warnings.** A `build.edn` path that leaves the project warns on every
+  build.
+
+The first version took 2 s per no-op build: the provider filter ran
+`pkg-config --print-requires` 690 times for `cairo.h`'s candidates. Storing the
+requires in the index brought a warm no-op build to 0.11 s. Five new units.
+The `_SC_*` importer gap went to deferred/overview.md. Docs: docs/build.md
+"Choosing C packages" and the two libraries, and a pointer from compiler.md.
+
+## Stage 27 — BT-7 library projects and `nucleus install` built (2026-10-25, uncommitted)
+
+A `build.edn` with `:kind :library` now builds a library, and `nucleus
+install`/`uninstall` put it where C libraries go. Departures are in the
+*Built* note in [stage27-build/plan.md](stage27-build/plan.md).
+
+- **Library builds.** Every `.nuc` file under the provided roots (`:provides`,
+  or derived from the source root) gets an object, a `.nuch` carrying
+  `(library NAME "VERSION" :build-id …)`, and a `.h`. One archive is built
+  over all the objects, plus a `.so` with `:shared true`. The build id hashes
+  the compiler, the flags and the sources, and doesn't depend on where the
+  checkout is.
+- **Strict initializers.** A new compiler flag, `--strict-initializers`,
+  makes `-c`'s run-time-initializer warning an error. Every library object is
+  compiled with it.
+- **`nucleus install`.** Writes §8.4's layout under `--prefix`, `--user` or
+  `/usr/local`, honoring `DESTDIR`. Target-specific files go under the
+  multiarch name. It writes a `.pc` file that `pkg-config --cflags --libs`
+  and a C consumer use directly, and a manifest whose `:files` drives
+  `nucleus uninstall`. `--no-source` refuses a library that exports macros.
+- **Compiler.** The header modes honor `-o`. `default-host-triple` is
+  factored out of `target-init`. The executor resolves a depfile's relative
+  paths against the step's directory.
+
+Three new units. Docs: docs/build.md "Library projects" and "Installing a
+library", and compiler.md's `--strict-initializers` and `-o` rows.
+
+## Stage 27 — BT-8 dependencies and lookup built (2026-10-25, uncommitted)
+
+Libraries outside the project are now found without flags. Departures are in
+the *Built* note in [stage27-build/plan.md](stage27-build/plan.md).
+
+- **`:deps`** in `build.edn` and `build-local.edn` (`:path`, `:version`,
+  `:unsafe/version`, `:prebuilt`), merged by name, plus `:user-registry`.
+- **§8.5 lookup** (`nucleus.build.lookup`). The places, in order: local and
+  committed paths, the user registry (`library-paths.edn` plus
+  `--library-paths=`, skipped by `--no-user-registry`), installed manifests,
+  `.pc` files naming a manifest, then `.nuch` include directories. The stdlib
+  stays the compiler's own.
+- **Discovery.** Every unfound import root is resolved, and the closure is
+  listed again until it is whole. A dependency's own `:deps`, requirement sets,
+  cflags and libs join the build. Collisions and a non-stdlib `nucleus` stop
+  the build, and libraries from outside the repository are named on every
+  build.
+- **Imports a macro generates.** The new `--missing-imports=` flag lets a
+  failed compile hand the import back. The build starts again with the
+  library found and remembers the import.
+- **`nucleus init-local`** writes sibling checkouts into `build-local.edn` and
+  git-ignores it.
+- **Fixes along the way.** A dependency's `:unsafe/pkg-config` was dropped by
+  the resolver, which left a header with no sets and crashed. It is now
+  rank-scoped. The depfile lists file-valued `--link-arg`s, so a reinstalled
+  prebuilt archive relinks.
+
+Five new units. Docs: docs/build.md "Dependencies", the lookup library, and
+compiler.md's `--missing-imports=` and depfile notes. `--no-source`'s
+macro rule is deferred to BT-11 at the user's request.
+
+## Stage 27 — BT-9 the stdlib through `nucleus install` built (2026-10-25, uncommitted)
+
+`make install` now installs the standard library the way any library is
+installed. Departures are in the *Built* note in
+[stage27-build/plan.md](stage27-build/plan.md).
+
+- **`lib/build.edn`** declares the library `nucleus` (`:source-root "."`,
+  `:provides [nucleus]`). `make install` installs `nucleusc` and the `nucleus`
+  symlink, then runs `nucleus install` in `lib/`. `make uninstall` delegates
+  the same way.
+- **The installed sources are in `share/nucleus/src/`.** The compiler's
+  fallbacks beside the executable and in `/usr/local` both moved there, so an
+  installed compiler finds its stdlib under any prefix with no `-I` and no
+  `$NUCLEUS_LIB`. A library's `.edn` files are installed with its sources.
+- **`libnucleus.a`, `nucleus.pc` and the headers** are installed for C
+  programs. Programs still compile the stdlib from source.
+- **Fixes along the way.** A unit's root that the prelude re-enters under a
+  second spelling (`core.nuc` through `-I`) is recognised by `realpath`.
+  Generated C headers label hyphenated names through a `NUC_ASM` macro,
+  because GCC needs the label quoted and clang needs it bare. Before this,
+  a header with a hyphenated name didn't link under GCC.
+
+One new unit, which installs into a scratch prefix, compiles from an unrelated
+directory, links C under `cc` and clang, and uninstalls. Docs: docs/build.md
+"The standard library", toplevel.md's import search, and compiler.md's label
+notes.
+
+## Stage 27 — BT-10 prebuilt opt-in built (2026-10-25, uncommitted)
+
+A prebuilt library's macros can now call the library's own code. Departures
+are in the *Built* note in [stage27-build/plan.md](stage27-build/plan.md).
+
+- **`import-ct` keeps its IR.** A compile-time-only import's definitions go to
+  `g-ct-def-buf` instead of a discarded sink, with recorded spans, so the macro
+  mirror can copy a withheld function. `import-ct` of your own library now
+  works for its macros.
+- **`--ct-source=ROOT=DIR`** (P11) reads a root's source compile-time-only
+  and declares its definitions for the program, which links them from the
+  object. One `defvar` storage serves both.
+- **The tool** passes it for a prebuilt library whose headers export macros.
+  It also falls back to source when the manifest's target differs, or when an
+  `unsafe/` widening picks a package other than the one the object was
+  compiled against. The latter reruns the resolution.
+
+Three new units: the compiler path (`import-ct` callee, `--ct-source` IR and
+link), prebuilt through the tool with the compiler-mismatch fallback and the
+`--no-source` refusal, and the `unsafe/` widening. Docs: toplevel.md "A
+library's source for compile time", build.md's prebuilt rules, compiler.md's
+flag row, and macros.md's mirror note.
+
+## Stage 27 — BT-11 close-out (2026-10-25, uncommitted)
+
+BT-0 … BT-11 are built. Departures are in the *Built* note in
+[stage27-build/plan.md](stage27-build/plan.md).
+
+- **`--no-source`** (option B, ruled by the user) refuses only a macro whose
+  expansion code calls the library's own functions or reads its `defvar`s.
+  Library headers record these as `(macro-calls M [ns/name …])`, built from
+  each macro's mirror roots. A syntax-only macro installs without source and
+  works from the object. The refusal names the macro and its callees.
+
+- **The charge walkthrough** is docs/build.md "Example: a GTK program": what
+  replaces each line of the old build comment. It isn't applied to
+  `../charge.nuc` yet; that's the user's call.
+- **§6 "Done means" is covered by two units:**
+  - a charge-shaped fixture (an annotated import of a fake `fgtk` library,
+    plus stdlib imports) builds, runs, and opens a working `run-repl` with no
+    `build.edn` and no flags;
+  - two installed libraries, one depending on the other, resolve from the
+    prefix, and a sibling then overrides one of them through `init-local`.
+- **A REPL fix.** Importing a file with a collection-literal `defvar` failed
+  with an undefined `@nuc_init…`, at HEAD too. Imported initializers now run
+  from their own module, after the import's declares (`repl-g3-init` covers
+  it).
+- `run-repl`'s doc row says it imports nothing itself. The usage string lists
+  `--ct-source`.
+
+Gate: 1601 pass, the 5 known datalayout failures, bootstrap PASS.

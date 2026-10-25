@@ -1,0 +1,15 @@
+; The header -> C package table (design/stage27-build/overview.md §8.3.1 C).
+;
+; An entry is an advisory requirement for a C header import: `:libs` are plain
+; libraries, linked whenever the header is imported; `:pkg-config` applies only
+; when no import of the header is annotated, and only if installed.
+; $XDG_CONFIG_HOME/nucleus/c-packages.edn extends this table, and its entry for
+; a header replaces this one.
+;
+; `dl` and `pthread` are absent: glibc 2.34+ and musl keep them in libc, and
+; there is no unversioned `libdl.so` for `--run` to load.
+{"math.h"    {:libs ["m"]}
+ "complex.h" {:libs ["m"]}
+ "fenv.h"    {:libs ["m"]}
+ "tgmath.h"  {:libs ["m"]}
+ "zlib.h"    {:pkg-config ["zlib"]}}

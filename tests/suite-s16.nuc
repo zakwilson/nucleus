@@ -122,7 +122,7 @@
       (drop &ir))
     (let (h:String (try (source-cheader src)))
       (try (check-line (string-as-view &h)
-                       "int32_t f_bool(bool a) asm(\"f.bool\");"))
+                       "int32_t f_bool(bool a) NUC_ASM(\"f.bool\");"))
       (try (check-line (string-as-view &h) "bool g(bool b);"))
       (try (check-line (string-as-view &h) "#include <stdbool.h>"))
       (drop &h))))

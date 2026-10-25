@@ -14,6 +14,7 @@
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
 (import-use nucleus.process)
+(import-use nucleus.file)
 (import-use nucleus.vector)
 (import-use nucleus.hashmap)
 (import-use nucleus.hashset)
@@ -1530,9 +1531,12 @@
 (defn cheader-run-cpp (header-path:Symbol with-target:bool dump-macros:i32
                        out-len:&i64 out-status:&i32):ptr
   (let (c:Command (cheader-cpp-command header-path with-target dump-macros)
-        buf:ptr (cheader-capture &c out-len out-status))
-    (drop &c)
-    (return buf)))
+        tmp:Symbol (if (depfile-on?) (depfile-cpp-tmp) (symbol-none)))
+    (when (not (symbol-none? tmp)) (depfile-cpp-args &c tmp))
+    (let (buf:ptr (cheader-capture &c out-len out-status))
+      (drop &c)
+      (when (not (symbol-none? tmp)) (depfile-note-cpp tmp))
+      (return buf))))
 
 ; C4: clang could not read the header at all. Re-run the failing command with
 ; stderr attached — clang's own "'x.h' file not found" is the whole diagnosis,
@@ -3679,7 +3683,7 @@
   (return (cheader-escape-global
             (fstr prefix "_" (sanitize-for-c (symbol-as-view member))))))
 
-; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
+; The `NUC_ASM("…")` suffix that re-binds a sanitized C declaration to the symbol the
 ; object actually defines, or "" when the sanitized spelling IS the symbol.
 ;
 ; A Nucleus link name keeps its hyphens (`(defn ch-get …)` emits `@ch-get`, and
@@ -3692,9 +3696,16 @@
 ; Deliberately empty when no mangling was needed, so a library whose names are
 ; already C-legal gets a fully portable header and the extension appears exactly
 ; where it is load-bearing.
+(defvar g-cheader-asm-used:bool false)
 (defn cheader-asm-label (link:Symbol cname:StrView):StrView
   (when (= (symbol-as-view link) cname) (return ""))
-  (return (fstr " asm(\"" link "\")")))
+  (set! g-cheader-asm-used true)
+  (return (fstr " NUC_ASM(\"" link "\")")))
+
+; GCC writes the label into its assembly verbatim, where a hyphen needs quotes;
+; clang treats the label as the symbol itself, quotes and all.
+(defconst CHEADER-ASM-MACRO
+  "#ifndef NUC_ASM\n#if defined(__clang__)\n#define NUC_ASM(s) asm(s)\n#else\n#define NUC_ASM(s) asm(\"\\\"\" s \"\\\"\")\n#endif\n#endif\n")
 
 ; The linker symbol behind an ir-name: the same string without its leading `@`
 ; sigil. Stage 15 W9 item 26 — the generic registry stores ir-names (`@eq.String
@@ -3796,8 +3807,19 @@
   (set! g-hdr-buf (make String))
   (set! g-hdr &g-hdr-buf))
 
+; To `-o` when given, which the build tool needs for an edge's output.
 (defn header-out-close ():void
-  (emit-all stdout &g-hdr-buf)
+  (if (symbol-none? g-output-path)
+    (emit-all stdout &g-hdr-buf)
+    (let (path:StrView (symbol-as-view g-output-path))
+      (match (file-create &path)
+        ((err e) (eprint "nucleusc: cannot write " path "\n") (exit 1))
+        ((ok f)
+          (let (fh:File f)
+            (match (write-str &fh (string-as-view &g-hdr-buf))
+              ((ok) 0)
+              ((err e) (eprint "nucleusc: cannot write " path "\n") (exit 1)))
+            (drop &fh))))))
   (set! g-hdr null))
 
 (defn header-print-node (n:?&Node):void
@@ -4716,7 +4738,7 @@
     ; bare name; identity under `user`, so existing headers are byte-identical.
     ;
     ; W9 item 4: the declaration's two halves — the opening `ret name(` and the
-    ; closing `) asm("link");` — are emitted many lines apart with the parameters
+    ; closing `) NUC_ASM("link");` — are emitted many lines apart with the parameters
     ; streamed between them, so both spellings are computed HERE, once. Deriving
     ; the label's copy separately is exactly how the two would drift.
     ;
@@ -4814,7 +4836,7 @@
 ; identifier. Sanitizing it to `ch_count` produces a header that PARSES and then
 ; fails to link (`undefined reference to 'ch_count'`, measured), which is strictly
 ; worse than one that fails to parse: the error moves away from its cause. So a
-; name that needs sanitizing carries an `asm("…")` label, which is what makes the
+; name that needs sanitizing carries a `NUC_ASM("…")` label, which is what makes the
 ; C spelling reach the real symbol (measured: the C consumer reads 7).
 ;
 ; The label is emitted ONLY when the sanitized name differs from the link name, so
@@ -5198,9 +5220,11 @@
   ; generated headers: a borrowed unit's header may itself name one.
   (cheader-emit-c-includes)
   (cheader-emit-includes)
-  (emit g-hdr "\n")
-  (emit g-hdr "/* Generated from " source-file " by nucleusc --emit-cheader */\n\n")
-  (let (fc:ptr forms)
+  (set! g-cheader-asm-used false)
+  (let (body-at:usize ((string-as-view &g-hdr-buf) 'len))
+   (emit g-hdr "\n")
+   (emit g-hdr "/* Generated from " source-file " by nucleusc --emit-cheader */\n\n")
+   (let (fc:ptr forms)
     (while (> (node-len fc) 0)
       (let (f:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST))
@@ -5223,4 +5247,11 @@
                   "defconst"  (emit-cheader-defconst (as ptr f))
                   "defenum"   (emit-cheader-defenum (as ptr f))
                   0))))
-      (set! fc (node-rest (unsafe/cast &Node fc))))))
+      (set! fc (node-rest (unsafe/cast &Node fc)))))
+   (when g-cheader-asm-used
+     (let (rest:StrView (strview-drop-bytes (string-as-view &g-hdr-buf) body-at)
+           tail:String (make String))
+       (str-into &tail rest)
+       (string-truncate-unchecked &g-hdr-buf body-at)
+       (str-into &g-hdr-buf CHEADER-ASM-MACRO (string-as-view &tail))
+       (drop &tail)))))

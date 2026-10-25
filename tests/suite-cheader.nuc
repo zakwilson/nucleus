@@ -13,7 +13,7 @@
 ; Reading a generated header
 ; ---------------------------------------------------------------------------
 
-; The `asm("…")` label on `l`, or an empty view when the line carries none.
+; The `NUC_ASM("…")` label on `l`, or an empty view when the line carries none.
 (import-use nucleus.string)
 (import-use nucleus.strview)
 (import-use nucleus.test)
@@ -22,9 +22,9 @@
 (import-use nucleus.fmt)
 (import-use nucleus.create)
 (defn asm-label (l:StrView):StrView
-  (let (m:StrView "asm(\"")
+  (let (m:StrView "NUC_ASM(\"")
     (match (strview-find &l &m)
-      ((some at) (return (view-upto-byte (strview-drop-bytes l (+ at 5)) 34)))
+      ((some at) (return (view-upto-byte (strview-drop-bytes l (+ at 9)) 34)))
       (none (return "")))))
 
 ; A name made only of punctuation is an operator that reached the C side; one
@@ -42,7 +42,7 @@
 ; A generated line carries at most one label and it always sits last, so what
 ; comes before it is the whole of what has to be legal C.
 (defn line-before-label (l:StrView):StrView
-  (let (m:StrView " asm(\"")
+  (let (m:StrView " NUC_ASM(\"")
     (match (strview-find &l &m)
       ((some at) (return (strview-take-bytes l at)))
       (none (return l)))))
@@ -146,10 +146,10 @@
         h:StrView (c-lib-text &l))
     (try (check-line h "extern int32_t counter;"))
     (try (check-line h "#define limit ((int32_t)99)"))
-    (try (check-line h "extern const struct CRec rec_const asm(\"rec-const\");"))
-    (try (check-line h "extern int64_t tick_count asm(\"tick-count\");"))
-    (try (check-line h "extern struct CRec rec_val asm(\"rec-val\");"))
-    (try (check-line h "extern int32_t arr_val[4] asm(\"arr-val\");"))
+    (try (check-line h "extern const struct CRec rec_const NUC_ASM(\"rec-const\");"))
+    (try (check-line h "extern int64_t tick_count NUC_ASM(\"tick-count\");"))
+    (try (check-line h "extern struct CRec rec_val NUC_ASM(\"rec-val\");"))
+    (try (check-line h "extern int32_t arr_val[4] NUC_ASM(\"arr-val\");"))
     (try (check-not-contains h "hidden"))
     (drop &l)
     (return (ok))))
@@ -250,7 +250,7 @@ int main(void) {
 (deftest w9-cheader-label-only-where-needed
   (let (l:CLib (try (c-lib "hlib" (idents-lib)))
         h:StrView (c-lib-text &l))
-    (try (check-line h "int32_t my_bump(int32_t n_arg) asm(\"my-bump\");"))
+    (try (check-line h "int32_t my_bump(int32_t n_arg) NUC_ASM(\"my-bump\");"))
     (try (check-line h "int32_t plain(int32_t n);"))
     (try (check-line h "#define BUF_LEN 4"))
     (try (check-contains h "int32_t xs[BUF_LEN];"))
@@ -565,7 +565,7 @@ int main(void) {
 (deftest w9-cheader-builtin-scalar-not-struct
   (let (l:CLib (try (c-lib "tlib" (tag-lib)))
         h:StrView (c-lib-text &l))
-    (try (check-line h "uint32_t ch_echo(uint32_t c) asm(\"ch-echo\");"))
+    (try (check-line h "uint32_t ch_echo(uint32_t c) NUC_ASM(\"ch-echo\");"))
     (try (check-not-contains h "struct Char"))
     (drop &l)
     (return (ok))))
@@ -631,11 +631,11 @@ int main(void) {
   (let (l:CLib (try (c-lib "ovlib" (ovl-lib)))
         h:StrView (c-lib-text &l))
     (try (check-line
-           h "int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm(\"scale.pPt.i32\");"))
+           h "int32_t scale_pPt_i32(struct Pt* p, int32_t k) NUC_ASM(\"scale.pPt.i32\");"))
     (try (check-line
-           h "int32_t scale_i32_i32(int32_t a, int32_t k) asm(\"scale.i32.i32\");"))
+           h "int32_t scale_i32_i32(int32_t a, int32_t k) NUC_ASM(\"scale.i32.i32\");"))
     (try (check-line
-           h "bool eq_Pt_Pt(struct Pt a, struct Pt b) asm(\"eq.Pt.Pt\");"))
+           h "bool eq_Pt_Pt(struct Pt a, struct Pt b) NUC_ASM(\"eq.Pt.Pt\");"))
     (try (check-line h "int32_t solo(int32_t n);"))
     (drop &l)
     (return (ok))))
@@ -750,9 +750,9 @@ int main(void) {
     (try (check-line h "    int32_t signed_;"))
     (try (check-line h "typedef struct class_ {"))
     (try (check-line h "struct class_ bump(struct class_ v);"))
-    (try (check-line h "extern int32_t delete_ asm(\"delete\");"))
-    (try (check-line h "int32_t union_(int32_t a, int32_t b) asm(\"union\");"))
-    (try (check-line h "int32_t xor_(int32_t a, int32_t default_) asm(\"xor\");"))
+    (try (check-line h "extern int32_t delete_ NUC_ASM(\"delete\");"))
+    (try (check-line h "int32_t union_(int32_t a, int32_t b) NUC_ASM(\"union\");"))
+    (try (check-line h "int32_t xor_(int32_t a, int32_t default_) NUC_ASM(\"xor\");"))
     (try (check-line h "int32_t plain(struct Box* b);"))
     (drop &l)
     (return (ok))))
@@ -844,7 +844,7 @@ int main(void) {
 (deftest l8-cheader-emits-fnptr
   (let (h:String (try (fixture-cheader (closure-fixture))))
     (try (check-line (string-as-view &h)
-                     "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
+                     "int32_t plain_fn(int32_t x, int32_t y) NUC_ASM(\"plain-fn\");"))
     (drop &h))
   (return (ok)))
 
@@ -882,7 +882,7 @@ int main(void) {
 (deftest l13-cheader-emits-fnptr
   (let (h:String (try (fixture-cheader (box-fixture))))
     (try (check-line (string-as-view &h)
-                     "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
+                     "int32_t plain_fn(int32_t x, int32_t y) NUC_ASM(\"plain-fn\");"))
     (drop &h))
   (return (ok)))
 
@@ -944,6 +944,6 @@ int main(void){return 0;}
 (deftest fp5-cheader-fnptr-return-takes-void
   (let (h:String (try (fixture-cheader "examples/fnptr-global.nuc")))
     (try (check-line (string-as-view &h)
-                     "int32_t (*pick_hook(void))(void) asm(\"pick-hook\");"))
+                     "int32_t (*pick_hook(void))(void) NUC_ASM(\"pick-hook\");"))
     (drop &h))
   (return (ok)))

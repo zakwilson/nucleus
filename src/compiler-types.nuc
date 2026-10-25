@@ -854,7 +854,11 @@
   ir-start:usize
   ir-end:usize
   ; Defining file was under `g-ct-lib-root` — §3.1 condition 1.
-  from-lib:i32)
+  from-lib:i32
+  ct-buf:i32  ; the span is in `g-ct-def-buf`, a compile-time-only import's
+  ; The source spelling, for a header's `macro-calls` (src/nuch.nuc).
+  ns:Symbol
+  name:Symbol)
 
 ; Stage 20 L6: the ProgDefn of a program `defvar`. `ty-ir` is the LLVM type text,
 ; so a JIT module that only NAMES the global can declare it `external` without
@@ -866,7 +870,10 @@
   ir-start:usize
   ir-end:usize
   from-lib:i32
-  is-const:i32)
+  is-const:i32
+  ct-buf:i32
+  ns:Symbol
+  name:Symbol)
 
 (defstruct BinOp
   ; All three are content-only: `name` is only ever content-compared against

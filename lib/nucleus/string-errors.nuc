@@ -31,6 +31,12 @@
 (deferror io-open-failed "cannot open file")
 (deferror io-read-failed "read failed")
 
+; Stage 27 BT-1: stat(2), rename(2), unlink(2)/rmdir(2) and realpath(3) refused.
+(deferror io-stat-failed "cannot stat file")
+(deferror io-rename-failed "cannot rename file")
+(deferror io-remove-failed "cannot remove file")
+(deferror io-path-failed "cannot resolve path")
+
 ; A digit run that is empty, holds a byte that is not a digit of its radix, or
 ; names a magnitude the target width cannot hold. Raised by
 ; `strview-parse-magnitude` and by every `FromStr` integer conformance over it.

@@ -335,6 +335,33 @@
         (set! i (+ i 1))))))
 
 ; ===========================================================================
+; Merging maps (in place, like Set's union)
+; ===========================================================================
+
+; merge — assoc every entry of `other` into `self`; `other`'s value wins. Like
+; `assoc`, a replaced value is not dropped: a map does not own its elements.
+(defn merge (self:&M other:&M
+             :where ((Assoc K V Ki Vi) M) ((Coll (Entry K V) It) M)):void
+  (let (it:It (iter other))
+    (while true
+      (match (next &it)
+        (none (return))
+        ((some e) (assoc self (e 'key) (e 'val)))))))
+
+; merge-with — the same, but a key in both maps gets `(apply2 f old new)`.
+(defn merge-with (self:&M other:&M f:&F
+                  :where ((Assoc K V Ki Vi) M) ((Coll (Entry K V) It) M)
+                         ((BinaryFn V V) F)):void
+  (let (it:It (iter other))
+    (while true
+      (match (next &it)
+        (none (return))
+        ((some e)
+          (match (get self (e 'key))
+            (none (assoc self (e 'key) (e 'val)))
+            ((some old) (assoc self (e 'key) (apply2 f old (e 'val))))))))))
+
+; ===========================================================================
 ; Joinery — "emit each element, separated"
 ; ===========================================================================
 

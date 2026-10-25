@@ -461,6 +461,34 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ---
 
+### Merging maps (`lib/nucleus/combinators.nuc`)
+
+| Function | Signature |
+|----------|-----------|
+| `merge` | `(self:&M other:&M):void` — assoc every entry of `other` into `self`; on a shared key `other`'s value wins |
+| `merge-with` | `(self:&M other:&M f:&F):void` — the same, but a shared key gets `(apply2 f old new)` |
+
+Both are generic over any `M` that is `(Assoc K V Ki Vi)` and
+`(Coll (Entry K V) It)`, so they work for `HashMap` and for any other map that
+conforms. `f` is any `(BinaryFn V V)`. Both work in place, as `union` does for
+a set.
+
+A replaced value is **not** dropped, for the same reason `assoc` doesn't drop
+one: a map doesn't own its elements. A caller that owns its values drops the
+old one first.
+
+```lisp
+(import-use nucleus.combinators)
+
+(with (a (make (HashMap i32 i32))
+       b (make (HashMap i32 i32)))
+  (assoc &a 1 10) (assoc &a 2 20)
+  (assoc &b 2 5) (assoc &b 3 30)
+  (merge-with &a &b (fn (x:i32 y:i32):i32 (+ x y))))   ; a: 1=10 2=25 3=30
+```
+
+`examples/comb-merge.nuc` also passes a named `BinaryFn` conformer.
+
 ## `HashSet T` (`lib/nucleus/hashset.nuc`)
 
 `(import-use nucleus.hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.

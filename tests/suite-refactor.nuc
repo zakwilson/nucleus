@@ -2577,7 +2577,7 @@
   (when (not (rg-header-spells? "lib/m.h" "int32_t square(int32_t x);\n" "square")) (fail! "a bare C name"))
   (when (rg-header-spells? "lib/m.h" "int32_t squared(int32_t x);\n" "square") (fail! "a longer C name"))
   (when (not (rg-header-spells? "lib/g.h" "int32_t geom__area(int32_t w);\n" "area")) (fail! "a namespaced C name"))
-  (when (not (rg-header-spells? "lib/q.h" "bool nuc_full_QMARK(void) asm(\"nuc_full_QMARK\");\n" "full?"))
+  (when (not (rg-header-spells? "lib/q.h" "bool nuc_full_QMARK(void) NUC_ASM(\"nuc_full_QMARK\");\n" "full?"))
     (fail! "a nuc_ name"))
   (when (not (rg-header-spells? "lib/b.h" "/* box-set: generic template; not exported */\n" "box-set"))
     (fail! "a comment"))

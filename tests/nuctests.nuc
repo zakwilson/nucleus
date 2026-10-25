@@ -53,6 +53,7 @@
 (import-use suite-dyn)
 (import-use suite-const)
 (import-use suite-refactor)
+(import-use suite-build)
 (import-use nucleus.intern)
 (import-use nucleus.coll) (import-use nucleus.create)
 

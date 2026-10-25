@@ -120,6 +120,8 @@
   (let (off:usize (command-push-cstr self a))
     (conj (ref self 'offs) off)))
 
+; The child changes directory before it execs, so a relative program path is
+; read from `dir`, not from the parent's cwd.
 (defn command-cwd (self:&Command dir:StrView):void
   (set! (self 'cwd-off) (as i64 (command-push-cstr self dir))))
 

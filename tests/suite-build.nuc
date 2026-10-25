@@ -1,0 +1,1491 @@
+; Stage 27 — the build tool and the compiler support under it.
+;
+; Design: design/stage27-build/overview.md; phases in design/stage27-build/plan.md.
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.process)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.file)
+(import-use nucleus.build.version)
+(import-use nucleus.build.resolve)
+(import-use nucleus.test)
+(import-use "unistd.h")
+(import-use "stdlib.h")
+
+; The tree's path + `rel`, for a unit that runs the compiler from another cwd.
+(defn bt-abs (rel:StrView):String
+  (let (buf:&i8 (alloca i8 4096))
+    (getcwd buf 4096)
+    (return (str (strview-from-cstr (as CStr buf)) "/" rel))))
+
+(defn bt-compiler ():String (return (bt-abs "build/nucleusc")))
+
+; `<compiler> <args…> -o <out>` with `cwd` as the working directory; the
+; program's exit status, or a failure carrying the compiler's output.
+(defn bt-build-run-in (compiler:StrView cwd:StrView main:StrView out:StrView):!i32
+  (let (c:Command (command compiler))
+    (command-search &c false)
+    (command-cwd &c cwd)
+    (command-env &c "NUCLEUS_LIB" "/nonexistent")
+    (command-arg &c main)
+    (command-arg &c "-o")
+    (command-arg &c out)
+    (command-capture &c true)
+    (command-stderr-to-stdout &c true)
+    (match (run &c)
+      ((ok o)
+        (when (not (success? (ref o 'status)))
+          (fail! "compile failed\n     " (test-show (string-as-view (ref o 'out)))
+                 (test-show (string-as-view (ref o 'err)))))
+        (drop &o))
+      ((err e) (return (err e))))
+    (drop &c)
+    (let (bin:String (str cwd "/" out)
+          got:i32 (try (run-exit (string-as-view &bin))))
+      (drop &bin)
+      (return (ok got)))))
+
+; ---------------------------------------------------------------------------
+; BT-0: lookup fixes
+; ---------------------------------------------------------------------------
+
+; P1: a compiler finds the stdlib at <exe>/../lib. The copy's lib/ holds a
+; library no other search step reaches, and the cwd is a sibling with no lib/.
+(deftest bt0-stdlib-beside-compiler
+  (try (test-scratch-sub "pfx"))
+  (let (bin:String (try (test-scratch-sub "pfx/bin"))
+        lib:String (try (test-scratch-sub "pfx/lib"))
+        app:String (try (test-scratch-sub "app"))
+        av:StrView (string-as-view &app)
+        cc:String (bt-compiler))
+    (let (cp:Command (command "cp"))
+      (command-arg &cp (string-as-view &cc))
+      (command-arg &cp (string-as-view &bin))
+      (let (o:Output (try (run &cp))) (drop &o))
+      (drop &cp))
+    (let (ln:Command (command "ln"))
+      ; -n: on a rerun, replace the link rather than create one inside its target.
+      (command-arg &ln "-sfn")
+      (let (t:String (bt-abs "lib/nucleus")
+            d:String (str (string-as-view &lib) "/nucleus"))
+        (command-arg &ln (string-as-view &t))
+        (command-arg &ln (string-as-view &d))
+        (let (o:Output (try (run &ln))) (drop &o))
+        (drop &t)
+        (drop &d))
+      (drop &ln))
+    (try (write-into (string-as-view &lib) "bt0mark.nuc" "(defn bt0-mark ():i32 (return 41))
+"))
+    (try (write-into av "app.nuc" "(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use bt0mark)
+(defn main ():i32 (let (s:String (str \"x\")) (return (+ (bt0-mark) (unsafe/cast i32 ((string-as-view &s) 'len))))))
+"))
+    (let (rel:String (str (string-as-view &bin) "/nucleusc")
+          ; Absolute: the child changes directory before it execs.
+          copy:String (bt-abs (string-as-view &rel))
+          got:i32 (try (bt-build-run-in (string-as-view &copy) av "app.nuc" "app")))
+      (try (check-eq-int (as i64 got) 42 "exit status"))
+      (drop &copy)
+      (drop &rel))
+    (drop &cc)
+    (drop &app)
+    (drop &lib)
+    (drop &bin))
+  (return (ok)))
+
+; P6 (§8.1 gap 4): `nucleusc app.nuc` searches the cwd, as `./app.nuc` does.
+(deftest bt0-bare-filename-searches-cwd
+  (let (p:String (try (test-scratch-sub "bare"))
+        pv:StrView (string-as-view &p)
+        m:String (try (test-scratch-sub "bare/mylib"))
+        cc:String (bt-compiler))
+    (try (write-into (string-as-view &m) "core.nuc" "(defn bt0-core ():i32 (return 9))
+"))
+    (try (write-into pv "app.nuc" "(import-use mylib.core)
+(defn main ():i32 (return (bt0-core)))
+"))
+    (let (got:i32 (try (bt-build-run-in (string-as-view &cc) pv "app.nuc" "app")))
+      (try (check-eq-int (as i64 got) 9 "exit status")))
+    (drop &cc)
+    (drop &m)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-1: library support
+; ---------------------------------------------------------------------------
+
+; `pkg-config --exists "bt1v <op> <b>"` against a scratch `.pc` at version `a`.
+(defn bt1-pkg-holds (dir:StrView a:StrView op:StrView b:StrView):!bool
+  (let (pc:String (str "Name: bt1v\nDescription: t\nVersion: " a "\n"))
+    (try (write-into dir "bt1v.pc" (string-as-view &pc)))
+    (drop &pc))
+  (let (c:Command (command "pkg-config"))
+    (command-env &c "PKG_CONFIG_LIBDIR" dir)
+    (command-env &c "PKG_CONFIG_PATH" "")
+    (command-arg &c "--exists")
+    (let (q:String (str "bt1v " op " " b))
+      (command-arg &c (string-as-view &q))
+      (let (o:Output (try (run &c))
+            held:bool (success? (ref o 'status)))
+        (drop &o)
+        (drop &q)
+        (drop &c)
+        (return (ok held))))))
+
+(defn bt1-pkg-cmp (dir:StrView a:StrView b:StrView):!i32
+  (when (try (bt1-pkg-holds dir a "<" b)) (return (ok -1)))
+  (when (try (bt1-pkg-holds dir a "=" b)) (return (ok 0)))
+  (when (try (bt1-pkg-holds dir a ">" b)) (return (ok 1)))
+  (fail! "pkg-config answered none of <, =, > for " a " vs " b))
+
+(defn bt1-agree (dir:StrView a:StrView b:StrView):!void
+  (let (want:i32 (try (bt1-pkg-cmp dir a b))
+        got:i32 (version-cmp a b))
+    (when (!= want got)
+      (fail! "version-cmp " a " " b " = " (as i64 got) ", pkg-config says " (as i64 want))))
+  (return (ok)))
+
+; D-VERCMP: the port gives pkg-config's answer for every pair.
+(deftest bt1-version-agrees-with-pkg-config
+  (let (probe:Command (command "pkg-config"))
+    (command-arg &probe "--version")
+    (let (o:Output (try (run &probe))
+          have:bool (success? (ref o 'status)))
+      (drop &o)
+      (drop &probe)
+      (when (not have) (skip! "pkg-config is not installed"))))
+  (let (dir:StrView (try (test-scratch)))
+    (try (bt1-agree dir "1.0" "1.0"))
+    (try (bt1-agree dir "1.0" "1.1"))
+    (try (bt1-agree dir "1.10" "1.9"))
+    (try (bt1-agree dir "1.2.3" "1.2"))
+    (try (bt1-agree dir "2.0" "2"))
+    (try (bt1-agree dir "01.2" "1.2"))
+    (try (bt1-agree dir "1.0a" "1.0"))
+    (try (bt1-agree dir "1.0a" "1.0b"))
+    (try (bt1-agree dir "1.a" "1.1"))
+    (try (bt1-agree dir "1.0~rc1" "1.0"))
+    (try (bt1-agree dir "1.0~rc1" "1.0~rc2"))
+    (try (bt1-agree dir "4.12.4" "4.10"))
+    (try (bt1-agree dir "1.0-2" "1.0.2"))
+    (try (bt1-agree dir "1_0" "1.0"))
+    (try (bt1-agree dir "1.0" "1.0.0"))
+    (try (bt1-agree dir "20240101" "1.0"))
+    (try (bt1-agree dir "1.0.0beta" "1.0.0")))
+  (return (ok)))
+
+(defn bt1-holds (v:StrView k:StrView):!bool
+  (let (c:VersionConstraint (try (version-constraint-parse k)))
+    (return (ok (version-satisfies? v &c)))))
+
+(defn bt1-refused (k:StrView):!void
+  (match (version-constraint-parse k)
+    ((ok c) (fail! "constraint '" k "' must be refused"))
+    ((err e) (return (ok)))))
+
+(deftest bt1-version-constraints
+  (try (check (try (bt1-holds "4.12" ">= 4.10")) ">= holds"))
+  (try (check (not (try (bt1-holds "4.8" ">=4.10"))) ">= fails"))
+  (try (check (try (bt1-holds "1.2" "= 1.2")) "= holds"))
+  (try (check (try (bt1-holds "1.9" "< 2")) "< holds"))
+  (try (check (not (try (bt1-holds "2.0" "<= 2"))) "2.0 is above 2"))
+  (try (check (try (bt1-holds "3.1" "!= 3.0")) "!= holds"))
+  (try (check (try (bt1-holds "0.1" "")) "empty is no constraint"))
+  (try (bt1-refused "1.2"))
+  (try (bt1-refused ">= 1.2 3"))
+  (try (bt1-refused ">="))
+  (return (ok)))
+
+(defn bt1-remove-refused (p:StrView):!void
+  (match (remove-file p)
+    ((ok) (fail! "removing a missing file must fail"))
+    ((err e) (return (ok)))))
+
+(deftest bt1-file-metadata
+  (let (p:String (try (test-write-file "bt1-a.txt" "hello")))
+    (let (st:FileStat (try (file-stat (string-as-view &p))))
+      (try (check-eq-int (st 'size) 5 "size"))
+      (try (check-eq-int (as i64 (st 'kind)) (as i64 FILE-KIND-REG) "kind"))
+      (try (check (> (st 'mtime-ns) 0) "mtime")))
+    (let (dir:StrView (try (test-scratch))
+          ds:FileStat (try (file-stat dir)))
+      (try (check-eq-int (as i64 (ds 'kind)) (as i64 FILE-KIND-DIR) "dir kind")))
+    (let (q:String (str (string-as-view &p) ".moved"))
+      (try (rename-file (string-as-view &p) (string-as-view &q)))
+      (try (check (not (file-exists? (string-as-view &p))) "rename removes the source"))
+      (try (check (file-exists? (string-as-view &q)) "rename creates the target"))
+      (try (remove-file (string-as-view &q)))
+      (try (check (not (file-exists? (string-as-view &q))) "remove-file"))
+      (try (bt1-remove-refused (string-as-view &q)))
+      (drop &q))
+    (drop &p))
+  (let (rp:String (try (real-path "build/../build/nucleusc"))
+        want:String (bt-compiler))
+    (try (check-eq (string-as-view &rp) (string-as-view &want)))
+    (drop &want)
+    (drop &rp))
+  (let (ep:String (try (exe-path))
+        v:StrView (string-as-view &ep))
+    (try (check (strview-has-suffix v "/nuctests") "exe-path names this binary"))
+    (try (check (= (aref (v 'data) 0) 47) "exe-path is absolute"))
+    (drop &ep))
+  (return (ok)))
+
+; A shard runs many units in one process, so the variables are put back.
+(defn bt1-env-save (name:StrView):?String
+  (match (env-var name)
+    (none (return (none)))
+    ((some v) (return (some (c-path &v))))))
+
+(defn bt1-env-restore (name:CStr saved:&?String):void
+  (match @saved
+    (none (unsetenv name))
+    ((some v) (let (s:String v) (setenv name (string-as-cstr &s) 1) (drop &s)))))
+
+(defn bt1-xdg-check ():!void
+  (setenv "HOME" "/home/bt1" 1)
+  (setenv "XDG_CONFIG_HOME" "/etc/bt1conf" 1)
+  (setenv "XDG_CACHE_HOME" "relative/ignored" 1)
+  (let (c:String (try (xdg-config-home))
+        k:String (try (xdg-cache-home)))
+    (try (check-eq (string-as-view &c) "/etc/bt1conf"))
+    (try (check-eq (string-as-view &k) "/home/bt1/.cache"))
+    (drop &k)
+    (drop &c))
+  (unsetenv "XDG_CONFIG_HOME")
+  (let (c:String (try (xdg-config-home)))
+    (try (check-eq (string-as-view &c) "/home/bt1/.config"))
+    (drop &c))
+  (return (ok)))
+
+(deftest bt1-xdg-dirs
+  (let (home:?String (bt1-env-save "HOME")
+        conf:?String (bt1-env-save "XDG_CONFIG_HOME")
+        cache:?String (bt1-env-save "XDG_CACHE_HOME")
+        r:!void (bt1-xdg-check))
+    (bt1-env-restore "HOME" &home)
+    (bt1-env-restore "XDG_CONFIG_HOME" &conf)
+    (bt1-env-restore "XDG_CACHE_HOME" &cache)
+    (return r)))
+
+; ---------------------------------------------------------------------------
+; BT-2: dependency reporting
+; ---------------------------------------------------------------------------
+
+; `<compiler> <flags…> <main>` with `cwd` as the working directory.
+(defn bt-compile-in (cwd:StrView flags:&(Vector StrView) main:StrView):!Ran
+  (let (env:(Vector StrView) (make (Vector StrView))
+        r:Ran (try (bt-compile-env cwd flags main &env)))
+    (drop &env)
+    (return (ok r))))
+
+; The same with `env` as name/value pairs set in the child.
+(defn bt-compile-env (cwd:StrView flags:&(Vector StrView) main:StrView
+                      env:&(Vector StrView)):!Ran
+  (let (cc:String (bt-compiler)
+        c:Command (command (string-as-view &cc)))
+    (command-search &c false)
+    (command-cwd &c cwd)
+    (let (k:usize 0)
+      (while (< (+ k 1) (count env))
+        (command-env &c (invoke env k) (invoke env (+ k 1)))
+        (set! k (+ k 2))))
+    (dotimes (k (count flags)) (command-arg &c (invoke flags k)))
+    (command-arg &c main)
+    (let (r:Ran (try (ran &c)))
+      (drop &c)
+      (drop &cc)
+      (return (ok r)))))
+
+; A unit reaching every kind of read: a nested import, a `.nuch`, a C header,
+; a string-path import with a space, and a macro's tracked read.
+(defn bt2-project ():!String
+  (let (p:String (try (test-scratch-sub "proj"))
+        pv:StrView (string-as-view &p)
+        m:String (try (test-scratch-sub "proj/mylib")))
+    (try (write-into (string-as-view &m) "core.nuc" "(import-use mylib.util)
+(defn bt2-core ():i32 (return (bt2-util)))
+"))
+    (try (write-into (string-as-view &m) "util.nuc" "(defn bt2-util ():i32 (return 1))
+"))
+    (try (write-into pv "hlib.nuch" "(declare bt2-h () :i32)
+"))
+    (try (write-into pv "bt2.h" "int bt2_c(void);
+"))
+    (try (write-into pv "sp ace.nuc" "(defn bt2-sp ():i32 (return 2))
+"))
+    (try (write-into pv "data.txt" "twelve bytes"))
+    (try (write-into pv "app.nuc" "(import-use mylib.core)
+(import-use hlib)
+(import-use \"bt2.h\")
+(import-use \"sp ace.nuc\")
+(import-use nucleus.file)
+(import-use nucleus.string)
+(import-use nucleus.node)
+(defmacro data-len ()
+  (match (read-file-tracked \"data.txt\")
+    ((ok s) (node-int (as i64 (nucleus.string/byte-len &s))))
+    ((err e) `0)))
+(defn main ():i32 (return (+ (data-len) (bt2-core) (bt2-sp))))
+"))
+    (drop &m)
+    (return (ok p))))
+
+(deftest bt2-depfile-lists-reads
+  (let (p:String (try (bt2-project))
+        pv:StrView (string-as-view &p)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (conj &flags "-I")
+    (conj &flags ".")
+    (conj &flags "--depfile=app.d")
+    (conj &flags "--emit-llvm")
+    (let (r:Ran (try (bt-compile-in pv &flags "app.nuc")))
+      (when (not (r 'ok?))
+        (fail! "compile failed\n     " (test-show (string-as-view (ref r 'err)))))
+      (drop &r))
+    (let (dp:String (str pv "/app.d")
+          d:String (try (read-file (string-as-view &dp)))
+          dv:StrView (string-as-view &d))
+      (try (check-contains dv "app.nuc: \\\n"))
+      (try (check-contains dv "  app.nuc \\\n"))
+      (try (check-contains dv "  ./mylib/core.nuc \\\n"))
+      (try (check-contains dv "  ./mylib/util.nuc \\\n"))
+      (try (check-contains dv "  ./hlib.nuch \\\n"))
+      (try (check-contains dv " bt2.h \\\n"))
+      (try (check-contains dv "  sp\\ ace.nuc \\\n"))
+      (try (check-contains dv "  data.txt\n"))
+      (try (check-not-contains dv "/dev/null"))
+      (drop &d)
+      (drop &dp))
+    (let (left:String (str pv "/app.d.cpp1")
+          tmp:String (str pv "/app.d.tmp"))
+      (try (check (not (file-exists? (string-as-view &left))) "the clang -MF scratch is removed"))
+      (try (check (not (file-exists? (string-as-view &tmp))) "the depfile temporary is renamed"))
+      (drop &tmp)
+      (drop &left))
+    (drop &flags)
+    (drop &p))
+  (return (ok)))
+
+; A failed compile writes no depfile: an old one would claim the output is current.
+(deftest bt2-depfile-not-written-on-error
+  (let (p:String (try (test-scratch-sub "bad"))
+        pv:StrView (string-as-view &p)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (try (write-into pv "app.nuc" "(defn main ():i32 (return undefined-name))
+"))
+    (conj &flags "--depfile=app.d")
+    (conj &flags "--emit-llvm")
+    (let (r:Ran (try (bt-compile-in pv &flags "app.nuc")))
+      (try (check (not (r 'ok?)) "the compile fails"))
+      (drop &r))
+    (let (dp:String (str pv "/app.d"))
+      (try (check (not (file-exists? (string-as-view &dp))) "no depfile"))
+      (drop &dp))
+    (drop &flags)
+    (drop &p))
+  (return (ok)))
+
+(deftest bt2-list-imports
+  (let (p:String (try (bt2-project))
+        pv:StrView (string-as-view &p)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (try (write-into pv "lone.nuc" "(import-use no.such.lib)
+(require-ct mylib.util)
+"))
+    (conj &flags "-I")
+    (conj &flags ".")
+    (conj &flags "--list-imports")
+    (let (r:Ran (try (bt-compile-in pv &flags "app.nuc"))
+          o:StrView (string-as-view (ref r 'out)))
+      (when (not (r 'ok?))
+        (fail! "--list-imports failed\n     " (test-show (string-as-view (ref r 'err)))))
+      (try (check-line o "{:file \"app.nuc\" :line 1 :head import-use :kind :nucleus :name \"mylib.core\" :path \"./mylib/core.nuc\"}"))
+      (try (check-line o "{:file \"app.nuc\" :line 2 :head import-use :kind :nucleus :name \"hlib\" :path \"./hlib.nuch\"}"))
+      (try (check-line o "{:file \"app.nuc\" :line 3 :head import-use :kind :c-header :name \"bt2.h\"}"))
+      (try (check-line o "{:file \"./mylib/core.nuc\" :line 1 :head import-use :kind :nucleus :name \"mylib.util\" :path \"./mylib/util.nuc\"}"))
+      (try (check-not-contains o "bt2-core"))
+      (drop &r))
+    (let (r:Ran (try (bt-compile-in pv &flags "lone.nuc"))
+          o:StrView (string-as-view (ref r 'out)))
+      (try (check-line o "{:file \"lone.nuc\" :line 1 :head import-use :kind :nucleus :name \"no.such.lib\" :path nil}"))
+      (try (check-line o "{:file \"lone.nuc\" :line 2 :head require-ct :kind :nucleus :name \"mylib.util\" :path \"./mylib/util.nuc\"}"))
+      (drop &r))
+    (drop &flags)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-3: C requirements
+; ---------------------------------------------------------------------------
+
+; An interned copy: a unit's paths and texts outlive the String that built them.
+(defn bt-sv (s:String):StrView
+  (let (v:StrView (symbol-as-view (symbol-intern (string-as-view &s))))
+    (drop &s)
+    (return v)))
+
+; Two scratch packages providing one header, so a pick is visible as `FAKE_V`.
+; PKG_CONFIG_LIBDIR points only at them, and XDG_CONFIG_HOME at scratch, so
+; neither system packages nor the user's own table can leak in.
+(defn bt3-project (name:StrView):!String
+  (let (rel:String (try (test-scratch-sub name))
+        ; Absolute: pkg-config runs from the project, not from the tree.
+        p:String (bt-abs (string-as-view &rel))
+        pv:StrView (string-as-view &p)
+        pc:String (try (test-scratch-sub (bt-sv (str name "/pc")))))
+    (drop &pc)
+    (try (test-scratch-sub (bt-sv (str name "/inc4"))))
+    (try (test-scratch-sub (bt-sv (str name "/inc3"))))
+    (try (test-scratch-sub (bt-sv (str name "/xdg"))))
+    (let (pcd:String (str pv "/pc")
+          i4:String (str pv "/inc4")
+          i3:String (str pv "/inc3")
+          f4:String (str "Name: fake4\nDescription: t\nVersion: 4.12\nCflags: -I" (string-as-view &i4) "\nLibs: -lm\n")
+          f3:String (str "Name: fake3\nDescription: t\nVersion: 3.24\nCflags: -I" (string-as-view &i3) "\n"))
+      (try (write-into (string-as-view &pcd) "fake4.pc" (string-as-view &f4)))
+      (try (write-into (string-as-view &pcd) "fake3.pc" (string-as-view &f3)))
+      (try (write-into (string-as-view &i4) "fake.h" "#define FAKE_V 4\n"))
+      (try (write-into (string-as-view &i3) "fake.h" "#define FAKE_V 3\n"))
+      (drop &f3) (drop &f4) (drop &i3) (drop &i4) (drop &pcd))
+    (drop &rel)
+    (return (ok p))))
+
+(defn bt3-env (pv:StrView out:&(Vector StrView)):void
+  (conj out "PKG_CONFIG_LIBDIR")
+  (conj out (bt-sv (str pv "/pc")))
+  (conj out "PKG_CONFIG_PATH")
+  (conj out "")
+  (conj out "XDG_CONFIG_HOME")
+  (conj out (bt-sv (str pv "/xdg"))))
+
+; `nucleusc <flags…> app.nuc -o app` in the project, then the exit status.
+(defn bt3-exit (pv:StrView extra:StrView):!i32
+  (let (flags:(Vector StrView) (make (Vector StrView))
+        env:(Vector StrView) (make (Vector StrView)))
+    (bt3-env pv &env)
+    (when (not (= extra "")) (conj &flags extra))
+    (conj &flags "-o")
+    (conj &flags "app")
+    (let (r:Ran (try (bt-compile-env pv &flags "app.nuc" &env)))
+      (when (not (r 'ok?))
+        (fail! "compile failed\n     " (test-show (string-as-view (ref r 'err)))))
+      (drop &r))
+    (drop &env)
+    (drop &flags)
+    (let (bin:String (str pv "/app")
+          got:i32 (try (run-exit (string-as-view &bin))))
+      (drop &bin)
+      (return (ok got)))))
+
+; The compile's stderr, for a unit that expects a refusal.
+(defn bt3-refusal (pv:StrView extra:StrView):!String
+  (let (flags:(Vector StrView) (make (Vector StrView))
+        env:(Vector StrView) (make (Vector StrView)))
+    (bt3-env pv &env)
+    (when (not (= extra "")) (conj &flags extra))
+    (conj &flags "--emit-llvm")
+    (let (r:Ran (try (bt-compile-env pv &flags "app.nuc" &env)))
+      (when (r 'ok?) (fail! "the compile must be refused"))
+      (let (ev:StrView (string-as-view (ref r 'err))
+            e:String (try (string-from-view &ev)))
+        (drop &r)
+        (drop &env)
+        (drop &flags)
+        (return (ok e))))))
+
+(defconst BT3-MAIN "(defn main ():i32 (return FAKE_V))\n")
+
+; An annotated import compiles and links with no flags, and the first installed
+; alternative that satisfies its constraint wins.
+(deftest bt3-annotation-applies-package
+  (let (p:String (try (bt3-project "ann"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "app.nuc" (bt-sv (str "(import-use \"fake.h\" :pkg-config [\"fake4 >= 4.10\" \"fake3\"])\n" BT3-MAIN))))
+    (try (check-eq-int (as i64 (try (bt3-exit pv ""))) 4 "fake4 picked"))
+    (try (write-into pv "app.nuc" (bt-sv (str "(import-use \"fake.h\" :pkg-config [\"fake4 >= 5\" \"fake3\"])\n" BT3-MAIN))))
+    (try (check-eq-int (as i64 (try (bt3-exit pv ""))) 3 "fake4 too old, fake3 picked"))
+    (drop &p))
+  (return (ok)))
+
+; Annotations on two imports of one header intersect (§8.3.1 B).
+(deftest bt3-annotations-intersect
+  (let (p:String (try (bt3-project "both"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "other.nuc" "(import-use \"fake.h\" :pkg-config [\"fake3\"])\n"))
+    (try (write-into pv "app.nuc" (bt-sv (str "(import-use \"fake.h\" :pkg-config [\"fake4\" \"fake3\"])\n(import-use other)\n" BT3-MAIN))))
+    (try (check-eq-int (as i64 (try (bt3-exit pv ""))) 3 "the intersection is fake3"))
+    (try (write-into pv "other.nuc" "(import-use \"fake.h\" :pkg-config [\"fake5\"])\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) "conflicting C requirements for 'fake.h'"))
+      (try (check-contains (string-as-view &e) "note: app.nuc:1 requires [\"fake4\" \"fake3\"]"))
+      (try (check-contains (string-as-view &e) "note: ./other.nuc:1 requires [\"fake5\"]"))
+      (drop &e))
+    (drop &p))
+  (return (ok)))
+
+; The build tool's `--pkg-config=` must be one of the alternatives (D-STANDALONE).
+(deftest bt3-passed-package-checked
+  (let (p:String (try (bt3-project "passed"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "app.nuc" (bt-sv (str "(import-use \"fake.h\" :pkg-config [\"fake4\" \"fake3\"])\n" BT3-MAIN))))
+    (try (check-eq-int (as i64 (try (bt3-exit pv "--pkg-config=fake3"))) 3 "the passed package wins"))
+    (let (e:String (try (bt3-refusal pv "--pkg-config=zlib")))
+      (try (check-contains (string-as-view &e) "app.nuc:1: error: 'fake.h' requires one of these packages, and --pkg-config passes none of them"))
+      (drop &e))
+    (drop &p))
+  (return (ok)))
+
+(deftest bt3-annotation-refusals
+  (let (p:String (try (bt3-project "refuse"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "app.nuc" "(import-use nucleus.io :libs [\"m\"])\n(defn main ():i32 (return 0))\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) "app.nuc:1: error: import-use: :pkg-config and :libs annotate a C header import, and 'nucleus.io' is a Nucleus library"))
+      (drop &e))
+    (try (write-into pv "app.nuc" "(import-use \"fake.h\" :pkgconfig [\"fake3\"])\n(defn main ():i32 (return 0))\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) "unknown annotation :pkgconfig (expected :pkg-config or :libs)"))
+      (drop &e))
+    (try (write-into pv "app.nuc" "(import-use \"fake.h\" :pkg-config [\"fake3 >=\"])\n(defn main ():i32 (return 0))\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) ":pkg-config entry 'fake3 >=' has an invalid version constraint"))
+      (drop &e))
+    (try (write-into pv "app.nuc" "(import-use \"fake.h\" :pkg-config [\"fake9\"])\n(defn main ():i32 (return 0))\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) "no installed C package satisfies 'fake.h'"))
+      (drop &e))
+    (drop &p))
+  (return (ok)))
+
+; `math.h` links `-lm` from the shipped table: `cbrt` of a run-time value is a
+; real libm call, so the link fails without it.
+(deftest bt3-table-links-libm
+  (let (p:String (try (bt3-project "libm"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "app.nuc" "(import-use \"math.h\")
+(defn main (argc:i32 argv:ptr):i32 (return (unsafe/cast i32 (cbrt (unsafe/cast f64 (* argc 27))))))
+"))
+    (try (check-eq-int (as i64 (try (bt3-exit pv ""))) 3 "cbrt(27)"))
+    (drop &p))
+  (return (ok)))
+
+; A user table entry applies to an unannotated import, and replaces the shipped one.
+(deftest bt3-user-table
+  (let (p:String (try (bt3-project "utab"))
+        pv:StrView (string-as-view &p)
+        x:String (try (test-scratch-sub "utab/xdg/nucleus")))
+    (try (write-into (string-as-view &x) "c-packages.edn" "{\"fake.h\" {:pkg-config [\"fake3\"]}}\n"))
+    (try (write-into pv "app.nuc" (bt-sv (str "(import-use \"fake.h\")\n" BT3-MAIN))))
+    (try (check-eq-int (as i64 (try (bt3-exit pv ""))) 3 "the user table's fake3"))
+    (try (write-into (string-as-view &x) "c-packages.edn" "{\"fake.h\" {:pkg-config 3}}\n"))
+    (let (e:String (try (bt3-refusal pv "")))
+      (try (check-contains (string-as-view &e) "c-packages.edn:1: error: c-packages: :pkg-config takes a non-empty vector of package names"))
+      (drop &e))
+    (drop &x)
+    (drop &p))
+  (return (ok)))
+
+(deftest bt3-list-imports-annotations
+  (let (p:String (try (bt3-project "list"))
+        pv:StrView (string-as-view &p)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (try (write-into pv "app.nuc" "(import-use \"fake.h\" :pkg-config [\"fake4 >= 4.10\" \"fake3\"] :libs [\"m\"])\n"))
+    (conj &flags "--list-imports")
+    (let (r:Ran (try (bt-compile-in pv &flags "app.nuc")))
+      (try (check-line (string-as-view (ref r 'out)) "{:file \"app.nuc\" :line 1 :head import-use :kind :c-header :name \"fake.h\" :pkg-config [\"fake4 >= 4.10\" \"fake3\"] :libs [\"m\"]}"))
+      (drop &r))
+    (drop &flags)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-4: header format v1
+; ---------------------------------------------------------------------------
+
+; `sh -c script` in `cwd`, for the C side of a fixture.
+(defn bt4-sh (cwd:StrView script:StrView):!void
+  (let (c:Command (command "sh"))
+    (command-cwd &c cwd)
+    (command-arg &c "-c")
+    (command-arg &c script)
+    (let (r:Ran (try (ran &c)))
+      (when (not (r 'ok?))
+        (fail! "sh failed: " script "\n     " (test-show (string-as-view (ref r 'err)))))
+      (drop &r))
+    (drop &c))
+  (return (ok)))
+
+; A C library `fakez` with a struct and a function, installed as a `.pc`; the
+; Nucleus library `mylib.core` wrapping it, built to `inst/mylib/core.nuch` plus
+; `core.o`; and a consumer directory `app` that sees only the header (§8.1 gaps 1-2).
+(defn bt4-project (name:StrView):!String
+  (let (p:String (try (bt3-project name))
+        pv:StrView (string-as-view &p)
+        rc:String (try (test-scratch-sub (bt-sv (str name "/c"))))
+        c:String (str pv "/c")
+        cv:StrView (string-as-view &c))
+    (drop &rc)
+    (try (test-scratch-sub (bt-sv (str name "/mylib"))))
+    (try (test-scratch-sub (bt-sv (str name "/inst"))))
+    (try (test-scratch-sub (bt-sv (str name "/inst/mylib"))))
+    (try (test-scratch-sub (bt-sv (str name "/app"))))
+    (try (write-into cv "fakez.h" "typedef struct fz { int avail; } fz_t;\nint fz_version(void);\n"))
+    (try (write-into cv "fakez.c" "int fz_version(void) { return 40; }\n"))
+    (try (bt4-sh cv "clang -c fakez.c -o fakez.o && ar rcs libfakez.a fakez.o"))
+    (let (pc:String (str "Name: fakez\nDescription: t\nVersion: 1.2\nCflags: -I" cv "\nLibs: -L" cv " -lfakez\n")
+          pcd:String (str pv "/pc"))
+      (try (write-into (string-as-view &pcd) "fakez.pc" (string-as-view &pc)))
+      (drop &pcd)
+      (drop &pc))
+    (let (lib:String (str pv "/mylib"))
+      (try (write-into (string-as-view &lib) "core.nuc" "(ns mylib.core)
+(import-use \"fakez.h\" :pkg-config [\"fakez >= 1.0\"])
+(import-use nucleus.node)
+(defn fz-avail (z:&fz_t):i32 (return (z 'avail)))
+(defn fz-ver ():i32 (return (+ (fz_version) 2)))
+(defmacro fz-seven () (node-int 7))
+"))
+      (drop &lib))
+    (let (env:(Vector StrView) (make (Vector StrView))
+          hflags:(Vector StrView) (make (Vector StrView))
+          oflags:(Vector StrView) (make (Vector StrView)))
+      (bt3-env pv &env)
+      (conj &hflags "--emit-nuch")
+      (conj &hflags "--library=mylib@0.1.0")
+      (conj &hflags "--build-id=b1")
+      (let (r:Ran (try (bt-compile-env pv &hflags "mylib/core.nuc" &env)))
+        (when (not (r 'ok?)) (fail! "header failed\n     " (test-show (string-as-view (ref r 'err)))))
+        (try (write-into pv "inst/mylib/core.nuch" (string-as-view (ref r 'out))))
+        (drop &r))
+      (conj &oflags "-c")
+      (conj &oflags "-o")
+      (conj &oflags "core.o")
+      (let (r:Ran (try (bt-compile-env pv &oflags "mylib/core.nuc" &env)))
+        (when (not (r 'ok?)) (fail! "object failed\n     " (test-show (string-as-view (ref r 'err)))))
+        (drop &r))
+      (drop &oflags)
+      (drop &hflags)
+      (drop &env))
+    (drop &c)
+    (return (ok p))))
+
+(defn bt4-header (pv:StrView):!String
+  (let (h:String (str pv "/inst/mylib/core.nuch")
+        hv:StrView (string-as-view &h)
+        text:String (try (read-file-tracked hv)))
+    (drop &h)
+    (return (ok text))))
+
+; The consumer: `-I ../inst`, the object, and nothing else on the command line.
+(defn bt4-consume (pv:StrView main-src:StrView extra:StrView):!Ran
+  (let (app:String (str pv "/app")
+        av:StrView (string-as-view &app)
+        flags:(Vector StrView) (make (Vector StrView))
+        env:(Vector StrView) (make (Vector StrView)))
+    (try (write-into av "app.nuc" main-src))
+    (bt3-env pv &env)
+    (conj &flags "-I")
+    (conj &flags "../inst")
+    (conj &flags extra)
+    (let (r:Ran (try (bt-compile-env av &flags "app.nuc" &env)))
+      (drop &env)
+      (drop &flags)
+      (drop &app)
+      (return (ok r)))))
+
+; H1-H3: the header names its library, carries its C import with the package
+; applied for it, and records what the library was built with.
+(deftest bt4-header-records-c-imports
+  (let (p:String (try (bt4-project "hdr"))
+        h:String (try (bt4-header (string-as-view &p)))
+        hv:StrView (string-as-view &h))
+    (try (check-line hv "(library mylib \"0.1.0\" :build-id \"b1\" :header-format 1)"))
+    (try (check-line hv "(import-use \"fakez.h\" :pkg-config [\"fakez >= 1.0\"])"))
+    (try (check-line hv "(c-requires {:pkg-config [\"fakez\"]})"))
+    (try (check-line hv "(require-ct nucleus.node)"))
+    (drop &h)
+    (drop &p))
+  (return (ok)))
+
+; §8.1 gap 1: a signature naming a C type the consumer never imported.
+(deftest bt4-header-loads-c-import
+  (let (p:String (try (bt4-project "gap1"))
+        r:Ran (try (bt4-consume (string-as-view &p) "(import-use mylib.core)
+(defn peek (z:&fz_t):i32 (return (fz-avail z)))
+(defn main ():i32 (return 0))
+" "--emit-llvm")))
+    (when (not (r 'ok?)) (fail! "consume failed\n     " (test-show (string-as-view (ref r 'err)))))
+    (drop &r)
+    (drop &p))
+  (return (ok)))
+
+; §8.1 gap 2: the link needs `-lfakez`, and only the header says so.
+(deftest bt4-header-links-c-requirements
+  (let (p:String (try (bt4-project "gap2"))
+        pv:StrView (string-as-view &p)
+        r:Ran (try (bt4-consume pv "(import-use mylib.core)
+(defn main ():i32 (return (fz-ver)))
+" "--link-arg=../core.o")))
+    (when (not (r 'ok?)) (fail! "consume failed\n     " (test-show (string-as-view (ref r 'err)))))
+    (drop &r)
+    (let (bin:String (str pv "/app/a.out")
+          got:i32 (try (run-exit (string-as-view &bin))))
+      (try (check-eq-int (as i64 got) 42 "fz_version() + 2"))
+      (drop &bin))
+    (drop &p))
+  (return (ok)))
+
+; §8.1 gap 3, the `node-int` half: a header's macro body reaches the library its
+; source imported, with no import of it in the consumer.
+(deftest bt4-macro-loads-at-compile-time
+  (let (p:String (try (bt4-project "gap3"))
+        r:Ran (try (bt4-consume (string-as-view &p) "(import-use mylib.core)
+(defn main ():i32 (return (fz-seven)))
+" "--emit-llvm")))
+    (when (not (r 'ok?)) (fail! "consume failed\n     " (test-show (string-as-view (ref r 'err)))))
+    (try (check-contains (string-as-view (ref r 'out)) "ret i32 7"))
+    (drop &r)
+    (drop &p))
+  (return (ok)))
+
+(deftest bt4-header-format-refusals
+  (let (p:String (try (test-scratch-sub "fmt"))
+        pv:StrView (string-as-view &p)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (try (write-into pv "newer.nuch" "(library newer \"2.0\" :header-format 9)\n(declare nv () :i32)\n"))
+    (try (write-into pv "app.nuc" "(import-use newer)\n(defn main ():i32 (return (nv)))\n"))
+    (conj &flags "--emit-llvm")
+    (let (r:Ran (try (bt-compile-in pv &flags "app.nuc")))
+      (when (r 'ok?) (fail! "a newer header format must be refused"))
+      (try (check-contains (string-as-view (ref r 'err))
+                           "newer.nuch:1: error: library: this header's format is newer than this compiler reads (format 1)"))
+      (drop &r))
+    (let (bad:(Vector StrView) (make (Vector StrView)))
+      (conj &bad "--library=nover")
+      (let (r:Ran (try (bt-compile-in pv &bad "app.nuc")))
+        (try (check-contains (string-as-view (ref r 'err)) "--library= expects NAME@VERSION"))
+        (drop &r))
+      (drop &bad))
+    (drop &flags)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-5: the `nucleus` core
+; ---------------------------------------------------------------------------
+
+; `build/nucleus <args…>` in project `pv`, isolated from system packages, the
+; user's tables and an installed stdlib.
+(defn bt5-command (pv:StrView tool:StrView args:&(Vector StrView)):Command
+  (let (c:Command (command tool)
+        env:(Vector StrView) (make (Vector StrView)))
+    (command-search &c false)
+    (command-cwd &c pv)
+    (bt3-env pv &env)
+    (conj &env "NUCLEUS_LIB")
+    (conj &env "/nonexistent")
+    (conj &env "XDG_CACHE_HOME")
+    (conj &env (bt-sv (str pv "/cache")))
+    (conj &env "HOME")
+    (conj &env (bt-sv (str pv "/home")))
+    (let (k:usize 0)
+      (while (< (+ k 1) (count &env))
+        (command-env &c (invoke &env k) (invoke &env (+ k 1)))
+        (set! k (+ k 2))))
+    (drop &env)
+    (dotimes (k (count args)) (command-arg &c (invoke args k)))
+    (return c)))
+
+(defn bt5-tool (pv:StrView args:&(Vector StrView)):!Ran
+  (let (tool:String (bt-abs "build/nucleus")
+        c:Command (bt5-command pv (string-as-view &tool) args)
+        r:Ran (try (ran &c)))
+    (drop &c)
+    (drop &tool)
+    (return (ok r))))
+
+; The same, for its exit status.
+(defn bt5-tool-status (pv:StrView args:&(Vector StrView)):!i32
+  (let (tool:String (bt-abs "build/nucleus")
+        c:Command (bt5-command pv (string-as-view &tool) args))
+    (command-capture &c true)
+    (match (run &c)
+      ((ok o)
+        (let (st:ExitStatus (o 'status)
+              got:i32 (exit-code &st))
+          (drop &o)
+          (drop &c)
+          (drop &tool)
+          (return (ok got))))
+      ((err e) (return (err e))))))
+
+; One command whose stderr must hold `want`; `ok` says whether it must succeed.
+(defn bt5-expect (pv:StrView a1:StrView a2:StrView ok:bool want:StrView):!void
+  (let (args:(Vector StrView) (make (Vector StrView)))
+    (conj &args a1)
+    (when (not (= a2 "")) (conj &args a2))
+    (let (r:Ran (try (bt5-tool pv &args)))
+      (when (not (= (r 'ok?) ok))
+        (fail! "nucleus " a1 " " a2 ": unexpected exit\n     " (test-show (string-as-view (ref r 'err)))))
+      (try (check-contains (string-as-view (ref r 'err)) want))
+      (drop &r))
+    (drop &args))
+  (return (ok)))
+
+(defn bt5-exit (pv:StrView prog:StrView):!i32
+  (let (bin:String (str pv "/build/" prog)
+        got:i32 (try (run-exit (string-as-view &bin))))
+    (drop &bin)
+    (return (ok got))))
+
+; D-CONV and D-STALE: no build.edn, then a no-op build, a touch, an -O change and
+; an edit to an imported file.
+(deftest bt5-zero-config-and-staleness
+  (let (p:String (try (bt3-project "zc"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "zc/src"))
+    (try (write-into pv "src/main.nuc" "(import-use helper)\n(defn main ():i32 (return (helper-val)))\n"))
+    (try (write-into pv "src/helper.nuc" "(defn helper-val ():i32 (return 41))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/zc (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "zc"))) 41 "built program"))
+    (try (bt5-expect pv "build" "" true "nucleus: zc is up to date"))
+    (try (write-into pv "src/helper.nuc" "(defn helper-val ():i32 (return 41))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: zc is up to date"))
+    (try (bt5-expect pv "build" "-O2" true "nucleus: building build/zc (command changed)"))
+    (try (write-into pv "src/helper.nuc" "(defn helper-val ():i32 (return 43))\n"))
+    (try (bt5-expect pv "build" "-O2" true "nucleus: building build/zc (src/helper.nuc changed)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "zc"))) 43 "rebuilt program"))
+    (drop &p))
+  (return (ok)))
+
+; §8.9: build-local.edn's flags append to build.edn's, and a requirement set in
+; the config picks the package for an unannotated import.
+(deftest bt5-config-merge
+  (let (p:String (try (bt3-project "merge"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "merge/src"))
+    (try (write-into pv "src/both.h" "#if defined(BT5_BASE) && defined(BT5_LOCAL)\n#define BOTH 10\n#else\n#define BOTH 0\n#endif\n"))
+    (try (write-into pv "src/main.nuc" "(import-use \"fake.h\")\n(import-use \"both.h\")\n(defn main ():i32 (return (+ FAKE_V BOTH)))\n"))
+    (try (write-into pv "build.edn" "{:name \"merged\" :cflags [\"-DBT5_BASE\" \"-Isrc\"] :pkg-config {\"fake.h\" [\"fake3\"]}}\n"))
+    (try (bt5-expect pv "build" "" true "building build/merged"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "merged"))) 3 "build.edn alone"))
+    (try (write-into pv "build-local.edn" "{:cflags [\"-DBT5_LOCAL\"]}\n"))
+    (try (bt5-expect pv "build" "" true "(command changed)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "merged"))) 13 "flags appended"))
+    (drop &p))
+  (return (ok)))
+
+; An `unsafe/` key replaces the source's annotation, and says so.
+(deftest bt5-unsafe-key-warns
+  (let (p:String (try (bt3-project "unsafe"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "unsafe/src"))
+    (try (write-into pv "src/main.nuc" "(import-use \"fake.h\" :pkg-config [\"fake3\"])\n(defn main ():i32 (return FAKE_V))\n"))
+    (try (write-into pv "build.edn" "{:pkg-config {\"fake.h\" {:unsafe/pkg-config [\"fake4\"]}}}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: warning: build.edn:1: :unsafe/pkg-config replaces every other requirement on \"fake.h\""))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "unsafe"))) 4 "fake4 forced"))
+    (drop &p))
+  (return (ok)))
+
+(deftest bt5-refusals
+  (let (p:String (try (bt3-project "refuse"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "refuse/src"))
+    (try (write-into pv "src/lib.nuc" "(defn helper ():i32 (return 1))\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: no main file: src has no src/main.nuc and no .nuc file that defines main"))
+    (try (write-into pv "build.edn" "{:entry \"src/nope.nuc\"}\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: build.edn:1: :entry 'src/nope.nuc' does not exist"))
+    (try (write-into pv "build.edn" "{:name \"x\"\n :bogus 1}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:2: error: unknown key :bogus"))
+    (try (write-into pv "build.edn" "{:opt 9}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :opt"))
+    (try (bt5-expect pv "frobnicate" "" false "nucleus: unknown command 'frobnicate'"))
+    (drop &p))
+  (return (ok)))
+
+; `run` passes what follows `--` and returns the program's status; a C source is
+; compiled to its own object; `clean` leaves nothing it wrote.
+(deftest bt5-run-c-sources-and-clean
+  (let (p:String (try (bt3-project "crun"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "crun/src"))
+    (try (test-scratch-sub "crun/csrc"))
+    (try (write-into pv "csrc/add.h" "int c_add(int a, int b);\n"))
+    (try (write-into pv "csrc/add.c" "int c_add(int a, int b) { return a + b; }\n"))
+    (try (write-into pv "src/main.nuc" "(import-use \"add.h\")\n(defn main (argc:i32 argv:ptr):i32 (return (c_add argc 40)))\n"))
+    (try (write-into pv "build.edn" "{:c-sources [\"csrc/add.c\"] :cflags [\"-Icsrc\"]}\n"))
+    (let (args:(Vector StrView) (make (Vector StrView)))
+      (conj &args "run")
+      (conj &args "--")
+      (conj &args "x")
+      (try (check-eq-int (as i64 (try (bt5-tool-status pv &args))) 42 "run, built"))
+      (drop &args))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "crun"))) 41 "built with the object"))
+    (try (write-into pv "csrc/add.c" "int c_add(int a, int b) { return a + b + 1; }\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/obj/csrc__add.c.o (csrc/add.c changed)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "crun"))) 42 "relinked"))
+    (try (bt5-expect pv "clean" "" true ""))
+    (let (out:String (str pv "/build"))
+      (when (dir-exists? (string-as-view &out)) (fail! "clean left build/"))
+      (drop &out))
+    (try (write-into pv "build.edn" "{}\n"))
+    (try (write-into pv "src/main.nuc" "(defn main (argc:i32 argv:ptr):i32 (return (+ argc 20)))\n"))
+    (let (args:(Vector StrView) (make (Vector StrView)))
+      (conj &args "run")
+      (conj &args "--")
+      (conj &args "x")
+      (conj &args "y")
+      (try (check-eq-int (as i64 (try (bt5-tool-status pv &args))) 23 "run in-process"))
+      (drop &args))
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-6: resolution, discovery and `nucleus init`
+; ---------------------------------------------------------------------------
+
+; Fake pkg-config answers for the resolver: everything but `gone` is installed,
+; and `wa` requires `fxa`.
+(defn bt6-installed (specs:&(Vector StrView)):bool
+  (return (not (= (invoke specs 0) "gone"))))
+
+(defn bt6-requires (name:StrView out:&(Vector StrView)):void
+  (when (= name "wa") (conj out "fxa")))
+
+(defn bt6-set (rq:&CRequests header:StrView file:StrView rank:i32 a:StrView b:StrView):void
+  (c-require rq header file 1 rank false)
+  (c-require-spec rq a)
+  (when (not (= b "")) (c-require-spec rq b)))
+
+; §8.8 step 4: a pick's Requires steer another header's pick, and a clash with
+; what the other header's sets allow leaves no resolution.
+(deftest bt6-requires-steer-the-pick
+  (let (rq:CRequests (c-requests)
+        res:Resolution (resolution))
+    (bt6-set &rq "w.h" "a.nuc" RANK-ROOT "wa" "")
+    (bt6-set &rq "fx/fx.h" "a.nuc" RANK-ROOT "fxb" "fxa")
+    (when (not (resolve-c &rq bt6-installed bt6-requires &res))
+      (fail! "must resolve: " (string-as-view (ref res 'error))))
+    (try (check-eq (resolved-pkg &res "fx/fx.h") "fxa"))
+    (try (check-eq (invoke (ref res 'notes) 0)
+                   "'fx/fx.h' uses fxa (fxb conflicts with the packages other headers need)"))
+    (drop &res)
+    (drop &rq))
+  (let (rq:CRequests (c-requests)
+        res:Resolution (resolution))
+    (bt6-set &rq "w.h" "a.nuc" RANK-ROOT "wa" "")
+    (bt6-set &rq "fx/fx.h" "a.nuc" RANK-ROOT "fxb" "fxa")
+    (bt6-set &rq "fx/fx.h" "dep.nuc" RANK-DEP "fxb" "")
+    (when (resolve-c &rq bt6-installed bt6-requires &res) (fail! "fxa is ruled out, so wa can't be used"))
+    (try (check-contains (string-as-view (ref res 'error)) "no choice of C packages satisfies every header"))
+    (try (check-contains (string-as-view (ref res 'error)) "'w.h' accepts wa (requires fxa)"))
+    (drop &res)
+    (drop &rq))
+  (let (rq:CRequests (c-requests)
+        res:Resolution (resolution))
+    (bt6-set &rq "z.h" "a.nuc" RANK-ROOT "gone" "")
+    (when (resolve-c &rq bt6-installed bt6-requires &res) (fail! "nothing is installed"))
+    (try (check-contains (string-as-view (ref res 'error)) "no C package satisfies 'z.h'\n  note: a.nuc:1 requires [\"gone\"]\n  note: not installed: gone"))
+    (drop &res)
+    (drop &rq))
+  (return (ok)))
+
+; Two packages that both provide `fx/fx.h`, as FX_V 1 and 2.
+(defn bt6-project (name:StrView):!String
+  (let (p:String (try (bt3-project name))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub (bt-sv (str name "/src"))))
+    (try (test-scratch-sub (bt-sv (str name "/fxa"))))
+    (try (test-scratch-sub (bt-sv (str name "/fxa/fx"))))
+    (try (test-scratch-sub (bt-sv (str name "/fxb"))))
+    (try (test-scratch-sub (bt-sv (str name "/fxb/fx"))))
+    (try (write-into pv "fxa/fx/fx.h" "#define FX_V 1\n"))
+    (try (write-into pv "fxb/fx/fx.h" "#define FX_V 2\n"))
+    (try (write-into pv "pc/fxa.pc" (bt-sv (str "Name: fxa\nDescription: t\nVersion: 1.0\nCflags: -I" pv "/fxa\n"))))
+    (try (write-into pv "pc/fxb.pc" (bt-sv (str "Name: fxb\nDescription: t\nVersion: 2.0\nCflags: -I" pv "/fxb\n"))))
+    (return (ok p))))
+
+(defconst BT6-MAIN "(defn main ():i32 (return FX_V))\n")
+
+; Q4: an ambiguous header stops a zero-config build; `init` records the choice,
+; and the next build uses it.
+(deftest bt6-ambiguous-header-and-init
+  (let (p:String (try (bt6-project "amb"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\")\n" BT6-MAIN))))
+    (try (bt5-expect pv "build" "" false "nucleus: error: 'fx/fx.h' is provided by several packages: fxa, fxb\n  note: run `nucleus init` to write the choice to build.edn"))
+    (try (bt5-expect pv "init" "" true "nucleus: wrote build.edn\n  'fx/fx.h' uses fxa; fxb commented out"))
+    (let (cfg:String (str pv "/build.edn")
+          text:String (try (read-file-tracked (string-as-view &cfg))))
+      (try (check-contains (string-as-view &text) "{\"fx/fx.h\" [\"fxa\"\n   ;\"fxb\"\n   ]}"))
+      (drop &text)
+      (drop &cfg))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/amb (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "amb"))) 1 "fxa's header"))
+    (try (bt5-expect pv "init" "" false "build.edn already exists"))
+    (try (write-into pv "build.edn" "{}\n"))
+    (try (bt5-expect pv "build" "" false "note: choose one in build.edn, as :pkg-config {\"fx/fx.h\" [\"fxa\"]}"))
+    (drop &p))
+  (return (ok)))
+
+; Sets from two files intersect to one package: no `init`, and a note, since it
+; wasn't the root file's first choice. The same inputs give the same pick.
+(deftest bt6-intersection-picks
+  (let (p:String (try (bt6-project "isect"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\" :pkg-config [\"fxa\" \"fxb\"])\n(import-use other)\n" BT6-MAIN))))
+    (try (write-into pv "src/other.nuc" "(import-use \"fx/fx.h\" :pkg-config [\"fxb\"])\n(defn other-v ():i32 (return 0))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: note: 'fx/fx.h' uses fxb (fxa is ruled out by src/other.nuc:1)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "isect"))) 2 "fxb's header"))
+    (try (bt5-expect pv "build" "" true "nucleus: isect is up to date"))
+    (try (write-into pv "src/other.nuc" "(defn other-v ():i32 (return 0))\n"))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\" :pkg-config [\"fxa >= 9\" \"fxb\"])\n(import-use other)\n" BT6-MAIN))))
+    (try (bt5-expect pv "build" "" true "nucleus: note: 'fx/fx.h' uses fxb (fxa is not installed in a version the requirements accept)"))
+    (drop &p))
+  (return (ok)))
+
+; An empty intersection fails before any compile, naming every set's source.
+(deftest bt6-empty-intersection
+  (let (p:String (try (bt6-project "empty"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\" :pkg-config [\"fxa\"])\n" BT6-MAIN))))
+    (try (write-into pv "build.edn" "{:pkg-config {\"fx/fx.h\" [\"fxb\"]}}\n"))
+    (let (args:(Vector StrView) (make (Vector StrView)))
+      (conj &args "build")
+      (let (r:Ran (try (bt5-tool pv &args)))
+        (when (r 'ok?) (fail! "the build must stop"))
+        (try (check-contains (string-as-view (ref r 'err)) "nucleus: error: no C package satisfies 'fx/fx.h': no package is in every set\n  note: build.edn:1 requires [\"fxb\"]\n  note: src/main.nuc:1 requires [\"fxa\"]"))
+        (try (check-not-contains (string-as-view (ref r 'err)) "building"))
+        (drop &r))
+      (drop &args))
+    (drop &p))
+  (return (ok)))
+
+; An index hit with one provider needs no decision; a path in build.edn that
+; leaves the project warns.
+(deftest bt6-single-provider-and-local-paths
+  (let (p:String (try (bt6-project "single"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "fxb/fx/only-b.h" "#define FX_B 5\n"))
+    (try (write-into pv "src/main.nuc" "(import-use \"fx/only-b.h\")\n(defn main ():i32 (return FX_B))\n"))
+    (try (write-into pv "build.edn" "{:out-dir \"../single-out\"}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: warning: build.edn:1: :out-dir '../single-out' is outside the project"))
+    (let (bin:String (str pv "/../single-out/single")
+          got:i32 (try (run-exit (string-as-view &bin))))
+      (try (check-eq-int (as i64 got) 5 "fxb picked alone"))
+      (drop &bin))
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-7: library projects, install and uninstall
+; ---------------------------------------------------------------------------
+
+; A library `fz` of two files, one importing the other and the stdlib.
+(defn bt7-library (name:StrView edn:StrView):!String
+  (let (p:String (try (bt3-project name))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub (bt-sv (str name "/src"))))
+    (try (test-scratch-sub (bt-sv (str name "/src/fz"))))
+    (try (write-into pv "src/fz/util.nuc" "(ns fz.util)\n(defn fz-twice (x:i32):i32 (return (* x 2)))\n"))
+    (try (write-into pv "src/fz/core.nuc" "(ns fz.core)
+(import-use fz.util)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(defn fz-answer ():i32 (let (s:String (str \"abc\")) (return (+ (fz-twice 20) (unsafe/cast i32 (byte-len &s))))))
+"))
+    (try (write-into pv "build.edn" edn))
+    (return (ok p))))
+
+(defconst BT7-TREE "for f in include/*/fz/core.nuch include/*/fz/core.h include/*/fz/util.nuch include/*/fz/util.h lib/*/libfz.a lib/*/pkgconfig/fz.pc lib/*/nucleus/fz.edn share/nucleus/src/fz/core.nuc share/nucleus/src/fz/util.nuc; do test -f pfx/$f || { echo missing $f >&2; exit 1; }; done; test $(find pfx -type f | wc -l) -eq 9")
+
+; §8.4: the installed tree, its .pc for a C consumer, and an uninstall that
+; leaves the prefix empty.
+(deftest bt7-install-and-uninstall
+  (let (p:String (try (bt7-library "inst" "{:kind :library :name \"fz\" :version \"1.0\" :libs [\"m\"]}\n"))
+        pv:StrView (string-as-view &p)
+        pre:String (str "--prefix=" pv "/pfx"))
+    (try (bt5-expect pv "install" (string-as-view &pre) true
+                     (bt-sv (str "nucleus: installed fz 1.0 into " pv "/pfx (9 files)"))))
+    (try (bt4-sh pv BT7-TREE))
+    (try (bt4-sh pv "grep -q '^Libs: -L${libdir} -lfz -lm$' pfx/lib/*/pkgconfig/fz.pc && grep -q ':provides \\[\"fz\"\\]' pfx/lib/*/nucleus/fz.edn && grep -q ':requires {:nucleus \\[\"nucleus\"\\] :pkg-config \\[\\] :libs \\[\"m\"\\]}' pfx/lib/*/nucleus/fz.edn && grep -q '^(library fz \"1.0\" :build-id' pfx/include/*/fz/core.nuch"))
+    (try (write-into pv "m.c" "#include <fz/core.h>\n#include <fz/util.h>\nint main(void) { return fz_core__fz_answer() + fz_util__fz_twice(0); }\n"))
+    (try (bt4-sh pv "export PKG_CONFIG_PATH=$(echo $PWD/pfx/lib/*/pkgconfig); pkg-config --cflags --libs fz | grep -q -- '-lfz -lm' && clang m.c $(pkg-config --cflags --libs fz) -o m && ./m; test $? -eq 43"))
+    (try (bt5-expect pv "install" (string-as-view &pre) true "nucleus: installed fz 1.0"))
+    (try (bt4-sh pv BT7-TREE))
+    (try (bt5-expect pv "uninstall" (string-as-view &pre) true
+                     (bt-sv (str "nucleus: uninstalled fz from " pv "/pfx"))))
+    (try (bt4-sh pv "test -d pfx && test -z \"$(ls -A pfx)\""))
+    (try (bt5-expect pv "uninstall" (string-as-view &pre) false "nucleus: error: fz is not installed in"))
+    (drop &pre)
+    (drop &p))
+  (return (ok)))
+
+; §8.4: an installed object is linked beside others, so a run-time initializer
+; in an imported file fails the build, and nothing is installed.
+(deftest bt7-strict-initializers
+  (let (p:String (try (bt3-project "strict"))
+        pv:StrView (string-as-view &p)
+        pre:String (str "--prefix=" pv "/pfx"))
+    (try (test-scratch-sub "strict/src"))
+    (try (test-scratch-sub "strict/src/fy"))
+    (try (write-into pv "src/fy/conf.nuc" "(ns fy.conf)\n(import-use nucleus.string)\n(import-use nucleus.fmt)\n(defvar g-greet:String (str \"hi\"))\n"))
+    (try (write-into pv "src/fy/top.nuc" "(ns fy.top)\n(import-use fy.conf)\n(import-use nucleus.string)\n(defn fy-len ():i32 (return (unsafe/cast i32 (byte-len &g-greet))))\n"))
+    (try (write-into pv "build.edn" "{:kind :library :name \"fy\" :version \"0.1\"}\n"))
+    (try (bt5-expect pv "install" (string-as-view &pre) false
+                     "src/fy/conf.nuc:4: error: defvar: 'g-greet' has a run-time initializer"))
+    (try (bt4-sh pv "test ! -e pfx"))
+    (drop &pre)
+    (drop &p))
+  (return (ok)))
+
+; :shared, DESTDIR, :provides derived from a top-level file, and the refusals.
+(deftest bt7-shared-destdir-and-refusals
+  (let (p:String (try (bt7-library "shared" "{:kind :library :name \"fz\" :version \"1.0\" :shared true}\n"))
+        pv:StrView (string-as-view &p)
+        tool:String (bt-abs "build/nucleus")
+        tv:StrView (string-as-view &tool))
+    (try (write-into pv "src/fw.nuc" "(ns fw)\n(defn fw-one ():i32 (return 1))\n"))
+    (try (bt4-sh pv (bt-sv (str "XDG_CACHE_HOME=$PWD/cache DESTDIR=$PWD/stage " tv " install --prefix=/opt/fz 2>err && grep -q 'into /opt/fz (13 files)' err && grep -q '^prefix=/opt/fz$' stage/opt/fz/lib/*/pkgconfig/fz.pc && grep -q ':provides \\[\"fw\" \"fz\"\\]' stage/opt/fz/lib/*/nucleus/fz.edn && nm -D stage/opt/fz/lib/*/libfz.so | grep -q 'T fz.core__fz-answer' && test -f stage/opt/fz/share/nucleus/src/fw.nuc"))))
+    (try (bt4-sh pv (bt-sv (str "XDG_CACHE_HOME=$PWD/cache DESTDIR=$PWD/stage " tv " uninstall fz --prefix=/opt/fz && test -z \"$(ls -A stage/opt/fz)\""))))
+    (try (bt5-expect pv "run" "" false "nucleus: error: fz is a library, which has no program to run"))
+    (try (test-scratch-sub "shared/src/fz/m"))
+    (try (write-into pv "src/fz/m/mac.nuc" "(ns fz.m.mac)\n(import-use nucleus.node)\n(defn fz-n ():i64 (return 7))\n(defmacro fz-seven () (node-int (fz-n)))\n"))
+    (try (bt5-expect pv "install" "--no-source" false
+                     "nucleus: error: --no-source: fz/m/mac.nuc's macro fz-seven calls fz.m.mac/fz-n, and without fz's source a consumer can't compile it"))
+    (try (write-into pv "build.edn" "{:kind :library :name \"fz\" :provides [nope]}\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: build.edn:1: a library needs :version"))
+    (try (write-into pv "build.edn" "{:kind :library :name \"fz\" :version \"1\" :provides [nope]}\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: :provides names nope, but src has no nope.nuc"))
+    (try (write-into pv "build.edn" "{:kind :library :name \"fz\" :version \"1\" :provides [\"fz/m\"]}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :provides takes top-level namespace names"))
+    (drop &tool)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-8: dependencies and lookup
+; ---------------------------------------------------------------------------
+
+; `nucleus a1 a2 a3` in `pv`'s subdirectory `sub`, with `pv`'s environment.
+(defn bt8-expect3 (pv:StrView sub:StrView a1:StrView a2:StrView a3:StrView ok:bool want:StrView):!void
+  (let (args:(Vector StrView) (make (Vector StrView))
+        tool:String (bt-abs "build/nucleus")
+        dir:String (str pv "/" sub))
+    (conj &args a1)
+    (when (not (= a2 "")) (conj &args a2))
+    (when (not (= a3 "")) (conj &args a3))
+    (let (c:Command (bt5-command pv (string-as-view &tool) &args))
+      (command-cwd &c (string-as-view &dir))
+      (let (r:Ran (try (ran &c)))
+        (when (not (= (r 'ok?) ok))
+          (fail! "nucleus " a1 " " a2 " " a3 " in " sub ": unexpected exit\n     " (test-show (string-as-view (ref r 'err)))))
+        (try (check-contains (string-as-view (ref r 'err)) want))
+        (drop &r))
+      (drop &c))
+    (drop &dir)
+    (drop &tool)
+    (drop &args))
+  (return (ok)))
+
+(defn bt8-expect (pv:StrView sub:StrView a1:StrView a2:StrView ok:bool want:StrView):!void
+  (return (bt8-expect3 pv sub a1 a2 "" ok want)))
+
+; A library NAME at `pv/dir` providing gtkw, whose `gw-val` answers `v`.
+(defn bt8-gtkw (pv:StrView dir:StrView name:StrView ver:StrView v:StrView):!void
+  (try (bt4-sh pv (bt-sv (str "mkdir -p " dir "/src/gtkw"))))
+  (let (d:String (str pv "/" dir))
+    (try (write-into (string-as-view &d) "build.edn"
+                     (bt-sv (str "{:kind :library :name \"" name "\" :version \"" ver "\"}\n"))))
+    (try (write-into (string-as-view &d) "src/gtkw/core.nuc"
+                     (bt-sv (str "(ns gtkw.core)\n(defn gw-val ():i32 (return " v "))\n"))))
+    (drop &d))
+  (return (ok)))
+
+(defconst BT8-MAIN "(import-use gtkw.core)\n(defn main ():i32 (return (gw-val)))\n")
+
+; §8.5: each place wins over the ones after it, and --no-user-registry skips
+; the default registry; init-local writes a sibling's path and git-ignores it.
+(deftest bt8-lookup-order-and-init-local
+  (let (p:String (try (bt3-project "tiers"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src .git xdg/nucleus"))
+    (try (write-into pv "src/main.nuc" BT8-MAIN))
+    (try (bt5-expect pv "build" "" false "nucleus: error: src/main.nuc:1: no library provides 'gtkw', for (import gtkw.core)"))
+    (try (bt8-gtkw pv "inst3" "gtkw" "0.3" "3"))
+    (try (bt8-expect pv "inst3" "install" "--user" true "nucleus: installed gtkw 0.3"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/tiers"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "tiers"))) 3 "installed"))
+    (try (bt8-gtkw pv "reg2" "gtkw" "0.2" "2"))
+    (try (write-into pv "xdg/nucleus/library-paths.edn" (bt-sv (str "{:libraries {gtkw \"" pv "/reg2\"}}\n"))))
+    (try (bt5-expect pv "build" "" true "nucleus: note: using gtkw from reg2 (the registry, xdg/nucleus/library-paths.edn)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "tiers"))) 2 "the registry"))
+    (try (bt5-expect pv "build" "--no-user-registry" true "nucleus: building build/tiers (command changed)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "tiers"))) 3 "--no-user-registry"))
+    (try (bt8-gtkw pv "../tiers-gw" "gtkw" "0.1" "1"))
+    (try (bt5-expect pv "init-local" "" true "nucleus: wrote build-local.edn\n  gtkw uses ../tiers-gw\n  added build-local.edn to .gitignore"))
+    (try (bt4-sh pv "grep -qx 'build-local.edn' .gitignore && grep -q '{:deps {\"gtkw\" {:path \"../tiers-gw\"}}}' build-local.edn"))
+    (try (bt5-expect pv "build" "" true "nucleus: note: using gtkw from ../tiers-gw (build-local.edn)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "tiers"))) 1 "build-local.edn"))
+    (try (write-into pv "build.edn" "{:deps {gtkw {:version \">= 0.2\"}}}\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: build.edn:1: gtkw 0.1 from build-local.edn does not satisfy '>= 0.2'"))
+    (drop &p))
+  (return (ok)))
+
+; Two providers of one root, a library providing `nucleus`, and a dependency's
+; own `unsafe/` key, which warns in its consumer's build.
+(deftest bt8-collisions-and-dependency-unsafe-keys
+  (let (p:String (try (bt6-project "coll"))
+        pv:StrView (string-as-view &p)
+        lp:String (str "--library-paths=" pv "/lp.edn"))
+    (try (write-into pv "src/main.nuc" BT8-MAIN))
+    (try (bt8-gtkw pv "srch/a" "gw-a" "1" "1"))
+    (try (bt8-gtkw pv "srch/b" "gw-b" "1" "2"))
+    (try (write-into pv "lp.edn" "{:search [\"srch\"]}\n"))
+    (try (bt5-expect pv "build" (string-as-view &lp) false
+                     "nucleus: error: two libraries provide 'gtkw': gw-a (srch/a) and gw-b (srch/b)"))
+    (try (bt4-sh pv "mkdir -p vendor/bad/src/nucleus vendor/gw/src/gtkw"))
+    (try (write-into pv "vendor/bad/build.edn" "{:kind :library :name \"bad\" :version \"1\"}\n"))
+    (try (write-into pv "vendor/bad/src/nucleus/bad.nuc" "(ns nucleus.bad)\n"))
+    (try (write-into pv "build.edn" "{:deps {bad {:path \"vendor/bad\"}}}\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: bad (vendor/bad) provides the root nucleus, which only the stdlib may"))
+    (try (write-into pv "vendor/gw/build.edn" "{:kind :library :name \"gw\" :version \"1\"\n :pkg-config {\"fx/fx.h\" {:unsafe/pkg-config [\"fxa\"]}}}\n"))
+    (try (write-into pv "vendor/gw/src/gtkw/core.nuc" "(ns gtkw.core)\n(import-use \"fx/fx.h\")\n(defn gw-val ():i32 (return FX_V))\n"))
+    (try (write-into pv "build.edn" "{:deps {gw {:path \"vendor/gw\"}}}\n"))
+    (try (bt5-expect pv "build" "" true
+                     "nucleus: warning: vendor/gw/build.edn:2: :unsafe/pkg-config replaces every other requirement on \"fx/fx.h\""))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "coll"))) 1 "fxa, as the dependency forced"))
+    (drop &lp)
+    (drop &p))
+  (return (ok)))
+
+; §8.8 across libraries: a dependency's annotation narrows a header the
+; project alone couldn't decide.
+(deftest bt8-dependency-c-requirement-narrows
+  (let (p:String (try (bt6-project "narrow"))
+        pv:StrView (string-as-view &p))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\")\n" BT6-MAIN))))
+    (try (bt5-expect pv "build" "" false "nucleus: error: 'fx/fx.h' is provided by several packages: fxa, fxb"))
+    (try (bt4-sh pv "mkdir -p vendor/gw/src/gtkw"))
+    (try (write-into pv "vendor/gw/build.edn" "{:kind :library :name \"gw\" :version \"1\"}\n"))
+    (try (write-into pv "vendor/gw/src/gtkw/core.nuc" "(ns gtkw.core)\n(import-use \"fx/fx.h\" :pkg-config [\"fxb\"])\n(defn gw-val ():i32 (return FX_V))\n"))
+    (try (write-into pv "src/main.nuc" (bt-sv (str "(import-use \"fx/fx.h\")\n(import-use gtkw.core)\n" BT6-MAIN))))
+    (try (write-into pv "build.edn" "{:deps {gw {:path \"vendor/gw\"}}}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/narrow (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "narrow"))) 2 "fxb, as the dependency requires"))
+    (drop &p))
+  (return (ok)))
+
+; An import a macro generates is invisible to --list-imports; the failed
+; compile names it, the build finds its library and starts again, and the next
+; build remembers it.
+(deftest bt8-macro-generated-import
+  (let (p:String (try (bt3-project "macimp"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src xdg/nucleus"))
+    (try (bt8-gtkw pv "reg" "gtkw" "1" "8"))
+    (try (write-into pv "xdg/nucleus/library-paths.edn" (bt-sv (str "{:libraries {gtkw \"" pv "/reg\"}}\n"))))
+    (try (write-into pv "src/main.nuc" "(import-use nucleus.node)\n(defmacro use-gw () `(import-use gtkw.core))\n(use-gw)\n(defn main ():i32 (return (gw-val)))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: note: using gtkw from reg"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "macimp"))) 8 "found on retry"))
+    (try (bt5-expect pv "build" "" true "nucleus: macimp is up to date"))
+    (try (write-into pv "src/main.nuc" "(import-use nucleus.node)\n(defmacro use-gw () `(import-use zzz.core))\n(use-gw)\n(defn main ():i32 (return 0))\n"))
+    (try (bt5-expect pv "build" "" false "nucleus: error: src/main.nuc:3: no library provides 'zzz', for (import zzz.core)"))
+    (drop &p))
+  (return (ok)))
+
+; A dependency's `unsafe/` set replaces the sets at its rank, never its
+; consumer's: the project's own annotation still narrows it.
+(deftest bt8-dependency-unsafe-is-scoped
+  (let (rq:CRequests (c-requests)
+        res:Resolution (resolution))
+    (bt6-set &rq "fx/fx.h" "dep.nuc" RANK-DEP "fxb" "")
+    (c-require &rq "fx/fx.h" "dep/build.edn" 1 RANK-DEP true)
+    (c-require-spec &rq "fxa")
+    (when (not (resolve-c &rq bt6-installed bt6-requires &res))
+      (fail! "must resolve: " (string-as-view (ref res 'error))))
+    (try (check-eq (resolved-pkg &res "fx/fx.h") "fxa"))
+    (drop &res)
+    (drop &rq))
+  (let (rq:CRequests (c-requests)
+        res:Resolution (resolution))
+    (bt6-set &rq "fx/fx.h" "main.nuc" RANK-ROOT "fxb" "")
+    (c-require &rq "fx/fx.h" "dep/build.edn" 1 RANK-DEP true)
+    (c-require-spec &rq "fxa")
+    (when (resolve-c &rq bt6-installed bt6-requires &res) (fail! "the project's fxb must still bind"))
+    (try (check-contains (string-as-view (ref res 'error)) "no package is in every set"))
+    (drop &res)
+    (drop &rq))
+  (return (ok)))
+
+; BT-9: the stdlib installed through lib/build.edn by a compiler copied into a
+; scratch prefix, which then finds it beside itself with no -I and no lib/ in reach.
+(defconst BT9-C "#include <stdio.h>\n#include <string.h>\n#include <nucleus/fnv.h>\nint main(void) {\n  char b[32];\n  snprintf(b, sizeof b, \"%zx\", nuc_fnv1a_bytes((uint8_t *)\"a\", 1));\n  return strcmp(b, \"af63dc4c8601ec8c\") != 0;\n}\n")
+
+(deftest bt9-installed-stdlib
+  (let (rel:String (try (test-scratch-sub "stdinst"))
+        p:String (bt-abs (string-as-view &rel))
+        pv:StrView (string-as-view &p)
+        tree:String (bt-abs ".")
+        env:String (str "export NUCLEUS_LIB=/nonexistent XDG_CACHE_HOME=$PWD/cache HOME=$PWD/home PKG_CONFIG_LIBDIR=$PWD/pc PKG_CONFIG_PATH= P=$PWD/pfx T=" (string-as-view &tree) "; "))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "mkdir -p pfx/bin src elsewhere pc && cp $T/build/nucleusc pfx/bin/ && ln -s nucleusc pfx/bin/nucleus && cp -r $T/lib/build.edn $T/lib/nucleus src/"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "cd src && $P/bin/nucleus install --prefix=$P 2>err || { cat err >&2; exit 1; }; grep -q 'installed nucleus ' err && test -f $P/share/nucleus/src/nucleus/core.nuc && test -f $P/share/nucleus/src/nucleus/c-packages.edn && test -f $P/lib/*/libnucleus.a && test -f $P/lib/*/nucleus/nucleus.edn && test -f $P/include/*/nucleus/fnv.h && test ! -e $P/share/nucleus/src/boxlib.nuc"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "cd elsewhere && cp $T/examples/comb-merge.nuc m.nuc && $P/bin/nucleusc m.nuc -o m --depfile=m.d && ./m | grep -q '^merge-with max: 3 entries' && grep -q \"$P/share/nucleus/src/nucleus/core.nuc\" m.d && grep -q \"$P/share/nucleus/src/nucleus/c-packages.edn\" m.d"))))
+    (try (write-into pv "elsewhere/c.c" BT9-C))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "cd elsewhere && export PKG_CONFIG_PATH=$(echo $P/lib/*/pkgconfig) && pkg-config --cflags --libs nucleus | grep -q -- '-lnucleus' && cc c.c $(pkg-config --cflags --libs nucleus) -o c && ./c && clang c.c $(pkg-config --cflags --libs nucleus) -o c2 && ./c2"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "cd src && $P/bin/nucleus uninstall nucleus --prefix=$P 2>err && grep -q 'uninstalled nucleus' err && test $(find $P ! -type d | wc -l) -eq 2"))))
+    (drop &env)
+    (drop &tree)
+    (drop &p)
+    (drop &rel))
+  (return (ok)))
+
+; BT-10: a library whose macro calls its own function at expansion time (§8.1
+; gap 3), and whose `defvar` the program reads through a macro.
+(defconst BT10-MAC "(ns mac.m)\n(import-use nucleus.node)\n(defn twice-of (n:i64):i64 (return (* n 2)))\n(defvar counter:i32 5)\n(defn bump ():i32 (set! counter (+ counter 1)) (return counter))\n(defmacro twice-lit (x) (node-int (twice-of (x 'i))))\n(defmacro counter-now () `counter)\n")
+(defconst BT10-APP "(import-use mac.m)\n(defn main ():i32 (bump) (return (+ (as i32 (twice-lit 21)) (bump) (counter-now))))\n")
+
+; The compiler half: `import-ct` keeps its definitions where the macro JIT can
+; copy them, and `--ct-source` reads a root's source while its object is linked.
+(deftest bt10-ct-source-compiler
+  (let (rel:String (try (test-scratch-sub "ctsrc"))
+        p:String (bt-abs (string-as-view &rel))
+        pv:StrView (string-as-view &p)
+        nc:String (bt-compiler)
+        env:String (str "export NUCLEUS_LIB=/nonexistent N=" (string-as-view &nc) "; "))
+    (try (bt4-sh pv "mkdir -p src/mac inst/mac app"))
+    (try (write-into pv "src/mac/m.nuc" BT10-MAC))
+    (try (write-into pv "app/main.nuc" BT10-APP))
+    (try (write-into pv "app/ct.nuc" "(import-ct mac.m)\n(defn main ():i32 (return (as i32 (twice-lit 21))))\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$N -I src app/ct.nuc -o app/ct && ./app/ct; test $? -eq 42"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$N -I src -c src/mac/m.nuc -o inst/m.o && $N -I src --emit-nuch src/mac/m.nuc -o inst/mac/m.nuch && $N -I inst app/main.nuc --link-arg=inst/m.o -o app/no 2>err; grep -q 'Symbols not found: \\[ mac.m__twice-of \\]' err"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$N -I inst --ct-source=mac=src app/main.nuc --link-arg=inst/m.o -o app/pre && ./app/pre; test $? -eq 56"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$N -I inst --ct-source=mac=src -S app/main.nuc > app/pre.ll && grep -q '^declare i64 @mac.m__twice-of(i64)' app/pre.ll && grep -q '^@mac.m__counter = external global i32' app/pre.ll && ! grep -q '^define.*@mac.m__' app/pre.ll"))))
+    (drop &env)
+    (drop &nc)
+    (drop &p)
+    (drop &rel))
+  (return (ok)))
+
+; §8.7 through the tool: prebuilt on request, with the macro's callees from the
+; installed source; a mismatched compiler identity falls back to source;
+; `--no-source` refuses the macro library.
+(deftest bt10-prebuilt-opt-in
+  (let (p:String (try (bt3-project "pmac"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src maclib/src/mac"))
+    (try (write-into pv "maclib/build.edn" "{:kind :library :name \"mac\" :version \"1.0\"}\n"))
+    (try (write-into pv "maclib/src/mac/m.nuc" BT10-MAC))
+    (try (bt8-expect pv "maclib" "install" "--no-source" false "nucleus: error: --no-source: mac/m.nuc's macro twice-lit calls mac.m/twice-of"))
+    (try (bt8-expect pv "maclib" "install" "--user" true "nucleus: installed mac 1.0"))
+    (try (write-into pv "src/main.nuc" BT10-APP))
+    (try (write-into pv "build.edn" "{:deps {mac {:prebuilt true}}}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/pmac (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "pmac"))) 56 "prebuilt, macros from source"))
+    (try (bt4-sh pv "grep -q '/libmac.a' build/.nucleus-log.edn && grep -q 'share/nucleus/src/mac/m.nuc' build/.nucleus-log.edn && ! grep -q 'mac/m.nuch' build/.nucleus-log.edn"))
+    (try (bt4-sh pv "sed -i 's/:compiler \"[^\"]*\"/:compiler \"0000\"/' home/.local/lib/*/nucleus/mac.edn"))
+    (try (bt5-expect pv "build" "" true "nucleus: note: mac is compiled from source: its object was built by another compiler"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "pmac"))) 56 "source fallback"))
+    (try (bt4-sh pv "! grep -q 'libmac.a' build/.nucleus-log.edn"))
+    (drop &p))
+  (return (ok)))
+
+; §8.6: an `unsafe/` widening that picks another package than the one a
+; prebuilt object was compiled against puts that library back on source.
+(deftest bt10-unsafe-widening-forces-source
+  (let (p:String (try (bt6-project "pwide"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src gwlib/src/gtkw"))
+    (try (write-into pv "gwlib/build.edn" "{:kind :library :name \"gw\" :version \"1\"}\n"))
+    (try (write-into pv "gwlib/src/gtkw/core.nuc" "(ns gtkw.core)\n(import-use \"fx/fx.h\" :pkg-config [\"fxb\"])\n(defn gw-val ():i32 (return FX_V))\n"))
+    (try (bt8-expect pv "gwlib" "install" "--user" true "nucleus: installed gw 1"))
+    (try (write-into pv "src/main.nuc" BT8-MAIN))
+    (try (write-into pv "build.edn" "{:deps {gw {:prebuilt true}}}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/pwide"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "pwide"))) 2 "prebuilt against fxb"))
+    (try (write-into pv "build.edn" "{:deps {gw {:prebuilt true}}\n :pkg-config {\"fx/fx.h\" {:unsafe/pkg-config [\"fxa\"]}}}\n"))
+    (try (bt5-expect pv "build" "" true
+                     "nucleus: note: gw is compiled from source: its object was compiled against fxb, and 'fx/fx.h' uses fxa here"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "pwide"))) 1 "source, under the widened fxa"))
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; BT-11: plan.md §6, "Done means"
+; ---------------------------------------------------------------------------
+
+; Shaped like ../charge.nuc: one annotated GTK-style header import and three
+; stdlib imports, no build.edn and no flags. A fake `fgtk4` package stands in
+; for GTK, with an archive for the link and a shared object for the REPL.
+(defconst BT11-MAIN "(ns app.main)\n(import-use \"fgtk/fgtk.h\" :pkg-config [\"fgtk4 >= 4.0\"])\n(import-use nucleus.vector)\n(import-use nucleus.fmt)\n(import-use nucleus.string)\n(import-use nucleus.io)\n(defvar options:(Vector i32) [5 7])\n(defn main ():i32\n  (let (s:String (str \"scaled \" (fg_scale (&options 1))))\n    (println (string-as-view &s))\n    (drop &s))\n  (return 0))\n")
+
+(deftest bt11-charge-shaped-build-run-repl
+  (let (p:String (try (bt3-project "chg"))
+        pv:StrView (string-as-view &p)
+        tool:String (bt-abs "build/nucleus")
+        env:String (str "export NUCLEUS_LIB=/nonexistent PKG_CONFIG_LIBDIR=$PWD/pc PKG_CONFIG_PATH= XDG_CONFIG_HOME=$PWD/xdg XDG_CACHE_HOME=$PWD/cache HOME=$PWD/home T=" (string-as-view &tool) "; "))
+    (try (bt4-sh pv "mkdir -p src fg/include/fgtk && echo 'int fg_scale(int n);' > fg/include/fgtk/fgtk.h && echo 'int fg_scale(int n) { return n * 3; }' > fg/fg.c && clang -shared -fPIC fg/fg.c -o fg/libfgtk.so && clang -c fg/fg.c -o fg/fg.o && ar rcs fg/libfgtk.a fg/fg.o"))
+    (try (write-into pv "pc/fgtk4.pc" (bt-sv (str "Name: fgtk4\nDescription: t\nVersion: 4.12\nCflags: -I" pv "/fg/include\nLibs: -L" pv "/fg -lfgtk\n"))))
+    (try (write-into pv "src/main.nuc" BT11-MAIN))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/chg (never built)"))
+    (try (bt4-sh pv "LD_LIBRARY_PATH=$PWD/fg:$LD_LIBRARY_PATH ./build/chg | grep -qx 'scaled 21'"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run | grep -qx 'scaled 21'"))))
+    (try (write-into pv "repl.in" "(import-use main)\n(app.main/main)\n(import-use \"fgtk/fgtk.h\")\n(fg_scale 2)\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl < repl.in > repl.out 2>&1; grep -q 'scaled 21' repl.out && grep -q '^nuc>   6$' repl.out || { cat repl.out >&2; exit 1; }"))))
+    (try (bt4-sh pv "test ! -e build.edn"))
+    (drop &env)
+    (drop &tool)
+    (drop &p))
+  (return (ok)))
+
+; §6's second fixture: duoa depends on duob; both install, the program resolves
+; them from the prefix, and a sibling checkout of duoa overrides the install.
+(deftest bt11-two-libraries-install-and-override
+  (let (p:String (try (bt3-project "duo"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src libb/src/duob liba/src/duoa ../duo-a/src/duoa"))
+    (try (write-into pv "libb/build.edn" "{:kind :library :name \"duob\" :version \"1.0\"}\n"))
+    (try (write-into pv "libb/src/duob/core.nuc" "(ns duob.core)\n(defn duob-base ():i32 (return 40))\n"))
+    (try (write-into pv "liba/build.edn" "{:kind :library :name \"duoa\" :version \"1.0\" :deps {duob {:version \">= 1.0\"}}}\n"))
+    (try (write-into pv "liba/src/duoa/core.nuc" "(ns duoa.core)\n(import-use duob.core)\n(defn duoa-val ():i32 (return (+ (duob-base) 2)))\n"))
+    (try (bt8-expect pv "libb" "install" "--user" true "nucleus: installed duob 1.0"))
+    (try (bt8-expect pv "liba" "install" "--user" true "nucleus: installed duoa 1.0"))
+    (try (bt4-sh pv "grep -q ':requires {:nucleus \\[\"duob\"\\]' home/.local/lib/*/nucleus/duoa.edn"))
+    (try (write-into pv "src/main.nuc" "(import-use duoa.core)\n(defn main ():i32 (return (duoa-val)))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/duo (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "duo"))) 42 "both from the prefix"))
+    (try (write-into pv "../duo-a/build.edn" "{:kind :library :name \"duoa\" :version \"1.1\" :deps {duob {}}}\n"))
+    (try (write-into pv "../duo-a/src/duoa/core.nuc" "(ns duoa.core)\n(import-use duob.core)\n(defn duoa-val ():i32 (return (+ (duob-base) 3)))\n"))
+    (try (bt5-expect pv "init-local" "" true "  duoa uses ../duo-a"))
+    (try (bt5-expect pv "build" "" true "nucleus: note: using duoa from ../duo-a (build-local.edn)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "duo"))) 43 "the sibling, over the install"))
+    (drop &p))
+  (return (ok)))
+
+; §8.4's `--no-source` rule: a macro whose expansion runs only the stdlib installs
+; without source and works from the object; one that runs the library's own code
+; is refused, naming the macro and the callee.
+(deftest bt11-no-source-macros
+  (let (p:String (try (bt3-project "nsm"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src lib/src/nsm"))
+    (try (write-into pv "lib/build.edn" "{:kind :library :name \"nsm\" :version \"1.0\"}\n"))
+    (try (write-into pv "lib/src/nsm/core.nuc" "(ns nsm.core)\n(import-use nucleus.node)\n(defn nsm-base ():i32 (return 40))\n(defmacro nsm-plus2 (x) `(+ ~x 2))\n(defmacro nsm-lit () (node-int 7))\n"))
+    (try (bt8-expect3 pv "lib" "install" "--user" "--no-source" true "nucleus: installed nsm 1.0"))
+    (try (bt4-sh pv "! grep -q macro-calls lib/build/include/nsm/core.nuch && test ! -e home/.local/share/nucleus/src/nsm"))
+    (try (write-into pv "src/main.nuc" "(import-use nsm.core)\n(defn main ():i32 (return (+ (nsm-plus2 (nsm-base)) (nsm-lit))))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/nsm (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "nsm"))) 49 "syntax macros from the object"))
+    (try (write-into pv "lib/src/nsm/core.nuc" "(ns nsm.core)\n(import-use nucleus.node)\n(defn nsm-base ():i32 (return 40))\n(defvar nsm-k:i64 3)\n(defmacro nsm-lit () (node-int (+ nsm-k (nsm-base))))\n"))
+    (try (bt8-expect3 pv "lib" "install" "--user" "--no-source" false
+                      "nucleus: error: --no-source: nsm/core.nuc's macro nsm-lit calls nsm.core/nsm-base, nsm.core/nsm-k, and without nsm's source"))
+    (try (bt4-sh pv "grep -q '^(macro-calls nsm-lit \\[nsm.core/nsm-base nsm.core/nsm-k\\])$' lib/build/include/nsm/core.nuch"))
+    (drop &p))
+  (return (ok)))

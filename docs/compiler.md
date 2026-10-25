@@ -2,11 +2,13 @@
 
 ## Compiler Flags
 
+A compiler started under the name `nucleus` (through a symlink) is the build tool instead; see [The build tool](build.md).
+
 By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` unless `-o` is given). The compiler embeds LLVM: it parses its own generated IR, emits an object file via `LLVMTargetMachineEmitToFile`, and shells out to a link driver for the final link step — `clang` by default, `avr-gcc` on an AVR `--target=`, `riscv64-linux-gnu-gcc` when *cross*-compiling to a `riscv64` `--target=`, or whatever `--linker=` names.
 
 | Flag | Description |
 |------|-------------|
-| `-o <path>` | Output path. For binary mode the default is `a.out`; with `-c` the default is `out.o`; with `--emit-llvm` output still goes to stdout. |
+| `-o <path>` | Output path. For binary mode the default is `a.out`; with `-c` the default is `out.o`; with `--emit-llvm` output still goes to stdout. With `--emit-nuch` or `--emit-cheader` the header is written to `<path>` instead of stdout. |
 | `-c` | Emit a `.o` object file instead of linking a binary. |
 | `--emit-llvm` / `-S` | Output textual LLVM IR to stdout (the legacy default). Required when the consumer wants `.ll` text — bootstrap, library `.ll` rules, and the `make bootstrap` fixed-point check all pass this flag. |
 | `-l<lib>` / `-L<dir>` | Forwarded to `clang` at the link step. Under `-i` and `--run`, loaded into the process instead — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt). |
@@ -21,7 +23,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--report-qq-resolution` | Print, to stderr, one `qq-resolution:` line for each name a macro, `~e` or `compile-time` quasiquote resolves in its own file, with the full name it is rewritten to, and for each binder in a template that would be refused for naming one (see [A template's names mean the macro file's names](macros.md#a-templates-names-mean-the-macro-files-names)). Compilation is otherwise unchanged. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `--run` / `--` | `nucleusc --run tool.nuc -- args…` compiles the unit exactly as `-o` would, then JIT-compiles it in-process and calls its `main` instead of linking: no object file, no link driver. `main` gets the source path as `argv[0]` and the words after `--` as the rest; the compiler exits with `main`'s return value (0 for a `void` `main`). See [Running a program without linking](#running-a-program-without-linking). |
-| `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
+| `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`, and before the compiler's own library (see [Where an import is found](toplevel.md#where-an-import-is-found)). |
 | `--diagnostics=text\|edn` | Format for compiler diagnostics on stderr. Default `text` (`path:line: error: msg` plus indented `  note:` lines). With `edn`, each diagnostic is one EDN map on one line, read back by `lib/nucleus/edn.nuc` — see [Structured diagnostics](#structured-diagnostics). |
 | `--warn-ct-shadow` / `--no-warn-ct-shadow` | Warn when a macro or `(compile-time …)` body calls one of the program's own `defn`s — or reads one of its own `defvar` globals — whose name the compiler binary also exports. **On by default.** The program's is the one that runs — see [What a macro body may call](macros.md#what-a-macro-body-may-call) — but before this rule existed the compiler's ran instead, silently, so the collision is worth naming once. Nothing in `lib/`, `src/` or `examples/` raises it; rename to silence it, or pass `--no-warn-ct-shadow`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -32,6 +34,18 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--cflag=<arg>` | Pass one verbatim argument to the `clang -E` that reads a C header import, so a header outside clang's default search path can be imported: `--cflag=-I/usr/include/gtk-4.0`. Repeatable, one argument per occurrence (a directory with a space in it is one argument, never re-split); only the preprocessor consults it, exactly like `--sysroot=`, so a `-D` given this way gates the header's `#if`s but is not itself admitted as a constant. The twin of `--link-arg=<arg>` for the other end of the build. **`-I` is the Nucleus import path and is not forwarded**: a directory of `.nuc` modules routinely carries generated `.h` files named after them (`lib/nucleus/string.h` is one), and a clang `-I` precedes the system directories, so forwarding it would have the prelude's `(import-use "string.h")` read the wrong file. See [C headers outside the default search path](#c-headers-outside-the-default-search-path). |
 | `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=` **when cross-compiling**) regardless of triple. On a riscv64 *host* the sysroot is `/`, so a `riscv64` target keeps the plain `clang` default rather than reaching for the triplet-prefixed cross driver — the latter is a Debian-family naming convention that other riscv64 distros do not ship. Pass `--linker=cc` (or `--linker=gcc`) if the native host has no `clang`. |
 | `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file — and after the compiler's own `-Wl,--gc-sections` (see [Separate compilation and symbol linkage](#separate-compilation-and-symbol-linkage)), so `--link-arg=-Wl,--no-gc-sections` turns that off. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. Ignored under `-i` — the REPL never links. |
+| `--pkg-config=<pkg>` | Apply one pkg-config package to the compile: its `--cflags` go to the `clang -E` that reads C headers, and its `--libs` go to the link. Under `--run` and `-i`, its `-l` names are loaded into the process instead. Repeatable. If any `--pkg-config=` is passed, the annotated imports are checked against the passed packages instead of picking their own, and an import that none of them satisfies is an error. See [C requirements on an import](#c-requirements-on-an-import). |
+| `--link-lib=<name>` | Link `-l<name>`, or load it under `--run`/`-i`. The difference from `-l<name>` is that `--run`/`-i` skip a library that can't be loaded (such as `libm.so`, a linker script) instead of failing, as they do for the libraries an annotation names. |
+| `--depfile=<path>` | After a successful compile, write a gcc-format dependency file to `<path>`: the output (the `-o` path, or the source when there is none), then every file the compile read. That covers each `.nuc` and `.nuch`, each C header the preprocessor opened, each `c-packages.edn` table, each `--link-arg=` that names an existing file (an archive the link reads), and each file a macro read through `read-file-tracked` (see [Reading files at compile time](macros.md#reading-files-at-compile-time)). Each path is listed once, in the order it was first read. A space is escaped as `\ `, `#` as `\#` and `$` as `$$`. The file is written to `<path>.tmp` and renamed into place. A failed compile writes nothing. Refused with `--run`. |
+| `--list-imports` | Read the unit without compiling it, and print one [EDN](edn.md) map per import form: the root file's forms first, then those of each file they reach. A map has `:file`, `:line`, `:head`, `:kind` (`:nucleus` or `:c-header`) and `:name`. A Nucleus import also has `:path` (`nil` when it doesn't resolve), and an annotated C header has `:pkg-config` and `:libs`. Imports a macro produces are not seen. Exit 0. |
+| `--library=<name>@<version>` | With `--emit-nuch`, name the library the header belongs to: the header gets a `(library NAME "VERSION" :header-format 1)` line after its `(ns …)` line (see [What a header records about its library](#what-a-header-records-about-its-library)). `--library=` without `@` and a version is refused with exit 2. |
+| `--build-id=<id>` | With `--library=`, add `:build-id "<id>"` to the header's `library` line. The build tool passes the identifier it also writes in the library's manifest. |
+| `--ct-source=<root>=<dir>` | Import every library under the root `<root>` from `<dir>`'s source, compile-time-only, and declare its definitions for the program to link from an object. A macro the library exports can then call the library's own functions (see [A library's source for compile time](toplevel.md#a-librarys-source-for-compile-time-its-object-for-the-program)). Repeatable. |
+| `--missing-imports=<file>` | When an import can't be found, write it to `<file>` as `{:name "gtkw.core" :file "src/main.nuc" :line 3}` and exit 3, without the error. The build tool passes it, so it can find the library and retry (see [Imports a macro generates](build.md#imports-a-macro-generates)). |
+| `--strict-initializers` | Make `-c`'s run-time-initializer warning an error, exiting 1 (see [Run-time initializers in a multi-object build](#run-time-initializers-in-a-multi-object-build)). The build tool passes it for every library object. |
+| `--c-require=[FILE LINE HEADER SPEC…]` | One requirement set for a C header, as an EDN vector: `--c-require='["build.edn" 3 "zlib.h" "zlib >= 1.2"]'`. It is intersected with the header's annotations like one more annotation, and applies to an unannotated import too. `FILE` and `LINE` are where a refusal points. Repeatable. The build tool passes one for each `:pkg-config` entry in `build.edn` (see [Requirement sets](build.md#requirement-sets)). |
+| `--c-require-unsafe=[FILE LINE HEADER SPEC…]` | The same, except that the header's annotations are ignored: the `--c-require=` and `--c-require-unsafe=` sets on that header decide alone. The build tool passes it for `:unsafe/pkg-config`. |
+| `--c-requirements-of=<file>` | With `-i`, resolve the C requirements of `<file>`'s import closure before the first prompt, as a compile of it would, and load what they pick. Without it, `-i` applies only the `--pkg-config=` packages. `nucleus run-repl` passes the entry file. |
 
 ## Running a program without linking
 
@@ -42,9 +56,9 @@ build/nucleusc --run scripts/stage26/list-api-sweep.nuc -- --apply src/*.nuc
 ```
 
 - **It is a compiled program, not a REPL session.** The whole unit is compiled first, prelude and imports included, so a macro that expands to a top-level `defn` (such as `defrewrite`) works, as it does under `-o`. The finished module is then JIT-compiled in a session of its own, separate from the one macros and `(compile-time …)` bodies used.
-- **Startup.** Run-time initializers (`@__nucleus_init`) run before `main`, as they do in a linked binary. `-l<lib>` loads the shared library into the process, searching the `-L` directories, before `main` is looked up. No other link argument has an effect.
+- **Startup.** Run-time initializers (`@__nucleus_init`) run before `main`, as they do in a linked binary. `-l<lib>` loads the shared library into the process, searching the `-L` directories, before `main` is looked up. The libraries that C requirements name are loaded too, and one that can't be loaded is skipped. No other link argument has an effect.
 - **`-O`.** The default is `-O0`, as for `-o`, and the JIT's code generator follows the level too. For a short-lived tool that is the fastest choice: the optimizer costs more than it saves. Pass `-O2` for a long run.
-- **Libraries.** Imports resolve as for any compile: from the source file's directory, then `lib/` under the current directory, then `-I`. A tool run with another directory as its working directory needs `-I <repo>/lib`, and a `lib/nucleus/` under that directory would be found first.
+- **Libraries.** Imports resolve as for any compile (see [Where an import is found](toplevel.md#where-an-import-is-found)). The compiler finds its own library from any working directory, but a `lib/nucleus/` under the working directory is found first.
 - **Streams and status.** The program shares the compiler's process, so its stdout and stderr are the command's. A crash in the program is a crash of `nucleusc`. A program that calls `exit` exits with that status.
 
 ## Diagnostics
@@ -468,6 +482,60 @@ Importing a `.nuch` with `declare` or `defmethod` forms registers the function b
 
 Registration and emission happen at different moments, and the split is what makes a header import order-free. The whole-graph prescan registers the header's `declare`s, `extern`s, `defconst`s, `defenum` members and `defmethod`s before any form of the unit is emitted — so they resolve on [reachability, not import order](toplevel.md#cross-file-resolution-reachability-not-import-order), exactly as a `.nuc` library's `defn`s do — while the `declare` / `external global` lines are still written where the import form sits, so a program's IR does not depend on it either. A name the prescan does *not* claim, because something else in the unit already bound it, keeps the older rule: the header's entry is dropped whole, definition and declaration together.
 
+### What a header records about its library
+
+A header records what a consumer needs to compile against it and link it. That
+lets a consumer that sees only the header, with no source and no flags, compile
+and link:
+
+```lisp
+; .nuch header for mylib/core.nuc
+(ns mylib.core)
+(library mylib "0.1.0" :build-id "b1" :header-format 1)
+(import-use "fakez.h" :pkg-config ["fakez >= 1.0"])
+(import-use nucleus.node)
+(require-ct nucleus.node)
+(c-requires {:pkg-config ["fakez"]})
+(declare fz-avail ((z (ref fz_t))) :i32)
+(defmacro fz-seven () (node-int 7))
+```
+
+- **`(library NAME "VERSION" …)`** is written only when `--library=` is
+  passed. It names the library, and `:header-format` says which version of
+  this format the header uses. A header without the line is format 0. A
+  header whose format is newer than the compiler reads is refused at the
+  header's line. The line comes after `(ns …)`, because an importer honors
+  `ns` only as a header's first form.
+- **C header imports load.** Every C header the source imported is written
+  into the header, and importing the header reads it as the source did. A
+  `declare` that names `fz_t` then resolves in a consumer that never imported
+  `fakez.h` itself. The import is annotated with the package this build
+  applied for that header, so a consumer of a prebuilt object uses the same
+  one. The intersection rules in
+  [How a package is chosen](#how-a-package-is-chosen) then apply in the
+  consumer, and a consumer whose own annotation rules that package out gets
+  the conflict error. The annotation carries the package's version
+  constraint when the build saw exactly one, and the bare package name
+  otherwise.
+- **`(c-requires {:pkg-config [...] :libs [...]})`** lists every package the
+  library was compiled with and every plain library it links. The plain
+  libraries are those from `:libs`, the header table and `--link-lib=`.
+  Libraries that a `.pc` file brings are not listed, because the package
+  brings them. A consumer applies these too, before its compile starts.
+  Empty keys are left out, and a library with neither gets no `c-requires`
+  line.
+- **A header that exports a macro loads the libraries its source imported at
+  compile time.** Each of those imports is also written as `(require-ct LIB)`,
+  so a macro body that calls `node-int` works in a consumer that never
+  imported `nucleus.node`. Every other import a header carries still loads
+  nothing. A macro body that calls the library's *own* functions still needs
+  the library's source, because the macro JIT can't reach the library's
+  object: `--ct-source` supplies it.
+- **`(macro-calls MACRO [ns/name …])`** lists the functions and `defvar`s that
+  a macro's expansion code reaches, leaving out the stdlib's. A macro that
+  reaches none gets no line. Importers ignore it, and `nucleus install
+  --no-source` reads it (see [docs/build.md](build.md)).
+
 ### Namespaced libraries (`.nuch` round-trip)
 
 When the source declares a namespace, its public symbols emit *mangled* link names (`geom/area` → `@geom__area`; see [namespaces](#namespaces)). The `.nuch` carries that namespace so an importer re-resolves the symbols under the correct link name: the header opens with the namespace directive (and a `set-ir-prefix` line if the library overrode the default prefix), and the importer's `do-import` re-runs the **same** ir-name computation while that namespace is current.
@@ -498,7 +566,7 @@ A header's templates and signatures are its source file's text, so the importer 
 - An `import-use` / `import-only` of a namespace other than `user` is written verbatim. One of a `user`-namespace library is not written: every file already sees `user`, so it binds nothing.
 - `unsafe/import-private` is written verbatim, of any library: its prefix reaches that library's private names, which a template in the header may use.
 
-In a header these forms **bind names and load nothing**. They are resolved on the include path as usual (a library that cannot be found is an error at the header's line), but no source or header is read in, just as a `declare` defines nothing. The binding is the header's own: it does not reach the importing file, and a private binding lets only the header's own text past the library's privacy. A consumer still imports every library it uses and links its object.
+In a header these forms **bind names and load nothing**, apart from C header imports and `require-ct` (see [What a header records about its library](#what-a-header-records-about-its-library)). They are resolved on the include path as usual (a library that cannot be found is an error at the header's line), but no source or header is read in, just as a `declare` defines nothing. The binding is the header's own: it does not reach the importing file, and a private binding lets only the header's own text past the library's privacy. A consumer still imports every library it uses and links its object.
 
 A facade's `(export …)` forms are written after the imports, verbatim, and re-export through the header exactly as through the source: `(import-prefixed "nsgfacade.nuch" g)` binds `g/area`. Because the carried import loaded nothing, the re-exported name exists only if the consumer imported its library too — here `(import-use nsgeom)`, or any other import of `nsgeom`. Without one the export is refused at the header's line, with a note naming the missing library:
 
@@ -577,7 +645,7 @@ typedef struct H {
 } H;
 ```
 
-A core type is named by its link name everywhere in a header, as `lib/nucleus/*.h` defines it: `struct nuc_String`, `struct nuc_StrView`. So is a core function: `nuc_string_push_char`, labelled `asm("nuc_string-push-char")`.
+A core type is named by its link name everywhere in a header, as `lib/nucleus/*.h` defines it: `struct nuc_String`, `struct nuc_StrView`. So is a core function: `nuc_string_push_char`, labelled `NUC_ASM("nuc_string-push-char")`.
 
 A `defunion` arm's field is a declarator, as a struct field is, so `(cb f:(fn i32)(i32))` is `int32_t (*cb)(int32_t);`.
 
@@ -626,14 +694,14 @@ A public `defvar` is exported to the generated C header as an `extern` declarati
 
 ```c
 extern int32_t counter;
-extern int64_t tick_count asm("tick-count");
+extern int64_t tick_count NUC_ASM("tick-count");
 #define limit ((int32_t)99)
 extern const struct CRec origin;
 ```
 
 Four rules are worth knowing:
 
-* **A hyphenated name gets an `asm` label.** See [Hyphenated names in a C header](#hyphenated-names-in-a-c-header) below — the rule is the same for a global and a function.
+* **A hyphenated name gets an asm label.** See [Hyphenated names in a C header](#hyphenated-names-in-a-c-header) below — the rule is the same for a global and a function.
 * **A literal `defconst` is a `#define`**, cast to its C type when annotated. An integer, float, string, character, `true`/`false` or `null` is written as its C spelling. A value C cannot spell the same way is omitted with a comment.
 * **An aggregate `defconst` is an `extern const`** over the library's read-only symbol (see [Constants](toplevel.md#constants)).
 * **`defvar-` is not exported**, the same as every other private definer.
@@ -664,11 +732,11 @@ This covers union-template instances like `(Maybe i32)`, closure and type-erased
 
 | Kind of name | C spelling | Why |
 |---|---|---|
-| `defn`, `defvar` | sanitized **+ `asm("real-symbol")`** | The object defines `@my-func`; the header must both spell an identifier and name that symbol, and one token cannot do both. |
+| `defn`, `defvar` | sanitized **+ `NUC_ASM("real-symbol")`** | The object defines `@my-func`; the header must both spell an identifier and name that symbol, and one token cannot do both. |
 | struct field, function parameter, `defunion` arm, enum tag, `#define` from `defconst` | sanitized | Nothing links against these — the name only has to parse. |
 | struct / union type name | sanitized | Same: a typedef name is not a symbol. |
 
-Sanitizing maps each character C does not allow to `_`. A **leading digit** is the one rule that is about position rather than characters — C identifiers are `[A-Za-z_][A-Za-z0-9_]*` — so a name starting with one takes a single leading `_` instead: `(defn 2fast (2n:i32):i32 …)` declares `int32_t _2fast(int32_t _2n);`. That is the same escape the emitted symbol takes for LLVM's identical rule (see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods)), so the two spellings agree and **no `asm()` label is emitted** — the C name *is* the symbol. The escape lands on a complete identifier, never on a fragment that is about to be joined after a prefix, so a `defunion` arm reads `_2Shape_2circle` rather than `_2Shape__2circle`.
+Sanitizing maps each character C does not allow to `_`. A **leading digit** is the one rule that is about position rather than characters — C identifiers are `[A-Za-z_][A-Za-z0-9_]*` — so a name starting with one takes a single leading `_` instead: `(defn 2fast (2n:i32):i32 …)` declares `int32_t _2fast(int32_t _2n);`. That is the same escape the emitted symbol takes for LLVM's identical rule (see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods)), so the two spellings agree and **no label is emitted** — the C name *is* the symbol. The escape lands on a complete identifier, never on a fragment that is about to be joined after a prefix, so a `defunion` arm reads `_2Shape_2circle` rather than `_2Shape__2circle`.
 
 ```nucleus
 (defconst BUF-LEN 4)
@@ -683,7 +751,7 @@ typedef struct My_Rec {
     int32_t a_field;
     int32_t xs[BUF_LEN];
 } My_Rec;
-int32_t my_bump(int32_t n_arg) asm("my-bump");
+int32_t my_bump(int32_t n_arg) NUC_ASM("my-bump");
 int32_t plain(int32_t n);
 ```
 
@@ -698,7 +766,7 @@ Sanitizing a linked name *without* the label gives a header that parses and then
 
 Two consequences worth knowing:
 
-* **`asm` labels are a GCC/Clang extension.** A library with hyphenated public names produces a header that needs one of those compilers; a library that names its exports in C-legal form does not.
+* **asm labels are a GCC/Clang extension.** A library with hyphenated public names produces a header that needs one of those compilers; a library that names its exports in C-legal form does not. The two compilers read a label differently: clang takes it as the symbol, while GCC writes it into its assembly, where a hyphen must be quoted. So a header that needs a label first defines `NUC_ASM(s)` as `asm(s)` under clang and as `asm("\"" s "\"")` otherwise, inside `#ifndef NUC_ASM`, and each label is written `NUC_ASM("…")`.
 * **Sanitizing is not injective.** `foo-bar` and `foo_bar` both spell `foo_bar`. This is caught loudly at the consumer (`conflicting asm label`, or a duplicate member), never silently mis-bound, but the fix is to rename in Nucleus.
 
 ## Overloaded and operator-named functions in a C header
@@ -719,9 +787,9 @@ own identifier and its own label:
 ```
 
 ```c
-int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm("scale.pPt.i32");
-int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");
-bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");
+int32_t scale_pPt_i32(struct Pt* p, int32_t k) NUC_ASM("scale.pPt.i32");
+int32_t scale_i32_i32(int32_t a, int32_t k) NUC_ASM("scale.i32.i32");
+bool eq_Pt_Pt(struct Pt a, struct Pt b) NUC_ASM("eq.Pt.Pt");
 int32_t solo(int32_t n);
 ```
 
@@ -773,8 +841,8 @@ typedef struct Box {
     int32_t class_;
     int32_t signed_;
 } Box;
-extern int32_t delete_ asm("delete");
-int32_t union_(int32_t a, int32_t b) asm("union");
+extern int32_t delete_ NUC_ASM("delete");
+int32_t union_(int32_t a, int32_t b) NUC_ASM("union");
 ```
 
 Only the C spelling moves; the symbol is untouched, so an object compiled
@@ -791,7 +859,7 @@ reason.
 external name its standard library declares, so a function, global, typedef,
 struct tag, enum constant or `#define` spelled `conj`, `abs` or `clock` is
 renamed the same way: `(defn conj …)` in `lib/nucleus/node.nuc` exports `conj_(…)
-asm("conj")`, and the header can be included beside `<complex.h>`. The list is
+NUC_ASM("conj")`, and the header can be included beside `<complex.h>`. The list is
 C17's library (from `<complex.h>`, `<math.h>`, `<stdio.h>`, `<stdlib.h>`,
 `<time.h>` and the rest), without POSIX. A struct field or parameter keeps such a
 name, because it is not at file scope.
@@ -889,6 +957,109 @@ clang's predefine, not the header's. The link step sees none of it; give it
 
 At the REPL, `--cflag=`, `-I`, `-L` and `-l` are all prompt-time forms instead
 of command-line ones — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt).
+
+## C requirements on an import
+
+A C header import can name what it needs, so the build line doesn't have to:
+
+```
+(import-use "gtk/gtk.h" :pkg-config ["gtk4 >= 4.10" "gtk3"])
+(import-use "zlib.h" :pkg-config ["zlib"] :libs ["m"])
+```
+
+The annotations are:
+
+- `:pkg-config` is a vector of alternatives, in order of preference. Each is
+  a package name with an optional pkg-config version constraint (`<`, `<=`,
+  `=`, `!=`, `>=`, `>`).
+- `:libs` is a vector of `-l` names.
+
+Every import head accepts them on a C header (`import`, `import-use`,
+`import-only`, `require`, and the rest). They are refused on a Nucleus import:
+
+```
+app.nuc:1: error: import-use: :pkg-config and :libs annotate a C header import, and 'nucleus.io' is a Nucleus library
+```
+
+An unknown key, an empty or non-string vector, and a constraint pkg-config
+would refuse (`"gtk4 >="`) are errors too.
+
+### How a package is chosen
+
+Before compiling, the compiler walks the unit's import closure and collects
+every import of each header. This is what `nucleusc` does on its own. `nucleus`
+resolves the closure itself, with more information: it gives the project's
+sets precedence over its dependencies', checks `Requires:`, and finds a package
+for an unannotated header from the header index. It then passes its picks as
+`--pkg-config=` (see [Choosing C packages](build.md#choosing-c-packages)).
+
+- **Choosing a package.**
+  - The alternatives of every `:pkg-config` on one header are intersected, in
+    the order of the first annotation reached. Two libraries that both import
+    `gtk/gtk.h`, one accepting `["gtk4" "gtk3"]` and one `["gtk3"]`, get
+    `gtk3`.
+  - The first alternative that `pkg-config --exists` accepts is used.
+  - An alternative that isn't the first one prints a note saying why:
+    ```
+    note: 'fake.h' uses fake3 (fake4 is not installed in a version the requirements accept)
+    ```
+- **Libraries.** The `:libs` of every import of a header are linked, and they
+  are not intersected.
+- **Applying the package.** The chosen package's `--cflags` reach the C
+  preprocessor and its `--libs` reach the link, as `--pkg-config=` would
+  give them. A header's flags apply to the whole unit, because the
+  preprocessor reads every header with the same flags.
+
+Each failure is an error at the import, with a note for every import of the
+header that contributed:
+
+```
+app.nuc:1: error: conflicting C requirements for 'fake.h': no package is in every set
+  note: app.nuc:1 requires ["fake4" "fake3"]
+  note: ./other.nuc:1 requires ["fake5"]
+app.nuc:1: error: no installed C package satisfies 'fake.h'
+```
+
+A build tool that has already chosen the packages passes them with
+`--pkg-config=`. The compiler then checks each annotated header against the
+passed packages instead of choosing its own. A header that none of them
+satisfies is an error:
+
+```
+app.nuc:1: error: 'fake.h' requires one of these packages, and --pkg-config passes none of them
+```
+
+### The header table
+
+An unannotated import gets its requirements from a table that maps a header
+to `{:pkg-config [...] :libs [...]}`.
+
+- **Where the table comes from.**
+  - The compiler ships `nucleus/c-packages.edn` with its library. That table
+    links `-lm` for `math.h`, `complex.h`, `fenv.h` and `tgmath.h`, and maps
+    `zlib.h` to `zlib`.
+  - `$XDG_CONFIG_HOME/nucleus/c-packages.edn` (default
+    `~/.config/nucleus/c-packages.edn`) is read after the shipped table. Its
+    entry for a header replaces the shipped one.
+- **How an entry applies.**
+  - A table entry's `:libs` always apply.
+  - A table entry's `:pkg-config` is applied only when the header has no
+    `:pkg-config` annotation and the package is installed. A missing package
+    is skipped silently.
+  - An annotation outranks the table.
+  - A malformed table is an error at its own line.
+
+`dlfcn.h` and `pthread.h` are not in the table, because glibc 2.34 and later
+puts both libraries in libc.
+
+### At the REPL and under `--run`
+
+- **`--run`.** It loads each `-l` name that a requirement chose into the
+  process, and skips one that can't be loaded. `libm.so` is such a library:
+  it is a linker script, and libm is already in the process anyway.
+- **The REPL.** It checks and removes annotations, but doesn't apply them
+  yet. Use the `pkg-config` meta form (see
+  [Using a C library at the prompt](#using-a-c-library-at-the-prompt)).
 
 ## Integer constants from a C header
 
@@ -1160,7 +1331,7 @@ file runs the initializer again on the one shared global. Give it a compile-time
 constant initializer, or move it into the object that owns it
 ```
 
-It is a **warning**, not an error, because a single Nucleus object linked against C code is a supported shape and there the initializer runs exactly once. It fires only under `-c` — the one flag that says "relocatable object bound for a link with other objects". A default whole-program build is correct by construction, and `--emit-llvm` says nothing about the eventual link (it is equally how a whole program is inspected), so both are silent.
+It is a **warning**, not an error, because a single Nucleus object linked against C code is a supported shape and there the initializer runs exactly once. `--strict-initializers` makes it an error. A library that `nucleus` builds is always linked beside other objects, so the tool passes the flag for every library object (see [Library projects](build.md#library-projects)). It fires only under `-c` — the one flag that says "relocatable object bound for a link with other objects". A default whole-program build is correct by construction, and `--emit-llvm` says nothing about the eventual link (it is equally how a whole program is inspected), so both are silent.
 
 The fix the message names is the real one: give the global a compile-time constant initializer. Those cover more than literals — named constants, `(sizeof T)`, `(as T x)`, addresses, constant struct and array aggregates — so most library globals can be written that way, and one that is costs *less*, since no constructor is emitted at all.
 

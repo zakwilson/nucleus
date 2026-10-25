@@ -1,0 +1,43 @@
+; merge / merge-with over HashMap (design/stage27-build/overview.md §8.9).
+
+(import-use nucleus.io)
+(import-use nucleus.create)
+(import-use nucleus.hashmap)
+(import-use nucleus.combinators)
+
+; A named BinaryFn conformer: keep the larger value.
+(defstruct MaxFn dummy:i32)
+(extend MaxFn (BinaryFn i32 i32))
+(defn apply2 (self:&MaxFn (x i32) (y i32)) i32
+  (return (if (> x y) x y)))
+
+(defn at (m:&(HashMap i32 i32) k:i32):i32
+  (match (get m k)
+    (none (return -1))
+    ((some v) (return v))))
+
+(defn show (label:StrView m:&(HashMap i32 i32)):void
+  (println label (count m) " entries: 1=" (at m 1) " 2=" (at m 2) " 3=" (at m 3)))
+
+(defn fill (a:&(HashMap i32 i32) b:&(HashMap i32 i32)):void
+  (assoc a 1 10) (assoc a 2 20)
+  (assoc b 2 5) (assoc b 3 30))
+
+(defn main ():i32
+  (with (a (make (HashMap i32 i32))
+         b (make (HashMap i32 i32)))
+    (fill &a &b)
+    (merge &a &b)
+    (show "merge: " &a))
+  (with (a (make (HashMap i32 i32))
+         b (make (HashMap i32 i32)))
+    (fill &a &b)
+    (merge-with &a &b (fn (x:i32 y:i32):i32 (+ x y)))
+    (show "merge-with +: " &a))
+  (with (a (make (HashMap i32 i32))
+         b (make (HashMap i32 i32))
+         f:MaxFn (MaxFn 0))
+    (fill &a &b)
+    (merge-with &a &b &f)
+    (show "merge-with max: " &a))
+  (return 0))

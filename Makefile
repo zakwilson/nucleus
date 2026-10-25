@@ -69,11 +69,16 @@ BOOT         := bin/nucleusc
 # time the symptom was a silently stale binary, or a `make bootstrap` that
 # diffed a stale stage1 against a fresh stage2. Over-approximating costs a
 # rebuild that takes seconds; under-approximating costs a debugging session.
-COMPILER_DEPS := $(wildcard src/*.nuc) $(wildcard lib/*.nuc lib/nucleus/*.nuc)
+COMPILER_DEPS := $(wildcard src/*.nuc) $(wildcard lib/*.nuc lib/nucleus/*.nuc lib/nucleus/build/*.nuc)
 
 $(BIN): $(COMPILER_DEPS) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
 	clang $(BUILD)/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
+	ln -sf nucleusc $(BUILD)/nucleus
+
+# The build tool is the compiler under another name: main dispatches on argv[0].
+$(BUILD)/nucleus: | $(BIN)
+	ln -sf nucleusc $@
 
 # Content stamp of the linked LLVM version. A build/nucleusc carried across an
 # LLVM switch (e.g. a build dir shared between host and container) is linked
@@ -122,7 +127,7 @@ NUCTESTS := $(BUILD)/nuctests
 # for a run that cannot accept one.
 NUCTESTS_ARGS :=
 
-$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.edn $(wildcard lib/*.nuc lib/nucleus/*.nuc) $(BIN) | $(BUILD)
+$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.edn $(wildcard lib/*.nuc lib/nucleus/*.nuc lib/nucleus/build/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctests.nuc -o $@
 
 # The suite's stdout is a stream of EDN records, one per line with `:status`
@@ -134,7 +139,7 @@ NUCTESTS_JOBS := $(shell nproc 2>/dev/null || echo 4)
 
 # The suite reads the generated C-header corpus and `examples/` imports
 # lib/mapiterlib.nuch; neither is committed.
-run-nuctests: $(NUCTESTS) lib-cheaders lib/mapiterlib.nuch
+run-nuctests: $(NUCTESTS) $(BUILD)/nucleus lib-cheaders lib/mapiterlib.nuch
 	@n=$(NUCTESTS_JOBS); pids=; i=0; \
 	  while [ $$i -lt $$n ]; do \
 	    ./$(NUCTESTS) $(NUCTESTS_ARGS) --shard $$i/$$n > $(BUILD)/nuctests.out.$$i & \
@@ -264,7 +269,7 @@ $(BUILD)/lib/%.o: $(BUILD)/lib/%.ll
 	llc -filetype=obj -relocation-model=pic $< -o $@
 
 # Build all library headers
-LIB_NUCS  := $(wildcard lib/*.nuc lib/nucleus/*.nuc)
+LIB_NUCS  := $(wildcard lib/*.nuc lib/nucleus/*.nuc lib/nucleus/build/*.nuc)
 LIB_NUCHS := $(LIB_NUCS:.nuc=.nuch)
 LIB_HS    := $(LIB_NUCS:.nuc=.h)
 LIB_LLS   := $(patsubst lib/%.nuc,$(BUILD)/lib/%.ll,$(LIB_NUCS))
@@ -286,36 +291,24 @@ clean:
 
 # ---- Install ----
 #
-# Installs the compiler binary plus the core library sources (lib/nucleus/),
-# which imports and the implicit `nucleus.core` read at compile time. The compiler searches for imports in:
-#   1. directory of current source file
-#   2. ./lib relative to cwd
-#   3. -I paths
-#   4. $NUCLEUS_LIB
-#   5. /usr/local/share/nucleus/lib   (compiled-in default)
-#
-# So a default-prefix install just works; for a custom PREFIX, set
-# NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib in the environment.
+# The compiler binary and its `nucleus` symlink, then the stdlib as the library
+# `nucleus` (lib/build.edn) through the build tool itself: sources under
+# $(PREFIX)/share/nucleus/src, libnucleus.a, nucleus.pc and the manifest under
+# $(PREFIX)/lib/<multiarch>. An installed compiler finds share/nucleus/src beside
+# itself, so any PREFIX works without NUCLEUS_LIB. design/stage27-build/plan.md BT-9.
 
 PREFIX  ?= /usr/local
 DESTDIR ?=
 BINDIR  := $(DESTDIR)$(PREFIX)/bin
-LIBDIR  := $(DESTDIR)$(PREFIX)/share/nucleus/lib
 
 install: $(BIN)
-	install -d $(BINDIR) $(LIBDIR)
+	install -d $(BINDIR)
 	install -m 755 $(BIN) $(BINDIR)/nucleusc
-	install -d $(LIBDIR)/nucleus/avr
-	install -m 644 lib/nucleus/*.nuc $(LIBDIR)/nucleus/
-	install -m 644 lib/nucleus/avr/*.nuc $(LIBDIR)/nucleus/avr/
-	@echo "Installed nucleusc to $(BINDIR)/nucleusc"
-	@echo "Installed lib files to $(LIBDIR)/"
-	@if [ "$(PREFIX)" != "/usr/local" ]; then \
-		echo "Note: PREFIX != /usr/local — set NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib"; \
-	fi
+	ln -sf nucleusc $(BINDIR)/nucleus
+	cd lib && DESTDIR="$(DESTDIR)" ../$(BUILD)/nucleus install --prefix=$(PREFIX)
 
 uninstall:
-	rm -f $(BINDIR)/nucleusc
-	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
+	cd lib && DESTDIR="$(DESTDIR)" $(BINDIR)/nucleus uninstall nucleus --prefix=$(PREFIX)
+	rm -f $(BINDIR)/nucleusc $(BINDIR)/nucleus
 
 .PHONY: test run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

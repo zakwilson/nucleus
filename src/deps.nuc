@@ -1,0 +1,229 @@
+; Stage 27 BT-2 — dependency reporting: `--depfile=<path>` and `--list-imports`.
+;
+; Design: design/stage27-build/plan.md BT-2 (P2, P3, P5).
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.create)
+(import-use nucleus.file)
+(import-use nucleus.process)
+(import-use nucleus.io)
+(import-use nucleus.build.exec)
+(import-use diagnostics)
+(import-use strfmt)
+
+(defvar g-depfile-path:Symbol) ; `symbol-none` = no depfile
+(defvar g-depfile-cpp-n:i32 0)
+(defvar g-list-imports:i32 0)
+
+(defn depfile-on? ():bool (return (not (symbol-none? g-depfile-path))))
+
+; `--missing-imports=<file>`: an import nothing provides is the build tool's to
+; find and retry (plan.md BT-8), so it is recorded there instead of reported.
+(defvar g-missing-imports-path:Symbol)
+
+(defn missing-import-record (name:Symbol line:i32):void
+  (when (symbol-none? g-missing-imports-path) (return))
+  (let (out:String (make String)
+        path:StrView (symbol-as-view g-missing-imports-path))
+    (str-into &out "{:name ")
+    (diag-write-string &out (symbol-as-view name))
+    (str-into &out " :file ")
+    (diag-write-string &out (symbol-as-view g-source-path))
+    (str-into &out " :line " line "}\n")
+    (match (file-create &path)
+      ((ok f)
+        (let (fh:File f)
+          (match (write-str &fh (string-as-view &out)) ((ok) 0) ((err e) 0))
+          (drop &fh)))
+      ((err e) 0))
+    (drop &out)
+    (exit 3)))
+
+; ---------------------------------------------------------------------------
+; Headers: `clang -E -MD -MF <tmp>` lists what the preprocessor read
+; ---------------------------------------------------------------------------
+
+; Beside the depfile, so two builds writing different depfiles never share one.
+(defn depfile-cpp-tmp ():Symbol
+  (set! g-depfile-cpp-n (+ g-depfile-cpp-n 1))
+  (return (symbol-intern (fstr g-depfile-path ".cpp" g-depfile-cpp-n))))
+
+(defn depfile-cpp-args (c:&Command tmp:Symbol):void
+  (command-arg c "-MD")
+  (command-arg c "-MF")
+  (command-arg c (symbol-as-view tmp)))
+
+; What clang's `-MD` listed, from the shared make-syntax reader.
+(defn depfile-note-cpp (tmp:Symbol):void
+  (let (tv:StrView (symbol-as-view tmp))
+    (match (read-file-quiet tv)
+      (none (return))
+      ((some text)
+        (let (t:String text
+              paths:(Vector StrView) (make (Vector StrView)))
+          (depfile-paths (string-as-view &t) &paths)
+          (dotimes (i (count &paths)) (track-read (invoke &paths i)))
+          (drop &paths)
+          (drop &t))))
+    (match (remove-file tv) ((ok) 0) ((err e) 0))))
+
+; A missing or unreadable file is none: clang may have failed before writing it.
+(defn read-file-quiet (path:StrView):?String
+  (match (file-open-read &path)
+    ((err e) (return (none)))
+    ((ok f)
+      (let (fh:File f
+            r:!String (file-read-to-string &fh))
+        (drop &fh)
+        (match r
+          ((ok s) (return (some s)))
+          ((err e) (return (none))))))))
+
+; ---------------------------------------------------------------------------
+; Writing the depfile
+; ---------------------------------------------------------------------------
+
+(defn depfile-escape-into (out:&String p:StrView):void
+  (dotimes (k (p 'len))
+    (let (c:i32 (text-byte-at p (as i64 k)))
+      (cond (= c 32) (str-into out "\\ ")
+            (= c 35) (str-into out "\\#")
+            (= c 36) (str-into out "$$")
+            true (string-push-bytes-raw out (unsafe/ptr+ (p 'data) (as i64 k)) 1)))))
+
+; The `-o` path, or the source when the output goes to stdout.
+(defn depfile-target (source-file:Symbol):Symbol
+  (if (symbol-none? g-output-path) (return source-file) (return g-output-path)))
+
+; gcc format: `target: dep …`, each path once, in first-read order. Written to a
+; temporary and renamed, so a reader never sees half a file.
+(defn depfile-write (target:Symbol):void
+  (when (not (depfile-on?)) (return))
+  (let (out:String (make String)
+        seen:(Vector Symbol) (make (Vector Symbol))
+        all:StrView (tracked-reads)
+        start:usize 0)
+    (depfile-escape-into &out (symbol-as-view target))
+    (str-into &out ":")
+    (dotimes (k (all 'len))
+      (when (= (text-byte-at all (as i64 k)) 0)
+        (let (p:Symbol (symbol-intern (strview-take-bytes (strview-drop-bytes all start) (- k start))))
+          (set! start (+ k 1))
+          (let (dup:bool false)
+            (dotimes (j (count &seen))
+              (when (= (invoke &seen j) p) (set! dup true)))
+            (when (not dup)
+              (conj &seen p)
+              (str-into &out " \\\n  ")
+              (depfile-escape-into &out (symbol-as-view p)))))))
+    ; The link reads its file arguments too: a reinstalled archive must relink.
+    (dotimes (k (count g-link-args))
+      (let (a:Symbol (invoke g-link-args k)
+            av:StrView (symbol-as-view a))
+        (when (and (not (strview-has-prefix av "-")) (file-exists? av)
+                   (not (sym-vec-has? &seen a)))
+          (conj &seen a)
+          (str-into &out " \\\n  ")
+          (depfile-escape-into &out av))))
+    (str-into &out "\n")
+    (let (tmp:StrView (fstr g-depfile-path ".tmp")
+          ok:bool (match (file-create &tmp)
+                    ((err e) false)
+                    ((ok f)
+                      (let (fh:File f
+                            w:bool (match (write-str &fh (string-as-view &out)) ((ok) true) ((err e) false)))
+                        (drop &fh)
+                        w))))
+      (when (or (not ok)
+                (match (rename-file tmp (symbol-as-view g-depfile-path)) ((ok) false) ((err e) true)))
+        (eprint "nucleusc: cannot write depfile " g-depfile-path "\n")
+        (exit 1)))
+    (drop &seen)
+    (drop &out)))
+
+; ---------------------------------------------------------------------------
+; `--list-imports`: the import forms of the unit, without compiling it
+; ---------------------------------------------------------------------------
+
+; The heads whose index 1 names a library or header, compile-time ones included:
+; a `require-ct` dependency still has to exist for the build to work.
+(defn list-imports-head? (h:Symbol):bool
+  (when (symbol-none? h) (return false)) ; a non-symbol head
+  (return (or (import-head? h) (= h "import-ct") (= h "require-ct"))))
+
+(defn list-imports-strings (out:&String key:StrView v:&(Vector Symbol)):void
+  (str-into out " :" key " [")
+  (dotimes (i (count v))
+    (when (> i 0) (str-into out " "))
+    (diag-write-string out (symbol-as-view (invoke v i))))
+  (str-into out "]"))
+
+(defn list-imports-record (out:&String file:Symbol line:i32 head:Symbol name:?&Node path:Symbol
+                           annot:?&CReq):void
+  (let (nn:&Node (unsafe/cast &Node name)
+        is-str:bool (= (node-kind (as ptr nn)) NODE-STR)
+        is-nuc:bool (or (not is-str)
+                      (!= (str-ends-with (nn 's) ".nuc") 0)
+                      (!= (str-ends-with (nn 's) ".nuch") 0)))
+    (str-into out "{:file ")
+    (diag-write-string out (symbol-as-view file))
+    (str-into out " :line " line " :head " head)
+    (str-into out (if is-nuc " :kind :nucleus :name " " :kind :c-header :name "))
+    (diag-write-string out (symbol-as-view (nn 's)))
+    (when is-nuc
+      (str-into out " :path ")
+      (if (symbol-none? path)
+        (str-into out "nil")
+        (diag-write-string out (symbol-as-view path))))
+    (when (!= annot null)
+      (let (r:&CReq (unsafe/cast &CReq annot))
+        (when (r 'has-pkgs) (list-imports-strings out "pkg-config" (r 'pkgs)))
+        (when (> (count (r 'libs)) 0) (list-imports-strings out "libs" (r 'libs)))))
+    (str-into out "}\n")))
+
+(defn list-imports-file (path:Symbol out:&String seen:&(Vector Symbol)):void
+  (dotimes (j (count seen))
+    (when (= (invoke seen j) path) (return)))
+  (conj seen path)
+  (let (save-path:Symbol g-source-path
+        src:String (read-file path)
+        ; Raw: desugaring strips the annotations this mode reports.
+        forms:ptr (read-source-or-die (string-as-view &src))
+        cur:?&Node (as ?&Node forms)
+        next:(Vector Symbol) (make (Vector Symbol)))
+    (set! g-source-path path)
+    (while (> (node-len cur) 0)
+      (let (f:?&Node (node-first (unsafe/cast &Node cur)))
+        (when (and (= (node-kind (as ptr f)) NODE-LIST) (>= (node-len f) 2))
+          (let (h:?&Node (as ?&Node (node-at f 0)))
+            (when (and (= (node-kind (as ptr h)) NODE-SYM)
+                       (list-imports-head? ((unsafe/cast &Node h) 's)))
+              (let (nm:?&Node (as ?&Node (node-at f 1))
+                    k:i32 (node-kind (as ptr nm)))
+                (when (or (= k NODE-SYM) (= k NODE-STR))
+                  (let (fl:i32 ((unsafe/cast &Node f) 'line)
+                        p:Symbol (import-form-path nm fl))
+                    (list-imports-record out path fl ((unsafe/cast &Node h) 's) nm p
+                                         (import-annot-parse f path true))
+                    (when (not (symbol-none? p)) (conj &next p)))))))))
+      (set! cur (node-rest (unsafe/cast &Node cur))))
+    (drop &src)
+    (dotimes (j (count &next))
+      (list-imports-file (invoke &next j) out seen))
+    (drop &next)
+    (set! g-source-path save-path)))
+
+; One EDN map per import form, the root file's first, then each reached file's.
+; Macro output is not seen; the `--diagnostics=edn` retry covers it (§3).
+(defn list-imports-main (source-file:Symbol):void
+  (let (out:String (make String)
+        seen:(Vector Symbol) (make (Vector Symbol)))
+    (list-imports-file source-file &out &seen)
+    (emit-all stdout &out)
+    (drop &seen)
+    (drop &out)))

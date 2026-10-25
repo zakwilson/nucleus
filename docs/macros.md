@@ -781,7 +781,9 @@ symbol. `alloc-node`, `node-int`, `intern-symbol` and the list API
 
 Everything else — your own `defn`s, and a `lib/` module the compiler does not
 itself link — resolves to **your** definition, which the compiler JIT-compiles on
-demand into a private *compile-time mirror* module. So:
+demand into a private *compile-time mirror* module. That includes a function an
+`import-ct` or `--ct-source` import withheld from the program: its IR is kept
+for the mirror (see [Compile-time-only imports](toplevel.md#compile-time-only-imports)). So:
 
 ```lisp
 (defn double (n:i32):i32 (_* n 2))
@@ -850,10 +852,12 @@ use — cross-compiles exactly as before.
 ### ⚠ Sharp edge: which `lib/` counts as the compiler's
 
 The first condition is a **path prefix** against the directory *this compilation*
-resolved `lib/nucleus/core.nuc` through, and the import search has five steps — the
-source file's directory, `lib/` relative to the **current directory**, each `-I`,
-`$NUCLEUS_LIB`, then the installed `/usr/local/share/nucleus/lib/`. A development
-build finds its library at step 2; an installed one at step 5. Five consequences:
+resolved `lib/nucleus/core.nuc` through. The import search is the one in
+[Where an import is found](toplevel.md#where-an-import-is-found): the source file's
+directory, `lib/` relative to the **current directory**, each `-I`, the library
+beside the compiler's executable, `$NUCLEUS_LIB`, then `/usr/local/share/nucleus/src/`.
+A development build run from its checkout finds its library at step 2. Run from
+anywhere else, a compiler finds its own library beside its executable. Five consequences:
 
 1. **A cwd-relative `lib/` can capture the root.** Run a program from a directory
    that has its own `lib/nucleus/core.nuc` and *that* becomes the root, so every module
@@ -880,6 +884,34 @@ build finds its library at step 2; an installed one at step 5. Five consequences
 
 A program that suppresses the automatic prelude has no root at all, so every one
 of its `defn`s is its own. That is the safe direction and needs no special case.
+
+## Reading files at compile time
+
+A macro body can read a file. Read it with `read-file-tracked` from
+`nucleus.file` (see [Tracked reads](io.md#tracked-reads)), so the file becomes
+a dependency of the compile:
+
+```lisp
+(import-use nucleus.file)
+(import-use nucleus.string)
+(import-use nucleus.node)
+
+(defmacro data-len ()
+  (match (read-file-tracked "data.txt")
+    ((ok s) (node-int (as i64 (nucleus.string/byte-len &s))))
+    ((err e) `0)))
+```
+
+The body runs in the compiler's process, so the call records the path in the
+compiler's own list of reads. `nucleusc --depfile=` writes that list, and a
+build tool then rebuilds the program when `data.txt` changes.
+
+A file opened any other way is **not** tracked: a direct `fopen`,
+`file-open-read`, or a C library that opens it. The compile still works, but a
+build won't notice when the file changes.
+
+A relative path is relative to the compiler's current directory, not to the
+file that holds the macro.
 
 ## Nesting levels
 

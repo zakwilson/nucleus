@@ -1,0 +1,5 @@
+; Imported by tests/repl/g3-init.in: a collection literal's initializer stamps
+; `init`, which calls this import's own `nuc_vector-oom`.
+(import-use nucleus.vector)
+(defvar g3-rvec:(Vector i32) [5 7 9])
+(defn g3-rvec-at (i:usize):i32 (return (&g3-rvec i)))

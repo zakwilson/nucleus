@@ -225,6 +225,57 @@ the difference between failing and returning names read out of the middle of
 
 ---
 
+## §4c — Metadata, paths and the environment (`lib/nucleus/file.nuc`)
+
+| Function | Signature |
+|----------|-----------|
+| `file-stat` | `(path:StrView):!FileStat` — follows a symlink; `(err io-stat-failed)` when `stat` fails |
+| `file-exists?` | `(path:StrView):bool` — anything `stat` can see, directories included |
+| `rename-file` | `(from:StrView to:StrView):!void` — `rename(2)`: atomic within one filesystem, replaces `to` |
+| `remove-file` | `(path:StrView):!void` — a file or an empty directory |
+| `real-path` | `(path:StrView):!String` — absolute, with symlinks, `.` and `..` resolved; the path must exist |
+| `exe-path` | `():!String` — the running executable (`/proc/self/exe`) |
+| `env-var` | `(name:StrView):?StrView` — none when unset **or empty** |
+| `xdg-config-home` | `():!String` — `$XDG_CONFIG_HOME`, else `$HOME/.config` |
+| `xdg-cache-home` | `():!String` — `$XDG_CACHE_HOME`, else `$HOME/.cache` |
+| `xdg-dir` | `(var:StrView fallback:StrView):!String` — the general form: `$var`, else `$HOME/<fallback>` |
+
+```lisp
+(defconst FILE-KIND-OTHER 0)
+(defconst FILE-KIND-REG 1)
+(defconst FILE-KIND-DIR 2)
+(defstruct FileStat mtime-ns:i64 size:i64 kind:i32)
+```
+
+`mtime-ns` is nanoseconds since the epoch (`st_mtim`), so two writes within
+one second still compare as different. A build tool's staleness check needs
+that.
+
+A relative `$XDG_CONFIG_HOME` is ignored, as the XDG base directory
+specification says, and the `$HOME` fallback is used. With `$HOME` unset as
+well, the result is `(err io-path-failed)`.
+
+The failures are `io-stat-failed`, `io-rename-failed`, `io-remove-failed` and
+`io-path-failed`.
+
+### Tracked reads
+
+| Function | Signature |
+|----------|-----------|
+| `read-file-tracked` | `(path:StrView):!String` — `file-read-to-string`, with `path` recorded first |
+| `track-read` | `(path:StrView):void` — record a path without reading it |
+| `tracked-reads` | `():StrView` — every recorded path, each followed by a NUL byte, in order |
+
+A macro or `(compile-time …)` body that reads a file through
+`read-file-tracked` puts that file in the compiler's `--depfile=` output, so a
+build reruns when the file changes. See
+[Reading files at compile time](macros.md#reading-files-at-compile-time). The
+path is recorded even when the read fails, because a file that appears later
+changes the output too. In an ordinary program the record is just a buffer,
+allocated on the first call.
+
+---
+
 ## §5 — `BufWriter` (`lib/nucleus/file.nuc`)
 
 ```lisp

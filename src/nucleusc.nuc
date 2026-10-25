@@ -327,6 +327,14 @@
 ; through. Two names because `import-ct` stands a discard sink in front of the
 ; buffer (`emit-import-forms`), which a value cannot express.
 (defvar g-def-buf:String (make String))
+; Where a compile-time-only import's definitions go. Kept, not discarded, so the
+; macro mirror can copy one a macro body calls.
+(defvar g-ct-def-buf:String (make String))
+; `--ct-source=ROOT=DIR`: an import under ROOT reads DIR's source for compile
+; time and links its definitions from an object (design/stage27-build/plan.md BT-10).
+(defvar g-ct-source-roots:&(Vector Symbol) (new (Vector Symbol) g-arena))
+(defvar g-ct-source-dirs:&(Vector Symbol) (new (Vector Symbol) g-arena))
+(defvar g-linked-paths:ptr)
 (defvar g-def-stream:?&String)
 ; The module's own definition stream, which `g-def-stream` may be standing in
 ; front of while an `import-ct` discards a library's definitions. A template
@@ -707,6 +715,7 @@
 (defvar g-header-request:i32 0) ; 1 --emit-nuch, 2 --emit-cheader
 (defvar g-emit-llvm:i32 0)    ; when 1, output textual LLVM IR to stdout instead of a binary
 (defvar g-emit-obj:i32 0)     ; when 1 (-c), emit a .o file instead of linking a binary
+(defvar g-strict-inits:bool false) ; --strict-initializers: the -c initializer warning is an error
 (defvar g-output-path:Symbol) ; -o <path>; `symbol-none` = default ("a.out")
 ; argv-style pass-through args appended to the link line. Null until the first
 ; -l/-L flag is parsed. G-5: built by @__nucleus_init before main, from the
@@ -1202,6 +1211,9 @@
 (import-use nucleus.read)
 (import-use nucleus.slots)
 (import-use resolve)
+(import-use deps)
+(import-use creqs)
+(import-use build-tool)
 
 ; Stage 10 C3: condition class for recoverable malformed top-level forms that
 ; the compiler validates at definition time (e.g. a malformed `(deferror …)`).
@@ -3597,11 +3609,29 @@
     (return (symbol-intern (strview-take-bytes (symbol-as-view path)
                                                (as usize last-slash))))))
 
-; The directory of the file currently being emitted, or null when it has none
-; (a bare filename in the cwd). Mirrors `try-import-path`'s first search step,
-; so the note names files the author could have imported by bare name.
+; The directory of the file currently being emitted; `.` for a bare filename,
+; so `nucleusc app.nuc` searches the cwd as `./app.nuc` does. Mirrors
+; `try-import-path`'s first search step, so the note names files the author
+; could have imported by bare name.
 (defn source-file-dir ():Symbol
-  (return (path-dir g-source-path)))
+  (when (symbol-none? g-source-path) (return (symbol-none)))
+  (let (d:Symbol (path-dir g-source-path))
+    (when (symbol-none? d) (return (symbol-intern ".")))
+    (return d)))
+
+; The parent of the directory holding the running compiler (`/x` for
+; `/x/build/nucleusc`), or none when `/proc/self/exe` can't be read. Read once.
+(defvar g-exe-prefix:Symbol)
+(defvar g-exe-prefix-read:i32 0)
+(defn exe-prefix ():Symbol
+  (when (= g-exe-prefix-read 0)
+    (set! g-exe-prefix-read 1)
+    (let (buf:&i8 (alloca i8 4096)
+          n:i64 (as i64 (readlink "/proc/self/exe" buf 4095)))
+      (when (> n 0)
+        (set! g-exe-prefix
+              (path-dir (path-dir (symbol-intern-bytes (unsafe/cast &ui8 buf) (as usize n))))))))
+  (return g-exe-prefix))
 
 ; The path of a Nucleus source file that is on the import search path, is NOT
 ; part of this compilation unit, and defines `name` — or null. Searches exactly
@@ -16531,7 +16561,7 @@
     (set! g-repl-retype-suffix "")
     (when (repl-host-global? (symbol-intern ir-name))
       (let (is-const:i32 (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)
-            pg:?&ProgGlobal (program-global-record (symbol-intern ir-name) is-const))
+            pg:?&ProgGlobal (program-global-record (symbol-intern ir-name) name is-const))
         (emit g-out ir-name " = external " (if (!= is-const 0) "constant " "global ")
               (type-to-ir ty) "\n\n")
         ; The preamble backfill declares it to later modules from this record.
@@ -16541,7 +16571,7 @@
     ; Stage 20 L6 (§5.7): open the span here, above the array-backing
     ; global, so `@g.data` is inside the text a mirror copies.
     (let (pg:?&ProgGlobal
-           (program-global-record (symbol-intern ir-name)
+           (program-global-record (symbol-intern ir-name) name
                                   (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)))
     ; L5's fourth condition, for a global: a `defvar` inside the CT block
     ; being compiled already lives in that module.
@@ -16625,7 +16655,7 @@
 (defn global-def-define-sym (cc:&Node name:Symbol ty:ptr ir-name:StrView attr-flags:i32):void
   (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
     (sym-record-src vsym (cc 'line))
-    (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
+    (when (ct-withheld?) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
     (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
     (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
       (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
@@ -17763,7 +17793,7 @@
                 ; registered and undefined. Marked HERE rather than in
                 ; `scope-define` because that is what ct-only means — a C header's
                 ; or a `.nuch`'s names still have real definitions to link against.
-                (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym fsym) 'ct-only) 1))
+                (when (ct-withheld?) (set! ((unsafe/cast &Sym fsym) 'ct-only) 1))
                 (when (!= is-noreturn 0) (set! ((unsafe/cast &Sym fsym) 'noreturn) 1))
                 (when (!= is-returns-twice 0)
                   (set! ((unsafe/cast &Sym fsym) 'returns-twice) 1))
@@ -17873,7 +17903,7 @@
             ; that define's byte span in g-def-buf (§5.1). Nothing it does emits.
             (let (pd:?&ProgDefn
                     (program-defn-record (defn-ir-name fname param-types nparams ret)
-                                         ret param-types nparams 0))
+                                         fname ret param-types nparams 0))
               ; L5: the mangled counterpart of the CT prescan's `@fname`.
               (ct-module-defn-note (defn-ir-name fname param-types nparams ret))
               ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
@@ -18125,8 +18155,9 @@
   (return (ct-mirror-refuse "is neither defined nor declared in this unit" irn)))
 
 ; The bytes of a recorded span.
-(defn ct-mirror-span-view (s:usize e:usize):StrView
-  (return (strview-take-bytes (strview-drop-bytes (string-as-view g-def-buf) s) (- e s))))
+(defn ct-mirror-span-view (ct:i32 s:usize e:usize):StrView
+  (let (b:StrView (if (!= ct 0) (string-as-view g-ct-def-buf) (string-as-view g-def-buf)))
+    (return (strview-take-bytes (strview-drop-bytes b s) (- e s)))))
 
 ; Does this text DEFINE `tok` rather than reference it? A global's span carries
 ; its own `@g` and, since G-2 shape 4, a `@g.data` backing global.
@@ -18204,7 +18235,7 @@
 ; its own object and a later flush declares what this one defined. The program's
 ; own bytes never move — the rewrite happens here, at the one place that copies.
 (defn ct-mirror-put-span ((out &String) pd:&ProgDefn):void
-  (let (span:StrView (ct-mirror-span-view (pd 'ir-start) (pd 'ir-end)))
+  (let (span:StrView (ct-mirror-span-view (pd 'ct-buf) (pd 'ir-start) (pd 'ir-end)))
     (when (strview-has-prefix span "define internal ")
       (emit out "define weak_odr " (strview-drop-bytes span (as usize 16)))
       (return))
@@ -18221,7 +18252,7 @@
 ; emits `internal`, which a later flush's `external` reference cannot bind. Only
 ; the global's own line moves; a backing `@g.data` is named only from here.
 (defn ct-mirror-put-global-span ((out &String) pg:&ProgGlobal):void
-  (let (span:StrView (ct-mirror-span-view (pg 'ir-start) (pg 'ir-end))
+  (let (span:StrView (ct-mirror-span-view (pg 'ct-buf) (pg 'ir-start) (pg 'ir-end))
         nm:StrView (symbol-as-view (pg 'ir-name))
         needle:StrView (fstr (symbol-as-view (pg 'ir-name)) " = internal "))
     (when (strview-contains span needle)
@@ -18370,13 +18401,13 @@
       (set! more 0)
       (while (and (= refused 0) (< di (unsafe/cast i32 (count g-ctm-defs))))
         (let (pd:&ProgDefn (invoke g-ctm-defs di:usize))
-          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pd 'ir-start) (pd 'ir-end)) 0) 0)
+          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pd 'ct-buf) (pd 'ir-start) (pd 'ir-end)) 0) 0)
             (set! refused 1)))
         (inc! di)
         (set! more 1))
       (while (and (= refused 0) (< gi (unsafe/cast i32 (count g-ctm-globals))))
         (let (pg:&ProgGlobal (invoke g-ctm-globals gi:usize))
-          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pg 'ir-start) (pg 'ir-end)) 1) 0)
+          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pg 'ct-buf) (pg 'ir-start) (pg 'ir-end)) 1) 0)
             (set! refused 1)))
         (inc! gi)
         (set! more 1))
@@ -19354,6 +19385,7 @@
 ; returns points into it -- every symbol and string is interned.
 (defn read-file (path:Symbol):String
   (let (pv:StrView (symbol-as-view path))
+    (when (depfile-on?) (track-read pv))
     (match (file-open-read pv)
       ((err e) (do (perror (symbol-as-cstr path)) (exit 1)))
       ((ok f)
@@ -19525,6 +19557,7 @@
 ; A top-level form with its binder slots split, for the forms whose emitters
 ; expect them split; lib/nucleus/slots.nuc says which forms and which elems.
 (defn desugar-form (form:?&Node):ptr
+  (when (>= (import-annot-start form) 0) (return (import-annot-strip form)))
   (when (or (= (node-len form) 0) (not (slots-desugared? form))) (return form))
   (let (f:&Node (unsafe/cast &Node form)
         out:&Node (node-list-new (f 'line))
@@ -19690,6 +19723,7 @@
 ; path); W9 item 38's header validation is the third caller, because a header
 ; mode never runs `do-import` and so never asked.
 (defn die-import-not-found (name:Symbol line:i32):void
+  (missing-import-record name line)
   (die-at line (fstr "import: cannot find '" name "'")))
 
 (defn prescan-imported-types (forms:?&Node):void
@@ -20195,7 +20229,7 @@
           (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
         (let (vsym:&Sym (scope-define g-globals name ty
                              (fstr "@" (def-ir-base name)) 1))
-          (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
+          (when (ct-withheld?) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
           (when (!= g-defining-private 0)
             (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
           ; G-4: this Sym is the "declared, not yet reached" half of the pair.
@@ -20265,7 +20299,7 @@
           (when (!= sd null) (set! ty (type-for-sdef sd))))
         (when (or (= ty null) (symbol-none? nm)) (return))
         (let (vsym:&Sym (scope-define g-globals nm ty (fstr "@" (def-ir-base nm)) 1))
-          (when (!= g-ct-emitting 0) (set! (vsym 'ct-only) 1))
+          (when (ct-withheld?) (set! (vsym 'ct-only) 1))
           (set! (vsym 'readonly-global) 1)
           (set! (vsym 'defvar-state) DEFVAR-DECLARED)
           (prescan-const-finish vsym (cc 'line)))))))
@@ -20384,7 +20418,9 @@
             (let (nn:&Node (unsafe/cast &Node (node-at (as ptr f) 1)))
               (do
                 (let (path:Symbol (import-form-path nn (f 'line)))
+                  ; A linked library is compile-time-only, as an `import-ct` is.
                   (when (and (not (symbol-none? path))
+                             (not (ct-linked? path))
                              (= (import-list-has g-prescan-sigs path) 0)
                              (= (import-list-has g-prescan-inflight path) 0)
                              (= (as ptr (import-list-find g-imported path)) null))
@@ -20762,20 +20798,25 @@
 ; object also inlines the same file — so this reports the property it can prove
 ; and names the fix. Not guarded away behind a once-flag: see the progress note
 ; for why a guard trades this leak for a silent use-before-init.
+; `--strict-initializers` makes it an error: an installed object is always
+; linked beside others (stage27-build/overview.md §8.4).
 (defn warn-shared-runtime-inits ():void
   (when (= g-emit-obj 0) (return))
   (when (symbol-none? g-unit-entry-path) (return))
   (let (i:i32 g-init-drained
-        n:i32 (unsafe/cast i32 (count g-init-worklist)))
+        n:i32 (unsafe/cast i32 (count g-init-worklist))
+        hit:bool false)
     (while (< i n)
       (let (job:&InitJob (as &InitJob (invoke g-init-worklist i:usize)))
         (when (!= (job 'path) g-unit-entry-path)
           ; The location prefix already names the declaring file and line, so the
           ; sentence does not repeat the path.
-          (diag-emit "warning" (job 'path) (job 'line)
+          (diag-emit (if g-strict-inits "error" "warning") (job 'path) (job 'line)
                 (fstr "defvar: '" (job 'name)
-                "' has a run-time initializer, and this object only imports the file that declares it -- every object that imports that file runs the initializer again on the one shared global. Give it a compile-time constant initializer, or move it into the object that owns it")))
-        (inc! i)))))
+                "' has a run-time initializer, and this object only imports the file that declares it -- every object that imports that file runs the initializer again on the one shared global. Give it a compile-time constant initializer, or move it into the object that owns it"))
+          (set! hit true))
+        (inc! i)))
+    (when (and hit g-strict-inits) (exit 1))))
 
 ; The batch drain, called once per compilation at `emit-toplevel-forms` depth 1
 ; — the one point at which every top-level form of every reachable file has been
@@ -21406,9 +21447,9 @@
 
 ; Try to find a file by name in the import search path.
 ; Search order: directory of current source file; lib/ relative to cwd;
-; -I include paths; $NUCLEUS_LIB; the compiled-in default install path.
-; The last two let an installed compiler find its standard libraries
-; (macros, prelude, …) when run from an arbitrary working directory.
+; -I include paths; beside the compiler (<exe>/../lib for a checkout,
+; <exe>/../share/nucleus/src for an install); $NUCLEUS_LIB; the compiled-in
+; default install path. design/stage27-build/plan.md BT-0, BT-9.
 (defn try-import-path (filename:StrView):Symbol
   ; Try directory of the current source file
   (let (dir:Symbol (source-file-dir))
@@ -21426,6 +21467,15 @@
       (let (candidate:StrView (fstr (invoke g-include-paths (as usize j)) "/" filename))
         (when (!= (file-exists candidate) 0)
           (return (symbol-intern candidate))))))
+  ; Ahead of $NUCLEUS_LIB so a compiler finds its own stdlib, not another build's.
+  (let (ep:Symbol (exe-prefix))
+    (when (not (symbol-none? ep))
+      (let (candidate:StrView (fstr ep "/lib/" filename))
+        (when (!= (file-exists candidate) 0)
+          (return (symbol-intern candidate))))
+      (let (candidate:StrView (fstr ep "/share/nucleus/src/" filename))
+        (when (!= (file-exists candidate) 0)
+          (return (symbol-intern candidate))))))
   ; Try $NUCLEUS_LIB (a single directory; lets a custom-PREFIX install be found)
   (let (libenv:ptr (getenv "NUCLEUS_LIB"))
     (when (!= libenv null)
@@ -21433,7 +21483,7 @@
         (when (!= (file-exists candidate) 0)
           (return (symbol-intern candidate))))))
   ; Try the compiled-in default install path (default-prefix `make install`)
-  (let (candidate:StrView (fstr "/usr/local/share/nucleus/lib/" filename))
+  (let (candidate:StrView (fstr "/usr/local/share/nucleus/src/" filename))
     (when (!= (file-exists candidate) 0)
       (return (symbol-intern candidate))))
   (return (symbol-none)))
@@ -21447,11 +21497,57 @@
   (match (import-name-relpath name)
     (none (return (symbol-none)))
     ((some rel)
+      (let (linked:Symbol (ct-source-path name rel))
+        (when (not (symbol-none? linked)) (return linked)))
       (let (nuc-path:Symbol (try-import-path (fstr rel ".nuc")))
-        (when (not (symbol-none? nuc-path)) (return nuc-path)))
+        (when (not (symbol-none? nuc-path)) (return (entry-spelling nuc-path))))
       (let (nuch-path:Symbol (try-import-path (fstr rel ".nuch")))
         (when (not (symbol-none? nuch-path)) (return nuch-path)))))
   (return (symbol-none)))
+
+(defn ct-linked? (path:Symbol):bool
+  (return (and (not (symbol-none? path)) (!= (import-list-has g-linked-paths path) 0))))
+
+; Is a definition being emitted now one the program has no copy of to link? A
+; linked library's are in its object, so only an `import-ct`'s are withheld.
+(defn ct-withheld? ():bool
+  (return (and (!= g-ct-emitting 0) (not (ct-linked? g-source-path)))))
+
+(defn ct-source-path (name:Symbol rel:StrView):Symbol
+  (when (= (count g-ct-source-roots) 0) (return (symbol-none)))
+  (let (nv:StrView (symbol-as-view name)
+        root:StrView (match (strview-find-byte &nv 46) ((some at) (strview-take-bytes nv at)) (none nv)))
+    (dotimes (i (count g-ct-source-roots))
+      (when (= (symbol-as-view (invoke g-ct-source-roots i)) root)
+        (let (candidate:StrView (fstr (invoke g-ct-source-dirs i) "/" rel ".nuc"))
+          (when (!= (file-exists candidate) 0)
+            (let (p:Symbol (symbol-intern candidate))
+              (when (= (import-list-has g-linked-paths p) 0)
+                (set! g-linked-paths (import-list-push g-linked-paths p)))
+              (return p)))))))
+  (return (symbol-none)))
+
+; The unit's root reached under another spelling is the root: `nucleus build` in
+; `lib/` compiles `nucleus/core.nuc`, which the prelude finds through `-I`.
+(defvar g-unit-entry-real:Symbol)
+(defn entry-spelling (path:Symbol):Symbol
+  (when (or (symbol-none? g-unit-entry-path) (= path g-unit-entry-path)) (return path))
+  (let (pd:Symbol (path-dir g-unit-entry-path)
+        base:StrView (if (symbol-none? pd)
+                       (symbol-as-view g-unit-entry-path)
+                       (strview-drop-bytes (symbol-as-view g-unit-entry-path) (+ (symbol-len pd) 1))))
+    (when (not (strview-has-suffix (symbol-as-view path) base)) (return path)))
+  (when (symbol-none? g-unit-entry-real)
+    (match (real-path (symbol-as-view g-unit-entry-path))
+      ((ok s) (set! g-unit-entry-real (symbol-intern (string-as-view &s))) (drop &s))
+      ((err e) (return path))))
+  (match (real-path (symbol-as-view path))
+    ((ok s)
+      (let (same:bool (= (symbol-intern (string-as-view &s)) g-unit-entry-real))
+        (drop &s)
+        (when same (return g-unit-entry-path))))
+    ((err e) 0))
+  (return path))
 
 ; Stage 23 AN-1: a library name's dots are directories (`a.b` → `a/b`), as in
 ; Clojure; hyphens are kept. None for an empty component, which would otherwise
@@ -21495,6 +21591,7 @@
 ; re-registers conformances the first pass already recorded.
 ; design/stage16-ergonomics/compile-time-imports.md §4a.
 (defn ct-sink-here (path:Symbol):i32
+  (when (ct-linked? path) (return 1))
   (when (= g-import-ct 0) (return 0))
   (when (!= (import-list-has g-real-reachable path) 0) (return 0))
   (return 1))
@@ -21511,20 +21608,21 @@
 (defn emit-import-forms (forms:?&Node is-nuch:i32 ct:i32):void
   (let (saved-def:?&String g-def-stream
         saved-out:?&String g-out
-        saved-ct:i32 g-ct-emitting
-        (sink String) (make String))
+        saved-ct:i32 g-ct-emitting)
     (if (!= ct 0)
-      (do (set! g-def-stream &sink)
-          (set! g-out &sink)
+      (do (set! g-def-stream &g-ct-def-buf)
+          (set! g-out &g-ct-def-buf)
           (set! g-ct-emitting 1))
       (do (set! g-def-stream g-def-stream-program)
           (set! g-out g-def-stream-program)
           (set! g-ct-emitting 0)))
-    (if (!= is-nuch 0) (emit-nuch-import-forms forms) (emit-toplevel-forms forms))
+    (let (linked:bool (ct-linked? g-source-path))
+      (when linked (set! g-import-ct (+ g-import-ct 1)))
+      (if (!= is-nuch 0) (emit-nuch-import-forms forms) (emit-toplevel-forms forms))
+      (when linked (set! g-import-ct (- g-import-ct 1))))
     (set! g-ct-emitting saved-ct)
     (set! g-def-stream saved-def)
-    (set! g-out saved-out)
-    (drop &sink)))
+    (set! g-out saved-out)))
 
 ; Stage 12 (design/stage12/namespaces.md §"Import"): import dedup is keyed on
 ; (file, prefix), not file alone — the same library may be imported under two
@@ -22225,9 +22323,11 @@
 ; Populate g-host-target (always native) and g-target (== host unless
 ; --target=<triple> overrides). Derives g-target-triple / g-target-ptr-bytes so
 ; the rest of codegen, which predates the Target struct, sees the right values.
+(defn default-host-triple ():Symbol (return (symbol-from-cstr (as CStr (LLVMGetDefaultTargetTriple)))))
+
 (defn target-init ():void
   (targets-init-all)
-  (let (host-triple:Symbol (symbol-from-cstr (as CStr (LLVMGetDefaultTargetTriple)))
+  (let (host-triple:Symbol (default-host-triple)
         empty:Symbol (symbol-intern ""))
     (set! g-host-target (make-target-for-triple host-triple empty))
     (if (symbol-none? g-target-triple-override)
@@ -22469,6 +22569,8 @@
                   (command-arg &cmd "-Wl,--gc-sections"))
                 (dotimes (j (unsafe/cast i32 (count g-link-args)))
                   (command-arg &cmd (symbol-as-view (invoke g-link-args j:usize))))
+                (dotimes (j (count g-creq-libs))
+                  (command-arg &cmd (fstr "-l" (invoke g-creq-libs j))))
                 ; An argv, not a command line: a path with a space in it used to
                 ; be the caller's quoting problem and is now nobody's.
                 (let (rc2:i32 -1)
@@ -22656,18 +22758,81 @@
     (set! (aref out (+ n 1)) null)
     (return (as ptr out))))
 
+; One binary, two programs (plan.md D-ENTRY): `nucleus` is the build tool, which
+; hands its `run`/`run-repl` back to `compiler-main` in this same process.
+; `argv` stays a C string (overview.md §2.7); this is where it becomes a view.
+(defn argv-view (argv:ptr i:i32):StrView
+  (return (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
+
 (defn main (argc:i32 argv:ptr):int
+  (let (a0:StrView (argv-view argv 0)
+        base:StrView a0)
+    (match (strview-rfind-byte &a0 47)
+      ((some k) (set! base (strview-drop-bytes a0 (+ k 1))))
+      (none 0))
+    (when (= base "nucleus") (return (tool-main argc argv)))
+    (return (compiler-main argc argv))))
+
+(defn compiler-main (argc:i32 argv:ptr):int
   (let (source-file:Symbol (symbol-none)
         run-from:i32 argc
         i:i32 1)
     (while (< i argc)
       ; `argv` stays a C string (overview.md §2.7), but the flag scanning below
       ; is the compiler reading it, so it reads a view.
-      (let (argview:StrView (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i))))
+      (let (argview:StrView (argv-view argv i))
         (cond (= argview "--emit-nuch")
                 (set! g-header-request 1)
               (= argview "--dump-ast")
                 (set! g-dump-ast 1)
+              (= argview "--list-imports")
+                (set! g-list-imports 1)
+              (strview-has-prefix argview "--pkg-config=")
+                (do (when (<= (byte-len &argview) 13)
+                      (do (eprint "--pkg-config= requires a package\n") (return 2)))
+                    (add-pkg-config-arg (symbol-intern (strview-drop-bytes argview 13))))
+              (strview-has-prefix argview "--link-lib=")
+                (do (when (<= (byte-len &argview) 11)
+                      (do (eprint "--link-lib= requires a library name\n") (return 2)))
+                    (add-link-lib (symbol-intern (strview-drop-bytes argview 11))))
+              (or (strview-has-prefix argview "--c-require=") (strview-has-prefix argview "--c-require-unsafe="))
+                (let (unsafe:bool (strview-has-prefix argview "--c-require-unsafe=")
+                      body:StrView (strview-drop-bytes argview (if unsafe 19 12)))
+                  (when (not (add-config-creq body unsafe))
+                    (do (eprint "--c-require= expects [\"FILE\" LINE \"HEADER\" \"SPEC\" ...]\n") (return 2))))
+              (strview-has-prefix argview "--c-requirements-of=")
+                (set! g-creq-root (symbol-intern (strview-drop-bytes argview 20)))
+              (strview-has-prefix argview "--library=")
+                (let (spec:StrView (strview-drop-bytes argview 10))
+                  (match (strview-find-byte &spec 64)
+                    ((some k)
+                      (when (or (= k 0) (= (+ k 1) (spec 'len)))
+                        (do (eprint "--library= expects NAME@VERSION\n") (return 2)))
+                      (set! g-library-name (symbol-intern (strview-take-bytes spec k)))
+                      (set! g-library-version (symbol-intern (strview-drop-bytes spec (+ k 1)))))
+                    (none (do (eprint "--library= expects NAME@VERSION\n") (return 2)))))
+              (= argview "--strict-initializers") (set! g-strict-inits true)
+              (strview-has-prefix argview "--build-id=")
+                (do (when (<= (byte-len &argview) 11)
+                      (do (eprint "--build-id= requires an id\n") (return 2)))
+                    (set! g-library-build-id (symbol-intern (strview-drop-bytes argview 11))))
+              (strview-has-prefix argview "--ct-source=")
+                (let (spec:StrView (strview-drop-bytes argview 12))
+                  (match (strview-find-byte &spec 61)
+                    ((some at)
+                      (when (or (= at 0) (= (+ at 1) (byte-len &spec)))
+                        (do (eprint "--ct-source= expects ROOT=DIR\n") (return 2)))
+                      (conj g-ct-source-roots (symbol-intern (strview-take-bytes spec at)))
+                      (conj g-ct-source-dirs (symbol-intern (strview-drop-bytes spec (+ at 1)))))
+                    (none (eprint "--ct-source= expects ROOT=DIR\n") (return 2))))
+              (strview-has-prefix argview "--missing-imports=")
+                (do (when (<= (byte-len &argview) 18)
+                      (do (eprint "--missing-imports= requires a path\n") (return 2)))
+                    (set! g-missing-imports-path (symbol-intern (strview-drop-bytes argview 18))))
+              (strview-has-prefix argview "--depfile=")
+                (do (when (<= (byte-len &argview) 10)
+                      (do (eprint "--depfile= requires a path\n") (return 2)))
+                    (set! g-depfile-path (symbol-intern (strview-drop-bytes argview 10))))
               (= argview "--report-qq-resolution")
                 (set! g-report-qq 1)
               (= argview "--resolve")
@@ -22770,6 +22935,7 @@
               (!= g-header-request 0) (set! clash "--emit-nuch/--emit-cheader")
               (!= g-dump-ast 0) (set! clash "--dump-ast")
               (not (symbol-none? g-target-triple-override)) (set! clash "--target=")
+              (depfile-on?) (set! clash "--depfile=")
               true 0)
         (when (not (str-empty? &clash))
           (eprint "nucleusc: --run cannot be combined with " clash "\n")
@@ -22795,14 +22961,22 @@
           (return 2)))
       (resolve-arm))
 
-    ; REPL mode
+    ; REPL mode. The REPL reads no file, so `nucleus run-repl` names the one whose
+    ; C requirements the session needs.
     (when (!= g-interactive 0)
+       (if (symbol-none? g-creq-root)
+         (creq-apply-pkgs g-pkg-config-args)
+         (creqs-resolve g-creq-root))
        (repl-main) (return 0))
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--resolve] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--depfile=<path>] [--missing-imports=<path>] [--ct-source=<root>=<dir>] [--list-imports] [--pkg-config=<pkg>] [--link-lib=<name>] [--library=<name>@<version>] [--build-id=<id>] [--strict-initializers] [--c-require=<edn>] [--c-require-unsafe=<edn>] [--c-requirements-of=<file>] [--resolve] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
     (set! g-source-path source-file)
+    (when (!= g-list-imports 0)
+      (list-imports-main source-file)
+      (return 0))
+    (when (= g-dump-ast 0) (creqs-resolve source-file))
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
       ; by its own `defvar` initializer — the constants by the loader, the rest
@@ -22855,6 +23029,8 @@
             (emit-nuch-header g-root-forms source-file)
             (emit-cheader-header g-root-forms source-file))
           (header-out-close)
+          (depfile-write (depfile-target source-file))
           (return 0))
-        (flush-module-ir source-file))))
+        (flush-module-ir source-file)
+        (depfile-write (depfile-target source-file)))))
     (return 0)))

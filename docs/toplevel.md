@@ -11,7 +11,7 @@
 | `deftype` | Define a **type alias**: `(deftype Name Type)` gives an existing type a second spelling. Not a new type — the alias and its body are the same type everywhere (same `type-eq`, same mangled name, one overload), and a program using aliases emits byte-identical IR to the spelled-out form. The body is any type expression and may name another alias; a forward reference works, since the body is re-parsed on use. The body is still checked at the `deftype`, so an unknown type in it is an error at its line whether or not the alias is used. The name may take type parameters — `(deftype (Vec T) (ref (Vector T)))` — which are substituted into the body at each application, including in a generic method's receiver. A name that already names a type is refused rather than silently ignored. Compile-time only; emits no code. See [Type aliases](types.md#type-aliases--deftype). | `typedef` (but never a new type) |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. Each signature's types are checked at the `defprotocol`, as a `defn`'s are, so an unknown type is an error at its signature's line whether or not the protocol is ever extended. A **bare** (non-parametric) name takes no type annotation — `(defprotocol P:i32 ...)` is rejected (`defprotocol: takes no type annotation; write (defprotocol P ...)`); a genuine parametric head such as `(Seq E)` is unaffected. See [Protocols](generics.md#protocols-defprotocol-and-extend) and [Parametric protocols](generics.md#parametric-protocols). | — (concept: interface/trait) |
 | `extend` | Assert conformance `(extend Type Protocol)` or parametric conformance `(extend (Name X) (Protocol X))`, where the subject's arguments are distinct type variables that the rest of the form names, and the template may sit under pointers or behind a parametric alias (`(extend &(Vector T) P)`, `(extend (Vec T) P)`): checks that each required signature resolves — a signature with its own `:where` by a method generic over it — then records the fact. Code-free. See [Protocols](generics.md#protocols-defprotocol-and-extend) and [Parametric protocols](generics.md#parametric-protocols). | — |
-| `import` | **Prefix-qualified import** (the default, deliberate-API form). `(import lib [prefix])` exposes each public symbol of `lib` as `prefix/name`, pointing at the same definition (no new code; a foreign C symbol keeps its bare link name, so `c/printf` calls `@printf`). `lib` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, `-I` paths, `$NUCLEUS_LIB`, or `/usr/local/share/nucleus/lib` (the install-time default used by `make install`); a string path imports a C header (`(import "stdio.h")`, preprocessed with `clang -E`) or an explicit `.nuc`/`.nuch` file by path. The prefix defaults to the lib's last dotted component (`foo.bar.baz` → `baz`); a string-path C header defaults to `c` (`(import "stdio.h" c)` → `c/printf`). The **same library** may be imported under **multiple** prefixes (aliasing); two different libraries **may not share** a prefix (error). Dedup is keyed on `(file, prefix)`. **A prefix binds only in the file that declares the import** — see [Import prefixes are file-scoped](#import-prefixes-are-file-scoped). Source imports inline all definitions; header imports emit `declare` (extern) for functions, and also bring in the header's object-like `#define`s whose bodies fold to integer constants, and its enumerators, under their C names — see [Integer constants from a C header](compiler.md#integer-constants-from-a-c-header). *(`import` and `import-prefixed` are synonyms.)* | — |
+| `import` | **Prefix-qualified import** (the default, deliberate-API form). `(import lib [prefix])` exposes each public symbol of `lib` as `prefix/name`, pointing at the same definition (no new code; a foreign C symbol keeps its bare link name, so `c/printf` calls `@printf`). `lib` resolves `name.nuc` (source) or `name.nuch` (header) on the import search path (see [Where an import is found](#where-an-import-is-found)); a string path imports a C header (`(import "stdio.h")`, preprocessed with `clang -E`, and annotated with the C packages it needs as described in [C requirements on an import](compiler.md#c-requirements-on-an-import)) or an explicit `.nuc`/`.nuch` file by path. The prefix defaults to the lib's last dotted component (`foo.bar.baz` → `baz`); a string-path C header defaults to `c` (`(import "stdio.h" c)` → `c/printf`). The **same library** may be imported under **multiple** prefixes (aliasing); two different libraries **may not share** a prefix (error). Dedup is keyed on `(file, prefix)`. **A prefix binds only in the file that declares the import** — see [Import prefixes are file-scoped](#import-prefixes-are-file-scoped). Source imports inline all definitions; header imports emit `declare` (extern) for functions, and also bring in the header's object-like `#define`s whose bodies fold to integer constants, and its enumerators, under their C names — see [Integer constants from a C header](compiler.md#integer-constants-from-a-c-header). *(`import` and `import-prefixed` are synonyms.)* | — |
 | `import-use` | **Flatten import** — brings **every** symbol of a library or C header into the current namespace under its bare name, including private symbols (the opt-out from the prefixing discipline). Good for the REPL and for libraries; discouraged for deliberate API design. `(import-use name)` / `(import-use "hdr.h")`. The prelude is auto-`import-use`d into every unit. | — |
 | `import-ct` | **Compile-time-only import** — `(import-ct lib)` registers everything `import-use` would (types, signatures, constants, macros) and emits **none** of the library's definitions. For a library whose surface a macro body needs at compile time but whose code the program never calls: a macro body is JIT'd against the compiler process, so it resolves those symbols there. Reaching a withheld definition from program code is refused at the use — `'node-len' was imported compile-time-only` — rather than left to fail at link. Compile-time-only is a property of the **unit**, not of one import: if any ordinary import in the unit reaches the same library, it is imported normally and nothing is withheld, in either order. See [Compile-time-only imports](#compile-time-only-imports). | — |
 | `import-prefixed` | Explicit spelling of the prefix-qualified `import` above: `(import-prefixed lib [prefix])`. Identical to `import`. | — |
@@ -240,6 +240,30 @@ main.nuc:7: error: extend: unknown protocol 'shapez/Shape'
 When some *other* file of the unit declares the namespace, the note names it
 instead: `namespace 'shapez' (declared in lib/shapez.nuc) is not loaded by this
 file's imports — add (require …) naming its library to reach it by its full name.`
+
+### Where an import is found
+
+A library name, or a `.nuc`/`.nuch` string path, is looked up in these
+directories, in order. In each directory, `name.nuc` is tried before
+`name.nuch`.
+
+1. The directory of the file that holds the import. A bare
+   `nucleusc app.nuc` counts as `./app.nuc`, so `./mylib/core.nuc` is found
+   either way.
+2. `lib/`, relative to the current directory.
+3. Each `-I` directory, in the order given.
+4. `<prefix>/lib/` and then `<prefix>/share/nucleus/src/`, where `<prefix>`
+   is the directory above the one holding the running compiler. A
+   checkout's `build/nucleusc` finds the checkout's `lib/`, and an installed
+   `$PREFIX/bin/nucleusc` finds `$PREFIX/share/nucleus/src/` (where `make
+   install` puts the standard library), from any current directory and with
+   no `$NUCLEUS_LIB` set.
+5. `$NUCLEUS_LIB`, a single directory.
+6. `/usr/local/share/nucleus/src/`.
+
+Step 4 comes before `$NUCLEUS_LIB`, so a compiler uses its own library
+rather than another build's. `nucleusc --list-imports FILE` shows where each
+import of a unit resolved (see [Compiler Flags](compiler.md#compiler-flags)).
 
 ### Library names: dots are directories
 
@@ -678,20 +702,33 @@ A C header (`(import-ct "stdio.h")`) is imported normally: a header emits only
 declarations, and libc supplies the definitions either way, so there is nothing
 to withhold.
 
-**`import-ct` only works for a library the compiler itself links.** Withholding
-the definitions is exactly what leaves nothing for the compile-time JIT to run,
-so the symbol has to already be in the compiler process — which is the first
-condition in [What a macro body may call](macros.md#what-a-macro-body-may-call),
-and is true of `node`, `intern`, `strview` and the rest of the standard library.
-Reaching a library of your own this way is refused at the macro:
+**A macro body may call a function `import-ct` withheld.** The definition isn't
+in the program, but the compiler keeps its IR, so the macro JIT copies it in as
+it copies the program's own code (see
+[What a macro body may call](macros.md#what-a-macro-body-may-call)). A library
+the compiler itself links, such as `node`, `intern` or `strview`, is called in
+the compiler process instead, as always.
+
+### A library's source for compile time, its object for the program
+
+`--ct-source=ROOT=DIR` imports a library from its source and links it from an
+object. An import whose root is `ROOT` (`mac` for `mac.m`) reads
+`DIR/mac/m.nuc` ahead of the rest of the search, compile-time-only like
+`import-ct`. Program code may use everything it defines, though: each
+function becomes a `declare` and each `defvar` an `external global`, and the
+definitions come from the object on the link line. The library's own imports
+are compile-time-only too, unless the program imports them for real.
 
 ```
-probe.nuc:3: error: macro 'probe' needs 'mydouble', which is defined where no span was recorded
-  note: only a function defined at the top level of this unit can be copied into the compile-time JIT
+nucleusc -I inst --ct-source=mac=src app.nuc --link-arg=libmac.a -o app
 ```
 
-Import it with `import-use` instead — a macro body may call the program's own
-code, and then there is a definition to copy.
+This is how a prebuilt library's macros can call the library's own functions:
+from its `.nuch` alone, the JIT has nothing to run and the expansion fails with
+`Symbols not found`. The build tool passes the flag itself, for a prebuilt
+library whose headers export a macro (see
+[Dependencies](build.md#dependencies)). One `defvar` storage is shared by the
+library's code and the program's, because only the object defines it.
 
 ## Cross-file resolution: reachability, not import order
 

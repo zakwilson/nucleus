@@ -24,6 +24,15 @@
 (import-use nucleus.arena)
 (import-use nucleus.vector)
 (import-use nucleus.strview-str)
+(import-use nucleus.create)
+
+; `--library=NAME@VERSION` and `--build-id=ID`: a header naming its library is
+; format 1 (BT-4 H3); one without is format 0.
+(defvar g-library-name:Symbol)
+(defvar g-library-version:Symbol)
+(defvar g-library-build-id:Symbol)
+(defconst NUCH-HEADER-FORMAT 1)
+
 (defn emit-nuch-list (form:ptr):void
   (dotimes (i (node-len form))
     (when (!= i 0) (emit g-hdr " "))
@@ -218,6 +227,9 @@
         (let (h:Symbol ((as ptr:Node (node-at f 0)) 's)
               lib:?&Node (as ?&Node (node-at f 1)))
           (cond
+            (and (or (= h "import") (= h "import-prefixed") (= h "import-use") (= h "import-only"))
+                 (creq-c-header-name? lib))
+              (nuch-write-c-import (unsafe/cast &Node f) h)
             (or (= h "import") (= h "import-prefixed"))
               ; Spelled explicitly: the prefix may have been a derived default.
               (let (prefix:Symbol (import-form-prefix f (f 'line)))
@@ -238,6 +250,155 @@
             (and (require-head? h) (= (node-len f) 2))
               (do (header-print-node f) (emit g-hdr "\n"))
             true 0))))))
+
+; The importer loads a carried C header (BT-4 H1), annotated with the package this
+; build applied for it, so a prebuilt object and its consumer agree on it.
+(defn nuch-write-c-import (f:&Node h:Symbol):void
+  (let (lib:?&Node (as ?&Node (node-at (as ptr f) 1))
+        prefixed:bool (or (= h "import") (= h "import-prefixed"))
+        spec:Symbol (creq-picked-spec ((unsafe/cast &Node lib) 's))
+        out:String (make String))
+    (str-into &out "(" (if prefixed "import-prefixed" (symbol-as-view h)) " ")
+    (emit-all g-hdr &out)
+    (string-clear &out)
+    (header-print-node lib)
+    (if prefixed
+      (str-into &out " " (import-form-prefix (as ptr f) (f 'line)))
+      (do (emit-all g-hdr &out)
+          (string-clear &out)
+          (let (i:i32 2)
+            (while (< i (node-len (as ptr f)))
+              (emit g-hdr " ")
+              (header-print-node (as ?&Node (node-at (as ptr f) i)))
+              (inc! i)))))
+    (when (not (symbol-none? spec))
+      (str-into &out " :pkg-config [")
+      (diag-write-string &out (symbol-as-view spec))
+      (str-into &out "]"))
+    (str-into &out ")\n")
+    (emit-all g-hdr &out)
+    (drop &out)))
+
+(defn nuch-write-strings (out:&String key:StrView v:&(Vector Symbol)):void
+  (when (!= key "pkg-config") (str-into out " "))
+  (str-into out ":" key " [")
+  (dotimes (i (count v))
+    (when (> i 0) (str-into out " "))
+    (diag-write-string out (symbol-as-view (invoke v i))))
+  (str-into out "]"))
+
+; What the library was built with (BT-4 H2): every package applied, and the plain
+; libraries, so a consumer of a prebuilt object links the same ones.
+(defn nuch-write-c-requires ():void
+  (when (and (= (count g-applied-pkgs) 0) (= (count g-creq-plain-libs) 0)) (return))
+  (let (out:String (make String))
+    (str-into &out "(c-requires {")
+    (when (> (count g-applied-pkgs) 0) (nuch-write-strings &out "pkg-config" g-applied-pkgs))
+    (when (> (count g-creq-plain-libs) 0) (nuch-write-strings &out "libs" g-creq-plain-libs))
+    (str-into &out "})\n")
+    (emit-all g-hdr &out)
+    (drop &out)))
+
+; A carried Nucleus import a macro body may call into: loaded at compile time in
+; the importer (BT-4 H4), where every other carried import loads nothing.
+(defn nuch-carried-nucleus-lib (f:?&Node):?&Node
+  (when (or (!= (node-kind f) NODE-LIST) (< (node-len f) 2)) (return null))
+  (let (h:Symbol (import-form-head f)
+        lib:?&Node (as ?&Node (node-at f 1)))
+    (when (symbol-none? h) (return null))
+    (when (not (or (= h "import") (= h "import-prefixed") (= h "import-use")
+                   (= h "import-only") (= h "require")))
+      (return null))
+    (when (creq-c-header-name? lib) (return null))
+    (let (path:Symbol (import-form-path lib ((unsafe/cast &Node f) 'line)))
+      (when (or (symbol-none? path) (= (import-path-ns path) "user")
+                (prelude-ns? (import-path-ns path)))
+        (return null)))
+    (return lib)))
+
+(defn nuch-exports-macro? (forms:ptr):bool
+  (dotimes (fi (node-len forms))
+    (when (= (import-form-head (as ?&Node (node-at forms fi))) "defmacro") (return true)))
+  (return false))
+
+(defn nuch-write-macro-loads (forms:ptr):void
+  (when (not (nuch-exports-macro? forms)) (return))
+  (let (seen:(Vector Symbol) (make (Vector Symbol)))
+    (dotimes (fi (node-len forms))
+      (let (lib:?&Node (nuch-carried-nucleus-lib (as ?&Node (node-at forms fi))))
+        (when (!= lib null)
+          (let (nm:Symbol ((unsafe/cast &Node lib) 's))
+            (when (not (sym-vec-has? &seen nm))
+              (conj &seen nm)
+              (emit g-hdr "(require-ct ")
+              (header-print-node lib)
+              (emit g-hdr ")\n"))))))
+    (drop &seen)))
+
+; The source name of one of a macro body's mirror roots; none for the stdlib's,
+; which a consumer can always compile from its installed source.
+(defn nuch-root-name (irn:Symbol):Symbol
+  (let (pd:?&ProgDefn (program-defn-lookup irn))
+    (when (!= (as ptr pd) null)
+      (let (p:&ProgDefn (unsafe/cast &ProgDefn pd))
+        (when (!= (p 'from-lib) 0) (return (symbol-none)))
+        (when (= (p 'ns) "user") (return (p 'name)))
+        (return (symbol-intern (fstr (p 'ns) "/" (p 'name)))))))
+  (let (pg:?&ProgGlobal (program-global-lookup irn))
+    (when (!= (as ptr pg) null)
+      (let (g:&ProgGlobal (unsafe/cast &ProgGlobal pg))
+        (when (!= (g 'from-lib) 0) (return (symbol-none)))
+        (when (= (g 'ns) "user") (return (g 'name)))
+        (return (symbol-intern (fstr (g 'ns) "/" (g 'name)))))))
+  (return (symbol-none)))
+
+; `(macro-calls M [ns/f …])`: what M's expansion runs, so `install --no-source`
+; can refuse only a macro that needs the library's own source (§8.4).
+(defn nuch-write-macro-calls (forms:ptr):void
+  (dotimes (fi (node-len forms))
+    (let (f:?&Node (as ?&Node (node-at forms fi)))
+      (when (= (import-form-head f) "defmacro")
+        (let (nm:Symbol ((unsafe/cast &Node (node-at (as ptr f) 1)) 's))
+          (if-some (m (find-macro-exact (qualify-name nm)))
+            (let (seen:(Vector Symbol) (make (Vector Symbol)))
+              (doseq (irn (m 'ct-roots) (VecIter Symbol))
+                (let (s:Symbol (nuch-root-name irn))
+                  (when (and (not (symbol-none? s)) (not (sym-vec-has? &seen s)))
+                    (conj &seen s))))
+              (when (> (count &seen) 0)
+                (emit g-hdr "(macro-calls " nm " [")
+                (dotimes (i (count &seen))
+                  (when (> i 0) (emit g-hdr " "))
+                  (emit g-hdr (invoke &seen i)))
+                (emit g-hdr "])\n"))
+              (drop &seen))
+            0))))))
+
+(defn nuch-write-library ():void
+  (when (symbol-none? g-library-name) (return))
+  (let (out:String (make String))
+    (str-into &out "(library " g-library-name " ")
+    (diag-write-string &out (symbol-as-view g-library-version))
+    (when (not (symbol-none? g-library-build-id))
+      (str-into &out " :build-id ")
+      (diag-write-string &out (symbol-as-view g-library-build-id)))
+    (str-into &out " :header-format " NUCH-HEADER-FORMAT ")\n")
+    (emit-all g-hdr &out)
+    (drop &out)))
+
+; A header names a format this compiler reads, or none (format 0).
+(defn nuch-check-library (f:&Node):void
+  (let (i:i32 3)
+    (while (< (+ i 1) (node-len (as ptr f)))
+      (let (k:?&Node (as ?&Node (node-at (as ptr f) i))
+            v:?&Node (as ?&Node (node-at (as ptr f) (+ i 1))))
+        (when (and (= (node-kind (as ptr k)) NODE-KEYWORD)
+                   (= ((unsafe/cast &Node k) 's) "header-format")
+                   (or (!= (node-kind (as ptr v)) NODE-INT)
+                       (> ((unsafe/cast &Node v) 'i) NUCH-HEADER-FORMAT)))
+          (die-at (f 'line) (fstr "library: this header's format is newer than this compiler reads (format "
+                                  NUCH-HEADER-FORMAT ")"))))
+      (set! i (+ i 2)))))
 
 ; A C header's constant in an array extent is written as its value: the importer
 ; binds this header's C imports but never reads them.
@@ -278,7 +439,12 @@
     (let (override:Symbol (ns-ir-prefix-get g-current-ns))
       (when (not (symbol-none? override))
         (emit g-hdr "(set-ir-prefix \"" override "\")\n"))))
+  ; After `ns`, which the importer's prescan honors only as the first form.
+  (nuch-write-library)
   (emit-nuch-import-env forms)
+  (nuch-write-macro-loads forms)
+  (nuch-write-macro-calls forms)
+  (nuch-write-c-requires)
   (dotimes (fi (node-len forms))
     (let (fc:?&Node (as ?&Node (node-at forms fi)))
       (let (f:&Node (unsafe/cast &Node fc))
@@ -814,9 +980,27 @@
               ; its text was written against and load nothing, like its `declare`s.
               (:or "import" "import-prefixed" "import-use" "import-only" "unsafe/import-private"
                    "require" "require-ct")
-                (when (not (import-form-bind f))
-                  (die-import-not-found (-> f (node-at _ 1) (unsafe/cast &Node _) (_ 's))
-                                        (f 'line)))
+                (cond
+                  ; BT-4 H1 and H4: these two load.
+                  (creq-c-header-name? (as ?&Node (node-at (as ptr f) 1)))
+                    (case h
+                      "import-use" (emit-import-use (as ptr f))
+                      "import-only" (emit-import-only (as ptr f))
+                      (emit-import-prefixed (as ptr f)))
+                  (= h "require-ct")
+                    (emit-require-ct (as ptr f))
+                  (not (import-form-bind f))
+                    (die-import-not-found (-> f (node-at _ 1) (unsafe/cast &Node _) (_ 's))
+                                          (f 'line))
+                  true 0)
+              "library"
+                (nuch-check-library f)
+              ; Applied before the compile, by the closure walk (creqs-resolve).
+              "c-requires"
+                0
+              ; Read by `nucleus install --no-source`, not by an importer.
+              "macro-calls"
+                0
               ; A facade's re-exports, from the libraries the lines above bind.
               "export"
                 (emit-export f)

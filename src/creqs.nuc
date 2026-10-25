@@ -1,0 +1,507 @@
+; Stage 27 BT-3 — C requirements: import annotations, `--pkg-config=`,
+; `--link-lib=`, and the header -> package table.
+;
+; Design: design/stage27-build/plan.md BT-3 and D-STANDALONE; the model is
+; overview.md §8.3.1 (B + C) and §8.8.
+
+(import-use nucleus.arena)
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.create)
+(import-use nucleus.file)
+(import-use nucleus.io)
+(import-use nucleus.build.pkg)
+(import-use nucleus.build.version)
+(import-use diagnostics)
+(import-use strfmt)
+
+; `--pkg-config=` packages: the build tool's decisions, applied as given.
+(defvar g-pkg-config-args:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; Plain libraries from `:libs`, the table and `--link-lib=`. Kept apart from
+; `g-link-args` because `--run` loads them leniently: `libm.so` is a linker script.
+(defvar g-creq-libs:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; Every package whose flags this compile applied (BT-4 writes them into headers).
+(defvar g-applied-pkgs:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; The libraries a header's `c-requires` names: a `.pc` file's own `-l`s are left
+; out, because the package brings them.
+(defvar g-creq-plain-libs:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; Per header, the spec of the package applied for it, which a `.nuch` writes back.
+(defvar g-creq-pick-headers:&(Vector Symbol) (new (Vector Symbol) g-arena))
+(defvar g-creq-pick-specs:&(Vector Symbol) (new (Vector Symbol) g-arena))
+
+; One import's annotation, or one table entry.
+(defstruct CReq
+  header:Symbol
+  file:Symbol
+  line:i32
+  pkgs:&(Vector Symbol)   ; `gtk4` or `gtk4 >= 4.10`, in the author's order
+  libs:&(Vector Symbol)
+  has-pkgs:bool)
+
+(defn sym-vec-has? (v:&(Vector Symbol) s:Symbol):bool
+  (dotimes (i (count v))
+    (when (= (invoke v i) s) (return true)))
+  (return false))
+
+(defn sym-vec-add (v:&(Vector Symbol) s:Symbol):void
+  (when (not (sym-vec-has? v s)) (conj v s)))
+
+(defn add-pkg-config-arg (pkg:Symbol):void (sym-vec-add g-pkg-config-args pkg))
+(defn add-link-lib (name:Symbol):void
+  (sym-vec-add g-creq-libs name)
+  (sym-vec-add g-creq-plain-libs name))
+
+; Requirement sets from the build tool's configuration (`--c-require=`), and the
+; headers on which one replaces every other set (`--c-require-unsafe=`, §8.6).
+(defvar g-config-creqs:&(Vector &CReq) (new (Vector &CReq) g-arena))
+(defvar g-config-creq-unsafe:&(Vector Symbol) (new (Vector Symbol) g-arena))
+; `--c-requirements-of=`: the file a REPL session resolves requirements for.
+(defvar g-creq-root:Symbol)
+
+; `["FILE" LINE "HEADER" "SPEC" …]`: one set, with where the configuration said it.
+(defn add-config-creq (arg:StrView unsafe:bool):bool
+  (match (read-all-with-macros arg (read-macro-table-new))
+    ((err e) (return false))
+    ((ok forms)
+      (let (v:?&Node (node-first (unsafe/cast &Node forms))
+            n:i32 (node-len v))
+        (when (or (!= (node-kind (as ptr v)) NODE-LIST) (< n 5)
+                  (!= (import-form-head v) "vector-lit"))
+          (return false))
+        (let (f:?&Node (as ?&Node (node-at v 1))
+              l:?&Node (as ?&Node (node-at v 2))
+              h:?&Node (as ?&Node (node-at v 3)))
+          (when (or (!= (node-kind (as ptr f)) NODE-STR) (!= (node-kind (as ptr l)) NODE-INT)
+                    (!= (node-kind (as ptr h)) NODE-STR))
+            (return false))
+          (let (r:&CReq (creq-new ((unsafe/cast &Node h) 's) ((unsafe/cast &Node f) 's)
+                                  (unsafe/cast i32 ((unsafe/cast &Node l) 'i))))
+            (let (i:i32 4)
+              (while (< i n)
+                (let (sn:?&Node (as ?&Node (node-at v i)))
+                  (when (!= (node-kind (as ptr sn)) NODE-STR) (return false))
+                  (conj (r 'pkgs) ((unsafe/cast &Node sn) 's)))
+                (inc! i)))
+            (set! (r 'has-pkgs) true)
+            (conj g-config-creqs r)
+            (when unsafe (sym-vec-add g-config-creq-unsafe (r 'header)))
+            (return true)))))))
+
+(defn creq-picked-spec (header:Symbol):Symbol
+  (dotimes (i (count g-creq-pick-headers))
+    (when (= (invoke g-creq-pick-headers i) header) (return (invoke g-creq-pick-specs i))))
+  (return (symbol-none)))
+
+(defn creq-c-header-name? (n:?&Node):bool
+  (when (!= (node-kind (as ptr n)) NODE-STR) (return false))
+  (let (s:Symbol ((unsafe/cast &Node n) 's))
+    (return (and (= (str-ends-with s ".nuc") 0) (= (str-ends-with s ".nuch") 0)))))
+
+; The index of an import form's first annotation keyword, or -1.
+(defn import-annot-start (form:?&Node):i32
+  (when (or (!= (node-kind form) NODE-LIST) (< (node-len form) 3)) (return -1))
+  (when (not (list-imports-head? (import-form-head form))) (return -1))
+  (let (i:i32 2)
+    (while (< i (node-len form))
+      (when (= (node-kind (node-at form i)) NODE-KEYWORD) (return i))
+      (inc! i)))
+  (return -1))
+
+; `gtk4 >= 4.10` → `gtk4`: the bytes before the first space or operator.
+(defn creq-spec-name (spec:Symbol):Symbol
+  (let (v:StrView (symbol-as-view spec)
+        k:usize 0)
+    (while (and (< k (v 'len))
+                (let (c:i32 (text-byte-at v (as i64 k)))
+                  (not (or (= c 32) (= c 9) (= c 60) (= c 61) (= c 62) (= c 33)))))
+      (set! k (+ k 1)))
+    (return (symbol-intern (strview-take-bytes v k)))))
+
+(defn creq-spec-constraint (spec:Symbol):StrView
+  (let (v:StrView (symbol-as-view spec))
+    (return (strview-drop-bytes v (symbol-len (creq-spec-name spec))))))
+
+(defn creq-bad (strict:bool line:i32 msg:StrView):?&CReq
+  (when strict (die-at line msg))
+  (return null))
+
+; `(vector-lit "a" "b")` of non-empty strings into `out`.
+(defn creq-string-vector (v:?&Node out:&(Vector Symbol)):bool
+  (when (or (!= (node-kind (as ptr v)) NODE-LIST) (< (node-len v) 1)) (return false))
+  (let (h:?&Node (as ?&Node (node-at v 0)))
+    (when (or (!= (node-kind (as ptr h)) NODE-SYM)
+              (!= ((unsafe/cast &Node h) 's) "vector-lit"))
+      (return false)))
+  (let (i:i32 1)
+    (while (< i (node-len v))
+      (let (e:?&Node (as ?&Node (node-at v i)))
+        (when (!= (node-kind (as ptr e)) NODE-STR) (return false))
+        (when (= (symbol-len ((unsafe/cast &Node e) 's)) 0) (return false))
+        (conj out ((unsafe/cast &Node e) 's)))
+      (inc! i)))
+  (return true))
+
+(defn creq-new (header:Symbol file:Symbol line:i32):&CReq
+  (let (r:&CReq (new CReq g-arena))
+    (set-fields! r
+                 'header header
+                 'file file
+                 'line line
+                 'pkgs (new (Vector Symbol) g-arena)
+                 'libs (new (Vector Symbol) g-arena)
+                 'has-pkgs false)
+    (return r)))
+
+; Keyword/value pairs from index `start` into `r`. `who` names the form for the
+; messages; a lenient parse answers null instead of dying.
+(defn creq-parse-pairs (r:&CReq form:?&Node start:i32 who:StrView strict:bool):?&CReq
+  (let (line:i32 (r 'line)
+        n:i32 (node-len form)
+        i:i32 start)
+    (while (< i n)
+      (let (k:?&Node (as ?&Node (node-at form i)))
+        (when (!= (node-kind (as ptr k)) NODE-KEYWORD)
+          (return (creq-bad strict line (fstr who ": expected :pkg-config or :libs"))))
+        (let (key:Symbol ((unsafe/cast &Node k) 's))
+          (when (>= (+ i 1) n)
+            (return (creq-bad strict line (fstr who ": :" key " needs a vector of strings"))))
+          (let (v:?&Node (as ?&Node (node-at form (+ i 1))))
+            (cond (= key "pkg-config")
+                    (do
+                      (when (r 'has-pkgs)
+                        (return (creq-bad strict line (fstr who ": :pkg-config is given twice"))))
+                      (when (not (creq-string-vector v (r 'pkgs)))
+                        (return (creq-bad strict line
+                                  (fstr who ": :pkg-config takes a non-empty vector of package names"))))
+                      (dotimes (j (count (r 'pkgs)))
+                        (let (spec:Symbol (invoke (r 'pkgs) j))
+                          (when (= (symbol-len (creq-spec-name spec)) 0)
+                            (return (creq-bad strict line
+                                      (fstr who ": :pkg-config entry '" spec "' names no package"))))
+                          (match (version-constraint-parse (creq-spec-constraint spec))
+                            ((ok c) 0)
+                            ((err e)
+                              (return (creq-bad strict line
+                                        (fstr who ": :pkg-config entry '" spec
+                                              "' has an invalid version constraint")))))))
+                      (set! (r 'has-pkgs) true))
+                  (= key "libs")
+                    (when (not (creq-string-vector v (r 'libs)))
+                      (return (creq-bad strict line
+                                (fstr who ": :libs takes a non-empty vector of library names"))))
+                  true
+                    (return (creq-bad strict line
+                              (fstr who ": unknown annotation :" key " (expected :pkg-config or :libs)")))))))
+      (set! i (+ i 2)))
+    (return r)))
+
+; An annotated C-header import's requirement, or null when it has none.
+(defn import-annot-parse (form:?&Node file:Symbol strict:bool):?&CReq
+  (let (start:i32 (import-annot-start form))
+    (when (< start 0) (return null))
+    (let (f:&Node (unsafe/cast &Node form)
+          nm:?&Node (as ?&Node (node-at form 1))
+          who:Symbol (import-form-head form))
+      (when (not (creq-c-header-name? nm))
+        (return (creq-bad strict (f 'line)
+                  (fstr who ": :pkg-config and :libs annotate a C header import, and '"
+                        ((unsafe/cast &Node nm) 's) "' is a Nucleus library"))))
+      (return (creq-parse-pairs (creq-new ((unsafe/cast &Node nm) 's) file (f 'line))
+                                form start (symbol-as-view who) strict)))))
+
+; `desugar-form`'s hook: validate, then drop the annotation, so every import
+; walker downstream sees the form it always has.
+(defn import-annot-strip (form:?&Node):ptr
+  (let (start:i32 (import-annot-start form))
+    (when (< start 0) (return (as ptr form)))
+    (import-annot-parse form g-source-path true)
+    (let (out:&Node (node-list-new ((unsafe/cast &Node form) 'line)))
+      (dotimes (i start) (node-push out (as ?&Node (node-at form i))))
+      (return (as ptr out)))))
+
+; ---------------------------------------------------------------------------
+; The header -> package table
+; ---------------------------------------------------------------------------
+
+; A raw read that never dies: the compile proper reports what this cannot read.
+(defn creq-read-raw (path:Symbol):?&Node
+  (match (read-file-quiet (symbol-as-view path))
+    (none (return null))
+    ((some text)
+      (let (t:String text)
+        (match (read-all-with-macros (string-as-view &t) (read-macro-table-new))
+          ((err e) (drop &t) (return null))
+          ((ok forms) (drop &t) (return forms)))))))
+
+(defn creq-hashmap-lit? (n:?&Node):bool
+  (when (or (!= (node-kind (as ptr n)) NODE-LIST) (< (node-len n) 1)) (return false))
+  (let (h:?&Node (as ?&Node (node-at n 0)))
+    (return (and (= (node-kind (as ptr h)) NODE-SYM)
+                 (= ((unsafe/cast &Node h) 's) "hashmap-lit")))))
+
+; Later files replace an earlier entry for the same header.
+(defn creq-table-put (table:&(Vector &CReq) r:&CReq):void
+  (dotimes (i (count table))
+    (when (= ((invoke table i) 'header) (r 'header))
+      (set table i r)
+      (return)))
+  (conj table r))
+
+; A table is user-editable, so a malformed entry is an error at its own line.
+(defn creq-table-load-file (path:Symbol table:&(Vector &CReq)):void
+  (when (depfile-on?) (track-read (symbol-as-view path)))
+  (let (forms:?&Node (creq-read-raw path)
+        save:Symbol g-source-path)
+    (when (= forms null) (return))
+    (set! g-source-path path)
+    (let (m:?&Node (node-first (unsafe/cast &Node forms)))
+      (when (not (creq-hashmap-lit? m))
+        (die-at 1 "c-packages: expected one map from header names to requirements"))
+      (let (i:i32 1)
+        (while (< i (node-len m))
+          (let (k:?&Node (as ?&Node (node-at m i))
+                v:?&Node (as ?&Node (node-at m (+ i 1))))
+            (when (!= (node-kind (as ptr k)) NODE-STR)
+              (die-at (node-line (as ptr v) 1) "c-packages: a key must be a header name string"))
+            (when (not (creq-hashmap-lit? v))
+              (die-at (node-line (as ptr v) 1) (fstr "c-packages: '" ((unsafe/cast &Node k) 's) "' needs a map")))
+            (let (r:&CReq (creq-new ((unsafe/cast &Node k) 's) path (node-line (as ptr v) 1)))
+              (creq-parse-pairs r v 1 "c-packages" true)
+              (creq-table-put table r)))
+          (set! i (+ i 2)))))
+    (set! g-source-path save)))
+
+(defn creq-table-load (table:&(Vector &CReq)):void
+  (let (shipped:Symbol (try-import-path "nucleus/c-packages.edn"))
+    (when (not (symbol-none? shipped)) (creq-table-load-file shipped table)))
+  (match (xdg-config-home)
+    ((ok d)
+      (let (dir:String d
+            p:Symbol (symbol-intern (fstr (string-as-view &dir) "/nucleus/c-packages.edn")))
+        (drop &dir)
+        (when (file-exists? (symbol-as-view p)) (creq-table-load-file p table))))
+    ((err e) 0)))
+
+; ---------------------------------------------------------------------------
+; The closure walk and resolution (D-STANDALONE)
+; ---------------------------------------------------------------------------
+
+(defn creq-c-requires? (f:?&Node):bool
+  (return (and (= (node-len f) 2) (= (import-form-head f) "c-requires"))))
+
+(defn creq-walk-file (path:Symbol seen:&(Vector Symbol) reqs:&(Vector &CReq)
+                      headers:&(Vector Symbol) pins:&(Vector &CReq)):void
+  (when (sym-vec-has? seen path) (return))
+  (conj seen path)
+  (let (forms:?&Node (creq-read-raw path)
+        save:Symbol g-source-path
+        next:(Vector Symbol) (make (Vector Symbol)))
+    (set! g-source-path path)
+    (let (cur:?&Node forms)
+      (while (> (node-len cur) 0)
+        (let (f:?&Node (node-first (unsafe/cast &Node cur)))
+          ; A header's record of what its library was built with (BT-4 H2).
+          (when (and (creq-c-requires? f) (!= (str-ends-with path ".nuch") 0))
+            (let (m:?&Node (as ?&Node (node-at f 1))
+                  r:&CReq (creq-new (symbol-intern "") path ((unsafe/cast &Node f) 'line)))
+              (when (not (creq-hashmap-lit? m))
+                (die-at (r 'line) "c-requires: expected a map with :pkg-config and :libs"))
+              (creq-parse-pairs r m 1 "c-requires" true)
+              (conj pins r)))
+          (when (and (= (node-kind (as ptr f)) NODE-LIST) (>= (node-len f) 2)
+                     (list-imports-head? (import-form-head f)))
+            (let (nm:?&Node (as ?&Node (node-at f 1))
+                  k:i32 (node-kind (as ptr nm)))
+              (cond (creq-c-header-name? nm)
+                      (do (sym-vec-add headers ((unsafe/cast &Node nm) 's))
+                          (let (r:?&CReq (import-annot-parse f path false))
+                            (when (!= r null) (conj reqs (unsafe/cast &CReq r)))))
+                    (or (= k NODE-SYM) (= k NODE-STR))
+                      (let (p:Symbol (import-form-path nm ((unsafe/cast &Node f) 'line)))
+                        (when (not (symbol-none? p)) (conj &next p)))
+                    true 0))))
+        (set! cur (node-rest (unsafe/cast &Node cur)))))
+    (set! g-source-path save)
+    (dotimes (j (count &next))
+      (creq-walk-file (invoke &next j) seen reqs headers pins))
+    (drop &next)))
+
+; `name`'s specs across every requirement, the bare name included, for one
+; `pkg-config --exists` that checks them all.
+(defn creq-specs-for (slot:&(Vector &CReq) name:Symbol out:&(Vector StrView)):void
+  (conj out (symbol-as-view name))
+  (dotimes (i (count slot))
+    (let (ps:&(Vector Symbol) ((invoke slot i) 'pkgs))
+      (dotimes (j (count ps))
+        (let (c:StrView (creq-spec-constraint (invoke ps j)))
+          (when (and (= (creq-spec-name (invoke ps j)) name)
+                     (> ((strview-trim &c) 'len) 0))
+            (conj out (symbol-as-view (invoke ps j)))))))))
+
+(defn creq-in-all? (slot:&(Vector &CReq) name:Symbol):bool
+  (dotimes (i (count slot))
+    (let (ps:&(Vector Symbol) ((invoke slot i) 'pkgs)
+          hit:bool false)
+      (dotimes (j (count ps))
+        (when (= (creq-spec-name (invoke ps j)) name) (set! hit true)))
+      (when (not hit) (return false))))
+  (return true))
+
+; The located list §8.8 promises: every requirement on the slot and its source.
+(defn creq-slot-notes (slot:&(Vector &CReq)):StrView
+  (let (out:StrView "")
+    (dotimes (i (count slot))
+      (let (r:&CReq (invoke slot i)
+            specs:StrView "")
+        (dotimes (j (count (r 'pkgs)))
+          (set! specs (fstr specs (if (= j 0) "\"" " \"") (invoke (r 'pkgs) j) "\"")))
+        (set! out (fstr out "\n  note: " (r 'file) ":" (r 'line) " requires [" specs "]"))))
+    (return out)))
+
+(defn creq-die (slot:&(Vector &CReq) msg:StrView):void
+  (let (r:&CReq (invoke slot 0))
+    (set! g-source-path (r 'file))
+    (die-at (r 'line) (fstr msg (creq-slot-notes slot)))))
+
+; The package for one header slot, or none when an advisory (table) slot has no
+; installed alternative. Annotated slots that cannot be satisfied die here, before
+; any compile (§8.8).
+(defn creq-pick (header:Symbol slot:&(Vector &CReq) hard:bool):Symbol
+  (let (cands:(Vector Symbol) (make (Vector Symbol))
+        first:&(Vector Symbol) ((invoke slot 0) 'pkgs))
+    (dotimes (j (count first))
+      (let (nm:Symbol (creq-spec-name (invoke first j)))
+        (when (creq-in-all? slot nm) (sym-vec-add &cands nm))))
+    (when (= (count &cands) 0)
+      (when hard (creq-die slot (fstr "conflicting C requirements for '" header "': no package is in every set")))
+      (drop &cands)
+      (return (symbol-none)))
+    (let (pick:Symbol (symbol-none))
+      (if (> (count g-pkg-config-args) 0)
+        ; The build tool decided; its choice must be one this slot accepts.
+        (do
+          (dotimes (j (count &cands))
+            (when (and (symbol-none? pick) (sym-vec-has? g-pkg-config-args (invoke &cands j)))
+              (set! pick (invoke &cands j))))
+          (when (and hard (symbol-none? pick))
+            (creq-die slot (fstr "'" header "' requires one of these packages, and --pkg-config passes none of them"))))
+        (dotimes (j (count &cands))
+          (when (symbol-none? pick)
+            (let (specs:(Vector StrView) (make (Vector StrView)))
+              (creq-specs-for slot (invoke &cands j) &specs)
+              (when (pkg-config-exists? &specs) (set! pick (invoke &cands j)))
+              (drop &specs)))))
+      (when (and hard (symbol-none? pick))
+        (creq-die slot (fstr "no installed C package satisfies '" header "'")))
+      ; A pick that is not the first choice is said aloud (§8.8).
+      (when (and (not (symbol-none? pick)) (!= pick (invoke &cands 0)) (= (count g-pkg-config-args) 0))
+        (eprint "note: '" header "' uses " pick " (" (invoke &cands 0)
+                " is not installed in a version the requirements accept)\n"))
+      (drop &cands)
+      (return pick))))
+
+; What a header writes back for the pick: its one constraint when the slot gave
+; exactly one, else the bare name, since alternatives cannot say "all of these".
+(defn creq-pick-spec (slot:&(Vector &CReq) name:Symbol):Symbol
+  (let (spec:Symbol name
+        n:i32 0)
+    (dotimes (i (count slot))
+      (let (ps:&(Vector Symbol) ((invoke slot i) 'pkgs))
+        (dotimes (j (count ps))
+          (let (sp:Symbol (invoke ps j)
+                c:StrView (creq-spec-constraint sp))
+            (when (and (= (creq-spec-name sp) name) (> ((strview-trim &c) 'len) 0)
+                       (not (= sp spec)))
+              (set! spec sp)
+              (inc! n))))))
+    (return (if (= n 1) spec name))))
+
+(defn creq-record-pick (header:Symbol spec:Symbol):void
+  (conj g-creq-pick-headers header)
+  (conj g-creq-pick-specs spec))
+
+; Applied in the batch order: cflags first, then the link's `-L`, `-l`, rest.
+(defn creq-apply-pkgs (pkgs:&(Vector Symbol)):void
+  (when (= (count pkgs) 0) (return))
+  (let (pf:PkgFlags (pkg-flags)
+        msg:String (pkg-config-query pkgs &pf))
+    (when (> (byte-len &msg) 0)
+      (eprint "error: " (string-as-view &msg) "\n")
+      (exit 1))
+    (dotimes (i (count (ref pf 'cflags))) (add-cflag (invoke (ref pf 'cflags) i)))
+    (dotimes (i (count (ref pf 'lib-dirs)))
+      (add-link-arg (symbol-intern (fstr "-L" (invoke (ref pf 'lib-dirs) i)))))
+    ; With `:libs`, so `--run` loads a `.pc` file's `-lm` leniently too.
+    (dotimes (i (count (ref pf 'libs))) (sym-vec-add g-creq-libs (invoke (ref pf 'libs) i)))
+    (dotimes (i (count (ref pf 'other))) (add-link-arg (invoke (ref pf 'other) i)))
+    (dotimes (i (count pkgs)) (sym-vec-add g-applied-pkgs (invoke pkgs i)))
+    (drop &msg)
+    (drop &pf)))
+
+; Resolve the C requirements of `root`'s import closure and apply them, before
+; any header is preprocessed. A compile with neither annotations, table hits nor
+; `--pkg-config=` runs no pkg-config.
+(defn creqs-resolve (root:Symbol):void
+  (let (seen:(Vector Symbol) (make (Vector Symbol))
+        reqs:(Vector &CReq) (make (Vector &CReq))
+        headers:(Vector Symbol) (make (Vector Symbol))
+        table:(Vector &CReq) (make (Vector &CReq))
+        picks:(Vector Symbol) (make (Vector Symbol))
+        pins:(Vector &CReq) (make (Vector &CReq)))
+    (creq-walk-file root &seen &reqs &headers &pins)
+    (dotimes (i (count g-config-creqs))
+      (let (r:&CReq (invoke g-config-creqs i))
+        (sym-vec-add &headers (r 'header))
+        (conj &reqs r)))
+    (dotimes (i (count &pins))
+      (let (r:&CReq (invoke &pins i))
+        (dotimes (j (count (r 'libs))) (add-link-lib (invoke (r 'libs) j)))
+        (dotimes (j (count (r 'pkgs))) (sym-vec-add &picks (creq-spec-name (invoke (r 'pkgs) j))))))
+    (when (> (count &headers) 0) (creq-table-load &table))
+    (dotimes (h (count &headers))
+      (let (hd:Symbol (invoke &headers h)
+            slot:(Vector &CReq) (make (Vector &CReq)))
+        (dotimes (i (count &reqs))
+          (let (r:&CReq (invoke &reqs i))
+            (when (= (r 'header) hd)
+              (dotimes (j (count (r 'libs))) (add-link-lib (invoke (r 'libs) j)))
+              (when (and (r 'has-pkgs) (not (sym-vec-has? g-config-creq-unsafe hd)))
+                (conj &slot r)))))
+        (when (sym-vec-has? g-config-creq-unsafe hd)
+          (dotimes (i (count g-config-creqs))
+            (when (= ((invoke g-config-creqs i) 'header) hd) (conj &slot (invoke g-config-creqs i)))))
+        (let (entry:?&CReq null)
+          (dotimes (i (count &table))
+            (when (= ((invoke &table i) 'header) hd) (set! entry (invoke &table i))))
+          (when (!= entry null)
+            (let (e:&CReq (unsafe/cast &CReq entry))
+              (dotimes (j (count (e 'libs))) (add-link-lib (invoke (e 'libs) j)))
+              (when (and (= (count &slot) 0) (e 'has-pkgs))
+                (let (adv:(Vector &CReq) (make (Vector &CReq)))
+                  (conj &adv e)
+                  (let (p:Symbol (creq-pick hd &adv false))
+                    (when (not (symbol-none? p))
+                      (sym-vec-add &picks p)
+                      (creq-record-pick hd (creq-pick-spec &adv p))))
+                  (drop &adv))))))
+        (when (> (count &slot) 0)
+          (let (p:Symbol (creq-pick hd &slot true))
+            (sym-vec-add &picks p)
+            (creq-record-pick hd (creq-pick-spec &slot p))))
+        (drop &slot)))
+    (let (all:(Vector Symbol) (make (Vector Symbol)))
+      (dotimes (i (count g-pkg-config-args)) (sym-vec-add &all (invoke g-pkg-config-args i)))
+      (dotimes (i (count &picks)) (sym-vec-add &all (invoke &picks i)))
+      (creq-apply-pkgs &all)
+      (drop &all))
+    (drop &pins)
+    (drop &picks)
+    (drop &table)
+    (drop &headers)
+    (drop &reqs)
+    (drop &seen)))

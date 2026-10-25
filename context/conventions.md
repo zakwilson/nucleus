@@ -6691,6 +6691,23 @@ The sequence is: land the feature (src/ still not using it) → `make` green →
 `make update-bootstrap` → now use it. Stage 17's `fstr` needed exactly this, as
 `try-boot` did before it.
 
+**The `lib/` files that `src/` imports are boot-gated as well**, which includes
+`nucleus.file` and `nucleus.build.*`. Stage 27 BT-3 ran into these limits:
+
+- `(make String)` doesn't resolve in `lib/nucleus/file.nuc`. Use
+  `(alloca String)` and then `(init p)`.
+- `ref` works only on a place. Bind the expression to a local first. That
+  includes `&(string-as-view &s)`, in `src/` as well ("ref: target must be
+  symbol").
+- `(set (deref table) …)` doesn't work. Use `(set table i r)`.
+
+Separately, and in every compiler, a `match` clause can't be empty, and the
+`ok` arm of a `!void` takes no binder: write `((ok) 0)`.
+
+A `symbol-none` must never reach `=` against a literal. Its bytes are read,
+and that dereferences null. Check `symbol-none?` before a head predicate such
+as `import-head?`.
+
 ## Importing the string stack into `src/` collides on protocol method names
 
 `lib/nucleus/strview-str.nuc` / `lib/nucleus/string.nuc` bring `char-at`, `byte-at`, `bytes`,
@@ -7740,3 +7757,13 @@ arm frame).
 ## A `defunion`'s name is a plain struct until its arms register
 
 `prescan-struct-names` registers a `defunion`'s backing `StructDef` with `udef` null so that signatures can name the type; `udef` is attached only by `defunion-register` (the layout prescan, or emission when the layout is deferred). So a lookup made during the signature prescan cannot tell a union from a struct by `udef`. Anything that records the distinction (the `--resolve` report's `:kind`) must read it when the compile ends: keep the `StructDef`, not the answer (`resolve-note-aggregate`, `src/resolve.nuc`).
+
+## A C header's `_`-prefixed names are skipped — POSIX's `_SC_*` too
+`sysconf(_SC_NPROCESSORS_ONLN)` reads as "undefined: _SC_…" even though the
+enumerator imports fine. Reach it with `(unsafe/import-private "unistd.h" posix)`
+and `posix/_SC_…` (as `src/build-tool.nuc` does). Separately, `extern` declares
+only variables: a C function needs a header import.
+
+## Read `argv` with `argv-view`, not `(as CStr …)`
+`cstr-residue` (`scripts/check-cstr.py`) counts every `CStr` in `src/`, so a
+new argv read fails `make test`. `argv-view` in `src/nucleusc.nuc` is the one seam.

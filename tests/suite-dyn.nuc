@@ -630,7 +630,7 @@
     (try (check-line h "typedef struct nuc_dynref_Show {"))
     (try (check-line h "typedef struct nuc_dyn_Show {"))
     (try (check-line h "    struct nuc_dyn_Show o;"))
-    (try (check-line h "int32_t bd2_show(struct nuc_dynref_Show s) asm(\"bd2-show\");"))
+    (try (check-line h "int32_t bd2_show(struct nuc_dynref_Show s) NUC_ASM(\"bd2-show\");"))
     (try (check-line h "/* bd2-own: exposes a closure or type-erased box type; not C-callable, omitted */"))
     (let (out:String (try (c-lib-run &l "#include <stdio.h>
 #include \"bd2cb.h\"

@@ -815,3 +815,22 @@ binding-reads only, so `(f (str …))` and `(f (s 'p))` against a `&T` parameter
 are argument-type errors; the idiom is `(f &(str …))`. If revisited, record the
 address at those emitters (`Val.lvalue-addr` beside `lvalue-sym`) rather than
 relax the coercion rule (borrow-conventions.md §3.4 "Not covered").
+
+## POSIX's `_`-prefixed names are skipped by the C importer
+
+Found in Stage 27 BT-5, 2026-10-25. The importer skips every C name that
+begins with `_` (compiler.md "What is skipped"), since C reserves them for the
+implementation. POSIX also uses that space for public API: `_SC_*` for
+`sysconf`, `_PC_*` for `pathconf`, and `_CS_*` for `confstr`. As a result,
+`(sysconf _SC_NPROCESSORS_ONLN)` is "undefined" from `"unistd.h"`, although the
+enumerator imports correctly. Today the only way in is
+`(unsafe/import-private "unistd.h" posix)` and `posix/_SC_…`
+(`src/build-tool.nuc`'s default `-j`). Calling a POSIX function should not need
+`unsafe/`.
+
+Options:
+- admit `_` + uppercase names that a header's own `#define X X` marks as public,
+  which is how glibc exposes its enumerators;
+- a list of POSIX prefixes (`_SC_`, `_PC_`, `_CS_`, `_POSIX_`, `_XOPEN_`);
+- skip only `__` and `_` + lowercase, which would admit glibc internals such as
+  `_IO_*`.
