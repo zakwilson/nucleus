@@ -4685,3 +4685,15 @@ Test: `s21-struct-literal-if-branch` in `tests/suite-s21.nuc`.
 Gate: 1599 pass, 18 fail. Those are the 5 known datalayout failures plus 13
 `suite-build` tests that see the port's own `build.edn` above the checkout;
 all 13 pass with it set aside. Bootstrap PASS.
+
+## DOOM-port bug fix: `fn` refused to read a stored global (2026-10-28)
+
+Found by the nuc-doom port (its ISSUE-010). A `fn` body that read a global
+`defvar` or an aggregate `defconst` (both are stored globals) was rejected as
+capturing a runtime local, although `special-forms.md` allows it.
+`fn-capture-walk` tested only `is-local`, which is 1 for stored globals too;
+it now also requires that the symbol's home not be `g-globals`.
+
+Test: `s21-fn-reads-stored-global` in `tests/suite-s21.nuc`.
+
+Gate: 1600 pass, the same 18 fail as the previous entry. Bootstrap PASS.

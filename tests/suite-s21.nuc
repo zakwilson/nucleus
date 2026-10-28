@@ -3915,6 +3915,23 @@ int main(void) {
                          "f: implicit return type mismatch — returned value of type either Fx (line 3) or &Gx (line 3) does not match declared return type Fx"))
   (return (ok)))
 
+; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
+; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
+(deftest s21-fn-reads-stored-global
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defconst TABLE (array i32 1 2 3))
+(defvar g:i32 5)
+(defn main ():i32
+  (let (f:(fn i32)(i32) (fn (i:i32):i32 (+ (aref TABLE i) g))
+        h (vfn ():i32 g))
+    (set! g 10)
+    (printf \"%d %d\\n\" (f 2) (h)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "13 10\n"))
+    (drop &out))
+  (return (ok)))
+
 ; `= expects integer operands` named none of the types an operator takes. Every
 ; operator the intrinsic cannot answer now says which protocol the type fails
 ; and how to conform; a struct-literal operand with no overload is refused.

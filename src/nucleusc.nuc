@@ -8876,7 +8876,8 @@
         (when (symbol-none? name) (return))
         (when (!= (fn-bound-has bound name) 0) (return))
         (if-some (sym (scope-lookup scope name))
-          (when (!= (sym 'is-local) 0)
+          ; `is-local` is 1 for a stored global too (conventions.md); only home tells.
+          (when (and (!= (sym 'is-local) 0) (!= (sym 'home) g-globals))
             (if (= cap-box null)
               ; REJECT mode (`fn`).
               (die-at line
