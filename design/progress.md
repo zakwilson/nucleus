@@ -4697,3 +4697,16 @@ it now also requires that the symbol's home not be `g-globals`.
 Test: `s21-fn-reads-stored-global` in `tests/suite-s21.nuc`.
 
 Gate: 1600 pass, the same 18 fail as the previous entry. Bootstrap PASS.
+
+## DOOM-port bug fix: a Maybe-shaped user union refused its own arms (2026-10-28)
+
+Found by the nuc-doom port (its ISSUE-012). `(defunion Slot empty (full b:&Box))`
+matched niche rule 2 on shape alone, but a niche value is a bare pointer whose
+constructors and `match` know only `some`/`none`, so `Slot-empty` and the
+`empty` pattern were refused. `union-layout-classify` now takes rule 2 only for
+arms named `some`/`none`, and rule 3 only for `ok`/`err`; any other names get
+the tagged layout. `Maybe` and `Result` keep their niches.
+
+Test: `s21-maybe-shaped-union-keeps-arms` in `tests/suite-s21.nuc`.
+
+Gate: 1601 pass, the same 18 fail. Bootstrap PASS.

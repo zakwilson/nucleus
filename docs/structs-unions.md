@@ -993,13 +993,17 @@ representation:
 | Rule | Arms shape | Layout | C type | Nucleus type |
 |---|---|---|---|---|
 | 1 | All arms payload-less | `i32` tag only (≅ `defenum`) | `int32_t` | direct tag value |
-| 2 | Two arms: one payload-less + one single `(ref T)` field | bare pointer, `null` = payload-less arm | `T*` | `(Maybe (ref T))` / `?ptr:T` |
-| 3 | Two arms: one single `(ref T)` field + one single `Err` field | bare pointer, ERR_PTR encoding | `T*` (reserved top-page range) | `(Result (ref T) Err)` / `!ptr:T` |
+| 2 | Two arms: a payload-less `none` + a single `(ref T)` field `some` | bare pointer, `null` = payload-less arm | `T*` | `(Maybe (ref T))` / `?ptr:T` |
+| 3 | Two arms: a single `(ref T)` field `ok` + a single `Err` field `err` | bare pointer, ERR_PTR encoding | `T*` (reserved top-page range) | `(Result (ref T) Err)` / `!ptr:T` |
 | 4 | Everything else | `{i32 tag; union payload}` tagged struct | tagged struct + enum constants | `(Result T E)`, multi-arm, etc. |
 
-Rules are applied in order; the first that matches wins. Niche rules (2 and 3)
-require the `(ref T)` payload to name a concrete pointee type — an elem-less
-bare `ptr` does not qualify and the union falls through to rule 4.
+Rules are applied in order; the first that matches wins. A niche value is a
+bare pointer that carries no arm names, so rules 2 and 3 also need the arms to
+be named as `Maybe`'s and `Result`'s are. A union of the same shape with its own
+arm names, such as `(defunion Slot empty (full b:&Box))`, gets the tagged
+layout. The niche rules also require the `(ref T)` payload to name a concrete
+pointee type — an elem-less bare `ptr` does not qualify and the union falls
+through to rule 4.
 
 **ERR_PTR encoding (rule 3).** `(ok p)` stores the `(ref T)` pointer `p`
 directly. `(err E)` encodes the error id as `inttoptr(0 - id)`, placing it in

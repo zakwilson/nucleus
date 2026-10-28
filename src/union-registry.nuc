@@ -1108,6 +1108,12 @@
     (when (= pty null) (return 0))
     (return (if (= (pty 'kind) TY-ERR) 1 0))))
 
+; True iff the two arms are named `a` and `b`, in either order.
+(defn arms-named (arm0:&Arm arm1:&Arm a:StrView b:StrView):i32
+  (if (or (and (= (arm0 'name) a) (= (arm1 'name) b))
+          (and (= (arm0 'name) b) (= (arm1 'name) a)))
+    1 0))
+
 ; The layout engine (design/stage10/unions.md §6) — the U4/A2 convergence step.
 ; Given a fully-built arm table and the parsed :repr mode, decide the layout in
 ; rule order. `:repr tagged` forces rule 4; `:repr niche` requires a niche.
@@ -1137,21 +1143,24 @@
           ref1:i32 (arm-is-typed-ref arm1)
           err0:i32 (arm-is-err-field arm0)
           err1:i32 (arm-is-err-field arm1))
-      ; Rule 2: one payload-less arm, one single typed (ref T) field.
-      (when (or (and (!= none0 0) (!= ref1 0))
-                (and (!= ref0 0) (!= none1 0)))
+      ; Rule 2: one payload-less arm, one single typed (ref T) field. A niche
+      ; value carries no arm names, so the eliminators know only some/none.
+      (when (and (or (and (!= none0 0) (!= ref1 0))
+                     (and (!= ref0 0) (!= none1 0)))
+                 (!= (arms-named arm0 arm1 "some" "none") 0))
         (let (ri-arm:&Arm (if (!= ref0 0) arm0 arm1))
           (set! (aref (unsafe/cast &ptr niche-elem-out) 0) ((ri-arm 'ptype) 'elem))
           (return LAYOUT-NICHE-MAYBE)))
       ; Rule 3: one single typed (ref T) field, one single Err field.
-      (when (or (and (!= ref0 0) (!= err1 0))
-                (and (!= err0 0) (!= ref1 0)))
+      (when (and (or (and (!= ref0 0) (!= err1 0))
+                     (and (!= err0 0) (!= ref1 0)))
+                 (!= (arms-named arm0 arm1 "ok" "err") 0))
         (let (ri-arm:&Arm (if (!= ref0 0) arm0 arm1))
           (set! (aref (unsafe/cast &ptr niche-elem-out) 0) ((ri-arm 'ptype) 'elem))
           (return LAYOUT-NICHE-ERRPTR)))))
   ; Rule 4: the §3 tagged struct.
   (when (= repr REPR-NICHE)
-    (die-at line ":repr niche: arms are not nicheable (need 2 arms: a typed (ref T) and a payload-less or Err arm)"))
+    (die-at line ":repr niche: arms are not nicheable (need 2 arms: a typed (ref T) `some` and a payload-less `none`, or a typed (ref T) `ok` and an Err `err`)"))
   (return LAYOUT-TAGGED))
 
 ; Register a tagged sum under `name` from its arm forms (a Node chain of

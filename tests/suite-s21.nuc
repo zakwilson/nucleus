@@ -3932,6 +3932,24 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+;; A Maybe-shaped user union (a payload-less arm, a (ref T) arm) took the niche
+;; layout, whose eliminators know only some/none, so its own arms were refused
+;; (ISSUE-012). Other names now get the tagged layout; Maybe keeps its niche.
+(deftest s21-maybe-shaped-union-keeps-arms
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Box n:i32)
+(defunion Slot empty (full b:&Box))
+(defn show (s:Slot):i32 (match s (empty 0) ((full b) (b 'n))))
+(defn main ():i32
+  (let (bx:Box (Box 7))
+    (printf \"%d %d %d\\n\" (show (Slot-empty)) (show (Slot-full &bx))
+            (if (= (sizeof ?&Box) (sizeof ptr)) 1 0)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "0 7 1\n"))
+    (drop &out))
+  (return (ok)))
+
 ; `= expects integer operands` named none of the types an operator takes. Every
 ; operator the intrinsic cannot answer now says which protocol the type fails
 ; and how to conform; a struct-literal operand with no overload is refused.
