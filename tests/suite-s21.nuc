@@ -3994,6 +3994,39 @@ int main(void) {
     (drop &dir))
   (return (ok)))
 
+;; A `typedef struct Tag {…} Name` alias shared its tag's fields but not its
+;; `laid-out` mark, so any import cycle in the unit made the alias "pending"
+;; and refused it by value (ISSUE-014).
+(deftest s21-cycle-keeps-c-typedef-layout
+  (let (dir:String (try (test-scratch-sub "s21-cycle-ctypedef"))
+        d:StrView (string-as-view &dir)
+        a:String (try (write-into d "ca.nuc" "(ns ca)
+(import-use cb)
+(defn a-one ():i32 (b-zero))
+"))
+        b:String (try (write-into d "cb.nuc" "(ns cb)
+(import-use ca)
+(defn b-zero ():i32 0)
+(defn b-one ():i32 (a-one))
+"))
+        m:String (try (write-into d "main.nuc" "(import-use \"stdio.h\")
+(import-use \"search.h\")
+(import-use ca)
+(defn main ():i32
+  (let (e:&ENTRY (alloca ENTRY))
+    (set! (e 'key) null)
+    (printf \"%d %d\\n\" (a-one) (if (null? (e 'key)) 1 0)))
+  (return 0))
+"))
+        out:String (try (build-run-file d "" (string-as-view &m))))
+    (try (check-golden (string-as-view &out) "0 1\n"))
+    (drop &out)
+    (drop &m)
+    (drop &b)
+    (drop &a)
+    (drop &dir))
+  (return (ok)))
+
 ; `= expects integer operands` named none of the types an operator takes. Every
 ; operator the intrinsic cannot answer now says which protocol the type fails
 ; and how to conform; a struct-literal operand with no overload is refused.

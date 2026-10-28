@@ -4723,3 +4723,16 @@ the memo and stamped it again, giving "duplicate definition of 'count'".
 Test: `s21-private-caller-stamps-public-method` in `tests/suite-s21.nuc`.
 
 Gate: 1602 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: an import cycle refused C typedef structs by value (2026-10-28)
+
+Found by the nuc-doom port (its ISSUE-014). `cheader-adopt-shape` gave a
+`typedef struct Tag {…} Name` alias its tag's fields but not `laid-out`. In a
+unit with any import cycle, `sdef-layout-pending` then reported the alias as
+pending and refused every by-value use ("has no layout at this point"), even
+for a header that no cycle member imports. The alias now copies `laid-out`
+with the fields.
+
+Test: `s21-cycle-keeps-c-typedef-layout` in `tests/suite-s21.nuc`.
+
+Gate: 1603 pass, the same 18 fail. Bootstrap PASS.

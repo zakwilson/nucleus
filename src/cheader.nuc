@@ -1678,6 +1678,10 @@
                ; dropped this printed `{ … }` for a `<{ … }>` type and sized it as unpacked.
                'packed     (src 'packed)
                'align-attr (src 'align-attr)
+               ; And it has the layout. Left 0, any import cycle in the unit made
+               ; `sdef-layout-pending` refuse every typedef'd C struct by value
+               ; (nuc-doom ISSUE-014).
+               'laid-out   (src 'laid-out)
                'opaque     0)
   (if (!= (src 'is-union) 0)
     ; Union: same deferred-definition path as the tag (drain-pending-union-irs).
