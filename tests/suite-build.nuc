@@ -1563,3 +1563,144 @@
     (drop &p)
     (drop &rel))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Several targets (design/stage27-build/targets.md)
+; ---------------------------------------------------------------------------
+
+; `script` in the project with bt5-command's environment, the tool as $T and
+; this machine's triple as $HOST.
+(defn mt-sh (pv:StrView script:StrView):!void
+  (let (tool:String (bt-abs "build/nucleus")
+        full:String (str "export NUCLEUS_LIB=/nonexistent XDG_CONFIG_HOME=$PWD/xdg XDG_CACHE_HOME=$PWD/cache"
+                         " HOME=$PWD/home PKG_CONFIG_LIBDIR=$PWD/pc PKG_CONFIG_PATH= T=" (string-as-view &tool)
+                         " HOST=$(clang -dumpmachine); " script))
+    (try (bt4-sh pv (string-as-view &full)))
+    (drop &full)
+    (drop &tool))
+  (return (ok)))
+
+; MT-1: keys in the wrong scope, a target without a triple, an unknown default,
+; and build-local.edn adding to a target by name; the target builds under its
+; own directory, for its own machine (ELF e_machine 83 is AVR).
+(deftest mt1-targets-config
+  (let (p:String (try (bt3-project "mtcfg"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src && rm -f build.edn build-local.edn"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return 7))\n"))
+    (try (write-into pv "build.edn" "{:triple \"avr\"}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :triple is a target's setting; put it in a target under :targets"))
+    (try (write-into pv "build.edn" "{:targets {uno {:triple \"avr\" :entry \"x.nuc\"}}}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :targets uno: :entry is the project's, not a target's"))
+    (try (write-into pv "build.edn" "{:targets {uno {:triple \"avr\" :bogus 1}}}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :targets uno: unknown key :bogus"))
+    (try (write-into pv "build.edn" "{:targets {uno {:mcpu \"atmega328p\"}}}\n"))
+    (try (bt5-expect pv "build" "--target=uno" false "build.edn:1: target uno has no :triple"))
+    (try (write-into pv "build.edn" "{:targets {uno {:triple \"avr\"}} :default-target mega}\n"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: :default-target names mega, which :targets doesn't have"))
+    (try (write-into pv "build.edn" "{:targets {uno {:triple \"avr\"}}}\n"))
+    (try (write-into pv "build-local.edn" "{:targets {uno {:mcpu \"atmega328p\" :sysroot \"nowhere\"}}}\n"))
+    (try (bt5-expect pv "build" "--target=uno" false "build-local.edn:1: target uno: :sysroot 'nowhere' is not a directory"))
+    (try (write-into pv "build-local.edn" "{:targets {uno {:mcpu \"atmega328p\"}}}\n"))
+    (try (bt5-expect pv "build" "--target=uno" true "nucleus: building build/uno/mtcfg (never built)"))
+    (try (bt4-sh pv "test \"$(od -An -tu1 -j18 -N1 build/uno/mtcfg | tr -d ' ')\" = 83 && test ! -e build/mtcfg"))
+    (drop &p))
+  (return (ok)))
+
+; MT-2: --all-targets in one graph, each target's outputs beside the host's,
+; nothing stale when the targets are built one at a time, and clean per target.
+(deftest mt2-all-targets-one-graph
+  (let (p:String (try (bt3-project "mtall"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src && rm -rf build build.edn"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return 7))\n"))
+    (try (write-into pv "build.edn" "{:targets {uno {:triple \"avr\" :mcpu \"atmega328p\"}\n           mega {:triple \"avr\" :mcpu \"atmega2560\"}}}\n"))
+    (try (bt5-expect pv "build" "--all-targets" true "nucleus: building build/mega/mtall (never built)"))
+    (try (bt4-sh pv "test -f build/uno/mtall && test -f build/mega/mtall && test ! -e build/mtall"))
+    (try (bt5-expect pv "build" "--all-targets" true "nucleus: mtall is up to date for 2 targets"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/mtall (never built)"))
+    (try (bt5-expect pv "build" "--target=uno" true "nucleus: mtall is up to date"))
+    (try (bt5-expect pv "build" "" true "nucleus: mtall is up to date"))
+    (try (bt5-expect pv "clean" "--all-targets" true ""))
+    (try (bt4-sh pv "test ! -e build/uno && test ! -e build/mega && test -f build/mtall"))
+    (try (bt5-expect pv "clean" "" true ""))
+    (try (bt4-sh pv "test ! -e build"))
+    (try (bt5-expect pv "run" "--all-targets" false "nucleus: unknown option '--all-targets'"))
+    (drop &p))
+  (return (ok)))
+
+; MT-3: a target's pkg-config reads its sysroot, so a package only the sysroot
+; has resolves for that target, through its header index, and not for the host.
+(deftest mt3-sysroot-pkg-config
+  (let (p:String (try (bt3-project "mtsys"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src/fxl sr/usr/lib/pkgconfig sr/usr/include/fx && rm -rf build build.edn"))
+    (try (write-into pv "sr/usr/lib/pkgconfig/fx.pc" "prefix=/usr\nincludedir=${prefix}/include/fx\nName: fx\nDescription: t\nVersion: 1.0\nCflags: -I${includedir}\n"))
+    (try (write-into pv "sr/usr/include/fx/fx.h" "#define FX_ANSWER 42\n"))
+    (try (write-into pv "src/fxl/core.nuc" "(ns fxl.core)\n(import-use \"fx.h\")\n(defn fxl-answer ():i32 (return FX_ANSWER))\n"))
+    (try (mt-sh pv "printf '{:kind :library :name \"fxl\" :version \"1.0\"\\n :targets {fake {:triple \"%s\" :sysroot \"sr\"}}}\\n' $HOST > build.edn"))
+    (try (bt5-expect pv "build" "--target=fake" true "nucleus: building build/fake/lib/libfxl.a"))
+    (try (bt4-sh pv "grep -q '^(c-requires {:pkg-config \\[\"fx\"\\]})$' build/fake/include/fxl/core.nuch"))
+    (try (bt5-expect pv "build" "" false "fx.h"))
+    (drop &p))
+  (return (ok)))
+
+; MT-4: :deps per target. Two targets name one library at two paths, and each
+; program links its own.
+(deftest mt4-target-deps
+  (let (p:String (try (bt3-project "mtdep"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src vendor/dl-a/src vendor/dl-b/src && rm -rf build build.edn"))
+    (try (write-into pv "vendor/dl-a/build.edn" "{:kind :library :name \"dl\" :version \"1.0\"}\n"))
+    (try (write-into pv "vendor/dl-a/src/dl.nuc" "(ns dl)\n(defn dl-val ():i32 (return 1))\n"))
+    (try (write-into pv "vendor/dl-b/build.edn" "{:kind :library :name \"dl\" :version \"1.0\"}\n"))
+    (try (write-into pv "vendor/dl-b/src/dl.nuc" "(ns dl)\n(defn dl-val ():i32 (return 2))\n"))
+    (try (write-into pv "src/main.nuc" "(import-use dl)\n(defn main ():i32 (return (+ 40 (dl-val))))\n"))
+    (try (mt-sh pv "printf '{:targets {a {:triple \"%s\" :deps {dl {:path \"vendor/dl-a\"}}}\\n           b {:triple \"%s\" :deps {dl {:path \"vendor/dl-b\"}}}}}\\n' $HOST $HOST > build.edn"))
+    (try (bt5-expect pv "build" "--all-targets" true "nucleus: building build/b/mtdep (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "a/mtdep"))) 41 "target a's dl"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "b/mtdep"))) 42 "target b's dl"))
+    (try (bt5-expect pv "build" "" false "no library provides 'dl'"))
+    (drop &p))
+  (return (ok)))
+
+; MT-5: run goes through a target's :runner, a host target runs in the JIT,
+; and the commands that need this machine refuse a target it can't run.
+(deftest mt5-runner-and-refusals
+  (let (p:String (try (bt3-project "mtrun"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src && rm -rf build build.edn"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return 7))\n"))
+    (try (write-into pv "fake-run" "#!/bin/sh\necho \"runner $*\" > ran.txt\nexit 5\n"))
+    (try (mt-sh pv "chmod +x fake-run && printf '{:targets {uno {:triple \"avr\" :mcpu \"atmega328p\" :runner [\"./fake-run\" \"-x\"]}\\n           mega {:triple \"avr\" :mcpu \"atmega2560\"}\\n           here {:triple \"%s\"}}}\\n' $HOST > build.edn"))
+    (try (mt-sh pv "$T run --target=uno -- a b > out 2>&1; test $? -eq 5 && grep -qx \"runner -x $PWD/build/uno/mtrun a b\" ran.txt || { cat out ran.txt >&2; exit 1; }"))
+    (try (mt-sh pv "$T run --target=here > out 2>&1; test $? -eq 7 || { cat out >&2; exit 1; }"))
+    (try (bt5-expect pv "run" "--target=mega" false "nucleus: error: target mega is for avr, which this machine can't run"))
+    (try (bt5-expect pv "repl" "--target=uno" false "target uno is for avr, and repl's JIT runs on this machine"))
+    (try (mt-sh pv "! $T run --target=uno --target=here > out 2>&1 && grep -q 'run runs one target' out"))
+    (drop &p))
+  (return (ok)))
+
+; MT-6: install --all-targets writes each target's multiarch tree, a consumer
+; finds the install for the target it builds, and two targets with one
+; multiarch name are refused.
+(deftest mt6-install-all-targets
+  (let (p:String (try (bt3-project "mtinst"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p lib/src app/src && rm -rf home lib/build"))
+    (try (write-into pv "lib/src/mtl.nuc" "(ns mtl)\n(defn mtl-val ():i32 (return 5))\n"))
+    (try (mt-sh pv "printf '{:kind :library :name \"mtl\" :version \"1.0\"\\n :targets {here {:triple \"%s\"} uno {:triple \"avr\" :mcpu \"atmega328p\"}}}\\n' $HOST > lib/build.edn"))
+    (try (bt8-expect3 pv "lib" "install" "--user" "--all-targets" true "nucleus: installed mtl 1.0"))
+    (try (bt4-sh pv "test -f home/.local/lib/avr/nucleus/mtl.edn && test -f home/.local/lib/avr/libmtl.a && test -f home/.local/include/avr/mtl.nuch && ls home/.local/lib/*-linux*/nucleus/mtl.edn"))
+    (try (write-into pv "app/src/main.nuc" "(import-use mtl)\n(defn main ():i32 (return (mtl-val)))\n"))
+    (try (write-into pv "app/build.edn" "{:targets {uno {:triple \"avr\" :mcpu \"atmega328p\"}}}\n"))
+    (try (bt8-expect3 pv "app" "build" "--target=uno" "" true "nucleus: building build/uno/app (never built)"))
+    (try (bt8-expect3 pv "app" "build" "" "" true "nucleus: building build/app (never built)"))
+    (try (check-eq-int (as i64 (try (bt5-exit (bt-sv (str pv "/app")) "app"))) 5 "the host's install"))
+    (try (bt8-expect3 pv "lib" "uninstall" "--user" "--all-targets" true "nucleus: uninstalled mtl"))
+    (try (bt4-sh pv "test ! -e home/.local/lib/avr/nucleus/mtl.edn"))
+    (try (mt-sh pv "printf '{:kind :library :name \"mtl\" :version \"1.0\"\\n :targets {uno {:triple \"avr\"} mega {:triple \"avr\" :mcpu \"atmega2560\"}}}\\n' > lib/build.edn"))
+    (try (bt8-expect3 pv "lib" "install" "--user" "--all-targets" false
+                      "target uno and target mega both install into lib/avr"))
+    (drop &p))
+  (return (ok)))

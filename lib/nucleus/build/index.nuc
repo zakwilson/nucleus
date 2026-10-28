@@ -258,9 +258,14 @@
       (drop &tmp))
     (drop &out)))
 
-; clang's `#include <…>` list, from `clang -E -v`.
-(defn index-system-dirs (out:&(Vector StrView)):void
+; clang's `#include <…>` list, from `clang -E -v`, for `triple` and `sysroot`
+; ("" for the host's).
+(defn index-system-dirs (out:&(Vector StrView) triple:StrView sysroot:StrView):void
   (let (c:Command (command "clang"))
+    (when (> (triple 'len) 0)
+      (let (a:String (str "--target=" triple)) (command-arg &c (string-as-view &a)) (drop &a)))
+    (when (> (sysroot 'len) 0)
+      (let (a:String (str "--sysroot=" sysroot)) (command-arg &c (string-as-view &a)) (drop &a)))
     (command-arg &c "-E")
     (command-arg &c "-v")
     (command-arg &c "-x")
@@ -285,17 +290,18 @@
     (drop &c)))
 
 ; The index for the current pkg-config path: the cache when its stamp still
-; holds, else built and cached.
-(defn header-index-load (idx:&HeaderIndex):void
+; holds, else built and cached. One cache file per path, so a host build and a
+; cross build don't evict each other.
+(defn header-index-load (idx:&HeaderIndex triple:StrView sysroot:StrView):void
   (let (dirs:(Vector StrView) (make (Vector StrView))
         key:StrView (pkg-search-dirs &dirs)
         stamp:StrView (pkg-search-stamp &dirs))
-    (index-system-dirs (ref idx 'system))
+    (index-system-dirs (ref idx 'system) triple sysroot)
     (match (xdg-cache-home)
       ((ok d)
         (let (cache:String d
               dir:String (str (string-as-view &cache) "/nucleus")
-              path:String (str (string-as-view &dir) "/pkg-index.edn"))
+              path:String (str (string-as-view &dir) "/pkg-index-" (hash-hex (hash-fold-view HASH-SEED key)) ".edn"))
           (when (not (index-cache-load (string-as-view &path) key stamp idx))
             (index-build idx)
             (match (make-dir (string-as-view &cache)) ((ok) 0) ((err e) 0))

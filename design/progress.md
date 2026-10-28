@@ -4628,3 +4628,42 @@ Found on the way: `.gitignore`'s `build/` hid `lib/nucleus/build/`, so commit
 re-includes them.
 
 Gate: 1605 pass, the 5 known datalayout failures, bootstrap PASS.
+
+## Stage 27 — building for several targets: proposed (2026-10-28)
+
+The user noted that a project builds for one target at a time.
+[stage27-build/targets.md](stage27-build/targets.md) proposes named targets in
+`build.edn`, a `build/<target>/` directory per target, `--all-targets` in one
+graph, and C requirements resolved per target. Phases MT-1 … MT-6. Q1–Q5
+were ruled the same day: named targets; plain `build` builds the default
+target, or the host; `build/<target>/`, with the host keeping `build/`. Source-level
+target branching (toward Clojure-style reader conditionals) and profiles are
+deferred. Nothing is built yet.
+
+## Stage 27 — building for several targets: MT-1 … MT-6 built (2026-10-28, uncommitted)
+
+[stage27-build/targets.md](stage27-build/targets.md) §8 has the details.
+- **Config:** `build.edn` has `:targets` (each with `:triple`, `:mcpu`,
+  `:mmcu`, `:sysroot`, `:linker`, `:runner` and the per-target flags and
+  `:deps`) and `:default-target`. `:target` is gone. A key in the wrong scope
+  is an error at its line, and `build-local.edn` merges into a target by
+  name.
+- **Builds:** a named target builds into `build/<target>/`, and the host
+  keeps `build/`. Repeated `--target=` and `--all-targets` share one graph,
+  with each target keeping its own log (`Edge.log`, `LogSet` in
+  `exec-graph`).
+- **pkg-config:** it reads the target's sysroot or multiarch directories.
+  The environment is set around resolution and per edge (`Edge.env`, which
+  is hashed), and the header index is per triple and sysroot, with one cache
+  file per search path.
+- **Running:** `run` goes through a `:runner`. `run-repl` and `repl` refuse
+  a target this machine can't run, and JIT sessions never get the target
+  flags.
+- **Install:** `install`/`uninstall --all-targets` work, with two targets
+  sharing a multiarch name refused.
+- **Preflight:** a missing sysroot, linker, runner or `avr-gcc` is reported
+  before anything compiles.
+
+Tests: `mt1` … `mt6` in `tests/suite-build.nuc`.
+
+Gate: 1611 pass, the 5 known datalayout failures, bootstrap PASS.

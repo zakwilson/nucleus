@@ -838,3 +838,29 @@ Options:
 ## Integer literal typing
 
 Integer literals are i32 unless they're big enough to be i64. Expressions overflow rather than promote. That's probably right, but it would be great to have `42:i64` shorthand to avoid bulky `as` syntax.
+
+## Branching on the target in Nucleus source
+
+Deferred by the user 2026-10-28 (stage27-build/targets.md Q4). No Nucleus form
+gives code the target at compile time; only a C header's `#if`s see it.
+Per-target `:c-sources` and `:deps` split a project by whole files, but a
+platform difference inside one `.nuc` file has no spelling. The user pointed
+at Clojure's mechanism as one to imitate: reader conditionals,
+`#?(:clj … :cljs …)` and the splicing `#?@(…)`, valid in a `.cljc` file and
+resolved by the reader against the platform's feature set. For Nucleus, the
+features would come from the target (arch, OS, ABI, and the target's name
+from `build.edn`). Since the reader already recovers errors as values
+(Stage 10 E4), it is the natural place for this. It needs its own design:
+- the feature keywords;
+- whether every file may use them or only some (Clojure confines them to
+  `.cljc`);
+- how tools that read source without a target, such as `nucleus.refactor`
+  and `--list-imports`, treat both branches.
+
+## Build profiles
+
+Deferred by the user 2026-10-28 (stage27-build/targets.md Q5). `-O` is a
+flag, so an `-O0` and an `-O3` build of the same target share outputs and
+rebuild each other. Cargo keys its output directories by profile as well as
+by target. A `:profiles` map in `build.edn` would follow the per-target
+pattern, with outputs in `build/<target>/<profile>/`.

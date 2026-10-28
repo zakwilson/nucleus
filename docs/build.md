@@ -13,15 +13,15 @@ form. The design is in `design/stage27-build/`.
 ## Commands
 
 ```
-nucleus build     [-j N] [-O0..-O3] [--target=TRIPLE]
-nucleus run       [same options] [-- ARGS...]
-nucleus run-repl  [same options] [--repl-format=text|json] [-- ARGS...]
-nucleus repl      [same options] [--repl-format=text|json]
-nucleus clean
+nucleus build     [-j N] [-O0..-O3] [--target=T]... [--all-targets]
+nucleus run       [-j N] [-O0..-O3] [--target=T] [-- ARGS...]
+nucleus run-repl  [-j N] [-O0..-O3] [--target=T] [--repl-format=text|json] [-- ARGS...]
+nucleus repl      [-j N] [-O0..-O3] [--target=T] [--repl-format=text|json]
+nucleus clean     [--target=T]... [--all-targets]
 nucleus init
 nucleus init-local
-nucleus install   [--prefix=DIR | --user] [--no-source] [--target=TRIPLE]
-nucleus uninstall [NAME] [--prefix=DIR | --user] [--target=TRIPLE]
+nucleus install   [--prefix=DIR | --user] [--no-source] [--target=T]... [--all-targets]
+nucleus uninstall [NAME] [--prefix=DIR | --user] [--target=T]... [--all-targets]
 ```
 
 Every command also takes `--library-paths=FILE` (repeatable) and
@@ -38,18 +38,21 @@ step's command, so switching it rebuilds nothing.
 
 | Command | What it does |
 |---------|--------------|
-| `build` | Brings `build/<name>` up to date, or for a library its headers, objects and archive (see [Library projects](#library-projects)). Prints `nucleus: building <output> (<reason>)` for each step it runs, or `nucleus: <name> is up to date`. |
-| `run` | Compiles and runs the program in this process (`nucleusc --run`), passing what follows `--`. Its exit status is the program's. A project with `:c-sources` is built and the binary run instead, because a C object can't join a JIT session. |
+| `build` | Brings `build/<name>` up to date, or for a library its headers, objects and archive (see [Library projects](#library-projects)). A named target builds under `build/<target>/` (see [Targets](#targets)). Prints `nucleus: building <output> (<reason>)` for each step it runs, or `nucleus: <name> is up to date`. |
+| `run` | Compiles and runs the program in this process (`nucleusc --run`), passing what follows `--`. Its exit status is the program's. A project with `:c-sources` is built and the binary run instead, because a C object can't join a JIT session. So is a target with a `:runner`, through the runner. A target this machine can't run, and that has no runner, is refused. |
 | `run-repl` | Runs the program with a REPL beside it: `nucleusc -i ENTRY -- ARGS` with the project's flags. `main` runs on its own thread, and the prompt starts in the entry file's namespace. The prompt can read and set the program's globals and redefine its functions while it runs. At the end of input it waits for `main` and exits with its status. Like `repl`, it refuses a project with `:c-sources`, whose objects can't join a JIT session. See [Running a program at the prompt](compiler.md#running-a-program-at-the-prompt). |
-| `repl` | Starts `nucleusc -i` with the project's flags, and imports and runs nothing. The REPL applies the C requirements of the entry file's import closure, as a build would, and loads their libraries. Import a header or one of the project's files at the prompt. Both `repl` and `run-repl` pass `--repl-format=` to the compiler, so `--repl-format=json` gives one JSON object per REPL error, as `nucleusc -i` does. |
+| `repl` | Starts `nucleusc -i` with the project's flags, and imports and runs nothing. The REPL applies the C requirements of the entry file's import closure, as a build would, and loads their libraries. Import a header or one of the project's files at the prompt. Both `repl` and `run-repl` pass `--repl-format=` to the compiler, so `--repl-format=json` gives one JSON object per REPL error, as `nucleusc -i` does. Both run their JIT on this machine, so they refuse a target it can't run. |
 | `init` | Writes `build.edn`, recording each choice the conventions couldn't make (see [Choosing C packages](#choosing-c-packages)). Refused if a `build.edn` already exists. |
 | `init-local` | Writes `build-local.edn`, pointing each library the project needs at a sibling checkout that provides it (see [`nucleus init-local`](#nucleus-init-local)). |
-| `clean` | Removes what the tool wrote: the outputs, their temporaries and depfiles, the log, then every directory under `build/` that this leaves empty, and `build/` itself. |
+| `clean` | Removes what the tool wrote for the chosen targets: the outputs, their temporaries and depfiles, the log, then every directory under `build/` that this leaves empty, and `build/` itself once it is empty. |
 | `install` | Builds a library and installs it (see [Installing a library](#installing-a-library)). |
 | `uninstall` | Removes an installed library: this project's, or `NAME`'s. |
 
 `-j N` (or `-jN`) caps the steps run at once. The default is the number of
-online processors. `-O` and `--target=` override `:opt` and `:target`.
+online processors. `-O` overrides `:opt`. `--target=` and `--all-targets`
+choose targets (see [Targets](#targets)). `run`, `run-repl` and `repl` take
+one target, and `--all-targets` is for `build`, `clean`, `install` and
+`uninstall`.
 
 The project root is the nearest directory at or above the current one that has
 a `build.edn`. Without one anywhere, the current directory is the project, with
@@ -136,7 +139,8 @@ One EDN map. Every key is optional.
 | `:entry` | string | The entry file, relative to the project root |
 | `:source-root` | string | The directory put on `-I`; `src` or the root by default |
 | `:out-dir` | string | Where outputs go; `build` by default |
-| `:target` | string | A target triple, as `--target=` |
+| `:targets` | map | Named targets and their settings (see [Targets](#targets)) |
+| `:default-target` | symbol or string | The target a build without `--target=` builds; the host by default |
 | `:opt` | 0–3 | The optimization level, as `-O` |
 | `:cflags` | vector of strings | Passed to clang, for C header imports and for `:c-sources` |
 | `:link-args` | vector of strings | Passed to the link |
@@ -156,7 +160,7 @@ One EDN map. Every key is optional.
 A misspelled key, or a value of the wrong kind, is an error at its line:
 
 ```
-build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :source-root :out-dir :target :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry)
+build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target)
 ```
 
 ### Requirement sets
@@ -198,7 +202,77 @@ what shouldn't be committed. The merge:
 - an `:unsafe/pkg-config` set first drops the earlier sets on its header;
 - `:deps` merges by name: `:path` and `:prebuilt` replace, a `:version`
   joins the earlier constraints (all of them have to hold), and an
-  `:unsafe/version` replaces them, with a warning.
+  `:unsafe/version` replaces them, with a warning;
+- `:targets` merges by name, each target's settings by these same rules, and
+  a `:runner` replaces the earlier one. A machine's `:sysroot` belongs here.
+
+## Targets
+
+`:targets` names the builds a project supports. Each target's map takes a
+`:triple` (required) and the target's own settings:
+
+| Key | Value | Meaning |
+|-----|-------|---------|
+| `:triple` | string | The target triple, as the compiler's `--target=` |
+| `:mcpu` | string | The CPU or device, as `--mcpu=` |
+| `:mmcu` | string | The AVR device the link uses, as `--mmcu=` |
+| `:sysroot` | string | The target's root, relative to the project: for C headers, the link, and pkg-config |
+| `:linker` | string | The link driver, as `--linker=` |
+| `:runner` | vector of strings | What `run` runs the program with, such as an emulator; the program and its arguments follow |
+
+It may also set `:opt`, `:cflags`, `:link-args`, `:libs`, `:c-sources`,
+`:pkg-config`, `:shared` and `:deps`. These merge over the project's settings
+by the `build-local.edn` rules, so the shared ones are written once. The
+project's own keys (`:name`, `:kind`, `:version`, `:entry`, `:source-root`,
+`:out-dir`, `:provides`, `:user-registry`) are refused inside a target, and a
+target's own keys are refused at the top.
+
+```clojure
+{:name "blink"
+ :targets {linux-arm64 {:triple "aarch64-linux-gnu"
+                        :sysroot "/usr/aarch64-linux-gnu"
+                        :runner ["qemu-aarch64" "-L" "/usr/aarch64-linux-gnu"]}
+           uno         {:triple "avr" :mcpu "atmega328p"
+                        :c-sources ["src/avr/vectors.c"]}}}
+```
+
+- **Which target builds.** `nucleus build` builds `:default-target`, or the
+  host when there is none. `--target=NAME` builds a named target, and may be
+  repeated. `--all-targets` builds every target in `:targets`. A
+  `--target=` value that names no target is a triple, for a one-off build.
+- **Where it goes.** The host build writes `build/`. A target, named or a
+  one-off triple, writes `build/<target>/`, including when it is
+  `:default-target`. So `build/uno/blink` sits beside `build/blink`.
+- **One graph.** The chosen targets' steps run as one graph, so `-j` runs
+  them side by side. Each target keeps its own log, so building one target
+  never makes another stale.
+- **C packages per target.** A target with a `:sysroot` runs pkg-config with
+  `PKG_CONFIG_SYSROOT_DIR` set to it and `PKG_CONFIG_LIBDIR` set to its
+  `usr/lib/<multiarch>/pkgconfig`, `usr/lib/pkgconfig` and `usr/share/pkgconfig`.
+  A target for another machine without one reads `/usr/lib/<multiarch>/pkgconfig`,
+  `/usr/local/lib/<multiarch>/pkgconfig`, `~/.local/lib/<multiarch>/pkgconfig`
+  and `/usr/share/pkgconfig`. `PKG_CONFIG_PATH` is cleared in both cases.
+  [The header index](#the-header-index) asks the target's clang
+  (`clang --target=T --sysroot=S -E -v`) for its include path. The host's
+  pkg-config is unchanged.
+- **Dependencies per target.** A target's `:deps` merge over the project's,
+  so a library can be one target's alone. Installed libraries are found by
+  the target's multiarch name.
+- **Running.** `run` runs a target through its `:runner`. A target this
+  machine can run, with no runner, runs in the JIT as usual. `run-repl` and
+  `repl` refuse a target this machine can't run. A triple whose multiarch
+  name is the host's counts as the host.
+- **Toolchains are checked first.** Before anything compiles, a `:sysroot`
+  that isn't a directory, a `:linker` or `:runner` that isn't on `PATH`, and
+  an AVR program with no `avr-gcc` stop the build, naming the target. A
+  relative `:runner` path is relative to the project.
+
+```
+nucleus: error: build.edn:3: target uno: the linker 'avr-ld' is not on PATH
+```
+
+A Nucleus file can't yet choose code by target. Per-target `:c-sources` and
+`:deps` split a project by whole files.
 
 ## Choosing C packages
 
@@ -275,10 +349,11 @@ package. The index holds each package's `--cflags-only-I` directories and its
 it requires is left out: gtk4's flags include glib's directory, but `glib.h`
 belongs to `glib-2.0`.
 
-The index is cached in `$XDG_CACHE_HOME/nucleus/pkg-index.edn`. The cache is
-keyed by `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR` (or pkg-config's built-in path)
-and `PKG_CONFIG_SYSROOT_DIR`, and it is rebuilt when any `.pc` file on that
-path is added, removed or changed.
+The index is cached in `$XDG_CACHE_HOME/nucleus/pkg-index-<hash>.edn`, one
+file per pkg-config search path, so a host build and a cross build keep their
+own. The cache is keyed by `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR` (or
+pkg-config's built-in path) and `PKG_CONFIG_SYSROOT_DIR`, and it is rebuilt
+when any `.pc` file on that path is added, removed or changed.
 
 ## What is rebuilt
 
@@ -509,7 +584,10 @@ $PREFIX/share/nucleus/src/fz/core.nuc           the source, for any target
 Each `.edn` file under a provided root is data the library reads, so it is
 installed beside the sources too.
 
-The target is `--target=`, then `:target`, then the host. A C program uses the
+The target is the one the build chose (see [Targets](#targets)).
+`install --all-targets` installs every target's tree, and the source once.
+Two targets with one multiarch name, such as two AVR boards, would install
+over each other, so that is refused, naming both. A C program uses the
 library through pkg-config, with no Nucleus tooling:
 
 ```
@@ -566,8 +644,9 @@ consumer links it from the object.
 
 `nucleus uninstall` reads the manifest for the same prefix and target, removes
 every file it lists, and then removes the directories that leaves empty, up to
-the prefix. Run in a library project it removes that library. `nucleus
-uninstall NAME` removes `NAME` from anywhere.
+the prefix. Run in a library project it removes that library, for each chosen
+target. `nucleus uninstall NAME` removes `NAME` from anywhere. With no project
+to name targets, its one `--target=` is a triple.
 
 ### The standard library
 
@@ -634,7 +713,7 @@ functions passed in, so a test can pass fakes.
 | Function | Signature |
 |----------|-----------|
 | `header-index` | `():HeaderIndex` — empty; `Drop` |
-| `header-index-load` | `(idx:&HeaderIndex):void` — from the cache, or built with pkg-config and cached |
+| `header-index-load` | `(idx:&HeaderIndex triple:StrView sysroot:StrView):void` — from the cache, or built with pkg-config and cached; `triple` and `sysroot` ("" for the host's) pick clang's include path |
 | `index-providers` | `(idx:&HeaderIndex header:StrView extra:&(Vector StrView) out:&(Vector StrView)):void` — the packages that provide `header`, by name; none when the system or a directory in `extra` finds it |
 | `index-requires` | `(idx:&HeaderIndex name:StrView out:&(Vector StrView)):bool` — a package's direct requires; false if the index doesn't know it |
 

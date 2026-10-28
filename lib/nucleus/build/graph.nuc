@@ -26,14 +26,17 @@
   depfile:StrView           ; what the command read, gcc format; "" for none
   compiler-id:StrView       ; argv[0]'s identity; "" when not tracked
   after:(Vector usize)      ; edges that must finish first
-  report:(Vector StrView))  ; after argv[0]; they change only how it reports, so not the hash
+  report:(Vector StrView)   ; after argv[0]; they change only how it reports, so not the hash
+  env:(Vector StrView)      ; NAME, value, NAME, value …: set for the command, and hashed
+  log:StrView)              ; the log that records it; "" = exec-graph's
 
 (defstruct Graph edges:(Vector Edge))
 
 (defn graph ():Graph (return (Graph (make (Vector Edge)))))
 
 (defn edge (output:StrView tmp:StrView cwd:StrView):Edge
-  (return (Edge output tmp (make (Vector StrView)) cwd "" "" (make (Vector usize)) (make (Vector StrView)))))
+  (return (Edge output tmp (make (Vector StrView)) cwd "" "" (make (Vector usize)) (make (Vector StrView))
+               (make (Vector StrView)) "")))
 
 (defn graph-add (g:&Graph e:Edge):usize
   (conj (ref g 'edges) e)
@@ -45,7 +48,8 @@
     (let (e:Edge (invoke (ref self 'edges) i))
       (drop (ref e 'argv))
       (drop (ref e 'after))
-      (drop (ref e 'report))))
+      (drop (ref e 'report))
+      (drop (ref e 'env))))
   (drop (ref self 'edges)))
 
 ; ---------------------------------------------------------------------------
@@ -82,4 +86,7 @@
       (set! h (hash-fold-view h (invoke (ref e 'argv) i)))
       (set! h (hash-fold h z 1)))
     (set! h (hash-fold-view h (e 'cwd)))
+    (dotimes (i (count (ref e 'env)))
+      (set! h (hash-fold h z 1))
+      (set! h (hash-fold-view h (invoke (ref e 'env) i))))
     (return (hash-hex h))))

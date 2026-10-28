@@ -30,6 +30,7 @@
 (import-use diagnostics)
 (import-use strfmt)
 (import-use "unistd.h")
+(import-use "stdlib.h")
 ; POSIX spells sysconf names `_SC_…`, which the C importer counts as private.
 (unsafe/import-private "unistd.h" posix)
 
@@ -39,7 +40,7 @@
   cmd:StrView
   jobs:i32
   opt:i32             ; -1 = the configuration's, or the compiler's default
-  target:StrView      ; "" = the configuration's
+  targets:(Vector StrView)  ; --target= values in order; empty = the default target
   args-from:i32       ; argv index after `--`, or argc
   prefix:StrView      ; install/uninstall: "" = /usr/local, or ~/.local with --user
   user:bool
@@ -48,7 +49,8 @@
   lib-paths:(Vector StrView)   ; --library-paths= files, after the default one
   no-registry:bool
   repl-format:StrView   ; repl/run-repl: "" = the compiler's default
-  diag:StrView)         ; --diagnostics=…, passed to each compile; "" = text
+  diag:StrView          ; --diagnostics=…, passed to each compile; "" = text
+  all-targets:bool)
 
 (defstruct Project
   root:StrView
@@ -76,7 +78,9 @@
   ct-sources:(Vector StrView)  ; ROOT=DIR, for a prebuilt library's macros
   pre-libs:(Vector StrView)    ; each prebuilt library's name, then its include dir
   pre-picks:(Vector StrView)   ; name, header, package: what an object was compiled against
-  )
+  tname:StrView                ; the target's name, or a one-off triple; "" = the host
+  triple:StrView               ; "" = the host's
+  base-out:StrView)            ; the host's out-dir, which holds each target's
 
 (defn tool-noloc ():Loc (return (Loc "" -1)))
 
@@ -130,9 +134,10 @@
     (tool-die-at at msg)))
 
 (defn tool-usage ():i32
-  (eprint "usage: nucleus build|run|run-repl|repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<triple>] [--repl-format=text|json] [--diagnostics=text|edn] [-- <args>...]\n"
-          "       nucleus install [--prefix=<dir>|--user] [--no-source] [--target=<triple>]\n"
-          "       nucleus uninstall [<name>] [--prefix=<dir>|--user] [--target=<triple>]\n"
+  (eprint "usage: nucleus build|run|run-repl|repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<name>|<triple>]... [--repl-format=text|json] [-- <args>...]\n"
+          "       nucleus build|clean|install|uninstall --all-targets\n"
+          "       nucleus install [--prefix=<dir>|--user] [--no-source] [--target=<name>|<triple>]...\n"
+          "       nucleus uninstall [<name>] [--prefix=<dir>|--user] [--target=<name>|<triple>]...\n"
           "       nucleus init-local\n"
           "  every command: [--library-paths=<file>]... [--no-user-registry] [--diagnostics=text|edn]\n")
   (return 2))
@@ -206,7 +211,7 @@
 
 (defn tool-warn-leaves (key:StrView v:StrView at:Loc):void
   (when (tool-leaves? v)
-    (tool-report "warning" at (fstr key " '" v "' is outside the project\n  note: a local path belongs in build-local.edn"))))
+    (tool-say-once "warning" at (fstr key " '" v "' is outside the project\n  note: a local path belongs in build-local.edn"))))
 
 ; A committed build.edn should build in any checkout (overview.md §8.6).
 (defn tool-check-committed-paths (c:&BuildConfig):void
@@ -334,7 +339,141 @@
     (when (= (count (ref p 'files)) 0)
       (tool-die (fstr "library " (p 'name) " has no .nuc files under " (tool-rel sr))))))
 
-(defn tool-project ():Project
+; ---------------------------------------------------------------------------
+; Targets (design/stage27-build/targets.md)
+; ---------------------------------------------------------------------------
+
+; `sel` is a target's name, a one-off triple, or "" for :default-target, else
+; the host. A named target's settings merge over the project's, and every
+; target builds under its own directory.
+(defn tool-select-target (p:&Project sel:StrView):void
+  (let (c:&BuildConfig (ref p 'config)
+        name:StrView sel
+        from-default:bool false)
+    (when (and (= (name 'len) 0) ((c 'default-target) 'set))
+      (set! name ((c 'default-target) 'value))
+      (set! from-default true))
+    (when (= (name 'len) 0) (return))
+    (let (hit:i64 -1)
+      (dotimes (i (count (ref c 'targets)))
+        (when (= ((invoke (ref c 'targets) i) 'name) name) (set! hit (as i64 i))))
+      (if (>= hit 0)
+        (let (t:TargetConfig (invoke (ref c 'targets) (as usize hit)))
+          (when (not (((t 'cfg) 'triple) 'set))
+            (tool-die-at (t 'at) (fstr "target " name " has no :triple")))
+          (config-merge c (t 'cfg))
+          (set! (p 'triple) ((c 'triple) 'value)))
+        (do (when from-default
+              (tool-die-at ((c 'default-target) 'at)
+                           (fstr ":default-target names " name ", which :targets doesn't have")))
+            (set! (p 'triple) name))))
+    (set! (p 'tname) name)
+    (set! (p 'out-dir) (fstr (p 'base-out) "/" name))))
+
+; Every target the project names, in its files' order.
+(defn tool-target-names (out:&(Vector StrView)):void
+  (let (root:StrView (tool-find-root)
+        c:BuildConfig (build-config))
+    (set! g-tool-root (symbol-intern root))
+    (tool-load-config-file (tool-join root "build.edn") &c)
+    (tool-load-config-file (tool-join root "build-local.edn") &c)
+    (dotimes (i (count (ref c 'targets))) (conj out ((invoke (ref c 'targets) i) 'name)))
+    (drop &c)))
+
+; What `o` asks for: each --target=, every target, or "" for the default.
+(defn tool-selections (o:&ToolOpts out:&(Vector StrView)):void
+  (if (o 'all-targets)
+    (do (tool-target-names out)
+        (when (= (count out) 0)
+          (tool-die "--all-targets: build.edn has no :targets")))
+    (dotimes (i (count (ref o 'targets))) (view-add out (invoke (ref o 'targets) i))))
+  (when (= (count out) 0) (conj out "")))
+
+(defn tool-target-label (p:&Project):StrView
+  (return (if (= ((p 'tname) 'len) 0) "the host" (fstr "target " (p 'tname)))))
+
+; pkg-config for the target: its sysroot's .pc files, or for a cross target
+; without one, the multiarch directories (targets.md §4.6). Pairs of name, value.
+(defn tool-pkg-env (p:&Project o:&ToolOpts out:&(Vector StrView)):void
+  (let (sr:StrView (tool-sysroot p)
+        ma:StrView (tool-multiarch (tool-full-target p o)))
+    (cond (> (sr 'len) 0)
+            (do (conj out "PKG_CONFIG_SYSROOT_DIR") (conj out sr)
+                (conj out "PKG_CONFIG_PATH") (conj out "")
+                (conj out "PKG_CONFIG_LIBDIR")
+                (conj out (fstr sr "/usr/lib/" ma "/pkgconfig:" sr "/usr/lib/pkgconfig:" sr "/usr/share/pkgconfig")))
+          (not (tool-host? p))
+            (let (home:StrView (tool-home))
+              (conj out "PKG_CONFIG_PATH") (conj out "")
+              (conj out "PKG_CONFIG_LIBDIR")
+              (conj out (fstr (if (> (home 'len) 0) (fstr home "/.local/lib/" ma "/pkgconfig:") "")
+                              "/usr/local/lib/" ma "/pkgconfig:/usr/lib/" ma "/pkgconfig:/usr/share/pkgconfig")))
+          true 0)))
+
+; The process's own pkg-config runs (resolution, the index, a .so's link line)
+; see the target's environment between a push and its pop.
+(defvar g-tool-env-saved:?&(Vector StrView) null)
+
+(defn tool-env-set (k:StrView v:StrView set:bool):void
+  (if set
+    (setenv (symbol-as-cstr (symbol-intern k)) (symbol-as-cstr (symbol-intern v)) 1)
+    (unsetenv (symbol-as-cstr (symbol-intern k)))))
+
+(defn tool-env-push (p:&Project o:&ToolOpts):void
+  (let (pairs:(Vector StrView) (make (Vector StrView))
+        saved:&(Vector StrView) (unsafe/cast &(Vector StrView) (malloc (sizeof (Vector StrView))))
+        k:usize 0)
+    (set! @saved (make (Vector StrView)))
+    (tool-pkg-env p o &pairs)
+    (while (< (+ k 1) (count &pairs))
+      (let (name:StrView (invoke &pairs k))
+        (conj saved name)
+        (match (env-var name)
+          ((some v) (conj saved "1") (conj saved (tool-intern v)))
+          (none (conj saved "0") (conj saved "")))
+        (tool-env-set name (invoke &pairs (+ k 1)) true))
+      (set! k (+ k 2)))
+    (drop &pairs)
+    (set! g-tool-env-saved saved)))
+
+(defn tool-env-pop ():void
+  (when (= g-tool-env-saved null) (return))
+  (let (saved:&(Vector StrView) (unsafe/cast &(Vector StrView) g-tool-env-saved)
+        k:usize 0)
+    (while (<= (+ k 3) (count saved))
+      (tool-env-set (invoke saved k) (invoke saved (+ k 2)) (= (invoke saved (+ k 1)) "1"))
+      (set! k (+ k 3)))
+    (drop saved)
+    (free (as ptr saved))
+    (set! g-tool-env-saved null)))
+
+(defn tool-on-path? (prog:StrView):bool
+  (when (strview-contains prog "/") (return (file-exists? prog)))
+  (let (path:StrView (match (env-var "PATH") ((some v) v) (none "/usr/bin:/bin")))
+    (let (start:usize 0)
+      (dotimes (k (+ (path 'len) 1))
+        (when (or (= k (path 'len)) (= (aref (path 'data) (as i64 k)) 58))
+          (let (d:StrView (strview-take-bytes (strview-drop-bytes path start) (- k start)))
+            (when (file-exists? (fstr (if (= (d 'len) 0) "." d) "/" prog)) (return true)))
+          (set! start (+ k 1))))))
+  (return false))
+
+; A missing cross toolchain, before any compile runs (targets.md §4.10).
+(defn tool-preflight (p:&Project run:bool):void
+  (let (c:&BuildConfig (ref p 'config)
+        who:StrView (tool-target-label p))
+    (when (and ((c 'sysroot) 'set) (not (dir-exists? (tool-sysroot p))))
+      (tool-die-at ((c 'sysroot) 'at) (fstr who ": :sysroot '" ((c 'sysroot) 'value) "' is not a directory")))
+    (when (and ((c 'linker) 'set) (not (p 'is-lib)) (not (tool-on-path? ((c 'linker) 'value))))
+      (tool-die-at ((c 'linker) 'at) (fstr who ": the linker '" ((c 'linker) 'value) "' is not on PATH")))
+    (when (and (not ((c 'linker) 'set)) (not (p 'is-lib)) (strview-has-prefix (p 'triple) "avr")
+               (not (tool-on-path? "avr-gcc")))
+      (tool-die (fstr who ": linking for " (p 'triple) " needs avr-gcc, which is not on PATH"
+                      "\n  note: install it, or name another link driver with :linker")))
+    (when (and run (> (count (ref c 'runner)) 0) (not (tool-on-path? (tool-runner-program p))))
+      (tool-die (fstr who ": the runner '" (invoke (ref c 'runner) 0) "' is not on PATH")))))
+
+(defn tool-project (sel:StrView):Project
   (let (root:StrView (tool-find-root)
         p:Project (Project root "" "" "" "" (build-config) (make (Vector StrView))
                            false "" (make (Vector StrView)) (make (Vector StrView))
@@ -342,7 +481,8 @@
                            (make (Vector Library)) (make (Vector StrView)) (make (Vector StrView))
                            (make (Vector StrView)) (make (Vector StrView))
                            (make (Vector Library)) false (make (Vector Library)) false
-                           (make (Vector StrView)) (make (Vector StrView)) (make (Vector StrView))))
+                           (make (Vector StrView)) (make (Vector StrView)) (make (Vector StrView))
+                           "" "" ""))
     (set! g-tool-root (symbol-intern root))
     (tool-load-config-file (tool-join root "build.edn") (ref p 'config))
     (tool-load-config-file (tool-join root "build-local.edn") (ref p 'config))
@@ -364,7 +504,9 @@
         (let (d:DepSpec (invoke (ref c 'deps) i))
           (when ((d 'unsafe-version) 'set) (tool-warn-unsafe-version &d))))
       (set! (p 'name) (if ((c 'name) 'set) ((c 'name) 'value) (tool-base root)))
-      (set! (p 'out-dir) (tool-join root (if ((c 'out-dir) 'set) ((c 'out-dir) 'value) "build")))
+      (set! (p 'base-out) (tool-join root (if ((c 'out-dir) 'set) ((c 'out-dir) 'value) "build")))
+      (set! (p 'out-dir) (p 'base-out))
+      (tool-select-target &p sel)
       ; An override is used as given: no fallback to the conventions (D-CONV).
       (if ((c 'source-root) 'set)
         (let (sr:StrView (tool-join root ((c 'source-root) 'value)))
@@ -409,10 +551,12 @@
   (let (c:&BuildConfig (ref p 'config))
     (if ((c 'opt) 'set) (return (unsafe/cast i32 ((c 'opt) 'value))) (return -1))))
 
-(defn tool-target (p:&Project o:&ToolOpts):StrView
-  (when (> ((o 'target) 'len) 0) (return (o 'target)))
-  (let (c:&BuildConfig (ref p 'config))
-    (if ((c 'target) 'set) (return ((c 'target) 'value)) (return ""))))
+(defn tool-target (p:&Project o:&ToolOpts):StrView (return (p 'triple)))
+
+; A configured :sysroot, relative to the project; "" for none.
+(defn tool-sysroot (p:&Project):StrView
+  (let (sr:StrSetting ((ref p 'config) 'sysroot))
+    (return (if (sr 'set) (tool-join (p 'root) (sr 'value)) ""))))
 
 (defn tool-include-args (p:&Project into:&(Vector StrView)):void
   (conj into "-I")
@@ -424,18 +568,30 @@
 (defn tool-report-args (o:&ToolOpts into:&(Vector StrView)):void
   (when (> ((o 'diag) 'len) 0) (conj into (o 'diag))))
 
-; `run` and `run-repl` take the same vector, less what only a link reads.
+; `run` and `run-repl` take the same vector, less what only a link reads. A JIT
+; session runs on the host, so it is never given the target (tool-host? held).
 (defn tool-compile-flags (p:&Project o:&ToolOpts into:&(Vector StrView) linking:bool):void
+  (tool-flags p o into linking false))
+
+(defn tool-jit-flags (p:&Project o:&ToolOpts into:&(Vector StrView)):void
+  (tool-flags p o into false true))
+
+(defn tool-flags (p:&Project o:&ToolOpts into:&(Vector StrView) linking:bool jit:bool):void
   (let (c:&BuildConfig (ref p 'config)
         opt:i32 (tool-opt p o)
         target:StrView (tool-target p o))
     (tool-include-args p into)
     (dotimes (i (count (ref p 'ct-sources))) (conj into (fstr "--ct-source=" (invoke (ref p 'ct-sources) i))))
     (when (>= opt 0) (conj into (fstr "-O" opt)))
-    (when (> (target 'len) 0) (conj into (fstr "--target=" target)))
+    (when (and (> (target 'len) 0) (not jit)) (conj into (fstr "--target=" target)))
+    (when (and ((c 'mcpu) 'set) (not jit)) (conj into (fstr "--mcpu=" ((c 'mcpu) 'value))))
+    (when ((c 'sysroot) 'set) (conj into (fstr "--sysroot=" (tool-sysroot p))))
     (dotimes (i (count (ref c 'cflags))) (conj into (fstr "--cflag=" (invoke (ref c 'cflags) i))))
     (dotimes (i (count (ref p 'dep-cflags))) (conj into (fstr "--cflag=" (invoke (ref p 'dep-cflags) i))))
     (when linking
+      (when ((c 'mmcu) 'set) (conj into (fstr "--mmcu=" ((c 'mmcu) 'value))))
+      (when ((c 'linker) 'set) (conj into (fstr "--linker=" ((c 'linker) 'value))))
+      (when ((c 'sysroot) 'set) (conj into (fstr "--link-arg=--sysroot=" (tool-sysroot p))))
       (dotimes (i (count (ref c 'link-args))) (conj into (fstr "--link-arg=" (invoke (ref c 'link-args) i))))
       (dotimes (i (count (ref p 'link-objs))) (conj into (fstr "--link-arg=" (invoke (ref p 'link-objs) i)))))
     (dotimes (i (count (ref c 'libs))) (conj into (fstr "--link-lib=" (invoke (ref c 'libs) i))))
@@ -459,15 +615,30 @@
 
 (defn tool-installed? (specs:&(Vector StrView)):bool (return (pkg-config-exists? specs)))
 
-; The header index, once loaded; its requires lists save a pkg-config per lookup.
+; The header index for the target being resolved, loaded once per target; its
+; requires lists save a pkg-config per lookup.
 (defvar g-tool-index:?&HeaderIndex null)
+(defvar g-tool-index-for:StrView "")
+(defvar g-tool-index-triple:StrView "")
+(defvar g-tool-index-sysroot:StrView "")
+
+(defn tool-index-target (p:&Project):void
+  (set! g-tool-index-triple (p 'triple))
+  (set! g-tool-index-sysroot (tool-sysroot p)))
 
 (defn tool-index ():&HeaderIndex
-  (when (= g-tool-index null)
-    (let (idx:&HeaderIndex (unsafe/cast &HeaderIndex (malloc (sizeof HeaderIndex))))
-      (set! @idx (header-index))
-      (header-index-load idx)
-      (set! g-tool-index idx)))
+  (let (want:StrView (fstr g-tool-index-triple "|" g-tool-index-sysroot))
+    (when (and (!= g-tool-index null) (not (= want g-tool-index-for)))
+      (let (old:&HeaderIndex (unsafe/cast &HeaderIndex g-tool-index))
+        (drop old)
+        (free (as ptr old))
+        (set! g-tool-index null)))
+    (when (= g-tool-index null)
+      (let (idx:&HeaderIndex (unsafe/cast &HeaderIndex (malloc (sizeof HeaderIndex))))
+        (set! @idx (header-index))
+        (header-index-load idx g-tool-index-triple g-tool-index-sysroot)
+        (set! g-tool-index idx)
+        (set! g-tool-index-for want))))
   (return (unsafe/cast &HeaderIndex g-tool-index)))
 
 (defn tool-requires (name:StrView out:&(Vector StrView)):void
@@ -1091,7 +1262,7 @@
   (let (root:StrView (tool-find-root)
         cfg:StrView (tool-join root "build.edn"))
     (when (file-exists? cfg) (tool-die (fstr cfg " already exists")))
-    (let (p:Project (tool-project)
+    (let (p:Project (tool-project "")
           res:Resolution (resolution)
           out:String (make String))
       (when (tool-resolve &p o &res true) (return (tool-init o)))
@@ -1164,6 +1335,18 @@
   (when (= (g-tool-compiler-id 'len) 0) (set! g-tool-compiler-id (file-hash (tool-compiler))))
   (return g-tool-compiler-id))
 
+; clang's spelling of a target's CPU and sysroot: AVR names a device, x86 an -march.
+(defn tool-c-target-flags (p:&Project av:&(Vector StrView)):void
+  (let (c:&BuildConfig (ref p 'config)
+        t:StrView (p 'triple))
+    (when ((c 'sysroot) 'set) (conj av (fstr "--sysroot=" (tool-sysroot p))))
+    (cond (and (strview-has-prefix t "avr") (or ((c 'mmcu) 'set) ((c 'mcpu) 'set)))
+            (conj av (fstr "-mmcu=" (if ((c 'mmcu) 'set) ((c 'mmcu) 'value) ((c 'mcpu) 'value))))
+          (not ((c 'mcpu) 'set)) 0
+          (or (strview-has-prefix t "x86_64") (strview-has-prefix t "i386") (strview-has-prefix t "i686"))
+            (conj av (fstr "-march=" ((c 'mcpu) 'value)))
+          true (conj av (fstr "-mcpu=" ((c 'mcpu) 'value))))))
+
 (defn tool-c-edges (p:&Project o:&ToolOpts g:&Graph objs:&(Vector usize) objpaths:&(Vector StrView)):void
   (let (c:&BuildConfig (ref p 'config)
         out:StrView (p 'out-dir)
@@ -1181,6 +1364,7 @@
           (conj av "-MD") (conj av "-MF") (conj av (fstr obj ".d")))
         (when (>= opt 0) (conj (ref e 'argv) (fstr "-O" opt)))
         (when (> (target 'len) 0) (conj (ref e 'argv) (fstr "--target=" target)))
+        (tool-c-target-flags p (ref e 'argv))
         (dotimes (k (count (ref c 'cflags))) (conj (ref e 'argv) (invoke (ref c 'cflags) k)))
         (set! (e 'depfile) (fstr obj ".d"))
         (conj objs (graph-add g e))
@@ -1301,6 +1485,7 @@
             c:&BuildConfig (ref p 'config))
         (conj av "clang") (conj av "-shared")
         (when (> (target 'len) 0) (conj av (fstr "--target=" target)))
+        (tool-c-target-flags p av)
         (dotimes (k (count &objpaths)) (conj av (invoke &objpaths k)))
         (when (> (count (ref p 'pkgs)) 0)
           (let (names:(Vector Symbol) (make (Vector Symbol))
@@ -1344,8 +1529,9 @@
 
 ; After a failed run: an import a compile couldn't find, which a library can
 ; provide, means another round; one already provided is the compile's error.
-(defn tool-missing-retry (p:&Project o:&ToolOpts g:&Graph):i32
-  (dotimes (i (count (ref g 'edges)))
+(defn tool-missing-retry (p:&Project o:&ToolOpts g:&Graph from:usize to:usize):i32
+  (let (i:usize from)
+   (while (< i to)
     (let (mp:StrView (tool-missing-path p ((invoke (ref g 'edges) i) 'output)))
       (match (exec-read-file mp)
         (none 0)
@@ -1366,25 +1552,61 @@
               (tool-save-seed p name)
               (return TOOL-RETRY))
             (eprint (tool-rel (tool-join (p 'root) file)) ":" line ": error: import: cannot find '" name "'\n")
-            (return 1))))))
-  (return 1))
+            (return 1)))))
+    (inc! i)))
+  (return 0))
+
+; Every target's edges in one graph, so -j schedules across targets. Each
+; edge keeps its target's log and pkg-config environment.
+(defn tool-build-all (ps:&(Vector &Project) o:&ToolOpts):i32
+  (let (g:Graph (graph)
+        firsts:(Vector usize) (make (Vector usize)))
+    (dotimes (k (count ps))
+      (let (p:&Project (invoke ps k)
+            first:usize (count (ref g 'edges))
+            env:(Vector StrView) (make (Vector StrView))
+            i:usize 0)
+        (conj &firsts first)
+        (tool-mkdirs (p 'out-dir))
+        (tool-mkdir (fstr (p 'out-dir) "/.deps"))
+        (tool-env-push p o)
+        (tool-any-graph p o &g)
+        (tool-env-pop)
+        (tool-pkg-env p o &env)
+        (set! i first)
+        (while (< i (count (ref g 'edges)))
+          (let (e:Edge (invoke (ref g 'edges) i))
+            (set! (e 'log) (tool-log-path p))
+            (dotimes (j (count &env)) (conj (ref e 'env) (invoke &env j)))
+            (set (ref g 'edges) i e)
+            (tool-mkdirs (tool-parent (e 'output)))
+            (tool-remove (tool-missing-path p (e 'output))))
+          (inc! i))
+        (drop &env)))
+    (conj &firsts (count (ref g 'edges)))
+    (let (ran:i32 (exec-graph &g (o 'jobs) (tool-log-path (invoke ps 0)) tool-say))
+      (when (< ran 0)
+        (dotimes (k (count ps))
+          (let (rc:i32 (tool-missing-retry (invoke ps k) o &g (invoke &firsts k) (invoke &firsts (+ k 1))))
+            (when (= rc TOOL-RETRY)
+              (drop &g)
+              (return rc))))
+        (drop &g)
+        (return 1))
+      (drop &g)
+      (drop &firsts)
+      (when (= ran 0)
+        (if (= (count ps) 1)
+          (eprint "nucleus: " ((invoke ps 0) 'name) " is up to date\n")
+          (eprint "nucleus: " ((invoke ps 0) 'name) " is up to date for " (count ps) " targets\n")))
+      (return 0))))
 
 (defn tool-build (p:&Project o:&ToolOpts):i32
-  (tool-mkdir (p 'out-dir))
-  (tool-mkdir (fstr (p 'out-dir) "/.deps"))
-  (let (g:Graph (graph))
-    (tool-any-graph p o &g)
-    (dotimes (i (count (ref g 'edges)))
-      (tool-mkdirs (tool-parent ((invoke (ref g 'edges) i) 'output)))
-      (tool-remove (tool-missing-path p ((invoke (ref g 'edges) i) 'output))))
-    (let (ran:i32 (exec-graph &g (o 'jobs) (tool-log-path p) tool-say))
-      (when (< ran 0)
-        (let (rc:i32 (tool-missing-retry p o &g))
-          (drop &g)
-          (return rc)))
-      (drop &g)
-      (when (= ran 0) (eprint "nucleus: " (p 'name) " is up to date\n"))
-      (return 0))))
+  (let (ps:(Vector &Project) (make (Vector &Project)))
+    (conj &ps p)
+    (let (rc:i32 (tool-build-all &ps o))
+      (drop &ps)
+      (return rc))))
 
 ; ---------------------------------------------------------------------------
 ; run and run-repl: the same flags, handed to this process's compiler
@@ -1398,42 +1620,64 @@
     (set! (aref av (as i64 n)) null)
     (return (compiler-main (unsafe/cast i32 n) (as ptr av)))))
 
+; A runner named by a relative path is the project's own script; a bare name is
+; looked up on PATH.
+(defn tool-runner-program (p:&Project):StrView
+  (let (r0:StrView (invoke (ref (ref p 'config) 'runner) 0))
+    (return (if (strview-contains r0 "/") (tool-join (p 'root) r0) r0))))
+
+; The built program, through the target's :runner when it has one.
+(defn tool-run-built (p:&Project o:&ToolOpts argc:i32 argv:ptr):i32
+  (let (rc:i32 (tool-build p o))
+    (when (!= rc 0) (return rc)))
+  (let (runner:&(Vector StrView) (ref (ref p 'config) 'runner)
+        prog:StrView (tool-program-path p)
+        cmd:Command (command (if (> (count runner) 0) (tool-runner-program p) prog)))
+    (command-search &cmd (> (count runner) 0))
+    (when (> (count runner) 0)
+      (dotimes (i (- (count runner) 1)) (command-arg &cmd (invoke runner (+ i 1))))
+      (command-arg &cmd prog))
+    (let (k:i32 (o 'args-from))
+      (while (< k argc)
+        (command-arg &cmd (argv-view argv k))
+        (inc! k)))
+    (match (spawn &cmd)
+      ((err e) (tool-die (fstr "cannot run " (if (> (count runner) 0) (invoke runner 0) (tool-rel prog)))))
+      ((ok pr)
+        (let (proc:Process pr)
+          (match (process-wait &proc)
+            ((ok st) (drop &cmd) (return (exit-code &st)))
+            ((err e) (tool-die "cannot wait for the program"))))))
+    (return 1)))
+
 (defn tool-run (p:&Project o:&ToolOpts argc:i32 argv:ptr):i32
   (let (c:&BuildConfig (ref p 'config)
         args:(Vector StrView) (make (Vector StrView)))
+    (when (and (not (tool-host? p)) (= (count (ref c 'runner)) 0))
+      (tool-die (fstr (tool-target-label p) " is for " (p 'triple) ", which this machine can't run"
+                      "\n  note: give the target a :runner, such as an emulator, and run runs the program through it")))
     ; A C object cannot join a JIT session, so a program with C sources runs built.
-    (when (> (count (ref c 'c-sources)) 0)
-      (let (rc:i32 (tool-build p o))
-        (when (!= rc 0) (return rc)))
-      (let (cmd:Command (command (tool-program-path p)))
-        (command-search &cmd false)
-        (let (k:i32 (o 'args-from))
-          (while (< k argc)
-            (command-arg &cmd (argv-view argv k))
-            (inc! k)))
-        (match (spawn &cmd)
-          ((err e) (tool-die (fstr "cannot run " (tool-rel (tool-program-path p)))))
-          ((ok pr)
-            (let (proc:Process pr)
-              (match (process-wait &proc)
-                ((ok st) (drop &cmd) (return (exit-code &st)))
-                ((err e) (tool-die "cannot wait for the program"))))))
-        (return 1)))
+    (when (or (> (count (ref c 'c-sources)) 0) (> (count (ref c 'runner)) 0))
+      (return (tool-run-built p o argc argv)))
     (conj &args (tool-compiler))
     (conj &args "--run")
     (tool-report-args o &args)
-    (tool-compile-flags p o &args false)
+    (tool-jit-flags p o &args)
     (conj &args (p 'entry))
     (conj &args "--")
     (let (k:i32 (o 'args-from))
       (while (< k argc)
         (conj &args (argv-view argv k))
         (inc! k)))
+    (tool-env-push p o)
     (return (tool-hand-off &args))))
 
 ; `repl` is the bare session; `run-repl` also runs the program's `main` beside
 ; the prompt (design/stage27-build/run-repl.md).
 (defn tool-repl (p:&Project o:&ToolOpts run:bool argc:i32 argv:ptr):i32
+  (when (not (tool-host? p))
+    (tool-die (fstr (tool-target-label p) " is for " (p 'triple) ", and " (o 'cmd)
+                    "'s JIT runs on this machine (" (symbol-as-view (default-host-triple)) ")")))
   (when (> (count (ref (ref p 'config) 'c-sources)) 0)
     (tool-die (fstr "a JIT session can't load the C objects :c-sources builds, so " (o 'cmd)
                     " can't either; nucleus run builds and runs the program")))
@@ -1442,7 +1686,7 @@
     (conj &args "-i")
     (when (> ((o 'repl-format) 'len) 0) (conj &args (o 'repl-format)))
     (tool-report-args o &args)
-    (tool-compile-flags p o &args false)
+    (tool-jit-flags p o &args)
     (when (not (p 'is-lib)) (conj &args (fstr "--c-requirements-of=" (p 'entry))))
     (when run
       (conj &args (p 'entry))
@@ -1451,6 +1695,7 @@
         (while (< k argc)
           (conj &args (argv-view argv k))
           (inc! k))))
+    (tool-env-push p o)
     (return (tool-hand-off &args))))
 
 (defn tool-remove (path:StrView):void
@@ -1480,6 +1725,7 @@
         (when (> ((e 'depfile) 'len) 0) (tool-prune (tool-parent (e 'depfile)) (p 'out-dir)))))
     (drop &g))
   (tool-remove (p 'out-dir))
+  (tool-remove (p 'base-out))
   (return 0))
 
 ; ---------------------------------------------------------------------------
@@ -1507,6 +1753,12 @@
   (let (t:StrView (tool-target p o))
     (when (> (t 'len) 0) (return t))
     (return (symbol-as-view (default-host-triple)))))
+
+; Whether this machine runs the target's programs; a triple can spell the host's
+; multiarch name with or without a vendor.
+(defn tool-host? (p:&Project):bool
+  (return (or (= ((p 'triple) 'len) 0)
+              (= (tool-multiarch (p 'triple)) (tool-multiarch (symbol-as-view (default-host-triple)))))))
 
 (defn tool-prefix (o:&ToolOpts):StrView
   (let (pre:StrView (o 'prefix))
@@ -1653,11 +1905,25 @@
     (drop &files)
     (return true)))
 
-(defn tool-install (p:&Project o:&ToolOpts):i32
-  (when (not (p 'is-lib))
-    (tool-die (fstr (p 'name) " is not a library: install needs :kind :library in build.edn")))
-  (let (rc:i32 (tool-build p o))
+; Two targets with one multiarch name would install over each other (targets.md §4.9).
+(defn tool-install-all (ps:&(Vector &Project) o:&ToolOpts):i32
+  (let (p0:&Project (invoke ps 0))
+    (when (not (p0 'is-lib))
+      (tool-die (fstr (p0 'name) " is not a library: install needs :kind :library in build.edn"))))
+  (dotimes (i (count ps))
+    (dotimes (j i)
+      (let (a:&Project (invoke ps j)
+            b:&Project (invoke ps i)
+            ma:StrView (tool-multiarch (tool-full-target a o)))
+        (when (= ma (tool-multiarch (tool-full-target b o)))
+          (tool-die (fstr (tool-target-label a) " and " (tool-target-label b) " both install into lib/" ma
+                          "\n  note: install them one at a time, into different prefixes"))))))
+  (let (rc:i32 (tool-build-all ps o))
     (when (!= rc 0) (return rc)))
+  (dotimes (i (count ps)) (tool-install (invoke ps i) o))
+  (return 0))
+
+(defn tool-install (p:&Project o:&ToolOpts):i32
   (let (prefix:StrView (tool-prefix o)
         target:StrView (tool-full-target p o)
         ma:StrView (tool-multiarch target)
@@ -1752,17 +2018,15 @@
     (drop &srcs)
     (return 0)))
 
-(defn tool-uninstall (name:StrView p:?&Project o:&ToolOpts):i32
-  (let (target:StrView (o 'target))
-    (when (and (= (target 'len) 0) (!= p null))
-      (set! target (tool-target (unsafe/cast &Project p) o)))
-    (when (= (target 'len) 0) (set! target (symbol-as-view (default-host-triple))))
-    (let (prefix:StrView (tool-prefix o)
-          manifest:StrView (tool-manifest-path prefix (tool-multiarch target) name))
-      (when (not (tool-remove-installed prefix manifest))
-        (tool-die (fstr name " is not installed in " prefix ": there is no " manifest)))
-      (eprint "nucleus: uninstalled " name " from " prefix "\n")
-      (return 0))))
+; `target` is a triple; "" for the host's.
+(defn tool-uninstall (name:StrView target:StrView o:&ToolOpts):i32
+  (when (= (target 'len) 0) (set! target (symbol-as-view (default-host-triple))))
+  (let (prefix:StrView (tool-prefix o)
+        manifest:StrView (tool-manifest-path prefix (tool-multiarch target) name))
+    (when (not (tool-remove-installed prefix manifest))
+      (tool-die (fstr name " is not installed in " prefix ": there is no " manifest)))
+    (eprint "nucleus: uninstalled " name " from " prefix "\n")
+    (return 0)))
 
 ; ---------------------------------------------------------------------------
 ; init-local: sibling checkouts as build-local.edn :path overrides (§8.6)
@@ -1798,7 +2062,7 @@
     (drop &text)))
 
 (defn tool-init-local (o:&ToolOpts):i32
-  (let (p:Project (tool-project)
+  (let (p:Project (tool-project "")
         root:StrView (p 'root)
         local:StrView (tool-join root "build-local.edn")
         wanted:(Vector StrView) (make (Vector StrView))
@@ -1881,8 +2145,8 @@
 (defn tool-main (argc:i32 argv:ptr):i32
   (when (< argc 2) (return (tool-usage)))
   (let (o:ToolOpts (ToolOpts (argv-view argv 1)
-                             (tool-jobs-default) -1 "" argc "" false false ""
-                             (make (Vector StrView)) false "" "")
+                             (tool-jobs-default) -1 (make (Vector StrView)) argc "" false false ""
+                             (make (Vector StrView)) false "" "" false)
         i:i32 2)
     (when (not (or (= (o 'cmd) "build") (= (o 'cmd) "run") (= (o 'cmd) "run-repl")
                    (= (o 'cmd) "repl") (= (o 'cmd) "clean") (= (o 'cmd) "init") (= (o 'cmd) "init-local")
@@ -1903,8 +2167,11 @@
                     (when (< (o 'jobs) 1) (return (tool-usage))))
               (or (= a "-O0") (= a "-O1") (= a "-O2") (= a "-O3"))
                 (set! (o 'opt) (- (as i32 (aref (a 'data) 2)) 48))
-              (strview-has-prefix a "--target=")
-                (set! (o 'target) (strview-drop-bytes a 9))
+              (and (strview-has-prefix a "--target=") (> (a 'len) 9))
+                (view-add (ref o 'targets) (strview-drop-bytes a 9))
+              (and (= a "--all-targets")
+                   (or (= (o 'cmd) "build") (= (o 'cmd) "clean") (= (o 'cmd) "install") (= (o 'cmd) "uninstall")))
+                (set! (o 'all-targets) true)
               (and (strview-has-prefix a "--prefix=") (> (a 'len) 9)
                    (or (= (o 'cmd) "install") (= (o 'cmd) "uninstall")))
                 (set! (o 'prefix) (strview-drop-bytes a 9))
@@ -1935,8 +2202,15 @@
       (return 2))
     (when (= (o 'cmd) "init") (return (tool-init &o)))
     (when (= (o 'cmd) "init-local") (return (tool-init-local &o)))
+    (when (and (> (count (ref o 'targets)) 0) (o 'all-targets))
+      (eprint "nucleus: --target= and --all-targets both choose targets; give one\n")
+      (return 2))
+    ; By name there is no project to name targets, so --target= is a triple.
     (when (and (= (o 'cmd) "uninstall") (> ((o 'name) 'len) 0))
-      (return (tool-uninstall (o 'name) null &o)))
+      (when (or (> (count (ref o 'targets)) 1) (o 'all-targets))
+        (eprint "nucleus: uninstall NAME takes one --target=, a triple\n")
+        (return 2))
+      (return (tool-uninstall (o 'name) (if (> (count (ref o 'targets)) 0) (invoke (ref o 'targets) 0) "") &o)))
     ; A retry starts over: the library a macro's import needed may bring C
     ; requirements and dependencies of its own.
     (let (round:i32 0)
@@ -1948,18 +2222,43 @@
     (return 0)))
 
 (defn tool-dispatch (o:&ToolOpts argc:i32 argv:ptr):i32
-  (let (p:Project (tool-project)
-        res:Resolution (resolution))
-    (when (and (p 'is-lib) (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl")))
-      (tool-die (fstr (p 'name) " is a library, which has no program to " (o 'cmd))))
-    (when (= (o 'cmd) "uninstall")
-      (when (not (p 'is-lib)) (tool-die (fstr (p 'name) " is not a library; name the one to uninstall")))
-      (return (tool-uninstall (p 'name) &p o)))
-    (when (and (not (= (o 'cmd) "clean")) (tool-resolve &p o &res false)) (return TOOL-RETRY))
-    (cond (= (o 'cmd) "build") (return (tool-build &p o))
-          (= (o 'cmd) "run") (return (tool-run &p o argc argv))
-          (= (o 'cmd) "run-repl") (return (tool-repl &p o true argc argv))
-          (= (o 'cmd) "repl") (return (tool-repl &p o false argc argv))
-          (= (o 'cmd) "install") (return (tool-install &p o))
-          true (return (tool-clean &p o))))
+  (let (sels:(Vector StrView) (make (Vector StrView))
+        ps:(Vector &Project) (make (Vector &Project))
+        one:bool (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl") (= (o 'cmd) "repl")))
+    (tool-selections o &sels)
+    (when (and one (> (count &sels) 1))
+      (tool-die (fstr (o 'cmd) " runs one target; choose it with --target=")))
+    (dotimes (k (count &sels))
+      (let (p:&Project (unsafe/cast &Project (malloc (sizeof Project))))
+        (set! @p (tool-project (invoke &sels k)))
+        (conj &ps p)))
+    (let (p0:&Project (invoke &ps 0))
+      (when (and (p0 'is-lib) (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl")))
+        (tool-die (fstr (p0 'name) " is a library, which has no program to " (o 'cmd))))
+      (when (= (o 'cmd) "uninstall")
+        (when (not (p0 'is-lib)) (tool-die (fstr (p0 'name) " is not a library; name the one to uninstall")))
+        (dotimes (k (count &ps))
+          (let (p:&Project (invoke &ps k))
+            (tool-uninstall (p 'name) (p 'triple) o)))
+        (return 0))
+      (when (and one (not (= (o 'cmd) "run")) (not (tool-host? p0)))
+        (return (tool-repl p0 o false argc argv)))
+      (when (= (o 'cmd) "clean")
+        (dotimes (k (count &ps)) (tool-clean (invoke &ps k) o))
+        (return 0))
+      (dotimes (k (count &ps)) (tool-preflight (invoke &ps k) (= (o 'cmd) "run")))
+      ; Each target resolves its C requirements in its own pkg-config environment.
+      (dotimes (k (count &ps))
+        (let (p:&Project (invoke &ps k)
+              res:Resolution (resolution))
+          (tool-index-target p)
+          (tool-env-push p o)
+          (let (again:bool (tool-resolve p o &res false))
+            (tool-env-pop)
+            (when again (return TOOL-RETRY)))))
+      (cond (= (o 'cmd) "build") (return (tool-build-all &ps o))
+            (= (o 'cmd) "run") (return (tool-run p0 o argc argv))
+            (= (o 'cmd) "run-repl") (return (tool-repl p0 o true argc argv))
+            (= (o 'cmd) "repl") (return (tool-repl p0 o false argc argv))
+            true (return (tool-install-all &ps o)))))
   (return 0))

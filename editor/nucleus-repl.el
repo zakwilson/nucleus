@@ -26,7 +26,7 @@
   :type 'string
   :group 'nucleus-repl)
 
-(defcustom nucleus-repl-program-args '("-i" "--repl-format=json")
+(defcustom nucleus-repl-program-args '("repl" "--repl-format=json")
   "Argument list passed to `nucleus-repl-program'."
   :type '(repeat string)
   :group 'nucleus-repl)

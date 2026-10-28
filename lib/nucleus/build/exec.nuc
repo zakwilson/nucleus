@@ -300,15 +300,36 @@
     (dotimes (k (count (ref e 'report))) (command-arg &c (invoke (ref e 'report) k)))
     (dotimes (k (- (count argv) 1)) (command-arg &c (invoke argv (+ k 1))))
     (command-cwd &c (e 'cwd))
+    (let (k:usize 0)
+      (while (< (+ k 1) (count (ref e 'env)))
+        (command-env &c (invoke (ref e 'env) k) (invoke (ref e 'env) (+ k 1)))
+        (set! k (+ k 2))))
     (let (p:!Process (spawn &c))
       (drop &c)
       (return p))))
 
+; The logs a graph's edges name, each loaded once.
+(defstruct LogSet paths:(Vector StrView) logs:(Vector &BuildLog))
+
+(defn log-set-get (ls:&LogSet path:StrView):&BuildLog
+  (dotimes (i (count (ref ls 'paths)))
+    (when (= (invoke (ref ls 'paths) i) path) (return (invoke (ref ls 'logs) i))))
+  (let (l:&BuildLog (unsafe/cast &BuildLog (malloc (sizeof BuildLog))))
+    (set! @l (build-log))
+    (log-load path l)
+    (conj (ref ls 'paths) path)
+    (conj (ref ls 'logs) l)
+    (return l)))
+
+(defn edge-log (e:&Edge ls:&LogSet default:StrView):&BuildLog
+  (return (log-set-get ls (if (> ((e 'log) 'len) 0) (e 'log) default))))
+
 ; Run every stale edge of `g`, at most `jobs` at once. Answers how many ran, or
 ; -1 when one failed: the failed edge's output stays as it was, and so does its
-; record. `say` reports each edge as it starts.
+; record. `say` reports each edge as it starts. An edge with no `log` of its own
+; is recorded in `log-path`'s.
 (defn exec-graph (g:&Graph jobs:i32 log-path:StrView say:(fn void)(StrView StrView)):i32
-  (let (log:BuildLog (build-log)
+  (let (ls:LogSet (LogSet (make (Vector StrView)) (make (Vector &BuildLog)))
         n:usize (count (ref g 'edges))
         state:(Vector i32) (make (Vector i32))
         pids:(Vector i32) (make (Vector i32))
@@ -317,7 +338,6 @@
         ran:i32 0
         failed:bool false
         progress:bool true)
-    (log-load log-path &log)
     (dotimes (i n) (conj &state EDGE-PENDING) (conj &pids -1))
     (while (or progress (> running 0))
       (set! progress false)
@@ -327,7 +347,7 @@
           (let (ev:Edge (invoke (ref g 'edges) i)
                 e:&Edge &ev
                 why:StrView (if (edge-after-rebuilt? g &state i) "an input was rebuilt"
-                              (edge-why e &log)))
+                              (edge-why e (edge-log e &ls log-path))))
             (set! progress true)
             (if (= (why 'len) 0)
               (set &state i EDGE-FRESH)
@@ -360,17 +380,23 @@
                   (if ok
                     (do (set &state i EDGE-BUILT)
                         (inc! ran)
-                        (log-put &log (edge-record e)))
+                        (log-put (edge-log e &ls log-path) (edge-record e)))
                     (do (set &state i EDGE-FAILED)
                         (set! failed true)
                         (when (file-exists? (e 'tmp))
                           (match (remove-file (e 'tmp)) ((ok) 0) ((err x) 0)))))))))))
       (when failed (set! progress false)))
-    (when (not (log-save log-path &log))
-      (eprint "nucleus: cannot write " log-path "\n")
-      (set! failed true))
+    (dotimes (i (count (ref ls 'paths)))
+      (let (path:StrView (invoke (ref ls 'paths) i)
+            l:&BuildLog (invoke (ref ls 'logs) i))
+        (when (not (log-save path l))
+          (eprint "nucleus: cannot write " path "\n")
+          (set! failed true))
+        (drop l)
+        (free (as ptr l))))
+    (drop (ref ls 'paths))
+    (drop (ref ls 'logs))
     (drop &procs)
     (drop &pids)
     (drop &state)
-    (drop &log)
     (return (if failed -1 ran))))

@@ -292,3 +292,4 @@ Stage 21 item 7 classified 2,294 pointer declarations this way (ptr-is-unchecked
   since `nucleus.read` imports it. Only `nucleus.refactor` is outside, and
   changing it needs only `make test` and the header check.
 - **`.gitignore`'s `build/` matched `lib/nucleus/build/`**, the build tool's own library, so commit 5c139db left its sources out. `!/lib/nucleus/build/` now re-includes it. A new directory named `build` anywhere else needs the same exception.
+- **Cross-target tests use AVR.** The container has `avr-gcc` and `qemu-riscv64`, but `/usr/riscv64-linux-gnu` has no `Scrt1.o`/crt files and no headers, so a riscv64 program can't link here. `mt*` tests in `tests/suite-build.nuc` cross-build to `avr` and check ELF `e_machine` (byte 18 = 83). A host-runnable named target is written with `$(clang -dumpmachine)` through `mt-sh`.

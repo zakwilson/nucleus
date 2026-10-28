@@ -39,7 +39,12 @@
   prebuilt:IntSetting
   at:Loc)
 
+; Owned by the BuildConfig that lists it.
+(defstruct TargetConfig name:StrView at:Loc cfg:&BuildConfig)
+
 ; Strings borrow the interned EDN text, which lives as long as the process.
+; A target's own settings are a BuildConfig too, merged over the project's
+; (design/stage27-build/targets.md §4.2); `triple` … `runner` are only a target's.
 (defstruct BuildConfig
   name:StrSetting
   kind:StrSetting
@@ -47,7 +52,14 @@
   entry:StrSetting
   source-root:StrSetting
   out-dir:StrSetting
-  target:StrSetting
+  triple:StrSetting
+  mcpu:StrSetting
+  mmcu:StrSetting
+  sysroot:StrSetting
+  linker:StrSetting
+  runner:(Vector StrView)      ; argv before the program; empty = none
+  default-target:StrSetting
+  targets:(Vector TargetConfig)
   opt:IntSetting
   cflags:(Vector StrView)
   link-args:(Vector StrView)
@@ -63,7 +75,9 @@
 
 (defn build-config ():BuildConfig
   (return (BuildConfig (str-setting) (str-setting) (str-setting) (str-setting)
-                       (str-setting) (str-setting) (str-setting)
+                       (str-setting) (str-setting)
+                       (str-setting) (str-setting) (str-setting) (str-setting) (str-setting)
+                       (make (Vector StrView)) (str-setting) (make (Vector TargetConfig))
                        (IntSetting 0 (Loc "" 0) false)
                        (make (Vector StrView)) (make (Vector StrView))
                        (make (Vector StrView)) (make (Vector StrView))
@@ -74,6 +88,12 @@
 
 (extend BuildConfig Drop)
 (defn drop (self:&BuildConfig):void
+  (drop (ref self 'runner))
+  (dotimes (i (count (ref self 'targets)))
+    (let (t:TargetConfig (invoke (ref self 'targets) i))
+      (drop (t 'cfg))
+      (free (as ptr (t 'cfg)))))
+  (drop (ref self 'targets))
   (drop (ref self 'cflags))
   (drop (ref self 'link-args))
   (drop (ref self 'libs))
@@ -94,7 +114,8 @@
 ; Decoding one file
 ; ---------------------------------------------------------------------------
 
-(defconst CONFIG-KEYS ":name :kind :version :entry :source-root :out-dir :target :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry")
+(defconst CONFIG-KEYS ":name :kind :version :entry :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target")
+(defconst TARGET-KEYS ":triple :mcpu :mmcu :sysroot :linker :runner :opt :cflags :link-args :libs :c-sources :pkg-config :shared :deps")
 
 (defn config-line (n:?&Node fallback:i32):i32
   (let (l:i32 (node-line (as ptr n) fallback))
@@ -269,6 +290,130 @@
           (return (config-fail err file hl (str ":pkg-config keys are header names, written as strings")))))))
   (return true))
 
+(defn config-new ():&BuildConfig
+  (let (c:&BuildConfig (unsafe/cast &BuildConfig (malloc (sizeof BuildConfig))))
+    (set! @c (build-config))
+    (return c)))
+
+; `["qemu-aarch64" "-L" "/usr/aarch64-linux-gnu"]`: replaces, so a later file
+; can swap the runner rather than extend it.
+(defn config-runner (c:&BuildConfig v:?&Node file:StrView line:i32 err:&String):bool
+  (let (vs:(Vector StrView) (make (Vector StrView)))
+    (when (not (config-strings &vs v "runner" file line err false))
+      (drop &vs)
+      (return false))
+    (when (= (count &vs) 0)
+      (drop &vs)
+      (return (config-fail err file line (str ":runner names no program"))))
+    (while (> (count (ref c 'runner)) 0) (remove-at (ref c 'runner) (- (count (ref c 'runner)) 1)))
+    (dotimes (i (count &vs)) (conj (ref c 'runner) (invoke &vs i)))
+    (drop &vs)
+    (return true)))
+
+(defn config-targets (c:&BuildConfig v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-MAP)
+    (return (config-fail err file line
+              (str ":targets takes a map from target names to maps, got " (edn-kind-name (edn-kind v))))))
+  (dotimes (i (edn-count v))
+    (let (tv:?&Node (edn-val v i)
+          tl:i32 (config-line tv line)
+          name:StrView (config-name (edn-key v i)))
+      (when (or (= (name 'len) 0) (strview-contains name "/"))
+        (return (config-fail err file tl (str ":targets keys are target names, as symbols or strings, without /"))))
+      (when (!= (edn-kind tv) EDN-MAP)
+        (return (config-fail err file tl
+                  (str ":targets " name " takes a map, such as {:triple \"aarch64-linux-gnu\"}, got "
+                        (edn-kind-name (edn-kind tv))))))
+      (let (t:&BuildConfig (config-new))
+        (conj (ref c 'targets) (TargetConfig name (Loc file tl) t))
+        (when (not (config-decode-map tv file t err name)) (return false)))))
+  (return true))
+
+; A key only the project sets, refused inside target `target`; a key only a
+; target sets, refused at the top. "" for neither.
+(defn config-misplaced (key:StrView target:StrView):String
+  (let (project-only:bool (or (= key "name") (= key "kind") (= key "version") (= key "entry")
+                              (= key "source-root") (= key "out-dir") (= key "provides")
+                              (= key "user-registry") (= key "targets") (= key "default-target"))
+        target-only:bool (or (= key "triple") (= key "mcpu") (= key "mmcu") (= key "sysroot")
+                             (= key "linker") (= key "runner")))
+    (cond (and project-only (> (target 'len) 0))
+            (return (str ":targets " target ": :" key " is the project's, not a target's"))
+          (and target-only (= (target 'len) 0))
+            (return (str ":" key " is a target's setting; put it in a target under :targets"))
+          true (return (make String)))))
+
+; One map's keys into `c`: a file's top level when `target` is "", else that
+; target's body.
+(defn config-decode-map (m:?&Node file:StrView c:&BuildConfig err:&String target:StrView):bool
+  (dotimes (i (edn-count m))
+    (let (kn:?&Node (edn-key m i)
+          v:?&Node (edn-val m i)
+          line:i32 (config-line v (config-line m 1)))
+      (match (edn-keyword kn)
+        ((err e) (return (config-fail err file line (str "a key must be a keyword"))))
+        ((ok kw)
+          (let (key:StrView (keyword-name kw)
+                wrong:String (config-misplaced key target))
+            (when (> (byte-len &wrong) 0) (return (config-fail err file line wrong)))
+            (drop &wrong)
+            (let (ok:bool
+                  (cond (= key "name") (config-str-setting (ref c 'name) v key file line err true)
+                        (= key "version") (config-str-setting (ref c 'version) v key file line err false)
+                        (= key "entry") (config-str-setting (ref c 'entry) v key file line err false)
+                        (= key "source-root") (config-str-setting (ref c 'source-root) v key file line err false)
+                        (= key "out-dir") (config-str-setting (ref c 'out-dir) v key file line err false)
+                        (= key "triple") (config-str-setting (ref c 'triple) v key file line err false)
+                        (= key "mcpu") (config-str-setting (ref c 'mcpu) v key file line err false)
+                        (= key "mmcu") (config-str-setting (ref c 'mmcu) v key file line err false)
+                        (= key "sysroot") (config-str-setting (ref c 'sysroot) v key file line err false)
+                        (= key "linker") (config-str-setting (ref c 'linker) v key file line err false)
+                        (= key "runner") (config-runner c v file line err)
+                        (= key "default-target") (config-str-setting (ref c 'default-target) v key file line err true)
+                        (= key "targets") (config-targets c v file line err)
+                        (= key "kind")
+                          (match (edn-keyword v)
+                            ((ok k)
+                              (if (or (= (keyword-name k) "program") (= (keyword-name k) "library"))
+                                (do (set! (c 'kind) (StrSetting (keyword-name k) (Loc file line) true))
+                                    true)
+                                (config-fail err file line
+                                  (str ":kind is :program or :library, not :" (keyword-name k)))))
+                            ((err e) (config-fail err file line (str ":kind is :program or :library"))))
+                        (= key "opt")
+                          (match (edn-int v)
+                            ((ok n)
+                              (if (and (>= n 0) (<= n 3))
+                                (do (set! (c 'opt) (IntSetting n (Loc file line) true)) true)
+                                (config-fail err file line (str ":opt is 0, 1, 2 or 3, not " n))))
+                            ((err e) (config-fail err file line (str ":opt is 0, 1, 2 or 3"))))
+                        (= key "cflags") (config-strings (ref c 'cflags) v key file line err false)
+                        (= key "link-args") (config-strings (ref c 'link-args) v key file line err false)
+                        (= key "c-sources") (config-strings (ref c 'c-sources) v key file line err false)
+                        (= key "libs") (config-strings (ref c 'libs) v key file line err true)
+                        (= key "pkg-config") (config-pkg-config c v file line err)
+                        (= key "provides")
+                          (do (while (> (count (ref c 'provides)) 0)
+                                (remove-at (ref c 'provides) (- (count (ref c 'provides)) 1)))
+                              (config-roots (ref c 'provides) v file line err))
+                        (= key "shared")
+                          (match (edn-bool v)
+                            ((ok b) (set! (c 'shared) (IntSetting (if b 1 0) (Loc file line) true)) true)
+                            ((err e) (config-fail err file line (str ":shared is true or false"))))
+                        (= key "deps") (config-deps c v file line err)
+                        (= key "user-registry")
+                          (match (edn-bool v)
+                            ((ok b) (set! (c 'user-registry) (IntSetting (if b 1 0) (Loc file line) true)) true)
+                            ((err e) (config-fail err file line (str ":user-registry is true or false"))))
+                        (> (target 'len) 0)
+                          (config-fail err file line
+                            (str ":targets " target ": unknown key :" key " (expected one of " TARGET-KEYS ")"))
+                        true
+                          (config-fail err file line
+                            (str "unknown key :" key " (expected one of " CONFIG-KEYS ")"))))
+              (when (not ok) (return false))))))))
+  (return true))
+
 ; Decode `text`, the contents of `file`, into `c`. False with `err` set to a
 ; located message when anything in it is wrong, a misspelled key included.
 (defn config-decode (text:StrView file:StrView c:&BuildConfig err:&String):bool
@@ -278,60 +423,7 @@
       (when (!= (edn-kind m) EDN-MAP)
         (return (config-fail err file (config-line m 1)
                   (str "expected a map, got " (edn-kind-name (edn-kind m))))))
-      (dotimes (i (edn-count m))
-        (let (kn:?&Node (edn-key m i)
-              v:?&Node (edn-val m i)
-              line:i32 (config-line v (config-line m 1)))
-          (match (edn-keyword kn)
-            ((err e) (return (config-fail err file line (str "a key must be a keyword"))))
-            ((ok kw)
-              (let (key:StrView (keyword-name kw)
-                    ok:bool
-                    (cond (= key "name") (config-str-setting (ref c 'name) v key file line err true)
-                          (= key "version") (config-str-setting (ref c 'version) v key file line err false)
-                          (= key "entry") (config-str-setting (ref c 'entry) v key file line err false)
-                          (= key "source-root") (config-str-setting (ref c 'source-root) v key file line err false)
-                          (= key "out-dir") (config-str-setting (ref c 'out-dir) v key file line err false)
-                          (= key "target") (config-str-setting (ref c 'target) v key file line err false)
-                          (= key "kind")
-                            (match (edn-keyword v)
-                              ((ok k)
-                                (if (or (= (keyword-name k) "program") (= (keyword-name k) "library"))
-                                  (do (set! (c 'kind) (StrSetting (keyword-name k) (Loc file line) true))
-                                      true)
-                                  (config-fail err file line
-                                    (str ":kind is :program or :library, not :" (keyword-name k)))))
-                              ((err e) (config-fail err file line (str ":kind is :program or :library"))))
-                          (= key "opt")
-                            (match (edn-int v)
-                              ((ok n)
-                                (if (and (>= n 0) (<= n 3))
-                                  (do (set! (c 'opt) (IntSetting n (Loc file line) true)) true)
-                                  (config-fail err file line (str ":opt is 0, 1, 2 or 3, not " n))))
-                              ((err e) (config-fail err file line (str ":opt is 0, 1, 2 or 3"))))
-                          (= key "cflags") (config-strings (ref c 'cflags) v key file line err false)
-                          (= key "link-args") (config-strings (ref c 'link-args) v key file line err false)
-                          (= key "c-sources") (config-strings (ref c 'c-sources) v key file line err false)
-                          (= key "libs") (config-strings (ref c 'libs) v key file line err true)
-                          (= key "pkg-config") (config-pkg-config c v file line err)
-                          (= key "provides")
-                            (do (while (> (count (ref c 'provides)) 0)
-                                  (remove-at (ref c 'provides) (- (count (ref c 'provides)) 1)))
-                                (config-roots (ref c 'provides) v file line err))
-                          (= key "shared")
-                            (match (edn-bool v)
-                              ((ok b) (set! (c 'shared) (IntSetting (if b 1 0) (Loc file line) true)) true)
-                              ((err e) (config-fail err file line (str ":shared is true or false"))))
-                          (= key "deps") (config-deps c v file line err)
-                          (= key "user-registry")
-                            (match (edn-bool v)
-                              ((ok b) (set! (c 'user-registry) (IntSetting (if b 1 0) (Loc file line) true)) true)
-                              ((err e) (config-fail err file line (str ":user-registry is true or false"))))
-                          true
-                            (config-fail err file line
-                              (str "unknown key :" key " (expected one of " CONFIG-KEYS ")"))))
-                (when (not ok) (return false)))))))
-      (return true))))
+      (return (config-decode-map m file c err "")))))
 
 ; ---------------------------------------------------------------------------
 ; Merging (§8.9)
@@ -362,7 +454,34 @@
   (merge-setting (ref into 'entry) (ref from 'entry))
   (merge-setting (ref into 'source-root) (ref from 'source-root))
   (merge-setting (ref into 'out-dir) (ref from 'out-dir))
-  (merge-setting (ref into 'target) (ref from 'target))
+  (merge-setting (ref into 'triple) (ref from 'triple))
+  (merge-setting (ref into 'mcpu) (ref from 'mcpu))
+  (merge-setting (ref into 'mmcu) (ref from 'mmcu))
+  (merge-setting (ref into 'sysroot) (ref from 'sysroot))
+  (merge-setting (ref into 'linker) (ref from 'linker))
+  (merge-setting (ref into 'default-target) (ref from 'default-target))
+  (when (> (count (ref from 'runner)) 0)
+    (while (> (count (ref into 'runner)) 0) (remove-at (ref into 'runner) (- (count (ref into 'runner)) 1)))
+    (merge-append (ref into 'runner) (ref from 'runner)))
+  ; A target the earlier file named takes the later file's settings over its own;
+  ; a new one moves across whole.
+  (let (moved:&(Vector TargetConfig) (ref from 'targets))
+    (dotimes (i (count moved))
+      (let (t:TargetConfig (invoke moved i)
+            at:i64 -1)
+        (dotimes (j (count (ref into 'targets)))
+          (when (= ((invoke (ref into 'targets) j) 'name) (t 'name)) (set! at (as i64 j))))
+        (if (< at 0)
+          (conj (ref into 'targets) (TargetConfig (t 'name) (t 'at) (config-new)))
+          0)
+        (let (dst:TargetConfig (invoke (ref into 'targets)
+                                       (if (< at 0) (- (count (ref into 'targets)) 1) (as usize at))))
+          (config-merge (dst 'cfg) (t 'cfg)))))
+    (while (> (count moved) 0)
+      (let (t:TargetConfig (invoke moved (- (count moved) 1)))
+        (drop (t 'cfg))
+        (free (as ptr (t 'cfg)))
+        (remove-at moved (- (count moved) 1)))))
   (when ((ref from 'opt) 'set) (set! (into 'opt) (from 'opt)))
   (merge-append (ref into 'cflags) (ref from 'cflags))
   (merge-append (ref into 'link-args) (ref from 'link-args))
