@@ -4667,3 +4667,21 @@ deferred. Nothing is built yet.
 Tests: `mt1` … `mt6` in `tests/suite-build.nuc`.
 
 Gate: 1611 pass, the 5 known datalayout failures, bootstrap PASS.
+
+## DOOM-port bug fix: a struct-literal `if` branch returned zero (2026-10-28)
+
+Found by the nuc-doom port (its ISSUE-003). `(defn f (c:bool):Fx (if c BIG (Fx 3)))`,
+with `BIG` a struct value, returned `zeroinitializer`: the literal's branch is
+`&Fx`, so the cond collapsed to void, and the implicit return turned the void
+into a zero.
+- **Join:** under a by-value struct want, a cond branch that is a pointer to
+  that struct now loads (`join-struct-branch` in `abi.nuc`), as the literal
+  does in every other typed slot.
+- **Return:** a cond that still lost its value is an error at an implicit
+  return, or at an explicit struct return (`reject-lost-join`), not a zero.
+
+Test: `s21-struct-literal-if-branch` in `tests/suite-s21.nuc`.
+
+Gate: 1599 pass, 18 fail. Those are the 5 known datalayout failures plus 13
+`suite-build` tests that see the port's own `build.edn` above the checkout;
+all 13 pass with it set aside. Bootstrap PASS.

@@ -11381,7 +11381,8 @@
       (emit-walk-cleanups scope)
       (if (and (!= g-fn-ret-abi null)
                (!= ((unsafe/cast &AbiInfo g-fn-ret-abi) 'kind) ABI-DIRECT))
-        (emit-struct-ret (as ptr v))
+        (do (reject-lost-join v g-fn-ret-type (cc 'line) "return")
+            (emit-struct-ret (as ptr v)))
         ; LW-3: coerce the returned value against the declared return type
         ; before emitting `ret`, mirroring the implicit end-of-body return
         ; path above (emit-defn: `coerce-int-val last-val ret`). Guard on
@@ -11914,6 +11915,7 @@
             (when (= bterm 0)
               ; A string-literal branch joins as a StrView, or as CStr under a CStr want.
               (set! bv (join-strlit-branch bv my-want (cc 'line)))
+              (set! bv (join-struct-branch bv my-want (cc 'line)))
               (let (join-lbl:StrView (fstr "cond.join" id "." i)
                     bty:ptr (bv 'type)
                     bline:i32 (node-line body-node 0))
@@ -17872,6 +17874,7 @@
                   (when (!= (frame-taint-survives last-val ret) 0)
                     (die-at (cc 'line)
                       "address of frame-local storage escapes via implicit return — the pointed-to storage is reclaimed when this function returns")))
+                (reject-lost-join last-val ret (cc 'line) (fstr fname ": implicit return"))
                 (if (!= ((unsafe/cast &AbiInfo g-fn-ret-abi) 'kind) ABI-DIRECT)
                   ; Struct return via the aggregate ABI. A void last expression
                   ; (degenerate fall-off) returns a zeroed struct.

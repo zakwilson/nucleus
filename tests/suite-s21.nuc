@@ -3895,6 +3895,26 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; A struct-literal branch (`&S`) beside a by-value S branch joins as S under an S
+; want. In return position the lost join returned zeroinitializer (ISSUE-003).
+(deftest s21-struct-literal-if-branch
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Fx v:i32)
+(defconst BIG (Fx 7))
+(defn r0 (c:bool):Fx (if c BIG (Fx 3)))
+(defn r1 (c:bool):Fx (let (r:Fx (if c BIG (Fx 3))) r))
+(defn r2 (c:bool):Fx (return (if c (Fx 3) BIG)))
+(defn r3 (c:bool):Fx (cond c BIG (not c) (Fx 4) true (Fx 5)))
+(defn main ():i32
+  (printf \"%d %d %d %d %d\\n\" ((r0 true) 'v) ((r1 false) 'v) ((r2 true) 'v) ((r3 false) 'v) ((r3 true) 'v))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "7 3 3 4 7\n"))
+    (drop &out))
+  (try (s21-type-refused "(defstruct Fx v:i32) (defstruct Gx v:i32) (defn f (c:bool):Fx (if c (Fx 1) (Gx 2)))" 3
+                         "f: implicit return type mismatch — returned value of type either Fx (line 3) or &Gx (line 3) does not match declared return type Fx"))
+  (return (ok)))
+
 ; `= expects integer operands` named none of the types an operator takes. Every
 ; operator the intrinsic cannot answer now says which protocol the type fails
 ; and how to conform; a struct-literal operand with no overload is refused.

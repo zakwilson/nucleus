@@ -328,6 +328,14 @@
     (when (> (why 'len) 0) (return why)))
   (return (type-display (v 'type))))
 
+; A cond that lost its value to disagreeing branches must fail at a return, not
+; reach it as the zero a void fall-off returns.
+(defn reject-lost-join (v:&Val ret:?&Type line:i32 what:StrView):void
+  (when (or (= ret null) (= ((unsafe/cast &Type ret) 'kind) TY-VOID)) (return))
+  (when (> ((v 'join-why) 'len) 0)
+    (die-at line (fstr what " type mismatch — returned value of type " (v 'join-why)
+                       " does not match declared return type " (type-display ret)))))
+
 ; Line 0 is a symbol branch: interned nodes carry no line of their own.
 (defn branch-type-display (t:?&Type line:i32):StrView
   (when (= line 0) (return (type-display t)))
@@ -1839,6 +1847,17 @@
       (let (mv:?&Val (coerce-int-val v (as ?&Type tgt) line))
         (when (!= mv null) (return mv)))))
   (collapse-strlit-cstr (as ptr v))
+  (return v))
+
+; A compound literal is `(ref S)`; under a by-value S want its branch joins as S,
+; as the literal does in every other typed slot (coerce-int-val's W5d load).
+(defn join-struct-branch (v:ref:Val want:ptr line:i32):&Val
+  (when (= want null) (return v))
+  (let (w:ptr:Type want
+        vt:ptr:Type (v 'type))
+    (when (and (= (w 'kind) TY-STRUCT) (= (vt 'kind) TY-PTR) (!= (vt 'elem) null))
+      (let (mv:?&Val (coerce-int-val v (as ?&Type want) line))
+        (when (!= mv null) (return mv)))))
   (return v))
 
 ; THE bool -> integer widening, in one function its two explicit askers CALL
