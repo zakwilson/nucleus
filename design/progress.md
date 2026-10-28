@@ -4710,3 +4710,16 @@ the tagged layout. `Maybe` and `Result` keep their niches.
 Test: `s21-maybe-shaped-union-keeps-arms` in `tests/suite-s21.nuc`.
 
 Gate: 1601 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a private caller made a template method stamp twice (2026-10-28)
+
+Found by the nuc-doom port (its ISSUE-008). When a template method was first
+stamped from inside a `defn-` body, the instance took that caller's privacy and
+file. Another namespace's call then filtered it out of the method set, missed
+the memo and stamped it again, giving "duplicate definition of 'count'".
+`generic-instantiate-in` now gives each stamp the template's `src-file` and
+`priv`, as it already did for `src-ns` and `src-imports`.
+
+Test: `s21-private-caller-stamps-public-method` in `tests/suite-s21.nuc`.
+
+Gate: 1602 pass, the same 18 fail. Bootstrap PASS.

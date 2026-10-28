@@ -3950,6 +3950,50 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+;; A template method first stamped from inside a `defn-` body was private, so
+;; another namespace's call missed the memo and stamped `count` again: a
+;; duplicate public definition (ISSUE-008).
+(deftest s21-private-caller-stamps-public-method
+  (let (dir:String (try (test-scratch-sub "s21-priv-stamp"))
+        d:StrView (string-as-view &dir)
+        a:String (try (write-into d "pa.nuc" "(ns pa)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.create)
+(defstruct Lump key:i64 size:i32)
+(defvar lumps:(Vector Lump) (make (Vector Lump)))
+(defvar index:(HashMap i64 i32) (make (HashMap i64 i32)))
+(defn- add-lump (l:Lump):void
+  (assoc &index (l 'key) (unsafe/cast i32 (count &lumps)))
+  (conj &lumps l))
+(defn add (l:Lump):void (add-lump l))
+(defn num-lumps ():i32 (unsafe/cast i32 (count &lumps)))
+"))
+        b:String (try (write-into d "pb.nuc" "(ns pb)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(defn small ():usize
+  (let (v (make (Vector i64)))
+    (conj &v 1)
+    (count &v)))
+"))
+        m:String (try (write-into d "main.nuc" "(import-use \"stdio.h\")
+(import-use pa)
+(import-use pb)
+(defn main ():i32
+  (add (Lump 5 1))
+  (printf \"%d %d\\n\" (num-lumps) (unsafe/cast i32 (small)))
+  (return 0))
+"))
+        out:String (try (build-run-file d "" (string-as-view &m))))
+    (try (check-golden (string-as-view &out) "1 1\n"))
+    (drop &out)
+    (drop &m)
+    (drop &b)
+    (drop &a)
+    (drop &dir))
+  (return (ok)))
+
 ; `= expects integer operands` named none of the types an operator takes. Every
 ; operator the intrinsic cannot answer now says which protocol the type fails
 ; and how to conform; a struct-literal operand with no overload is refused.

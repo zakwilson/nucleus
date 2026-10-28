@@ -3497,11 +3497,16 @@
           ; `p/tmpl` call in another namespace filters the first stamp out of the
           ; method set, `generic-find-method-exact`'s memo probe misses, and the
           ; instance is stamped (and emitted) twice under one symbol.
+          ; Its privacy and file are the template's too: stamped from inside a
+          ; `defn-` body it was private, and the next namespace's memo probe
+          ; missed it and stamped a duplicate (nuc-doom ISSUE-008).
           (set-fields! newm
                        'ir-name mangled
                        'origin-template mm
                        'src-ns (mm 'src-ns)
-                       'src-imports (mm 'src-imports))
+                       'src-imports (mm 'src-imports)
+                       'src-file (mm 'src-file)
+                       'priv (mm 'priv))
           (when (!= disc null) (set! (newm 'ir-fixed) 1))
           ; Stage 15 W9 item 43: and the body resolves its names as the TEMPLATE's
           ; file, not as this one. `mono-job-here` captured the call site's
