@@ -981,6 +981,9 @@
 ; meaningful answer and no eager registration is needed. Paths are compared by
 ; CONTENT — `resolve-import` is free to hand back a fresh buffer per call.
 (defvar g-file-ns:?&FileNsVec)
+; An imported file's bindings, kept under the REPL only: its `ns` gives the
+; prompt the bindings of that namespace's files (repl-adopt-ns-imports).
+(defvar g-path-imports:&(HashMap Symbol &ImportVec) (new (HashMap Symbol &ImportVec) g-arena))
 ; `g-file-ns` by path, for the walk that asks it once per flattened import.
 (defvar g-path-ns:&(HashMap Symbol Symbol) (new (HashMap Symbol Symbol) g-arena))
 
@@ -21650,6 +21653,10 @@
 ;
 ; A string path (`(import "stdio.h" 'c)`) routes to C-header parsing; the default
 ; prefix for a string import is `c` (handled by the callers).
+(defn note-file-imports (path:Symbol):void
+  (when (= g-interactive 0) (return))
+  (if-some (v g-file-imports) (assoc g-path-imports path v) 0))
+
 (defn do-import (form:?&Node name-node:?&Node prefix:Symbol line:i32):void
   (let (nn:&Node (unsafe/cast &Node name-node)
         bind-none:i32 (if (require-head? (import-form-head form)) 1 0))
@@ -21741,6 +21748,7 @@
                         (let (forms:ptr (desugar-emitting (read-emitting-raw (string-as-view &src) path)))
                           (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                           (drop &src)))
+                      (note-file-imports path)
                       (set! g-importing (import-list-pop g-importing))
                       (set! g-source-path save-path)
                       (set! g-current-ns save-ns)
@@ -21869,6 +21877,7 @@
                     (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                     ; Free imported source buffer
                     (drop &src)))
+                (note-file-imports path)
                 ; Pop from importing stack
                 (set! g-importing (import-list-pop g-importing))
                 (set! g-source-path save-path)
@@ -22923,8 +22932,9 @@
     (when (and (!= g-march-native 0) (not (symbol-none? g-target-triple-override)))
       (eprint "nucleusc: -march=native describes the host and cannot be combined with --target=\n")
       (return 2))
-    (when (and (= g-run 0) (< run-from argc))
-      (eprint "nucleusc: '--' passes arguments to a --run program; there is no --run\n")
+    (when (and (= g-run 0) (< run-from argc)
+               (or (= g-interactive 0) (symbol-none? source-file)))
+      (eprint "nucleusc: '--' passes arguments to a --run or -i program; there is none\n")
       (return 2))
     (when (!= g-run 0)
       (let (clash:StrView "")
@@ -22961,17 +22971,22 @@
           (return 2)))
       (resolve-arm))
 
-    ; REPL mode. The REPL reads no file, so `nucleus run-repl` names the one whose
-    ; C requirements the session needs.
+    ; REPL mode. With a file, its `main` runs beside the prompt
+    ; (design/stage27-build/run-repl.md), and its C requirements are the session's.
     (when (!= g-interactive 0)
+       (when (not (symbol-none? source-file))
+         (set! g-repl-entry source-file)
+         (set! g-run-argc (+ (- argc run-from) 1))
+         (set! g-run-argv (run-program-argv source-file argv run-from argc))
+         (when (symbol-none? g-creq-root) (set! g-creq-root source-file)))
        (if (symbol-none? g-creq-root)
          (creq-apply-pkgs g-pkg-config-args)
          (creqs-resolve g-creq-root))
-       (repl-main) (return 0))
+       (return (repl-main)))
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--depfile=<path>] [--missing-imports=<path>] [--ct-source=<root>=<dir>] [--list-imports] [--pkg-config=<pkg>] [--link-lib=<name>] [--library=<name>@<version>] [--build-id=<id>] [--strict-initializers] [--c-require=<edn>] [--c-require-unsafe=<edn>] [--c-requirements-of=<file>] [--resolve] [-i] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--depfile=<path>] [--missing-imports=<path>] [--ct-source=<root>=<dir>] [--list-imports] [--pkg-config=<pkg>] [--link-lib=<name>] [--library=<name>@<version>] [--build-id=<id>] [--strict-initializers] [--c-require=<edn>] [--c-require-unsafe=<edn>] [--c-requirements-of=<file>] [--resolve] [-i [<file.nuc>]] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
     (set! g-source-path source-file)
     (when (!= g-list-imports 0)
       (list-imports-main source-file)

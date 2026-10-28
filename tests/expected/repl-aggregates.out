@@ -1,0 +1,12 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc>   imported nucleus.vector
+nuc>   imported nucleus.create
+nuc>   #<(Vector i32)>
+nuc>   defined
+nuc>   #<Pt>
+nuc>   "a"
+nuc>   imported tests/fixtures/repl-ns-imports.nuc
+nuc> <repl>:1: error: unknown: str — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc>   "n=3 \"q\""
+nuc> 

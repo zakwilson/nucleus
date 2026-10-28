@@ -1,0 +1,4 @@
+(ns fx.nsimp)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(defn nsimp-val ():i32 (return 3))

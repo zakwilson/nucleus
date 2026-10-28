@@ -1,0 +1,343 @@
+; Stage 27 — which pkg-config packages provide a C header: each package's own
+; include directories, cached under $XDG_CACHE_HOME/nucleus (plan.md D-CACHE).
+;
+; Design: design/stage27-build/plan.md BT-6.
+
+(ns nucleus.build.index)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.node)
+(import-use nucleus.edn)
+(import-use nucleus.file)
+(import-use nucleus.process)
+(import-use nucleus.build.pkg)
+(import-use nucleus.build.graph)
+(import-use nucleus.build.exec)
+(import-use nucleus.build.resolve)
+
+; Every package: its `-I` directories `dirs[first .. first+n)` and the packages
+; it requires `reqs[rfirst .. rfirst+rn)`. `system` is what clang searches with
+; no flags: a header found there needs no package.
+(defstruct PkgDirs name:StrView first:usize n:usize rfirst:usize rn:usize)
+
+(defstruct HeaderIndex
+  pkgs:(Vector PkgDirs)
+  dirs:(Vector StrView)
+  reqs:(Vector StrView)
+  system:(Vector StrView))
+
+(defn header-index ():HeaderIndex
+  (return (HeaderIndex (make (Vector PkgDirs)) (make (Vector StrView)) (make (Vector StrView))
+                       (make (Vector StrView)))))
+
+(extend HeaderIndex Drop)
+(defn drop (self:&HeaderIndex):void
+  (drop (ref self 'pkgs))
+  (drop (ref self 'dirs))
+  (drop (ref self 'reqs))
+  (drop (ref self 'system)))
+
+(defn ix-intern (v:StrView):StrView
+  (return (symbol-as-view (symbol-intern v))))
+
+(defn ix-env (name:StrView):StrView
+  (match (env-var name)
+    ((some v) (return v))
+    (none (return ""))))
+
+(defn ix-split (v:StrView sep:i32 out:&(Vector StrView)):void
+  (let (start:usize 0
+        k:usize 0)
+    (while (<= k (v 'len))
+      (when (or (= k (v 'len)) (= (as i32 (aref (v 'data) (as i64 k))) sep))
+        (when (> k start)
+          (conj out (ix-intern (strview-take-bytes (strview-drop-bytes v start) (- k start)))))
+        (set! start (+ k 1)))
+      (set! k (+ k 1)))))
+
+(defn ix-pkg-config (args:&(Vector StrView)):String
+  (let (o:String (make String)
+        e:String (make String))
+    (when (!= (pkg-config-run args &o &e) 0)
+      (drop &o)
+      (set! o (make String)))
+    (drop &e)
+    (return o)))
+
+(defn ix-pkg-config-1 (a:StrView b:StrView):String
+  (let (args:(Vector StrView) (make (Vector StrView)))
+    (conj &args a)
+    (when (> (b 'len) 0) (conj &args b))
+    (let (o:String (ix-pkg-config &args))
+      (drop &args)
+      (return o))))
+
+; pkg-config's search path: `PKG_CONFIG_PATH`, then `PKG_CONFIG_LIBDIR` or the
+; built-in path. The cache is keyed by it, and by the sysroot.
+(defn pkg-search-dirs (out:&(Vector StrView)):StrView
+  (let (path:StrView (ix-env "PKG_CONFIG_PATH")
+        libdir:StrView (ix-env "PKG_CONFIG_LIBDIR"))
+    (ix-split path 58 out)
+    (if (> (libdir 'len) 0)
+      (ix-split libdir 58 out)
+      (let (o:String (ix-pkg-config-1 "--variable=pc_path" "pkg-config")
+            v:StrView (string-as-view &o))
+        (ix-split (strview-trim &v) 58 out)
+        (drop &o)))
+    (let (key:String (str "path=" path ";libdir=" libdir ";sysroot=" (ix-env "PKG_CONFIG_SYSROOT_DIR")))
+      (dotimes (i (count out)) (str-into &key ";" (invoke out i)))
+      (let (k:StrView (ix-intern (string-as-view &key)))
+        (drop &key)
+        (return k)))))
+
+; Every `.pc` file on the path, by name, mtime and size: a changed, added or
+; removed package changes the stamp.
+(defn pkg-search-stamp (dirs:&(Vector StrView)):StrView
+  (let (h:i64 HASH-SEED
+        ext:StrView ".pc")
+    (dotimes (i (count dirs))
+      (match (read-dir (invoke dirs i))
+        ((err e) 0)
+        ((ok d)
+          (let (de:DirEntries d)
+            (dir-sort &de)
+            (dotimes (j (dir-count &de))
+              (let (nm:StrView (dir-name &de j))
+                (when (strview-ends-with &nm &ext)
+                  (let (p:String (str (invoke dirs i) "/" nm))
+                    (match (file-stat (string-as-view &p))
+                      ((ok st)
+                        (let (line:String (str (string-as-view &p) " " (st 'mtime-ns) " " (st 'size) "\n"))
+                          (set! h (hash-fold-view h (string-as-view &line)))
+                          (drop &line)))
+                      ((err e) 0))
+                    (drop &p)))))
+            (drop &de)))))
+    (return (hash-hex h))))
+
+(defn index-add (idx:&HeaderIndex name:StrView dirs:&(Vector StrView) reqs:&(Vector StrView)):void
+  (conj (ref idx 'pkgs) (PkgDirs name (count (ref idx 'dirs)) (count dirs)
+                                 (count (ref idx 'reqs)) (count reqs)))
+  (dotimes (i (count dirs)) (conj (ref idx 'dirs) (invoke dirs i)))
+  (dotimes (i (count reqs)) (conj (ref idx 'reqs) (invoke reqs i))))
+
+; Whether the index knows `name`, and if so its direct requires into `out`.
+(defn index-requires (idx:&HeaderIndex name:StrView out:&(Vector StrView)):bool
+  (dotimes (i (count (ref idx 'pkgs)))
+    (let (p:PkgDirs (invoke (ref idx 'pkgs) i))
+      (when (= (p 'name) name)
+        (dotimes (j (p 'rn)) (view-add out (invoke (ref idx 'reqs) (+ (p 'rfirst) j))))
+        (return true))))
+  (return false))
+
+; The transitive closure of `index-requires`.
+(defn index-closure (idx:&HeaderIndex name:StrView out:&(Vector StrView)):void
+  (let (todo:(Vector StrView) (make (Vector StrView)))
+    (index-requires idx name &todo)
+    (while (> (count &todo) 0)
+      (let (n:StrView (invoke &todo (- (count &todo) 1)))
+        (remove-at &todo (- (count &todo) 1))
+        (when (and (not (view-has? out n)) (not (= n name)))
+          (conj out n)
+          (index-requires idx n &todo))))
+    (drop &todo)))
+
+; Per package from `--list-all`, in name order: `--cflags-only-I`, and its
+; requires, so a lookup never runs pkg-config.
+(defn index-build (idx:&HeaderIndex):void
+  (let (all:String (ix-pkg-config-1 "--list-all" "")
+        lines:(Vector StrView) (make (Vector StrView))
+        names:(Vector StrView) (make (Vector StrView)))
+    (ix-split (string-as-view &all) 10 &lines)
+    (dotimes (i (count &lines))
+      (let (l:StrView (invoke &lines i)
+            w:usize 0)
+        (while (and (< w (l 'len))
+                    (let (c:i32 (as i32 (aref (l 'data) (as i64 w)))) (not (or (= c 32) (= c 9)))))
+          (set! w (+ w 1)))
+        (when (> w 0) (view-add &names (ix-intern (strview-take-bytes l w))))))
+    (view-sort &names)
+    (dotimes (i (count &names))
+      (let (o:String (ix-pkg-config-1 "--cflags-only-I" (invoke &names i))
+            words:(Vector Symbol) (make (Vector Symbol))
+            dirs:(Vector StrView) (make (Vector StrView)))
+        (pkg-config-words &o &words)
+        (dotimes (j (count &words))
+          (let (w:StrView (symbol-as-view (invoke &words j)))
+            (when (and (strview-has-prefix w "-I") (> (w 'len) 2))
+              (view-add &dirs (ix-intern (strview-drop-bytes w 2))))))
+        (let (reqs:(Vector StrView) (make (Vector StrView)))
+          (pkg-config-requires (invoke &names i) &reqs)
+          (index-add idx (invoke &names i) &dirs &reqs)
+          (drop &reqs))
+        (drop &dirs)
+        (drop &words)
+        (drop &o)))
+    (drop &names)
+    (drop &lines)
+    (drop &all)))
+
+(defn ix-read-strs (v:?&Node out:&(Vector StrView)):void
+  (dotimes (j (edn-count v))
+    (match (edn-str (edn-nth v j))
+      ((ok s) (conj out (ix-intern s)))
+      ((err e) 0))))
+
+(defn index-cache-load (path:StrView key:StrView stamp:StrView idx:&HeaderIndex):bool
+  (match (exec-read-file path)
+    (none (return false))
+    ((some text)
+      (let (t:String text
+            ok:bool false)
+        (match (edn-parse-all (string-as-view &t))
+          ((err e) 0)
+          ((ok forms)
+            (let (m:?&Node (edn-nth forms 0)
+                  k:StrView ""
+                  s:StrView "")
+              (match (edn-str (edn-get m "key")) ((ok v) (set! k v)) ((err e) 0))
+              (match (edn-str (edn-get m "stamp")) ((ok v) (set! s v)) ((err e) 0))
+              (when (and (= k key) (= s stamp))
+                (let (ps:?&Node (edn-get m "packages"))
+                  (dotimes (i (edn-count ps))
+                    (let (row:?&Node (edn-nth ps i)
+                          dirs:(Vector StrView) (make (Vector StrView))
+                          reqs:(Vector StrView) (make (Vector StrView))
+                          name:StrView "")
+                      (match (edn-str (edn-nth row 0)) ((ok v) (set! name (ix-intern v))) ((err e) 0))
+                      (ix-read-strs (edn-nth row 1) &dirs)
+                      (ix-read-strs (edn-nth row 2) &reqs)
+                      (when (> (name 'len) 0) (index-add idx name &dirs &reqs))
+                      (drop &reqs)
+                      (drop &dirs))))
+                (set! ok true)))))
+        (drop &t)
+        (return ok)))))
+
+(defn ix-write-str (out:&String s:StrView):void
+  (match (edn-write out s) ((ok) 0) ((err e) 0)))
+
+; Written to a temporary and renamed; a cache that can't be written is only slower.
+(defn index-cache-save (dir:StrView path:StrView key:StrView stamp:StrView idx:&HeaderIndex):void
+  (match (make-dir dir) ((ok) 0) ((err e) 0))
+  (let (out:String (make String))
+    (str-into &out "{:key ")
+    (ix-write-str &out key)
+    (str-into &out "\n :stamp ")
+    (ix-write-str &out stamp)
+    (str-into &out "\n :packages [")
+    (dotimes (i (count (ref idx 'pkgs)))
+      (let (p:PkgDirs (invoke (ref idx 'pkgs) i))
+        (str-into &out (if (= i 0) "[" "\n            ["))
+        (ix-write-str &out (p 'name))
+        (str-into &out " [")
+        (dotimes (j (p 'n))
+          (when (> j 0) (str-into &out " "))
+          (ix-write-str &out (invoke (ref idx 'dirs) (+ (p 'first) j))))
+        (str-into &out "] [")
+        (dotimes (j (p 'rn))
+          (when (> j 0) (str-into &out " "))
+          (ix-write-str &out (invoke (ref idx 'reqs) (+ (p 'rfirst) j))))
+        (str-into &out "]]")))
+    (str-into &out "]}\n")
+    (let (tmp:String (str path ".tmp")
+          tv:StrView (string-as-view &tmp))
+      (match (file-create &tv)
+        ((ok f)
+          (let (fv:File f)
+            (match (write-str &fv (string-as-view &out)) ((ok) 0) ((err e) 0))
+            (match (file-close &fv) ((ok) 0) ((err e) 0))
+            (match (rename-file (string-as-view &tmp) path) ((ok) 0) ((err e) 0))))
+        ((err e) 0))
+      (drop &tmp))
+    (drop &out)))
+
+; clang's `#include <…>` list, from `clang -E -v`.
+(defn index-system-dirs (out:&(Vector StrView)):void
+  (let (c:Command (command "clang"))
+    (command-arg &c "-E")
+    (command-arg &c "-v")
+    (command-arg &c "-x")
+    (command-arg &c "c")
+    (command-arg &c "/dev/null")
+    (command-capture &c true)
+    (match (run &c)
+      ((ok o)
+        (let (lines:(Vector StrView) (make (Vector StrView))
+              inside:bool false)
+          (ix-split (string-as-view (ref o 'err)) 10 &lines)
+          (dotimes (i (count &lines))
+            (let (l:StrView (invoke &lines i))
+              (cond (strview-has-prefix l "#include <") (set! inside true)
+                    (strview-has-prefix l "End of search") (set! inside false)
+                    (and inside (strview-has-prefix l " "))
+                      (conj out (ix-intern (strview-trim &l)))
+                    true 0)))
+          (drop &lines)
+          (drop &o)))
+      ((err e) 0))
+    (drop &c)))
+
+; The index for the current pkg-config path: the cache when its stamp still
+; holds, else built and cached.
+(defn header-index-load (idx:&HeaderIndex):void
+  (let (dirs:(Vector StrView) (make (Vector StrView))
+        key:StrView (pkg-search-dirs &dirs)
+        stamp:StrView (pkg-search-stamp &dirs))
+    (index-system-dirs (ref idx 'system))
+    (match (xdg-cache-home)
+      ((ok d)
+        (let (cache:String d
+              dir:String (str (string-as-view &cache) "/nucleus")
+              path:String (str (string-as-view &dir) "/pkg-index.edn"))
+          (when (not (index-cache-load (string-as-view &path) key stamp idx))
+            (index-build idx)
+            (match (make-dir (string-as-view &cache)) ((ok) 0) ((err e) 0))
+            (index-cache-save (string-as-view &dir) (string-as-view &path) key stamp idx))
+          (drop &path)
+          (drop &dir)
+          (drop &cache)))
+      ((err e) (index-build idx)))
+    (drop &dirs)))
+
+(defn ix-in-dirs? (dirs:&(Vector StrView) header:StrView):bool
+  (dotimes (i (count dirs))
+    (let (p:String (str (invoke dirs i) "/" header)
+          hit:bool (file-exists? (string-as-view &p)))
+      (drop &p)
+      (when hit (return true))))
+  (return false))
+
+; The packages that provide `header`, in name order, less any that only reach
+; it through another candidate it requires (gtk4 reaches glib.h through
+; glib-2.0). None when the system or one of `extra` already finds it.
+(defn index-providers (idx:&HeaderIndex header:StrView extra:&(Vector StrView)
+                       out:&(Vector StrView)):void
+  (when (or (ix-in-dirs? (ref idx 'system) header) (ix-in-dirs? extra header)) (return))
+  (let (cands:(Vector StrView) (make (Vector StrView)))
+    (dotimes (i (count (ref idx 'pkgs)))
+      (let (p:PkgDirs (invoke (ref idx 'pkgs) i)
+            hit:bool false)
+        (dotimes (j (p 'n))
+          (let (f:String (str (invoke (ref idx 'dirs) (+ (p 'first) j)) "/" header))
+            (when (file-exists? (string-as-view &f)) (set! hit true))
+            (drop &f)))
+        (when hit (conj &cands (p 'name)))))
+    (if (< (count &cands) 2)
+      (dotimes (i (count &cands)) (conj out (invoke &cands i)))
+      (dotimes (i (count &cands))
+        (let (c:StrView (invoke &cands i)
+              rs:(Vector StrView) (make (Vector StrView))
+              through:bool false)
+          (index-closure idx c &rs)
+          (dotimes (j (count &cands))
+            (when (and (!= i j) (view-has? &rs (invoke &cands j))) (set! through true)))
+          (when (not through) (conj out c))
+          (drop &rs))))
+    (drop &cands)))

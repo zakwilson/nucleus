@@ -4,6 +4,8 @@ scripts/autopilot/
 .claude/settings.local.json
 build/
 build/out/
+# The build tool's library, not an output directory.
+!/lib/nucleus/build/
 *.o
 bin/nucleusc
 .stfolder/

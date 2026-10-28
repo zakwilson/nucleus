@@ -46,7 +46,9 @@
   no-source:bool
   name:StrView        ; uninstall's library, "" = this project
   lib-paths:(Vector StrView)   ; --library-paths= files, after the default one
-  no-registry:bool)
+  no-registry:bool
+  repl-format:StrView   ; repl/run-repl: "" = the compiler's default
+  diag:StrView)         ; --diagnostics=…, passed to each compile; "" = text
 
 (defstruct Project
   root:StrView
@@ -76,16 +78,63 @@
   pre-picks:(Vector StrView)   ; name, header, package: what an object was compiled against
   )
 
-(defn tool-die (msg:StrView):void
-  (eprint "nucleus: error: " msg "\n")
+(defn tool-noloc ():Loc (return (Loc "" -1)))
+
+; Under --diagnostics=edn the tool's own diagnostics are the compiler's maps too,
+; so a reader finds both by their opening bytes.
+(defn tool-render (severity:StrView at:Loc msg:StrView):String
+  (let (out:String (make String))
+    (if (= g-diag-edn 0)
+      (do (str-into &out "nucleus: " severity ": ")
+          (when (> ((at 'file) 'len) 0)
+            (str-into &out (at 'file))
+            (when (>= (at 'line) 0) (str-into &out ":" (at 'line)))
+            (str-into &out ": "))
+          (str-into &out msg "\n"))
+      (diag-render &out severity (if (= ((at 'file) 'len) 0) (symbol-none) (symbol-intern (at 'file)))
+                   (at 'line) msg))
+    (return out)))
+
+(defn tool-report (severity:StrView at:Loc msg:StrView):void
+  (let (out:String (tool-render severity at msg))
+    (eprint (string-as-view &out))
+    (drop &out)))
+
+(defn tool-die-at (at:Loc msg:StrView):void
+  (tool-report "error" at msg)
   (exit 1))
 
+(defn tool-die (msg:StrView):void (tool-die-at (tool-noloc) msg))
+
+; The build libraries spell an error "FILE[:LINE]: error: MSG"; a map wants the parts.
+(defn tool-lib-split (err:StrView at:&Loc):StrView
+  (set! @at (tool-noloc))
+  (let (marker:StrView ": error: ")
+    (match (strview-find &err &marker)
+      (none (return err))
+      ((some k)
+        (let (head:StrView (strview-take-bytes err k)
+              c:usize (match (strview-rfind-byte &head 58) ((some j) j) (none (head 'len)))
+              num:StrView (strview-drop-bytes head (+ c 1)))
+          (set! (at 'file) head)
+          (when (< c (head 'len))
+            (match (parse i32 &num)
+              ((ok n) (set! (at 'file) (strview-take-bytes head c)) (set! (at 'line) n))
+              ((err e) 0)))
+          (return (strview-drop-bytes err (+ k 9))))))))
+
+(defn tool-lib-die (err:StrView):void
+  (when (= g-diag-edn 0) (eprint err "\n") (exit 1))
+  (let (at:Loc (tool-noloc)
+        msg:StrView (tool-lib-split err &at))
+    (tool-die-at at msg)))
+
 (defn tool-usage ():i32
-  (eprint "usage: nucleus build|run|run-repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<triple>] [-- <args>...]\n"
+  (eprint "usage: nucleus build|run|run-repl|repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<triple>] [--repl-format=text|json] [--diagnostics=text|edn] [-- <args>...]\n"
           "       nucleus install [--prefix=<dir>|--user] [--no-source] [--target=<triple>]\n"
           "       nucleus uninstall [<name>] [--prefix=<dir>|--user] [--target=<triple>]\n"
           "       nucleus init-local\n"
-          "  every command: [--library-paths=<file>]... [--no-user-registry]\n")
+          "  every command: [--library-paths=<file>]... [--no-user-registry] [--diagnostics=text|edn]\n")
   (return 2))
 
 ; ---------------------------------------------------------------------------
@@ -155,23 +204,19 @@
       (set! k (+ k 1)))
     (return false)))
 
-(defn tool-warn-leaves (key:StrView v:StrView at:StrView):void
+(defn tool-warn-leaves (key:StrView v:StrView at:Loc):void
   (when (tool-leaves? v)
-    (eprint "nucleus: warning: " at ": " key " '" v
-            "' is outside the project\n  note: a local path belongs in build-local.edn\n")))
+    (tool-report "warning" at (fstr key " '" v "' is outside the project\n  note: a local path belongs in build-local.edn"))))
 
 ; A committed build.edn should build in any checkout (overview.md §8.6).
-(defn tool-at (s:&StrSetting):StrView
-  (return (fstr ((s 'at) 'file) ":" ((s 'at) 'line))))
-
 (defn tool-check-committed-paths (c:&BuildConfig):void
-  (when ((c 'entry) 'set) (tool-warn-leaves ":entry" ((c 'entry) 'value) (tool-at (ref c 'entry))))
+  (when ((c 'entry) 'set) (tool-warn-leaves ":entry" ((c 'entry) 'value) ((c 'entry) 'at)))
   (when ((c 'source-root) 'set)
-    (tool-warn-leaves ":source-root" ((c 'source-root) 'value) (tool-at (ref c 'source-root))))
+    (tool-warn-leaves ":source-root" ((c 'source-root) 'value) ((c 'source-root) 'at)))
   (when ((c 'out-dir) 'set)
-    (tool-warn-leaves ":out-dir" ((c 'out-dir) 'value) (tool-at (ref c 'out-dir))))
+    (tool-warn-leaves ":out-dir" ((c 'out-dir) 'value) ((c 'out-dir) 'at)))
   (dotimes (i (count (ref c 'c-sources)))
-    (tool-warn-leaves ":c-sources" (invoke (ref c 'c-sources) i) "build.edn")))
+    (tool-warn-leaves ":c-sources" (invoke (ref c 'c-sources) i) (Loc "build.edn" -1))))
 
 (defn tool-load-config-file (path:StrView into:&BuildConfig):void
   (when (not (file-exists? path)) (return))
@@ -182,8 +227,7 @@
             c:BuildConfig (build-config)
             err:String (make String))
         (when (not (config-decode (string-as-view &t) (tool-rel path) &c &err))
-          (eprint (string-as-view &err) "\n")
-          (exit 1))
+          (tool-lib-die (string-as-view &err)))
         (when (= (tool-base path) "build.edn") (tool-check-committed-paths &c))
         (config-merge into &c)
         (drop &c)
@@ -246,24 +290,27 @@
 ; A warning or note printed once per run, though a retry builds the project again.
 (defvar g-tool-said:?&(Vector StrView) null)
 
-(defn tool-say-once (msg:StrView):void
+(defn tool-say-once (severity:StrView at:Loc msg:StrView):void
   (when (= g-tool-said null)
     (let (v:&(Vector StrView) (unsafe/cast &(Vector StrView) (malloc (sizeof (Vector StrView)))))
       (set! @v (make (Vector StrView)))
       (set! g-tool-said v)))
   (let (said:&(Vector StrView) (unsafe/cast &(Vector StrView) g-tool-said))
-    (when (not (view-has? said msg))
-      (conj said (tool-intern msg))
-      (eprint msg "\n"))))
+    (let (out:String (tool-render severity at msg)
+          v:StrView (string-as-view &out))
+      (when (not (view-has? said v))
+        (conj said (tool-intern v))
+        (eprint v))
+      (drop &out))))
 
 (defn tool-warn-unsafe-req (r:&CRequirement):void
-  (tool-say-once (fstr "nucleus: warning: " ((r 'at) 'file) ":" ((r 'at) 'line)
-                       ": :unsafe/pkg-config replaces every other requirement on \"" (r 'header) "\"")))
+  (tool-say-once "warning" (r 'at)
+                 (fstr ":unsafe/pkg-config replaces every other requirement on \"" (r 'header) "\"")))
 
 (defn tool-warn-unsafe-version (d:&DepSpec):void
   (let (u:StrSetting (d 'unsafe-version))
-    (tool-say-once (fstr "nucleus: warning: " ((u 'at) 'file) ":" ((u 'at) 'line)
-                         ": :unsafe/version replaces every other constraint on " (d 'name)))))
+    (tool-say-once "warning" (u 'at)
+                   (fstr ":unsafe/version replaces every other constraint on " (d 'name)))))
 
 ; Every `.nuc` file under each provided root is public (plan.md BT-7).
 (defn tool-lib-files (p:&Project):void
@@ -302,14 +349,14 @@
     (let (c:&BuildConfig (ref p 'config))
       (when ((c 'kind) 'set)
         (let (k:StrView ((c 'kind) 'value)
-              at:StrView (tool-at (ref c 'kind)))
+              at:Loc ((c 'kind) 'at))
           (cond (= k "library")
-                  (do (when (not ((c 'name) 'set)) (tool-die (fstr at ": a library needs :name")))
-                      (when (not ((c 'version) 'set)) (tool-die (fstr at ": a library needs :version")))
+                  (do (when (not ((c 'name) 'set)) (tool-die-at at "a library needs :name"))
+                      (when (not ((c 'version) 'set)) (tool-die-at at "a library needs :version"))
                       (set! (p 'is-lib) true)
                       (set! (p 'version) ((c 'version) 'value)))
                 (= k "program") 0
-                true (tool-die (fstr at ": :kind is :program or :library, not :" k)))))
+                true (tool-die-at at (fstr ":kind is :program or :library, not :" k)))))
       (dotimes (i (count (ref c 'pkg-config)))
         (let (r:CRequirement (invoke (ref c 'pkg-config) i))
           (when (r 'unsafe) (tool-warn-unsafe-req &r))))
@@ -322,8 +369,8 @@
       (if ((c 'source-root) 'set)
         (let (sr:StrView (tool-join root ((c 'source-root) 'value)))
           (when (not (dir-exists? sr))
-            (tool-die (fstr (((c 'source-root) 'at) 'file) ":" (((c 'source-root) 'at) 'line)
-                            ": :source-root '" ((c 'source-root) 'value) "' is not a directory")))
+            (tool-die-at ((c 'source-root) 'at)
+                         (fstr ":source-root '" ((c 'source-root) 'value) "' is not a directory")))
           (set! (p 'source-root) sr))
         (let (src:StrView (tool-join root "src"))
           (set! (p 'source-root) (if (dir-exists? src) src root))))
@@ -331,8 +378,8 @@
             ((c 'entry) 'set)
         (let (en:StrView (tool-join root ((c 'entry) 'value)))
           (when (not (file-exists? en))
-            (tool-die (fstr (((c 'entry) 'at) 'file) ":" (((c 'entry) 'at) 'line)
-                            ": :entry '" ((c 'entry) 'value) "' does not exist")))
+            (tool-die-at ((c 'entry) 'at)
+                         (fstr ":entry '" ((c 'entry) 'value) "' does not exist")))
           (set! (p 'entry) en))
         true (set! (p 'entry) (tool-find-entry &p)))
       ; A program's roots too, so a dependency that provides one is a collision.
@@ -373,6 +420,9 @@
   (dotimes (i (count (ref p 'inc-dirs)))
     (conj into "-I")
     (conj into (invoke (ref p 'inc-dirs) i))))
+
+(defn tool-report-args (o:&ToolOpts into:&(Vector StrView)):void
+  (when (> ((o 'diag) 'len) 0) (conj into (o 'diag))))
 
 ; `run` and `run-repl` take the same vector, less what only a link reads.
 (defn tool-compile-flags (p:&Project o:&ToolOpts into:&(Vector StrView) linking:bool):void
@@ -429,6 +479,7 @@
     (command-search &c false)
     (command-cwd &c (p 'root))
     (command-arg &c "--list-imports")
+    (when (= g-diag-edn 1) (command-arg &c "--diagnostics=edn"))
     (let (inc:(Vector StrView) (make (Vector StrView)))
       (tool-include-args p &inc)
       (dotimes (i (count &inc)) (command-arg &c (invoke &inc i)))
@@ -627,8 +678,7 @@
       (tool-registry-files p o &files)
       (dotimes (i (count &files))
         (when (not (registry-load (invoke &files i) &entries &err))
-          (eprint "nucleus: error: " (string-as-view &err) "\n")
-          (exit 1)))
+          (tool-lib-die (string-as-view &err))))
       (dotimes (i (count &entries))
         (let (e:RegEntry (invoke &entries i)
               l:Library (library-new))
@@ -639,7 +689,7 @@
                     (tool-die (fstr (tool-display (e 'file)) ": :libraries names " (e 'name) ", but "
                                     (tool-display (e 'dir)) " is the library " (l 'name))))
                   (conj (ref p 'reg) l))
-              (tool-say-once (fstr "nucleus: warning: " (string-as-view &err)
+              (tool-say-once "warning" (tool-noloc) (fstr (string-as-view &err)
                                    "\n  note: skipping the registry entry " (tool-display (e 'dir))))))))
       (drop &err)
       (drop &entries)
@@ -656,7 +706,7 @@
         (let (l:Library (library-new))
           (if (library-from-manifest (invoke &paths i) &l &err)
             (conj (ref p 'inst) l)
-            (tool-say-once (fstr "nucleus: warning: " (string-as-view &err))))))
+            (tool-say-once "warning" (tool-noloc) (fstr (string-as-view &err))))))
       (drop &err)
       (drop &paths)))
   (return (ref p 'inst)))
@@ -752,7 +802,7 @@
         (match (version-constraint-parse (c 'value))
           ((ok vc)
             (when (not (version-satisfies? (l 'version) &vc))
-              (tool-die (fstr ((c 'at) 'file) ":" ((c 'at) 'line) ": " (l 'name) " "
+              (tool-die-at (c 'at) (fstr (l 'name) " "
                               (if (= ((l 'version) 'len) 0) "(no version)" (l 'version))
                               " from " (l 'where) " does not satisfy '" (c 'value) "'"))))
           ((err e) 0))))
@@ -835,7 +885,7 @@
                               true ""))
         (cond (= (why 'len) 0) (set! pre true)
               no-src (tool-die (fstr (l 'name) " (" (tool-place &l) ") has no source, and can't be used prebuilt: " why))
-              true (tool-say-once (fstr "nucleus: note: " (l 'name) " is compiled from source: " why)))))
+              true (tool-say-once "note" (tool-noloc) (fstr (l 'name) " is compiled from source: " why)))))
     (conj (ref p 'deps) l)
     (if pre
       (do (view-add (ref p 'inc-dirs) (l 'include))
@@ -849,7 +899,7 @@
       (view-add (ref p 'inc-dirs) (l 'source))))
   ; The two places outside the repository, so "works on my machine" shows.
   (when (or (= (l 'tier) TIER-LOCAL) (= (l 'tier) TIER-REGISTRY))
-    (tool-say-once (fstr "nucleus: note: using " (l 'name) " from " (tool-display (l 'dir)) " (" (l 'where) ")")))
+    (tool-say-once "note" (tool-noloc) (fstr "using " (l 'name) " from " (tool-display (l 'dir)) " (" (l 'where) ")")))
   (when (!= (l 'config) null)
     (let (c:&BuildConfig (unsafe/cast &BuildConfig (l 'config)))
       (dotimes (i (count (ref c 'pkg-config)))
@@ -859,7 +909,7 @@
         (view-add (ref p 'dep-cflags) (tool-cflag-for (l 'dir) (invoke (ref c 'cflags) i))))
       (dotimes (i (count (ref c 'libs))) (view-add (ref p 'dep-libs) (invoke (ref c 'libs) i)))
       (when (> (count (ref c 'c-sources)) 0)
-        (tool-say-once (fstr "nucleus: warning: " (l 'name) " has :c-sources, which a consumer doesn't build yet")))
+        (tool-say-once "warning" (tool-noloc) (fstr (l 'name) " has :c-sources, which a consumer doesn't build yet")))
       (dotimes (i (count (ref c 'deps)))
         (let (d:DepSpec (invoke (ref c 'deps) i))
           (when ((d 'unsafe-version) 'set) (tool-warn-unsafe-version &d))
@@ -876,7 +926,6 @@
         (tool-check-versions &l d)
         (return))))
   (let (l:Library (library-new)
-        at:StrView (fstr ((d 'at) 'file) ":" ((d 'at) 'line))
         found:bool false)
     (if ((d 'path) 'set)
       (let (ps:StrSetting (d 'path)
@@ -885,16 +934,16 @@
             err:String (make String))
         (when (not (library-from-project dir (tool-display (fstr dir "/build.edn"))
                                         (if local TIER-LOCAL TIER-CONFIG) ((ps 'at) 'file) &l &err))
-          (tool-die (fstr ((ps 'at) 'file) ":" ((ps 'at) 'line) ": :deps " (d 'name) " :path: "
+          (tool-die-at (ps 'at) (fstr ":deps " (d 'name) " :path: "
                           (string-as-view &err))))
         (when (not (= (l 'name) (d 'name)))
-          (tool-die (fstr ((ps 'at) 'file) ":" ((ps 'at) 'line) ": :deps " (d 'name) " :path '" (ps 'value)
+          (tool-die-at (ps 'at) (fstr ":deps " (d 'name) " :path '" (ps 'value)
                           "' is the library " (l 'name))))
         (drop &err)
         (set! found true))
       (set! found (tool-find-named p o (d 'name) &l)))
     (when (not found)
-      (tool-die (fstr at ": no library named " (d 'name) " was found"
+      (tool-die-at (d 'at) (fstr "no library named " (d 'name) " was found"
                       "\n  note: give it a :path in build-local.edn, or run `nucleus init-local` to use a sibling checkout")))
     (tool-check-versions &l d)
     (tool-use p o l (and ((d 'prebuilt) 'set) (= ((d 'prebuilt) 'value) 1)))))
@@ -1001,8 +1050,7 @@
     (let (ok:bool (resolve-c &rq tool-installed? tool-requires res))
       (drop &rq)
       (when (not ok)
-        (eprint "nucleus: error: " (string-as-view (ref res 'error)) "\n")
-        (exit 1))))
+        (tool-die (string-as-view (ref res 'error))))))
   (let (pp:&(Vector StrView) (ref p 'pre-picks)
         k:usize 0
         again:bool false)
@@ -1015,7 +1063,7 @@
           (set! again true)))
       (set! k (+ k 3)))
     (when again (return true)))
-  (dotimes (i (count (ref res 'notes))) (tool-say-once (fstr "nucleus: note: " (invoke (ref res 'notes) i))))
+  (dotimes (i (count (ref res 'notes))) (tool-say-once "note" (tool-noloc) (fstr (invoke (ref res 'notes) i))))
   (dotimes (i (count (ref res 'picks))) (view-add (ref p 'pkgs) ((invoke (ref res 'picks) i) 'pkg)))
   (when (and (not allow-choice) (> (count (ref res 'ambiguous)) 0))
     (let (amb:&(Vector Pick) (ref res 'ambiguous)
@@ -1027,12 +1075,13 @@
           (while (and (< i (count amb)) (= ((invoke amb i) 'header) h))
             (set! alts (fstr alts (if (= (alts 'len) 0) "" ", ") ((invoke amb i) 'pkg)))
             (inc! i))
-          (eprint "nucleus: error: '" h "' is provided by several packages: " alts "\n")
-          (if has-config
-            (eprint "  note: choose one in build.edn, as :pkg-config {\"" h "\" [\""
-                    (strview-take-bytes alts (match (strview-find-byte &alts 44) ((some k) k) (none (alts 'len))))
-                    "\"]}\n")
-            (eprint "  note: run `nucleus init` to write the choice to build.edn\n"))))
+          (tool-report "error" (tool-noloc)
+                       (fstr "'" h "' is provided by several packages: " alts
+                             (if has-config
+                               (fstr "\n  note: choose one in build.edn, as :pkg-config {\"" h "\" [\""
+                                     (strview-take-bytes alts (match (strview-find-byte &alts 44) ((some k) k) (none (alts 'len))))
+                                     "\"]}")
+                               "\n  note: run `nucleus init` to write the choice to build.edn")))))
       (exit 1)))
   (return false))
 
@@ -1147,6 +1196,7 @@
           e:Edge (edge prog (fstr prog ".tmp") root)
           cc:StrView (tool-compiler))
       (conj (ref e 'argv) cc)
+      (tool-report-args o (ref e 'report))
       (tool-compile-flags p o (ref e 'argv) true)
       (dotimes (k (count &objpaths)) (conj (ref e 'argv) (fstr "--link-arg=" (invoke &objpaths k))))
       (conj (ref e 'argv) (fstr "--depfile=" out "/.deps/" (p 'name) ".d"))
@@ -1203,6 +1253,7 @@
         dep:StrView (fstr (p 'out-dir) "/.deps/" (tool-obj-name (tool-rel output)) ".d")
         av:&(Vector StrView) (ref e 'argv))
     (conj av (tool-compiler))
+    (tool-report-args o (ref e 'report))
     (tool-compile-flags p o av false)
     (conj av mode)
     (when (> (a1 'len) 0) (conj av a1))
@@ -1370,6 +1421,7 @@
         (return 1)))
     (conj &args (tool-compiler))
     (conj &args "--run")
+    (tool-report-args o &args)
     (tool-compile-flags p o &args false)
     (conj &args (p 'entry))
     (conj &args "--")
@@ -1379,12 +1431,26 @@
         (inc! k)))
     (return (tool-hand-off &args))))
 
-(defn tool-run-repl (p:&Project o:&ToolOpts):i32
+; `repl` is the bare session; `run-repl` also runs the program's `main` beside
+; the prompt (design/stage27-build/run-repl.md).
+(defn tool-repl (p:&Project o:&ToolOpts run:bool argc:i32 argv:ptr):i32
+  (when (> (count (ref (ref p 'config) 'c-sources)) 0)
+    (tool-die (fstr "a JIT session can't load the C objects :c-sources builds, so " (o 'cmd)
+                    " can't either; nucleus run builds and runs the program")))
   (let (args:(Vector StrView) (make (Vector StrView)))
     (conj &args (tool-compiler))
     (conj &args "-i")
+    (when (> ((o 'repl-format) 'len) 0) (conj &args (o 'repl-format)))
+    (tool-report-args o &args)
     (tool-compile-flags p o &args false)
-    (conj &args (fstr "--c-requirements-of=" (p 'entry)))
+    (when (not (p 'is-lib)) (conj &args (fstr "--c-requirements-of=" (p 'entry))))
+    (when run
+      (conj &args (p 'entry))
+      (conj &args "--")
+      (let (k:i32 (o 'args-from))
+        (while (< k argc)
+          (conj &args (argv-view argv k))
+          (inc! k))))
     (return (tool-hand-off &args))))
 
 (defn tool-remove (path:StrView):void
@@ -1816,10 +1882,10 @@
   (when (< argc 2) (return (tool-usage)))
   (let (o:ToolOpts (ToolOpts (argv-view argv 1)
                              (tool-jobs-default) -1 "" argc "" false false ""
-                             (make (Vector StrView)) false)
+                             (make (Vector StrView)) false "" "")
         i:i32 2)
     (when (not (or (= (o 'cmd) "build") (= (o 'cmd) "run") (= (o 'cmd) "run-repl")
-                   (= (o 'cmd) "clean") (= (o 'cmd) "init") (= (o 'cmd) "init-local")
+                   (= (o 'cmd) "repl") (= (o 'cmd) "clean") (= (o 'cmd) "init") (= (o 'cmd) "init-local")
                    (= (o 'cmd) "install") (= (o 'cmd) "uninstall")))
       (eprint "nucleus: unknown command '" (o 'cmd) "'\n")
       (return (tool-usage)))
@@ -1852,11 +1918,17 @@
                 (conj (ref o 'lib-paths) (tool-join (tool-cwd) (strview-drop-bytes a 16)))
               (= a "--no-user-registry")
                 (set! (o 'no-registry) true)
+              (or (= a "--diagnostics=text") (= a "--diagnostics=edn"))
+                (do (set! (o 'diag) a)
+                    (set! g-diag-edn (if (= a "--diagnostics=edn") 1 0)))
+              (and (or (= a "--repl-format=text") (= a "--repl-format=json"))
+                   (or (= (o 'cmd) "repl") (= (o 'cmd) "run-repl")))
+                (set! (o 'repl-format) a)
               true
                 (do (eprint "nucleus: unknown option '" a "'\n") (return (tool-usage)))))
       (inc! i))
-    (when (and (< (o 'args-from) argc) (not (= (o 'cmd) "run")))
-      (eprint "nucleus: only run passes arguments after --\n")
+    (when (and (< (o 'args-from) argc) (not (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl"))))
+      (eprint "nucleus: only run and run-repl pass arguments after --\n")
       (return 2))
     (when (and (> ((o 'prefix) 'len) 0) (o 'user))
       (eprint "nucleus: --prefix and --user name two prefixes; give one\n")
@@ -1886,7 +1958,8 @@
     (when (and (not (= (o 'cmd) "clean")) (tool-resolve &p o &res false)) (return TOOL-RETRY))
     (cond (= (o 'cmd) "build") (return (tool-build &p o))
           (= (o 'cmd) "run") (return (tool-run &p o argc argv))
-          (= (o 'cmd) "run-repl") (return (tool-run-repl &p o))
+          (= (o 'cmd) "run-repl") (return (tool-repl &p o true argc argv))
+          (= (o 'cmd) "repl") (return (tool-repl &p o false argc argv))
           (= (o 'cmd) "install") (return (tool-install &p o))
           true (return (tool-clean &p o))))
   (return 0))

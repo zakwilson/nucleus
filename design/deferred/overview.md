@@ -834,3 +834,7 @@ Options:
 - a list of POSIX prefixes (`_SC_`, `_PC_`, `_CS_`, `_POSIX_`, `_XOPEN_`);
 - skip only `__` and `_` + lowercase, which would admit glibc internals such as
   `_IO_*`.
+
+## Integer literal typing
+
+Integer literals are i32 unless they're big enough to be i64. Expressions overflow rather than promote. That's probably right, but it would be great to have `42:i64` shorthand to avoid bulky `as` syntax.

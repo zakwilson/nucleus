@@ -15,7 +15,8 @@ form. The design is in `design/stage27-build/`.
 ```
 nucleus build     [-j N] [-O0..-O3] [--target=TRIPLE]
 nucleus run       [same options] [-- ARGS...]
-nucleus run-repl  [same options]
+nucleus run-repl  [same options] [--repl-format=text|json] [-- ARGS...]
+nucleus repl      [same options] [--repl-format=text|json]
 nucleus clean
 nucleus init
 nucleus init-local
@@ -24,13 +25,23 @@ nucleus uninstall [NAME] [--prefix=DIR | --user] [--target=TRIPLE]
 ```
 
 Every command also takes `--library-paths=FILE` (repeatable) and
-`--no-user-registry` (see [Dependencies](#dependencies)).
+`--no-user-registry` (see [Dependencies](#dependencies)), and
+`--diagnostics=text|edn`.
+
+With `--diagnostics=edn`, every compile the command runs writes its
+diagnostics as EDN maps ([Structured diagnostics](compiler.md#structured-diagnostics)).
+The tool's own errors, warnings and notes use the same maps. A `build.edn`
+error, for example, gives its `:file` and `:line`. Progress lines such as
+`nucleus: building …` stay text, so a reader picks out the diagnostics as the
+lines that start with `{:severity`. The flag doesn't count as a change to a
+step's command, so switching it rebuilds nothing.
 
 | Command | What it does |
 |---------|--------------|
 | `build` | Brings `build/<name>` up to date, or for a library its headers, objects and archive (see [Library projects](#library-projects)). Prints `nucleus: building <output> (<reason>)` for each step it runs, or `nucleus: <name> is up to date`. |
 | `run` | Compiles and runs the program in this process (`nucleusc --run`), passing what follows `--`. Its exit status is the program's. A project with `:c-sources` is built and the binary run instead, because a C object can't join a JIT session. |
-| `run-repl` | Starts `nucleusc -i` with the project's flags. The REPL applies the C requirements of the entry file's import closure, as a build would, and loads their libraries. It imports nothing itself: import a header or one of the project's files at the prompt. |
+| `run-repl` | Runs the program with a REPL beside it: `nucleusc -i ENTRY -- ARGS` with the project's flags. `main` runs on its own thread, and the prompt starts in the entry file's namespace. The prompt can read and set the program's globals and redefine its functions while it runs. At the end of input it waits for `main` and exits with its status. Like `repl`, it refuses a project with `:c-sources`, whose objects can't join a JIT session. See [Running a program at the prompt](compiler.md#running-a-program-at-the-prompt). |
+| `repl` | Starts `nucleusc -i` with the project's flags, and imports and runs nothing. The REPL applies the C requirements of the entry file's import closure, as a build would, and loads their libraries. Import a header or one of the project's files at the prompt. Both `repl` and `run-repl` pass `--repl-format=` to the compiler, so `--repl-format=json` gives one JSON object per REPL error, as `nucleusc -i` does. |
 | `init` | Writes `build.edn`, recording each choice the conventions couldn't make (see [Choosing C packages](#choosing-c-packages)). Refused if a `build.edn` already exists. |
 | `init-local` | Writes `build-local.edn`, pointing each library the project needs at a sibling checkout that provides it (see [`nucleus init-local`](#nucleus-init-local)). |
 | `clean` | Removes what the tool wrote: the outputs, their temporaries and depfiles, the log, then every directory under `build/` that this leaves empty, and `build/` itself. |
@@ -103,7 +114,8 @@ The comment can then go, and from the project root:
 ```
 nucleus build        # build/charge
 nucleus run          # compile and run in-process
-nucleus run-repl     # a REPL with GTK's flags and libraries; (import-use "gtk/gtk.h") at the prompt
+nucleus run-repl     # run it, with a prompt in its namespace beside the window
+nucleus repl         # a REPL with GTK's flags and libraries; (import-use "gtk/gtk.h") at the prompt
 ```
 
 Other files in `src/` are compiled only when an import reaches them.
@@ -474,7 +486,7 @@ src/fy/conf.nuc:4: error: defvar: 'g-greet' has a run-time initializer, and this
 The build id that the headers carry is a hash of the compiler, the name and
 version, the flags, and every public file's path and contents. It does not
 depend on where the checkout is, and the header's comment names the source
-relative to the project root. `run` and `run-repl` refuse a library.
+relative to the project root. `run` and `run-repl` refuse a library; `repl` doesn't.
 
 ## Installing a library
 

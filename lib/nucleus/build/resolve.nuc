@@ -1,0 +1,427 @@
+; Stage 27 — C requirement sets, resolved (overview.md §8.8): intersect each
+; header's sets, drop what isn't installed, pick in the root project's order,
+; and check the picks' `Requires:` against the other headers.
+;
+; Design: design/stage27-build/plan.md BT-6.
+
+(ns nucleus.build.resolve)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use "stdlib.h")
+
+; Where a set came from, most binding first. Only RANK-TABLE and RANK-INDEX are
+; advisory: they apply to a header that no other set names.
+(defconst RANK-CONFIG 0)    ; build.edn, build-local.edn
+(defconst RANK-ROOT 1)      ; an annotation in the project's own source
+(defconst RANK-DEP 2)       ; an annotation in a dependency or a header
+(defconst RANK-TABLE 3)     ; c-packages.edn
+(defconst RANK-INDEX 4)     ; the packages whose include directories hold it
+
+; One set; its specs are `specs[first .. first+n)` of the owning CRequests.
+(defstruct Requirement
+  header:StrView file:StrView line:i32 rank:i32 unsafe:bool first:usize n:usize)
+
+(defstruct CRequests reqs:(Vector Requirement) specs:(Vector StrView))
+
+(defn c-requests ():CRequests
+  (return (CRequests (make (Vector Requirement)) (make (Vector StrView)))))
+
+(extend CRequests Drop)
+(defn drop (self:&CRequests):void
+  (drop (ref self 'reqs))
+  (drop (ref self 'specs)))
+
+; Starts a set; `c-require-spec` then adds its alternatives in order.
+(defn c-require (rq:&CRequests header:StrView file:StrView line:i32 rank:i32 unsafe:bool):void
+  (conj (ref rq 'reqs) (Requirement header file line rank unsafe (count (ref rq 'specs)) 0)))
+
+(defn c-require-spec (rq:&CRequests spec:StrView):void
+  (let (k:usize (- (count (ref rq 'reqs)) 1)
+        r:Requirement (invoke (ref rq 'reqs) k))
+    (conj (ref rq 'specs) spec)
+    (set! (r 'n) (+ (r 'n) 1))
+    (set (ref rq 'reqs) k r)))
+
+(defstruct Pick header:StrView pkg:StrView)
+
+; `ambiguous` holds one Pick per installed alternative of each header that only
+; the index answers, in order; such a header gets no pick.
+(defstruct Resolution
+  picks:(Vector Pick)
+  notes:(Vector StrView)
+  ambiguous:(Vector Pick)
+  error:String)
+
+(defn resolution ():Resolution
+  (return (Resolution (make (Vector Pick)) (make (Vector StrView)) (make (Vector Pick))
+                      (make String))))
+
+(extend Resolution Drop)
+(defn drop (self:&Resolution):void
+  (drop (ref self 'picks))
+  (drop (ref self 'notes))
+  (drop (ref self 'ambiguous))
+  (drop (ref self 'error)))
+
+(defn resolved-pkg (res:&Resolution header:StrView):StrView
+  (dotimes (i (count (ref res 'picks)))
+    (let (p:Pick (invoke (ref res 'picks) i))
+      (when (= (p 'header) header) (return (p 'pkg)))))
+  (return ""))
+
+; ---------------------------------------------------------------------------
+; Specs and names
+; ---------------------------------------------------------------------------
+
+(defn rs-intern (s:String):StrView
+  (let (v:StrView (symbol-as-view (symbol-intern (string-as-view &s))))
+    (drop &s)
+    (return v)))
+
+; `gtk4 >= 4.10` → `gtk4`: up to the first blank or comparison byte.
+(defn spec-name (spec:StrView):StrView
+  (let (k:usize 0)
+    (while (< k (spec 'len))
+      (let (c:i32 (as i32 (aref (spec 'data) (as i64 k))))
+        (when (or (= c 32) (= c 9) (= c 60) (= c 61) (= c 62) (= c 33))
+          (return (symbol-as-view (symbol-intern (strview-take-bytes spec k))))))
+      (set! k (+ k 1)))
+    (return spec)))
+
+(defn view-has? (v:&(Vector StrView) s:StrView):bool
+  (dotimes (i (count v)) (when (= (invoke v i) s) (return true)))
+  (return false))
+
+(defn view-add (v:&(Vector StrView) s:StrView):void
+  (when (not (view-has? v s)) (conj v s)))
+
+(defn view-less? (a:StrView b:StrView):bool
+  (return (< (strview-cmp-raw &a &b) 0)))
+
+(defn view-sort (v:&(Vector StrView)):void
+  (let (i:usize 1)
+    (while (< i (count v))
+      (let (j:usize i)
+        (while (and (> j 0) (view-less? (invoke v j) (invoke v (- j 1))))
+          (let (t:StrView (invoke v j))
+            (set v j (invoke v (- j 1)))
+            (set v (- j 1) t))
+          (set! j (- j 1))))
+      (set! i (+ i 1)))))
+
+(defn req-spec (rq:&CRequests r:&Requirement i:usize):StrView
+  (return (invoke (ref rq 'specs) (+ (r 'first) i))))
+
+(defn req-names? (rq:&CRequests r:&Requirement name:StrView):bool
+  (dotimes (i (r 'n)) (when (= (spec-name (req-spec rq r i)) name) (return true)))
+  (return false))
+
+(defn req-show (rq:&CRequests r:&Requirement):StrView
+  (let (out:String (str "\n  note: " (r 'file) ":" (r 'line) " requires ["))
+    (dotimes (i (r 'n))
+      (str-into &out (if (= i 0) "\"" " \"") (req-spec rq r i) "\""))
+    (str-into &out "]")
+    (return (rs-intern out))))
+
+; `name`'s transitive Requires, from `requires` (which gives the direct ones).
+(defn requires-closure (name:StrView requires:(fn void)(StrView &(Vector StrView))
+                        out:&(Vector StrView)):void
+  (let (todo:(Vector StrView) (make (Vector StrView)))
+    (requires name &todo)
+    (while (> (count &todo) 0)
+      (let (n:StrView (invoke &todo (- (count &todo) 1)))
+        (remove-at &todo (- (count &todo) 1))
+        (when (and (not (view-has? out n)) (not (= n name)))
+          (conj out n)
+          (requires n &todo))))
+    (drop &todo)))
+
+; ---------------------------------------------------------------------------
+; One header
+; ---------------------------------------------------------------------------
+
+; The sets that decide a header. An `unsafe/` set replaces those at its rank
+; and below, never a more binding one's: a dependency can't widen its consumer.
+; Otherwise every binding set, else the table's, else the index's.
+(defn slot-used (rq:&CRequests header:StrView out:&(Vector usize)):void
+  (let (unsafe:bool false
+        ub:i32 9
+        best:i32 9)
+    (dotimes (i (count (ref rq 'reqs)))
+      (let (r:Requirement (invoke (ref rq 'reqs) i))
+        (when (= (r 'header) header)
+          (when (and (r 'unsafe) (< (r 'rank) ub)) (set! unsafe true) (set! ub (r 'rank)))
+          (when (< (r 'rank) best) (set! best (r 'rank))))))
+    (dotimes (i (count (ref rq 'reqs)))
+      (let (r:Requirement (invoke (ref rq 'reqs) i))
+        (when (= (r 'header) header)
+          (when (cond unsafe (if (r 'unsafe)
+                               (= (r 'rank) ub)
+                               (or (< (r 'rank) ub) (= (r 'rank) RANK-CONFIG)))
+                      (<= best RANK-DEP) (<= (r 'rank) RANK-DEP)
+                      true (= (r 'rank) best))
+            (conj out i)))))))
+
+; The set whose order wins: the most binding, and among dependencies the one
+; whose file sorts first, so the order never comes from the search (§8.8).
+(defn slot-order (rq:&CRequests used:&(Vector usize)):usize
+  (let (k:usize (invoke used 0))
+    (dotimes (i (count used))
+      (let (a:Requirement (invoke (ref rq 'reqs) (invoke used i))
+            b:Requirement (invoke (ref rq 'reqs) k))
+        (when (or (< (a 'rank) (b 'rank))
+                  (and (= (a 'rank) RANK-DEP) (= (b 'rank) RANK-DEP)
+                       (view-less? (a 'file) (b 'file))))
+          (set! k (invoke used i)))))
+    (return k)))
+
+(defn slot-shows (rq:&CRequests used:&(Vector usize) out:&String):void
+  (dotimes (i (count used))
+    (let (r:Requirement (invoke (ref rq 'reqs) (invoke used i)))
+      (str-into out (req-show rq &r)))))
+
+; One header's state during the search.
+(defstruct Slot
+  header:StrView
+  used:(Vector usize)
+  cands:(Vector StrView)       ; installed, in the winning order
+  named:(Vector StrView)       ; every package any of its sets names
+  out-names:(Vector StrView)   ; every alternative dropped, beside why
+  out-whys:(Vector StrView)
+  choice:i32)
+
+(defn slot-new (header:StrView):&Slot
+  (let (s:&Slot (unsafe/cast &Slot (malloc (sizeof Slot))))
+    (set! @s (Slot header (make (Vector usize)) (make (Vector StrView)) (make (Vector StrView))
+                   (make (Vector StrView)) (make (Vector StrView)) -1))
+    (return s)))
+
+(defn slot-free (s:&Slot):void
+  (drop (ref s 'used))
+  (drop (ref s 'cands))
+  (drop (ref s 'named))
+  (drop (ref s 'out-names))
+  (drop (ref s 'out-whys))
+  (free (as ptr s)))
+
+(defn slot-drop-why (s:&Slot name:StrView why:StrView):void
+  (when (not (view-has? (ref s 'out-names) name))
+    (conj (ref s 'out-names) name)
+    (conj (ref s 'out-whys) why)))
+
+(defn slot-why (rq:&CRequests s:&Slot name:StrView):StrView
+  (dotimes (i (count (ref s 'out-names)))
+    (when (= (invoke (ref s 'out-names) i) name) (return (invoke (ref s 'out-whys) i))))
+  (dotimes (i (count (ref s 'used)))
+    (let (r:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) i)))
+      (when (not (req-names? rq &r name))
+        (return (rs-intern (str name " is ruled out by " (r 'file) ":" (r 'line)))))))
+  (return (rs-intern (str name " conflicts with the packages other headers need"))))
+
+; Fills the slot, or writes the header's error and answers false.
+(defn slot-build (rq:&CRequests installed:(fn bool)(&(Vector StrView)) s:&Slot
+                  err:&String):bool
+  (slot-used rq (s 'header) (ref s 'used))
+  (let (ord:Requirement (invoke (ref rq 'reqs) (slot-order rq (ref s 'used)))
+        names:(Vector StrView) (make (Vector StrView))
+        missing:(Vector StrView) (make (Vector StrView)))
+    (dotimes (j (count (ref s 'used)))
+      (let (r:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) j)))
+        (dotimes (k (r 'n)) (view-add (ref s 'named) (spec-name (req-spec rq &r k))))))
+    (dotimes (i (ord 'n))
+      (let (nm:StrView (spec-name (req-spec rq &ord i))
+            in-all:bool true)
+        (dotimes (j (count (ref s 'used)))
+          (let (r:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) j)))
+            (when (and in-all (not (req-names? rq &r nm)))
+              (set! in-all false)
+              (slot-drop-why s nm (rs-intern (str nm " is ruled out by " (r 'file) ":" (r 'line)))))))
+        (when in-all (view-add &names nm))))
+    (when (= (count &names) 0)
+      (str-into err "no C package satisfies '" (s 'header) "': no package is in every set")
+      (slot-shows rq (ref s 'used) err)
+      (drop &missing)
+      (drop &names)
+      (return false))
+    (dotimes (i (count &names))
+      (let (nm:StrView (invoke &names i)
+            specs:(Vector StrView) (make (Vector StrView))
+            constrained:bool false)
+        (conj &specs nm)
+        (dotimes (j (count (ref s 'used)))
+          (let (r:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) j)))
+            (dotimes (k (r 'n))
+              (let (sp:StrView (req-spec rq &r k))
+                (when (and (= (spec-name sp) nm) (not (= sp nm)))
+                  (set! constrained true)
+                  (view-add &specs sp))))))
+        (if (installed &specs)
+          (conj (ref s 'cands) nm)
+          (do (conj &missing nm)
+              (slot-drop-why s nm
+                (if constrained
+                  (rs-intern (str nm " is not installed in a version the requirements accept"))
+                  (rs-intern (str nm " is not installed"))))))
+        (drop &specs)))
+    (when (= (count (ref s 'cands)) 0)
+      (str-into err "no C package satisfies '" (s 'header) "'")
+      (slot-shows rq (ref s 'used) err)
+      (str-into err "\n  note: not installed:")
+      (dotimes (i (count &missing)) (str-into err (if (= i 0) " " ", ") (invoke &missing i)))
+      (drop &missing)
+      (drop &names)
+      (return false))
+    (drop &missing)
+    (drop &names)
+    (return true)))
+
+; ---------------------------------------------------------------------------
+; The search
+; ---------------------------------------------------------------------------
+
+; Requires-closures computed so far: `memo-of[i]` names a package whose closure
+; is `memo[memo-at[i] .. memo-at[i+1])`.
+(defstruct Memo names:(Vector StrView) at:(Vector usize) flat:(Vector StrView))
+
+(defn memo-closure (m:&Memo name:StrView requires:(fn void)(StrView &(Vector StrView))
+                    out:&(Vector StrView)):void
+  (dotimes (i (count (ref m 'names)))
+    (when (= (invoke (ref m 'names) i) name)
+      (let (k:usize (invoke (ref m 'at) i)
+            end:usize (if (< (+ i 1) (count (ref m 'at))) (invoke (ref m 'at) (+ i 1)) (count (ref m 'flat))))
+        (while (< k end)
+          (conj out (invoke (ref m 'flat) k))
+          (set! k (+ k 1)))
+        (return))))
+  (let (c:(Vector StrView) (make (Vector StrView)))
+    (requires-closure name requires &c)
+    (conj (ref m 'names) name)
+    (conj (ref m 'at) (count (ref m 'flat)))
+    (dotimes (i (count &c))
+      (conj (ref m 'flat) (invoke &c i))
+      (conj out (invoke &c i)))
+    (drop &c)))
+
+; Does `a` require a package that slot `sb`'s sets name but `sb` didn't pick?
+(defn pick-clashes? (m:&Memo a:StrView b:StrView sb:&Slot
+                     requires:(fn void)(StrView &(Vector StrView))):bool
+  (let (c:(Vector StrView) (make (Vector StrView))
+        hit:bool false)
+    (memo-closure m a requires &c)
+    (dotimes (i (count &c))
+      (let (r:StrView (invoke &c i))
+        (when (and (not (= r b)) (view-has? (ref sb 'named) r)) (set! hit true))))
+    (drop &c)
+    (return hit)))
+
+(defn slot-pick (s:&Slot):StrView
+  (return (invoke (ref s 'cands) (as usize (s 'choice)))))
+
+(defn slots-agree? (m:&Memo slots:&(Vector &Slot) upto:usize
+                    requires:(fn void)(StrView &(Vector StrView))):bool
+  (let (si:&Slot (invoke slots upto)
+        p:StrView (slot-pick si))
+    (dotimes (j upto)
+      (let (sj:&Slot (invoke slots j)
+            q:StrView (slot-pick sj))
+        (when (or (pick-clashes? m p q sj requires) (pick-clashes? m q p si requires))
+          (return false)))))
+  (return true))
+
+; Depth first, each slot in its own order: the first consistent assignment.
+(defn slots-search (m:&Memo slots:&(Vector &Slot)
+                    requires:(fn void)(StrView &(Vector StrView))):bool
+  (let (n:usize (count slots)
+        i:i64 0)
+    (dotimes (k n)
+      (let (s:&Slot (invoke slots k)) (set! (s 'choice) -1)))
+    (while (and (>= i 0) (< i (as i64 n)))
+      (let (s:&Slot (invoke slots (as usize i))
+            placed:bool false)
+        (set! (s 'choice) (+ (s 'choice) 1))
+        (while (and (not placed) (< (as usize (s 'choice)) (count (ref s 'cands))))
+          (if (slots-agree? m slots (as usize i) requires)
+            (set! placed true)
+            (set! (s 'choice) (+ (s 'choice) 1))))
+        (if placed
+          (do (set! i (+ i 1))
+              (when (< i (as i64 n))
+                (let (nx:&Slot (invoke slots (as usize i))) (set! (nx 'choice) -1))))
+          (set! i (- i 1)))))
+    (return (= i (as i64 n)))))
+
+(defn slots-conflict-error (m:&Memo slots:&(Vector &Slot)
+                            requires:(fn void)(StrView &(Vector StrView)) err:&String):void
+  (str-into err "no choice of C packages satisfies every header")
+  (dotimes (i (count slots))
+    (let (s:&Slot (invoke slots i))
+      (str-into err "\n  note: '" (s 'header) "' accepts")
+      (dotimes (j (count (ref s 'cands)))
+        (let (c:StrView (invoke (ref s 'cands) j)
+              rs:(Vector StrView) (make (Vector StrView)))
+          (str-into err (if (= j 0) " " ", ") c)
+          (memo-closure m c requires &rs)
+          (let (shown:bool false)
+            (dotimes (k (count &rs))
+              (let (r:StrView (invoke &rs k)
+                    used:bool false)
+                (dotimes (t (count slots))
+                  (when (and (!= t i) (view-has? (ref (invoke slots t) 'named) r)) (set! used true)))
+                (when used
+                  (str-into err (if shown ", " " (requires ") r)
+                  (set! shown true))))
+            (when shown (str-into err ")")))
+          (drop &rs))))))
+
+; Resolves every header `rq` names. False with `out.error` set when nothing fits;
+; a header only the index answers, with several packages, goes in `ambiguous`.
+(defn resolve-c (rq:&CRequests installed:(fn bool)(&(Vector StrView))
+                 requires:(fn void)(StrView &(Vector StrView)) out:&Resolution):bool
+  (let (headers:(Vector StrView) (make (Vector StrView))
+        slots:(Vector &Slot) (make (Vector &Slot))
+        m:Memo (Memo (make (Vector StrView)) (make (Vector usize)) (make (Vector StrView)))
+        ok:bool true)
+    (dotimes (i (count (ref rq 'reqs)))
+      (view-add &headers ((invoke (ref rq 'reqs) i) 'header)))
+    (view-sort &headers)
+    (dotimes (h (count &headers))
+      (when ok
+        (let (s:&Slot (slot-new (invoke &headers h)))
+          (if (not (slot-build rq installed s (ref out 'error)))
+            (do (set! ok false) (slot-free s))
+            (let (r0:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) 0)))
+              (if (and (= (r0 'rank) RANK-INDEX) (> (count (ref s 'cands)) 1))
+                (do (dotimes (j (count (ref s 'cands)))
+                      (conj (ref out 'ambiguous) (Pick (s 'header) (invoke (ref s 'cands) j))))
+                    (slot-free s))
+                (conj &slots s)))))))
+    (when (and ok (not (slots-search &m &slots requires)))
+      (slots-conflict-error &m &slots requires (ref out 'error))
+      (set! ok false))
+    (when ok
+      (dotimes (i (count &slots))
+        (let (s:&Slot (invoke &slots i)
+              p:StrView (slot-pick s)
+              other:StrView "")
+          (conj (ref out 'picks) (Pick (s 'header) p))
+          ; §8.8: a pick that isn't every set's first choice is said aloud.
+          (dotimes (j (count (ref s 'used)))
+            (let (r:Requirement (invoke (ref rq 'reqs) (invoke (ref s 'used) j))
+                  f:StrView (spec-name (req-spec rq &r 0)))
+              (when (and (= (other 'len) 0) (not (= f p))) (set! other f))))
+          (when (> (other 'len) 0)
+            (conj (ref out 'notes)
+                  (rs-intern (str "'" (s 'header) "' uses " p " (" (slot-why rq s other) ")")))))))
+    (dotimes (i (count &slots)) (slot-free (invoke &slots i)))
+    (drop &slots)
+    (drop (ref m 'names))
+    (drop (ref m 'at))
+    (drop (ref m 'flat))
+    (drop &headers)
+    (return ok)))

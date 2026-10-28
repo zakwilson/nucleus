@@ -1,0 +1,85 @@
+; Stage 27 — the build graph: what to run, in what order, and what each step
+; reads. Backend-neutral (overview.md Q2): the executor in `nucleus.build.exec`
+; runs it, and nothing else emits it yet.
+;
+; Design: design/stage27-build/plan.md BT-5.
+
+(ns nucleus.build.graph)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.fnv)
+
+; One command making one file. The command writes `tmp`, which is renamed to
+; `output` only when it succeeds, so an interrupted or failed step never leaves
+; a partial output where the next build would trust it.
+(defstruct Edge
+  output:StrView
+  tmp:StrView
+  argv:(Vector StrView)     ; argv[0] is the program
+  cwd:StrView
+  depfile:StrView           ; what the command read, gcc format; "" for none
+  compiler-id:StrView       ; argv[0]'s identity; "" when not tracked
+  after:(Vector usize)      ; edges that must finish first
+  report:(Vector StrView))  ; after argv[0]; they change only how it reports, so not the hash
+
+(defstruct Graph edges:(Vector Edge))
+
+(defn graph ():Graph (return (Graph (make (Vector Edge)))))
+
+(defn edge (output:StrView tmp:StrView cwd:StrView):Edge
+  (return (Edge output tmp (make (Vector StrView)) cwd "" "" (make (Vector usize)) (make (Vector StrView)))))
+
+(defn graph-add (g:&Graph e:Edge):usize
+  (conj (ref g 'edges) e)
+  (return (- (count (ref g 'edges)) 1)))
+
+(extend Graph Drop)
+(defn drop (self:&Graph):void
+  (dotimes (i (count (ref self 'edges)))
+    (let (e:Edge (invoke (ref self 'edges) i))
+      (drop (ref e 'argv))
+      (drop (ref e 'after))
+      (drop (ref e 'report))))
+  (drop (ref self 'edges)))
+
+; ---------------------------------------------------------------------------
+; Hashing: FNV-1a, written as 16 hex digits
+; ---------------------------------------------------------------------------
+
+(defconst HASH-SEED -3750763034362895579)
+
+(defn hash-fold (h:i64 p:&ui8 n:usize):i64
+  (dotimes (i n) (set! h (fnv1a-byte h (as i64 (aref p (as i64 i))))))
+  (return h))
+
+(defn hash-fold-view (h:i64 v:StrView):i64
+  (when (= (v 'len) 0) (return h))
+  (return (hash-fold h (v 'data) (v 'len))))
+
+(defn hash-hex (h:i64):StrView
+  (let (out:String (make String)
+        digits:StrView "0123456789abcdef")
+    (dotimes (k 16)
+      (let (d:i64 (bit-and (bit-shr h (as i64 (* (- 15 k) 4))) 15))
+        (string-push-bytes-raw &out (unsafe/ptr+ (digits 'data) d) 1)))
+    (let (s:StrView (symbol-as-view (symbol-intern (string-as-view &out))))
+      (drop &out)
+      (return s))))
+
+; Every argument, NUL-separated so `a b` and `ab` differ, then the directory
+; the command runs in: a changed flag is a changed command (overview.md §4.2).
+(defn edge-command-hash (e:&Edge):StrView
+  (let (h:i64 HASH-SEED
+        z:&ui8 (as &ui8 (alloca ui8 1)))
+    (set! (aref z 0) 0)
+    (dotimes (i (count (ref e 'argv)))
+      (set! h (hash-fold-view h (invoke (ref e 'argv) i)))
+      (set! h (hash-fold h z 1)))
+    (set! h (hash-fold-view h (e 'cwd)))
+    (return (hash-hex h))))

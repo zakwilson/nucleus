@@ -4573,3 +4573,58 @@ BT-0 … BT-11 are built. Departures are in the *Built* note in
   `--ct-source`.
 
 Gate: 1601 pass, the 5 known datalayout failures, bootstrap PASS.
+
+## Stage 27 — `nucleus run-repl` runs the program (2026-10-26, uncommitted)
+
+At the user's request, `nucleus run-repl` now runs the program with a prompt
+beside it, and the bare session is `nucleus repl`. The design and its
+departures are in [stage27-build/run-repl.md](stage27-build/run-repl.md).
+
+- **RL-1.** `nucleusc -i FILE [-- ARGS]` imports the file, enters its
+  namespace, and starts `main` on a thread of its own. The prompt stays on
+  the main thread. End of input waits for `main` and exits with its status.
+  While the program runs, a redefinition or `forget` keeps the old code.
+- **RL-2.** The functions of the program's own files (under the entry's
+  directory, less the stdlib) are imported behind thunks, so a `defn` or
+  `defn-` at the prompt replaces them in the running program. A signature
+  change is refused while it runs. `defn-` now works at the prompt at all.
+
+Docs: compiler.md "Running a program at the prompt" and the `-i` row,
+build.md's commands, index.md.
+
+Gate: 1603 pass, the 5 known datalayout failures, bootstrap PASS.
+
+### Follow-up: the entry's imports at the prompt, and struct results (2026-10-26)
+
+`(str 8)` at a `run-repl` prompt failed as unknown, because the entry file's
+`(import-use nucleus.fmt)` bound `str` for that file only. Entering a
+namespace at the prompt now adds the import bindings of the files that
+declared it. Separately, a struct-valued expression printed nothing. A
+`String` or `StrView` now prints quoted, and any other struct or union prints
+`#<Type>`. Details are in [stage27-build/run-repl.md](stage27-build/run-repl.md) §5.
+The "main returned" note was printed with `emit`, whose buffer is shared
+with the compiler. That race crashed the charge-shaped unit once under load,
+and the note is now formatted privately.
+
+Gate: 1604 pass, the 5 known datalayout failures, bootstrap PASS.
+
+### Follow-up: `--repl-format` through the tool (2026-10-27)
+
+`nucleus repl` and `run-repl` take `--repl-format=text|json` and pass it to
+`nucleusc -i`. Other commands refuse it as an unknown option. Tested in
+`rl1-run-repl-runs-main`. Gate: 1604 pass, the 5 known datalayout failures,
+bootstrap PASS.
+
+### Follow-up: `--diagnostics=edn` through the tool (2026-10-27)
+
+Every `nucleus` command takes `--diagnostics=text|edn`. Each compile it runs
+gets the flag, through `Edge.report`, which the command hash leaves out. The
+tool's own diagnostics become the same EDN maps, with `build.edn` locations as
+`:file`/`:line`. Text output is unchanged. Tests: `bt-diagnostics-edn`, plus a
+`repl --diagnostics=edn` check in `rl1-run-repl-runs-main`.
+
+Found on the way: `.gitignore`'s `build/` hid `lib/nucleus/build/`, so commit
+5c139db left out the build tool's library sources. `!/lib/nucleus/build/`
+re-includes them.
+
+Gate: 1605 pass, the 5 known datalayout failures, bootstrap PASS.

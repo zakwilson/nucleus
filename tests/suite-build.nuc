@@ -1438,7 +1438,11 @@
     (try (bt4-sh pv "LD_LIBRARY_PATH=$PWD/fg:$LD_LIBRARY_PATH ./build/chg | grep -qx 'scaled 21'"))
     (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run | grep -qx 'scaled 21'"))))
     (try (write-into pv "repl.in" "(import-use main)\n(app.main/main)\n(import-use \"fgtk/fgtk.h\")\n(fg_scale 2)\n"))
-    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl < repl.in > repl.out 2>&1; grep -q 'scaled 21' repl.out && grep -q '^nuc>   6$' repl.out || { cat repl.out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T repl < repl.in > repl.out 2>&1; grep -q 'scaled 21' repl.out && grep -q '^nuc>   6$' repl.out && ! grep -q 'running main' repl.out || { cat repl.out >&2; exit 1; }"))))
+    ; The prompt is in app.main, where `options`, the header's names and the
+    ; file's `str` are bare.
+    (try (write-into pv "run.in" "(fg_scale (&options 0))\n(str 8)\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl < run.in > run.out 2>&1; grep -q 'scaled 21' run.out && grep -q '  15$' run.out && grep -q '  \"8\"$' run.out && grep -q '^  main returned 0$' run.out || { cat run.out >&2; exit 1; }"))))
     (try (bt4-sh pv "test ! -e build.edn"))
     (drop &env)
     (drop &tool)
@@ -1488,4 +1492,74 @@
                       "nucleus: error: --no-source: nsm/core.nuc's macro nsm-lit calls nsm.core/nsm-base, nsm.core/nsm-k, and without nsm's source"))
     (try (bt4-sh pv "grep -q '^(macro-calls nsm-lit \\[nsm.core/nsm-base nsm.core/nsm-k\\])$' lib/build/include/nsm/core.nuch"))
     (drop &p))
+  (return (ok)))
+
+; --diagnostics=edn reaches each compile and the tool's own messages, and
+; switching it rebuilds nothing.
+(deftest bt-diagnostics-edn
+  (let (p:String (try (bt3-project "dgedn"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src && rm -f build.edn"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return 0))\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/dgedn (never built)"))
+    (try (bt5-expect pv "build" "--diagnostics=edn" true "nucleus: dgedn is up to date"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return nope))\n"))
+    (try (bt5-expect pv "build" "--diagnostics=edn" false ":line 1 :message \"undefined: nope"))
+    (try (bt5-expect pv "run" "--diagnostics=edn" false "{:severity :error :file "))
+    (try (write-into pv "build.edn" "{:kind :widget}\n"))
+    (try (bt5-expect pv "build" "--diagnostics=edn" false
+                     "{:severity :error :file \"build.edn\" :line 1 :message \":kind is :program or :library, not :widget\" :notes []}"))
+    (try (bt5-expect pv "build" "" false "build.edn:1: error: :kind is :program or :library, not :widget"))
+    (try (write-into pv "build.edn" "{:kind :library}\n"))
+    (try (bt5-expect pv "build" "--diagnostics=edn" false
+                     "{:severity :error :file \"build.edn\" :line 1 :message \"a library needs :name\" :notes []}"))
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; run-repl: the program's `main` beside the prompt (design/stage27-build/run-repl.md)
+; ---------------------------------------------------------------------------
+
+(defconst RL-LOOP "(ns app.loop)\n(defvar :volatile stop:i32 0)\n(defvar :volatile ticks:i32 0)\n(defn main (argc:i32 argv:ptr):i32\n  (printf \"argc %d\\n\" argc)\n  (while (= stop 0) (set! ticks (+ ticks 1)) (usleep 1000))\n  (return (+ 40 argc)))\n")
+
+; RL-1: argv after `--`, the prompt in the entry's namespace, a global that ends
+; the program, and the exit status of `main` once the input runs out.
+(deftest rl1-run-repl-runs-main
+  (let (p:String (try (bt3-project "rlrun"))
+        pv:StrView (string-as-view &p)
+        tool:String (bt-abs "build/nucleus")
+        env:String (str "export NUCLEUS_LIB=/nonexistent XDG_CONFIG_HOME=$PWD/xdg XDG_CACHE_HOME=$PWD/cache HOME=$PWD/home T=" (string-as-view &tool) "; "))
+    (try (bt4-sh pv "mkdir -p src && rm -f build.edn"))
+    (try (write-into pv "src/main.nuc" RL-LOOP))
+    (try (write-into pv "in" "(while (= ticks 0) (usleep 1000))\n(set! stop 1)\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl -- a b < in > out 2>&1; rc=$?; test $rc -eq 43 && grep -q 'argc 3$' out && grep -q '^  running main$' out && grep -qx '  main returned 43' out || { echo rc=$rc; cat out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(+ 1 2)' | $T repl > out 2>&1 && grep -q '  3$' out && ! grep -q 'running main' out || { cat out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(nope)' | $T repl --repl-format=json > out 2>&1; grep -q '\"message\":\"error (recovered)\"}$' out && ! grep -q '  error: error (recovered)' out && ! $T build --repl-format=json > out 2>&1 && grep -q \"unknown option '--repl-format=json'\" out || { cat out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(+ 1 nope)' | $T repl --diagnostics=edn > out 2>&1; grep -q '{:severity :error :file \"<repl>\" :line 1 :message \"undefined: nope' out || { cat out >&2; exit 1; }"))))
+    (try (write-into pv "src/main.nuc" "(defn helper ():i32 (return 1))\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "! $T run-repl < /dev/null > out 2>&1 && grep -q \"no 'main' function to run\" out || { cat out >&2; exit 1; }"))))
+    (try (write-into pv "build.edn" "{:c-sources [\"x.c\"]}\n"))
+    (try (bt5-expect pv "run-repl" "" false "nucleus: error: a JIT session can't load the C objects :c-sources builds"))
+    (drop &env)
+    (drop &tool)
+    (drop &p))
+  (return (ok)))
+
+(defconst RL-LIVE "(ns app.live)\n(import-use nucleus.string)\n(import-use nucleus.fmt)\n(defvar :volatile stop:i32 0)\n(defvar :volatile last:i32 0)\n(defn- step ():i32 (return 1))\n(defn tick ():void (let (s:String (str \"t\")) (set! last (+ (step) (unsafe/cast i32 (byte-len &s)) -1)) (drop &s)))\n(defn main ():i32\n  (while (= stop 0) (tick) (usleep 1000))\n  (return last))\n")
+
+; RL-2: a `defn-` at the prompt replaces the running program's own function, a
+; signature change is refused, and the stdlib it imported got no thunks.
+(deftest rl2-redefine-while-running
+  (let (rel:String (try (test-scratch-sub "rllive"))
+        p:String (bt-abs (string-as-view &rel))
+        pv:StrView (string-as-view &p)
+        nc:String (bt-compiler)
+        env:String (str "export NUCLEUS_LIB=/nonexistent NUC_REPL_DUMP_IR=1 N=" (string-as-view &nc) "; "))
+    (try (write-into pv "live.nuc" RL-LIVE))
+    (try (write-into pv "in" "(while (= last 0) (usleep 1000))\n(defn- step ():i32 (return 7))\n(while (!= last 7) (usleep 1000))\n(defn- step (x:i32):i32 (return x))\n(set! stop 1)\n"))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$N -i live.nuc < in > out 2>&1; rc=$?; test $rc -eq 7 && grep -q \"calls to 'step' pass the old signature\" out && grep -q '^define .*@app.live__tick.impl.[0-9]*(' out && test $(grep '^define [^(]*\\.impl\\.[0-9]*(' out | grep -vc '@app\\.live__') -eq 0 || { echo rc=$rc; grep -v '^[ %;@!}]' out | grep -v '^define\\|^declare\\|^target\\|^attributes\\|^$' | head -40 >&2; exit 1; }"))))
+    (drop &env)
+    (drop &nc)
+    (drop &p)
+    (drop &rel))
   (return (ok)))

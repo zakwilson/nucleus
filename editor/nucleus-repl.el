@@ -21,7 +21,7 @@
   :group 'nucleus
   :prefix "nucleus-repl-")
 
-(defcustom nucleus-repl-program "nucleusc"
+(defcustom nucleus-repl-program "nucleus"
   "Program name (or path) used to launch the inferior REPL."
   :type 'string
   :group 'nucleus-repl)
@@ -42,7 +42,7 @@
   :group 'nucleus-repl)
 
 (defconst nucleus-repl-prompt-regexp "^\\(?:nuc\\|\\.\\.\\.\\)> "
-  "Matches the primary and continuation prompts emitted by `nucleusc -i'.")
+  "Matches the primary and continuation prompts emitted by `nucleus repl'.")
 
 (defconst nucleus-repl--json-error-regexp
   "{\"file\":\"\\([^\"]+\\)\",\"line\":\\([0-9]+\\)"
@@ -85,7 +85,7 @@ Groups 1 and 2 carry the source file and line number for
 
 (define-derived-mode nucleus-repl-mode comint-mode "Nucleus-REPL"
   "Major mode for an inferior Nucleus REPL.
-Runs `nucleusc -i --repl-format=json' under comint.  Errors emitted as
+Runs `nucleus repl --repl-format=json' under comint.  Errors emitted as
 JSON frames are made navigable via `compilation-shell-minor-mode'."
   (setq-local comint-prompt-regexp nucleus-repl-prompt-regexp)
   (setq-local comint-prompt-read-only t)

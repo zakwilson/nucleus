@@ -1,0 +1,411 @@
+; Stage 27 — the build configuration. Each of `build.edn` and `build-local.edn`
+; decodes into its own typed `BuildConfig`; the two then merge field by field.
+;
+; Design: design/stage27-build/overview.md §8.6, §8.9; plan.md BT-5, BT-8.
+
+(ns nucleus.build.config)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.keyword)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.edn)
+(import-use nucleus.build.version)
+(import-use "stdlib.h")
+
+; Where a value was written, for every message that names it.
+(defstruct Loc file:StrView line:i32)
+
+; `set` is false until some file gives the setting.
+(defstruct StrSetting value:StrView at:Loc set:bool)
+(defstruct IntSetting value:i64 at:Loc set:bool)
+
+; One requirement set on a C header (§8.8). An `unsafe` one replaces every
+; earlier set on its header instead of joining the intersection.
+(defstruct CRequirement header:StrView specs:&(Vector StrView) unsafe:bool at:Loc)
+
+; A library the project names (§8.5, §8.6). `versions` all have to hold; an
+; `unsafe/version` replaces them. `path` is relative to the file's project.
+(defstruct DepSpec
+  name:StrView
+  path:StrSetting
+  versions:&(Vector StrSetting)
+  unsafe-version:StrSetting
+  prebuilt:IntSetting
+  at:Loc)
+
+; Strings borrow the interned EDN text, which lives as long as the process.
+(defstruct BuildConfig
+  name:StrSetting
+  kind:StrSetting
+  version:StrSetting
+  entry:StrSetting
+  source-root:StrSetting
+  out-dir:StrSetting
+  target:StrSetting
+  opt:IntSetting
+  cflags:(Vector StrView)
+  link-args:(Vector StrView)
+  libs:(Vector StrView)
+  c-sources:(Vector StrView)
+  pkg-config:(Vector CRequirement)
+  provides:(Vector StrView)    ; a library's top-level namespaces; empty = derived
+  shared:IntSetting            ; 1 = a library also builds a .so
+  deps:(Vector DepSpec)
+  user-registry:IntSetting)    ; 0 = skip the default library-paths.edn
+
+(defn str-setting ():StrSetting (return (StrSetting "" (Loc "" 0) false)))
+
+(defn build-config ():BuildConfig
+  (return (BuildConfig (str-setting) (str-setting) (str-setting) (str-setting)
+                       (str-setting) (str-setting) (str-setting)
+                       (IntSetting 0 (Loc "" 0) false)
+                       (make (Vector StrView)) (make (Vector StrView))
+                       (make (Vector StrView)) (make (Vector StrView))
+                       (make (Vector CRequirement)) (make (Vector StrView))
+                       (IntSetting 0 (Loc "" 0) false)
+                       (make (Vector DepSpec))
+                       (IntSetting 1 (Loc "" 0) false))))
+
+(extend BuildConfig Drop)
+(defn drop (self:&BuildConfig):void
+  (drop (ref self 'cflags))
+  (drop (ref self 'link-args))
+  (drop (ref self 'libs))
+  (drop (ref self 'c-sources))
+  (dotimes (i (count (ref self 'pkg-config)))
+    (let (r:CRequirement (invoke (ref self 'pkg-config) i))
+      (drop (r 'specs))
+      (free (as ptr (r 'specs)))))
+  (drop (ref self 'pkg-config))
+  (drop (ref self 'provides))
+  (dotimes (i (count (ref self 'deps)))
+    (let (d:DepSpec (invoke (ref self 'deps) i))
+      (drop (d 'versions))
+      (free (as ptr (d 'versions)))))
+  (drop (ref self 'deps)))
+
+; ---------------------------------------------------------------------------
+; Decoding one file
+; ---------------------------------------------------------------------------
+
+(defconst CONFIG-KEYS ":name :kind :version :entry :source-root :out-dir :target :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry")
+
+(defn config-line (n:?&Node fallback:i32):i32
+  (let (l:i32 (node-line (as ptr n) fallback))
+    (return (if (> l 0) l fallback))))
+
+(defn config-fail (err:&String file:StrView line:i32 msg:String):bool
+  (string-clear err)
+  (str-into err file ":" line ": error: " (string-as-view &msg))
+  (drop &msg)
+  (return false))
+
+(defn config-str-setting (dst:&StrSetting v:?&Node key:StrView file:StrView line:i32
+                          err:&String allow-symbol:bool):bool
+  (let (k:i32 (edn-kind v))
+    (cond (= k EDN-STR)
+            (match (edn-str v)
+              ((ok s) (set! (dst 'value) s))
+              ((err e) 0))
+          (and allow-symbol (= k EDN-SYM))
+            (match (edn-symbol v)
+              ((ok s) (set! (dst 'value) s))
+              ((err e) 0))
+          true
+            (return (config-fail err file line
+                      (str ":" key " takes a string, got " (edn-kind-name k)))))
+    (when (= ((dst 'value) 'len) 0)
+      (return (config-fail err file line (str ":" key " is empty"))))
+    (set! (dst 'at) (Loc file line))
+    (set! (dst 'set) true)
+    (return true)))
+
+; A vector of non-empty strings, or a set of them when `set-ok`.
+(defn config-strings (into:&(Vector StrView) v:?&Node key:StrView file:StrView line:i32
+                      err:&String set-ok:bool):bool
+  (let (k:i32 (edn-kind v))
+    (when (not (or (= k EDN-VECTOR) (and set-ok (= k EDN-SET))))
+      (return (config-fail err file line
+                (str ":" key " takes a vector of strings, got " (edn-kind-name k)))))
+    (dotimes (i (edn-count v))
+      (let (e:?&Node (edn-nth v i))
+        (match (edn-str e)
+          ((ok s)
+            (when (= (s 'len) 0)
+              (return (config-fail err file (config-line e line) (str ":" key " has an empty string"))))
+            (conj into s))
+          ((err x)
+            (return (config-fail err file (config-line e line)
+                      (str ":" key " takes strings, got " (edn-kind-name (edn-kind e)))))))))
+    (return true)))
+
+; `:provides [gtkw "gtkw-extra"]`: namespace roots, as symbols or strings.
+(defn config-roots (into:&(Vector StrView) v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-VECTOR)
+    (return (config-fail err file line
+              (str ":provides takes a vector of namespace names, got " (edn-kind-name (edn-kind v))))))
+  (dotimes (i (edn-count v))
+    (let (e:?&Node (edn-nth v i)
+          k:i32 (edn-kind e)
+          name:StrView "")
+      (cond (= k EDN-STR) (match (edn-str e) ((ok s) (set! name s)) ((err x) 0))
+            (= k EDN-SYM) (match (edn-symbol e) ((ok s) (set! name s)) ((err x) 0))
+            true 0)
+      (when (or (= (name 'len) 0) (strview-contains name "/") (strview-contains name "."))
+        (return (config-fail err file (config-line e line)
+                  (str ":provides takes top-level namespace names, such as gtkw"))))
+      (conj into name)))
+  (return true))
+
+(defn config-name (n:?&Node):StrView
+  (match (edn-str n) ((ok s) (return s)) ((err e) 0))
+  (match (edn-symbol n) ((ok s) (return s)) ((err e) 0))
+  (return ""))
+
+(defconst DEP-KEYS ":path :version :unsafe/version :prebuilt")
+
+; `gtkw {:path "../gtkw" :version ">= 1.4" :prebuilt true}`, every key optional.
+(defn config-dep (c:&BuildConfig name:StrView v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-MAP)
+    (return (config-fail err file line
+              (str ":deps " name " takes a map, such as {:path \"../" name "\"}, got "
+                    (edn-kind-name (edn-kind v))))))
+  (let (vs:&(Vector StrSetting) (unsafe/cast &(Vector StrSetting) (malloc (sizeof (Vector StrSetting))))
+        d:DepSpec (DepSpec name (str-setting) vs (str-setting) (IntSetting 0 (Loc "" 0) false)
+                           (Loc file line)))
+    (set! @vs (make (Vector StrSetting)))
+    (dotimes (i (edn-count v))
+      (let (kv:?&Node (edn-val v i)
+            kl:i32 (config-line kv line)
+            key:StrView (match (edn-keyword (edn-key v i)) ((ok kw) (keyword-name kw)) ((err e) "")))
+        (cond (= key "path")
+                (when (not (config-str-setting (ref d 'path) kv "path" file kl err false)) (return false))
+              (or (= key "version") (= key "unsafe/version"))
+                (let (cs:StrSetting (str-setting))
+                  (when (not (config-str-setting &cs kv key file kl err false)) (return false))
+                  (match (version-constraint-parse (cs 'value))
+                    ((ok vc) 0)
+                    ((err e) (return (config-fail err file kl
+                                       (str ":" key " '" (cs 'value) "' is not a version constraint, such as \">= 1.4\"")))))
+                  (if (= key "version") (conj vs cs) (set! (d 'unsafe-version) cs)))
+              (= key "prebuilt")
+                (match (edn-bool kv)
+                  ((ok b) (set! (d 'prebuilt) (IntSetting (if b 1 0) (Loc file kl) true)))
+                  ((err e) (return (config-fail err file kl (str ":prebuilt is true or false")))))
+              true
+                (return (config-fail err file kl
+                          (str ":deps " name ": unknown key :" key " (expected one of " DEP-KEYS ")"))))))
+    (conj (ref c 'deps) d)
+    (return true)))
+
+(defn config-deps (c:&BuildConfig v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-MAP)
+    (return (config-fail err file line
+              (str ":deps takes a map from library names to maps, got " (edn-kind-name (edn-kind v))))))
+  (dotimes (i (edn-count v))
+    (let (dv:?&Node (edn-val v i)
+          dl:i32 (config-line dv line)
+          name:StrView (config-name (edn-key v i)))
+      (when (= (name 'len) 0)
+        (return (config-fail err file dl (str ":deps keys are library names, as symbols or strings"))))
+      (when (not (config-dep c name dv file dl err)) (return false))))
+  (return true))
+
+(defn config-requirement (c:&BuildConfig header:StrView v:?&Node file:StrView line:i32
+                          err:&String):bool
+  (let (specs:&(Vector StrView) (unsafe/cast &(Vector StrView) (malloc (sizeof (Vector StrView))))
+        unsafe:bool false
+        k:i32 (edn-kind v))
+    (set! @specs (make (Vector StrView)))
+    (cond (= k EDN-VECTOR)
+            (when (not (config-strings specs v "pkg-config" file line err false))
+              (return false))
+          (= k EDN-MAP)
+            (do
+              (when (!= (edn-count v) 1)
+                (return (config-fail err file line
+                          (str ":pkg-config \"" header "\" takes a vector, or a map with only :unsafe/pkg-config"))))
+              (let (kk:?&Node (edn-key v 0))
+                (match (edn-keyword kk)
+                  ((ok kw)
+                    (when (!= (keyword-name kw) "unsafe/pkg-config")
+                      (return (config-fail err file line
+                                (str ":pkg-config \"" header "\": unknown key :" (keyword-name kw)
+                                      " (expected :unsafe/pkg-config)")))))
+                  ((err e)
+                    (return (config-fail err file line
+                              (str ":pkg-config \"" header "\": expected the key :unsafe/pkg-config"))))))
+              (when (not (config-strings specs (edn-val v 0) "unsafe/pkg-config" file line err false))
+                (return false))
+              (set! unsafe true))
+          true
+            (return (config-fail err file line
+                      (str ":pkg-config \"" header "\" takes a vector of package names, got "
+                            (edn-kind-name k)))))
+    (when (= (count specs) 0)
+      (return (config-fail err file line (str ":pkg-config \"" header "\" names no package"))))
+    (conj (ref c 'pkg-config) (CRequirement header specs unsafe (Loc file line)))
+    (return true)))
+
+(defn config-pkg-config (c:&BuildConfig v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-MAP)
+    (return (config-fail err file line
+              (str ":pkg-config takes a map from header names to requirement sets, got "
+                    (edn-kind-name (edn-kind v))))))
+  (dotimes (i (edn-count v))
+    (let (hk:?&Node (edn-key v i)
+          hv:?&Node (edn-val v i)
+          hl:i32 (config-line hv line))
+      (match (edn-str hk)
+        ((ok h)
+          (when (not (config-requirement c h hv file hl err)) (return false)))
+        ((err e)
+          (return (config-fail err file hl (str ":pkg-config keys are header names, written as strings")))))))
+  (return true))
+
+; Decode `text`, the contents of `file`, into `c`. False with `err` set to a
+; located message when anything in it is wrong, a misspelled key included.
+(defn config-decode (text:StrView file:StrView c:&BuildConfig err:&String):bool
+  (match (edn-parse text)
+    ((err e) (return (config-fail err file (e 'line) (str (e 'msg)))))
+    ((ok m)
+      (when (!= (edn-kind m) EDN-MAP)
+        (return (config-fail err file (config-line m 1)
+                  (str "expected a map, got " (edn-kind-name (edn-kind m))))))
+      (dotimes (i (edn-count m))
+        (let (kn:?&Node (edn-key m i)
+              v:?&Node (edn-val m i)
+              line:i32 (config-line v (config-line m 1)))
+          (match (edn-keyword kn)
+            ((err e) (return (config-fail err file line (str "a key must be a keyword"))))
+            ((ok kw)
+              (let (key:StrView (keyword-name kw)
+                    ok:bool
+                    (cond (= key "name") (config-str-setting (ref c 'name) v key file line err true)
+                          (= key "version") (config-str-setting (ref c 'version) v key file line err false)
+                          (= key "entry") (config-str-setting (ref c 'entry) v key file line err false)
+                          (= key "source-root") (config-str-setting (ref c 'source-root) v key file line err false)
+                          (= key "out-dir") (config-str-setting (ref c 'out-dir) v key file line err false)
+                          (= key "target") (config-str-setting (ref c 'target) v key file line err false)
+                          (= key "kind")
+                            (match (edn-keyword v)
+                              ((ok k)
+                                (if (or (= (keyword-name k) "program") (= (keyword-name k) "library"))
+                                  (do (set! (c 'kind) (StrSetting (keyword-name k) (Loc file line) true))
+                                      true)
+                                  (config-fail err file line
+                                    (str ":kind is :program or :library, not :" (keyword-name k)))))
+                              ((err e) (config-fail err file line (str ":kind is :program or :library"))))
+                          (= key "opt")
+                            (match (edn-int v)
+                              ((ok n)
+                                (if (and (>= n 0) (<= n 3))
+                                  (do (set! (c 'opt) (IntSetting n (Loc file line) true)) true)
+                                  (config-fail err file line (str ":opt is 0, 1, 2 or 3, not " n))))
+                              ((err e) (config-fail err file line (str ":opt is 0, 1, 2 or 3"))))
+                          (= key "cflags") (config-strings (ref c 'cflags) v key file line err false)
+                          (= key "link-args") (config-strings (ref c 'link-args) v key file line err false)
+                          (= key "c-sources") (config-strings (ref c 'c-sources) v key file line err false)
+                          (= key "libs") (config-strings (ref c 'libs) v key file line err true)
+                          (= key "pkg-config") (config-pkg-config c v file line err)
+                          (= key "provides")
+                            (do (while (> (count (ref c 'provides)) 0)
+                                  (remove-at (ref c 'provides) (- (count (ref c 'provides)) 1)))
+                                (config-roots (ref c 'provides) v file line err))
+                          (= key "shared")
+                            (match (edn-bool v)
+                              ((ok b) (set! (c 'shared) (IntSetting (if b 1 0) (Loc file line) true)) true)
+                              ((err e) (config-fail err file line (str ":shared is true or false"))))
+                          (= key "deps") (config-deps c v file line err)
+                          (= key "user-registry")
+                            (match (edn-bool v)
+                              ((ok b) (set! (c 'user-registry) (IntSetting (if b 1 0) (Loc file line) true)) true)
+                              ((err e) (config-fail err file line (str ":user-registry is true or false"))))
+                          true
+                            (config-fail err file line
+                              (str "unknown key :" key " (expected one of " CONFIG-KEYS ")"))))
+                (when (not ok) (return false)))))))
+      (return true))))
+
+; ---------------------------------------------------------------------------
+; Merging (§8.9)
+; ---------------------------------------------------------------------------
+
+(defn merge-setting (into:&StrSetting from:&StrSetting):void
+  (when (from 'set) (set! @into @from)))
+
+(defn merge-union (into:&(Vector StrView) from:&(Vector StrView)):void
+  (dotimes (i (count from))
+    (let (s:StrView (invoke from i)
+          dup:bool false)
+      (dotimes (j (count into))
+        (when (= (invoke into j) s) (set! dup true)))
+      (when (not dup) (conj into s)))))
+
+(defn merge-append (into:&(Vector StrView) from:&(Vector StrView)):void
+  (dotimes (i (count from)) (conj into (invoke from i))))
+
+; `from` is the later file. Scalars: it wins. Flags: append. Libraries: union.
+; Requirement sets: kept side by side, so the compiler intersects them and can
+; name each one's file; an `unsafe` set first drops the earlier ones it replaces.
+; `from`'s requirements move into `into`, so drop `from` only after its vectors.
+(defn config-merge (into:&BuildConfig from:&BuildConfig):void
+  (merge-setting (ref into 'name) (ref from 'name))
+  (merge-setting (ref into 'kind) (ref from 'kind))
+  (merge-setting (ref into 'version) (ref from 'version))
+  (merge-setting (ref into 'entry) (ref from 'entry))
+  (merge-setting (ref into 'source-root) (ref from 'source-root))
+  (merge-setting (ref into 'out-dir) (ref from 'out-dir))
+  (merge-setting (ref into 'target) (ref from 'target))
+  (when ((ref from 'opt) 'set) (set! (into 'opt) (from 'opt)))
+  (merge-append (ref into 'cflags) (ref from 'cflags))
+  (merge-append (ref into 'link-args) (ref from 'link-args))
+  (merge-append (ref into 'c-sources) (ref from 'c-sources))
+  (merge-union (ref into 'libs) (ref from 'libs))
+  (when ((ref from 'shared) 'set) (set! (into 'shared) (from 'shared)))
+  (when ((ref from 'user-registry) 'set) (set! (into 'user-registry) (from 'user-registry)))
+  (dotimes (i (count (ref from 'deps)))
+    (let (d:DepSpec (invoke (ref from 'deps) i)
+          at:i64 -1)
+      (dotimes (j (count (ref into 'deps)))
+        (when (= ((invoke (ref into 'deps) j) 'name) (d 'name)) (set! at (as i64 j))))
+      (if (< at 0)
+        (let (vs:&(Vector StrSetting) (unsafe/cast &(Vector StrSetting) (malloc (sizeof (Vector StrSetting)))))
+          (set! @vs (make (Vector StrSetting)))
+          (dotimes (k (count (d 'versions))) (conj vs (invoke (d 'versions) k)))
+          (set! (d 'versions) vs)
+          (conj (ref into 'deps) d))
+        (let (o:DepSpec (invoke (ref into 'deps) (as usize at)))
+          (merge-setting (ref o 'path) (ref d 'path))
+          (when ((d 'prebuilt) 'set) (set! (o 'prebuilt) (d 'prebuilt)))
+          ; Narrowing: every constraint holds, unless an unsafe one replaces them.
+          (if ((d 'unsafe-version) 'set)
+            (do (while (> (count (o 'versions)) 0) (remove-at (o 'versions) (- (count (o 'versions)) 1)))
+                (set! (o 'unsafe-version) (d 'unsafe-version)))
+            (dotimes (k (count (d 'versions))) (conj (o 'versions) (invoke (d 'versions) k))))
+          (set (ref into 'deps) (as usize at) o)))))
+  (when (> (count (ref from 'provides)) 0)
+    (while (> (count (ref into 'provides)) 0)
+      (remove-at (ref into 'provides) (- (count (ref into 'provides)) 1)))
+    (merge-append (ref into 'provides) (ref from 'provides)))
+  (let (reqs:&(Vector CRequirement) (ref into 'pkg-config))
+    (dotimes (i (count (ref from 'pkg-config)))
+      (let (r:CRequirement (invoke (ref from 'pkg-config) i))
+        (when (r 'unsafe)
+          (let (j:usize (count reqs))
+            (while (> j 0)
+              (set! j (- j 1))
+              (let (o:CRequirement (invoke reqs j))
+                (when (= (o 'header) (r 'header))
+                  (drop (o 'specs))
+                  (free (as ptr (o 'specs)))
+                  (remove-at reqs j))))))
+        (conj reqs r))))
+  (let (moved:&(Vector CRequirement) (ref from 'pkg-config))
+    (while (> (count moved) 0) (remove-at moved (- (count moved) 1)))))

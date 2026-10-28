@@ -1,0 +1,376 @@
+; Stage 27 — the executor: decide which edges are stale, run those, and keep the
+; record that the next build's decision is made from.
+;
+; Design: design/stage27-build/plan.md BT-5 and D-STALE; the model is Ninja's
+; (overview.md §4.2): the command, the compiler's identity and the read set.
+
+(ns nucleus.build.exec)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.process)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.edn)
+(import-use nucleus.build.graph)
+(import-use "stdlib.h")
+
+(defn exec-intern (s:&String):StrView
+  (return (symbol-as-view (symbol-intern (string-as-view s)))))
+
+; ---------------------------------------------------------------------------
+; Depfiles
+; ---------------------------------------------------------------------------
+
+(defn dep-byte (t:StrView i:usize):i32 (return (as i32 (aref (t 'data) (as i64 i)))))
+
+(defn dep-ws? (c:i32):bool (return (or (= c 32) (= c 9) (= c 10) (= c 13))))
+
+(defn depfile-take (tok:&String into:&(Vector StrView)):void
+  (when (> (byte-len tok) 0)
+    (let (v:StrView (string-as-view tok))
+      (when (!= v "/dev/null") (conj into (exec-intern tok)))))
+  (string-clear tok))
+
+; The prerequisites of a gcc-format depfile, as clang and `nucleusc --depfile=`
+; write it: `target: dep dep \`, with `\ ` for a space and `$$` for a dollar.
+(defn depfile-paths (text:StrView into:&(Vector StrView)):void
+  (let (n:usize (text 'len)
+        i:usize 0
+        tok:String (make String))
+    ; Past the target: the first `:` followed by whitespace.
+    (while (and (< i n)
+                (not (and (= (dep-byte text i) 58)
+                          (or (= (+ i 1) n) (dep-ws? (dep-byte text (+ i 1)))))))
+      (set! i (+ i 1)))
+    (set! i (+ i 1))
+    (while (< i n)
+      (let (c:i32 (dep-byte text i)
+            nx:i32 (if (< (+ i 1) n) (dep-byte text (+ i 1)) 0))
+        (cond (and (= c 92) (or (= nx 10) (= nx 13)))
+                (do (depfile-take &tok into) (set! i (+ i 1)))
+              (and (= c 92) (or (= nx 32) (= nx 35)))
+                (do (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 (+ i 1))) 1)
+                    (set! i (+ i 1)))
+              (and (= c 36) (= nx 36))
+                (do (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 i)) 1)
+                    (set! i (+ i 1)))
+              (dep-ws? c)
+                (depfile-take &tok into)
+              true
+                (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 i)) 1)))
+      (set! i (+ i 1)))
+    (depfile-take &tok into)
+    (drop &tok)))
+
+; ---------------------------------------------------------------------------
+; Files
+; ---------------------------------------------------------------------------
+
+(defn exec-read-file (path:StrView):?String
+  (match (file-open-read &path)
+    ((err e) (return (none)))
+    ((ok f)
+      (let (fh:File f
+            r:!String (file-read-to-string &fh))
+        (drop &fh)
+        (match r
+          ((ok s) (return (some s)))
+          ((err e) (return (none))))))))
+
+; The content hash D-STALE falls back to, or "" for an unreadable file.
+(defn file-hash (path:StrView):StrView
+  (match (exec-read-file path)
+    (none (return ""))
+    ((some s)
+      (let (t:String s
+            h:StrView (hash-hex (hash-fold-view HASH-SEED (string-as-view &t))))
+        (drop &t)
+        (return h)))))
+
+; ---------------------------------------------------------------------------
+; The log: one EDN map per output (D-STATE)
+; ---------------------------------------------------------------------------
+
+(defstruct ReadRec path:StrView mtime:i64 size:i64 hash:StrView)
+
+(defstruct LogEntry
+  output:StrView
+  command:StrView
+  compiler:StrView
+  reads:&(Vector ReadRec))
+
+(defstruct BuildLog entries:(Vector LogEntry))
+
+(defn build-log ():BuildLog (return (BuildLog (make (Vector LogEntry)))))
+
+(defn read-recs-new ():&(Vector ReadRec)
+  (let (v:&(Vector ReadRec) (unsafe/cast &(Vector ReadRec) (malloc (sizeof (Vector ReadRec)))))
+    (set! @v (make (Vector ReadRec)))
+    (return v)))
+
+(defn read-recs-free (v:&(Vector ReadRec)):void
+  (drop v)
+  (free (as ptr v)))
+
+(extend BuildLog Drop)
+(defn drop (self:&BuildLog):void
+  (dotimes (i (count (ref self 'entries)))
+    (read-recs-free ((invoke (ref self 'entries) i) 'reads)))
+  (drop (ref self 'entries)))
+
+(defn log-find (log:&BuildLog output:StrView):i64
+  (dotimes (i (count (ref log 'entries)))
+    (when (= ((invoke (ref log 'entries) i) 'output) output) (return (as i64 i))))
+  (return -1))
+
+(defn log-put (log:&BuildLog e:LogEntry):void
+  (let (at:i64 (log-find log (e 'output)))
+    (if (< at 0)
+      (conj (ref log 'entries) e)
+      (do (read-recs-free ((invoke (ref log 'entries) (as usize at)) 'reads))
+          (set (ref log 'entries) (as usize at) e)))))
+
+(defn log-str (m:?&Node key:StrView):StrView
+  (match (edn-str (edn-get m key))
+    ((ok s) (return s))
+    ((err e) (return ""))))
+
+; A record that doesn't read is no record: its output just builds again.
+(defn log-load (path:StrView log:&BuildLog):void
+  (match (exec-read-file path)
+    (none (return))
+    ((some text)
+      (let (t:String text)
+        (match (edn-parse-all (string-as-view &t))
+          ((err e) 0)
+          ((ok forms)
+            (dotimes (i (edn-count forms))
+              (let (m:?&Node (edn-nth forms i)
+                    out:StrView (log-str m "output"))
+                (when (and (= (edn-kind m) EDN-MAP) (> (out 'len) 0))
+                  (let (reads:&(Vector ReadRec) (read-recs-new)
+                        rv:?&Node (edn-get m "reads"))
+                    (dotimes (j (edn-count rv))
+                      (let (r:?&Node (edn-nth rv j)
+                            p:StrView "" mt:i64 0 sz:i64 0 h:StrView "")
+                        (match (edn-str (edn-nth r 0)) ((ok s) (set! p s)) ((err e) 0))
+                        (match (edn-int (edn-nth r 1)) ((ok x) (set! mt x)) ((err e) 0))
+                        (match (edn-int (edn-nth r 2)) ((ok x) (set! sz x)) ((err e) 0))
+                        (match (edn-str (edn-nth r 3)) ((ok s) (set! h s)) ((err e) 0))
+                        (when (> (p 'len) 0) (conj reads (ReadRec p mt sz h)))))
+                    (log-put log (LogEntry out (log-str m "command") (log-str m "compiler") reads))))))))
+        (drop &t)))))
+
+(defn log-write-str (out:&String s:StrView):void
+  (match (edn-write out s) ((ok) 0) ((err e) 0)))
+
+; Written whole to a temporary and renamed, like every other output.
+(defn log-save (path:StrView log:&BuildLog):bool
+  (let (out:String (make String))
+    (dotimes (i (count (ref log 'entries)))
+      (let (e:LogEntry (invoke (ref log 'entries) i))
+        (str-into &out "{:output ")
+        (log-write-str &out (e 'output))
+        (str-into &out " :command ")
+        (log-write-str &out (e 'command))
+        (str-into &out " :compiler ")
+        (log-write-str &out (e 'compiler))
+        (str-into &out " :reads [")
+        (dotimes (j (count (e 'reads)))
+          (let (r:ReadRec (invoke (e 'reads) j))
+            (when (> j 0) (str-into &out " "))
+            (str-into &out "[")
+            (log-write-str &out (r 'path))
+            (str-into &out " " (r 'mtime) " " (r 'size) " ")
+            (log-write-str &out (r 'hash))
+            (str-into &out "]")))
+        (str-into &out "]}\n")))
+    (let (tmp:String (str path ".tmp")
+          tv:StrView (string-as-view &tmp)
+          ok:bool (match (file-create &tv)
+                    ((err e) false)
+                    ((ok f)
+                      (let (fh:File f
+                            w:bool (match (write-str &fh (string-as-view &out)) ((ok) true) ((err e) false)))
+                        (drop &fh)
+                        w))))
+      (when ok
+        (match (rename-file tv path) ((ok) 0) ((err e) (set! ok false))))
+      (drop &tmp)
+      (drop &out)
+      (return ok))))
+
+; ---------------------------------------------------------------------------
+; Staleness (D-STALE)
+; ---------------------------------------------------------------------------
+
+; Why `e` has to run, or "" when its record still holds. A read whose mtime or
+; size moved but whose content did not is refreshed in place, so touching a
+; file costs one hash, once.
+(defn edge-stale-reason (e:&Edge rec:?&LogEntry):StrView
+  (when (= rec null) (return "never built"))
+  (let (r:&LogEntry (unsafe/cast &LogEntry rec))
+    (when (not (file-exists? (e 'output))) (return "output missing"))
+    (when (!= (r 'command) (edge-command-hash e)) (return "command changed"))
+    (when (!= (r 'compiler) (e 'compiler-id)) (return "compiler changed"))
+    (dotimes (i (count (r 'reads)))
+      (let (rr:ReadRec (invoke (r 'reads) i))
+        (match (file-stat (rr 'path))
+          ((err x)
+            (let (m:String (str (rr 'path) " is gone")) (return (exec-intern &m))))
+          ((ok st)
+            (when (or (!= (st 'mtime-ns) (rr 'mtime)) (!= (st 'size) (rr 'size)))
+              (when (!= (file-hash (rr 'path)) (rr 'hash))
+                (let (m:String (str (rr 'path) " changed")) (return (exec-intern &m))))
+              (set! (rr 'mtime) (st 'mtime-ns))
+              (set! (rr 'size) (st 'size))
+              (set (r 'reads) i rr))))))
+    (return "")))
+
+; Edges and log entries share their vectors through pointers, so copies do.
+(defn edge-why (e:&Edge log:&BuildLog):StrView
+  (let (at:i64 (log-find log (e 'output)))
+    (when (< at 0) (return (edge-stale-reason e null)))
+    (let (le:LogEntry (invoke (ref log 'entries) (as usize at)))
+      (return (edge-stale-reason e &le)))))
+
+; A depfile names the command's own input as it was given, relative to the
+; command's directory; the log checks it from wherever the next build runs.
+(defn exec-under (dir:StrView path:StrView):StrView
+  (when (or (= (path 'len) 0) (= (aref (path 'data) 0) 47) (= (dir 'len) 0)) (return path))
+  (let (m:String (str dir "/" path)) (return (exec-intern &m))))
+
+; What `e` read, from its depfile, stat'd and hashed now that it has finished.
+(defn edge-record (e:&Edge):LogEntry
+  (let (reads:&(Vector ReadRec) (read-recs-new)
+        paths:(Vector StrView) (make (Vector StrView)))
+    (when (> ((e 'depfile) 'len) 0)
+      (match (exec-read-file (e 'depfile))
+        (none 0)
+        ((some text)
+          (let (t:String text)
+            (depfile-paths (string-as-view &t) &paths)
+            (drop &t)))))
+    (dotimes (i (count &paths))
+      (let (p:StrView (exec-under (e 'cwd) (invoke &paths i))
+            dup:bool false)
+        (dotimes (j (count reads))
+          (when (= ((invoke reads j) 'path) p) (set! dup true)))
+        (when (not dup)
+          (match (file-stat p)
+            ((ok st) (conj reads (ReadRec p (st 'mtime-ns) (st 'size) (file-hash p))))
+            ((err x) 0)))))
+    (drop &paths)
+    (return (LogEntry (e 'output) (edge-command-hash e) (e 'compiler-id) reads))))
+
+; ---------------------------------------------------------------------------
+; Running the graph
+; ---------------------------------------------------------------------------
+
+(defconst EDGE-PENDING 0)
+(defconst EDGE-RUNNING 1)
+(defconst EDGE-BUILT 2)
+(defconst EDGE-FAILED 3)
+(defconst EDGE-FRESH 4)
+
+(defn edge-ready? (g:&Graph state:&(Vector i32) i:usize):bool
+  (let (e:Edge (invoke (ref g 'edges) i))
+    (dotimes (k (count (ref e 'after)))
+      (let (s:i32 (invoke state (invoke (ref e 'after) k)))
+        (when (and (!= s EDGE-BUILT) (!= s EDGE-FRESH)) (return false))))
+    (return true)))
+
+(defn edge-after-rebuilt? (g:&Graph state:&(Vector i32) i:usize):bool
+  (let (e:Edge (invoke (ref g 'edges) i))
+    (dotimes (k (count (ref e 'after)))
+      (when (= (invoke state (invoke (ref e 'after) k)) EDGE-BUILT) (return true)))
+    (return false)))
+
+(defn edge-spawn (e:&Edge):!Process
+  (let (argv:&(Vector StrView) (ref e 'argv)
+        c:Command (command (invoke argv 0)))
+    (dotimes (k (count (ref e 'report))) (command-arg &c (invoke (ref e 'report) k)))
+    (dotimes (k (- (count argv) 1)) (command-arg &c (invoke argv (+ k 1))))
+    (command-cwd &c (e 'cwd))
+    (let (p:!Process (spawn &c))
+      (drop &c)
+      (return p))))
+
+; Run every stale edge of `g`, at most `jobs` at once. Answers how many ran, or
+; -1 when one failed: the failed edge's output stays as it was, and so does its
+; record. `say` reports each edge as it starts.
+(defn exec-graph (g:&Graph jobs:i32 log-path:StrView say:(fn void)(StrView StrView)):i32
+  (let (log:BuildLog (build-log)
+        n:usize (count (ref g 'edges))
+        state:(Vector i32) (make (Vector i32))
+        pids:(Vector i32) (make (Vector i32))
+        procs:(Vector Process) (make (Vector Process))
+        running:i32 0
+        ran:i32 0
+        failed:bool false
+        progress:bool true)
+    (log-load log-path &log)
+    (dotimes (i n) (conj &state EDGE-PENDING) (conj &pids -1))
+    (while (or progress (> running 0))
+      (set! progress false)
+      (dotimes (i n)
+        (when (and (not failed) (< running jobs) (= (invoke &state i) EDGE-PENDING)
+                   (edge-ready? g &state i))
+          (let (ev:Edge (invoke (ref g 'edges) i)
+                e:&Edge &ev
+                why:StrView (if (edge-after-rebuilt? g &state i) "an input was rebuilt"
+                              (edge-why e &log)))
+            (set! progress true)
+            (if (= (why 'len) 0)
+              (set &state i EDGE-FRESH)
+              (do
+                (when (file-exists? (e 'tmp)) (match (remove-file (e 'tmp)) ((ok) 0) ((err x) 0)))
+                (say (e 'output) why)
+                (match (edge-spawn e)
+                  ((ok p)
+                    (set &pids i (process-pid &p))
+                    (process-detach &p)
+                    (set &state i EDGE-RUNNING)
+                    (inc! running))
+                  ((err x)
+                    (eprint "nucleus: cannot run " (invoke (ref e 'argv) 0) "\n")
+                    (set &state i EDGE-FAILED)
+                    (set! failed true))))))))
+      (when (> running 0)
+        (match (wait-any)
+          ((err x) (set! running 0) (set! failed true))
+          ((ok ce)
+            (dotimes (i n)
+              (when (and (= (invoke &state i) EDGE-RUNNING) (= (invoke &pids i) (ce 'pid)))
+                (dec! running)
+                (set! progress true)
+                (let (ev:Edge (invoke (ref g 'edges) i)
+                      e:&Edge &ev
+                      ok:bool (and (success? (ref ce 'status)) (file-exists? (e 'tmp))))
+                  (when ok
+                    (match (rename-file (e 'tmp) (e 'output)) ((ok) 0) ((err x) (set! ok false))))
+                  (if ok
+                    (do (set &state i EDGE-BUILT)
+                        (inc! ran)
+                        (log-put &log (edge-record e)))
+                    (do (set &state i EDGE-FAILED)
+                        (set! failed true)
+                        (when (file-exists? (e 'tmp))
+                          (match (remove-file (e 'tmp)) ((ok) 0) ((err x) 0)))))))))))
+      (when failed (set! progress false)))
+    (when (not (log-save log-path &log))
+      (eprint "nucleus: cannot write " log-path "\n")
+      (set! failed true))
+    (drop &procs)
+    (drop &pids)
+    (drop &state)
+    (drop &log)
+    (return (if failed -1 ran))))

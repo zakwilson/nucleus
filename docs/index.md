@@ -15,7 +15,7 @@ Nucleus is a compiled systems programming language with Lisp-style syntax, a str
 nucleusc hello.nuc -o hello && ./hello
 ```
 
-Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `main:i32 ()` function is the entry point. The interactive REPL is available via `nucleusc -i`, and `nucleusc --run file.nuc -- args…` runs a program without linking it ([Running a program without linking](compiler.md#running-a-program-without-linking)).
+Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `main:i32 ()` function is the entry point. The interactive REPL is available via `nucleusc -i`, `nucleusc -i file.nuc` runs a program's `main` beside the prompt ([Running a program at the prompt](compiler.md#running-a-program-at-the-prompt)), and `nucleusc --run file.nuc -- args…` runs a program without linking it ([Running a program without linking](compiler.md#running-a-program-without-linking)).
 
 ## Hello, world
 
@@ -107,7 +107,7 @@ they are ordinary address-of: `&rest` is `(ref rest)`.
 | [EDN](edn.md) | EDN data as a typed view over the reader's `Node`: `edn-parse`, `edn-kind` and accessors, `edn-write`, range-checked `edn-read` conversions, the `EdnCodec` protocol over collections, and `derive-edn` struct codecs (`lib/nucleus/edn.nuc`) |
 | [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the EDN result records a suite prints (`lib/nucleus/test.nuc`) |
 | [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter`; directories, the sorted recursive walk and `**` globs; `file-stat`, rename/remove, XDG directories, tracked reads (`lib/nucleus/io.nuc`, `lib/nucleus/file.nuc`) |
-| [The build tool and its libraries](build.md) | `nucleus build`/`run`/`run-repl`/`clean`/`init`/`init-local`/`install`/`uninstall`, the zero-config conventions, `build.edn` and `build-local.edn`, dependencies (`:deps`, the lookup order, the user registry, prebuilt use), how C packages are chosen (requirement sets, the header index), what is rebuilt, library projects and the installed layout (`.pc` file, manifest), the standard library through `make install`, prebuilt use with `--ct-source`, a GTK walkthrough; versions and constraints compared as pkg-config compares them, pkg-config as a library (`PkgFlags`, `pkg-config-query`), the header→package table (`lib/nucleus/build/version.nuc`, `lib/nucleus/build/pkg.nuc`, `lib/nucleus/c-packages.edn`) |
+| [The build tool and its libraries](build.md) | `nucleus build`/`run`/`run-repl`/`repl`/`clean`/`init`/`init-local`/`install`/`uninstall`, the zero-config conventions, `build.edn` and `build-local.edn`, dependencies (`:deps`, the lookup order, the user registry, prebuilt use), how C packages are chosen (requirement sets, the header index), what is rebuilt, library projects and the installed layout (`.pc` file, manifest), the standard library through `make install`, prebuilt use with `--ct-source`, a GTK walkthrough; versions and constraints compared as pkg-config compares them, pkg-config as a library (`PkgFlags`, `pkg-config-query`), the header→package table (`lib/nucleus/build/version.nuc`, `lib/nucleus/build/pkg.nuc`, `lib/nucleus/c-packages.edn`) |
 | [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/nucleus/avr.nuc`, `lib/nucleus/avr/*.nuc`) |
 
 ## Standard library overview

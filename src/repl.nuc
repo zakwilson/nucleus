@@ -6,8 +6,10 @@
 
 (import-use "setjmp.h")
 (import-use "poll.h")
+(import-use "pthread.h")
 (import-use nucleus.string)
 (import-use nucleus.vector)
+(import-use nucleus.hashmap)
 (import-use nucleus.read)
 (import-use nucleus.strview)
 (import-use nucleus.intern)
@@ -83,6 +85,28 @@
     (if (!= marked 0)
       (emit stderr "  " rendered "\n")
       (emit stderr "  " rendered ".0\n"))))
+
+; Text as a literal spelling, so a String or StrView result reads back.
+(defn repl-print-quoted (v:StrView):void
+  (let (o:String (make String))
+    (diag-write-string &o v)
+    (emit stderr "  " (string-as-view &o) "\n")
+    (drop &o)))
+
+; An aggregate result, from the heap copy the eval function returned. A String
+; is the expression's temporary, which nothing else can reach, so it is dropped.
+(defn repl-print-aggregate (rv:ptr v:&Val):void
+  (let (t:&Type (unsafe/cast &Type (v 'type)))
+    (cond (!= (type-is-strview t) 0)
+            (do (repl-print-quoted (deref (unsafe/cast &StrView rv))) (free rv))
+          (and (= (t 'kind) TY-STRUCT) (!= (t 'sdef) null)
+               (core-named? ((unsafe/cast &StructDef (t 'sdef)) 'name) "String"))
+            (let (s:&String (unsafe/cast &String rv))
+              (repl-print-quoted (string-as-view s))
+              (drop s)
+              (free rv))
+          true
+            (do (emit stderr "  #<" (repl-type-to-nuc t) ">\n") (free rv)))))
 
 ; Call a JIT'd nullary thunk and print its result. `ToStr` renders f64 at
 ; `%.17g` and f32 at `%.9g` — the shortest round-trip widths, which is exactly
@@ -450,9 +474,10 @@
                           (when (!= tgt 0)
                             (set! (aref (unsafe/cast &ptr tgt) 0) (sym 'trace-saved)))
                           (let (rt:ptr (sym 'trace-tracker))
-                            (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
-                              (when (!= rerr null) (LLVMConsumeError rerr)))
-                            (LLVMOrcReleaseResourceTracker rt))
+                            (when (= g-repl-program-live 0)
+                              (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
+                                (when (!= rerr null) (LLVMConsumeError rerr)))
+                              (LLVMOrcReleaseResourceTracker rt)))
                           (set! (sym 'trace-tracker) null)
                           (set! (sym 'trace-saved) null)
                           (emit stderr "  untraced\n"))))))
@@ -472,7 +497,7 @@
                         (let (ty:?&Type (sym 'type))
                           (when (and (!= ty null) (= (ty 'kind) TY-FN))
                             (let (rt:ptr (sym 'tracker))
-                              (when (!= rt null)
+                              (when (and (!= rt null) (= g-repl-program-live 0))
                                 (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
                                   (when (!= rerr null) (LLVMConsumeError rerr)))
                                 (LLVMOrcReleaseResourceTracker rt)
@@ -737,6 +762,27 @@
         (return true)))
     (return false)))
 
+; Entering a namespace at the prompt reads it as its files do: their import
+; bindings join the prompt's, so a name a file flattened in resolves here too.
+(defn repl-adopt-ns-imports (ns:Symbol):void
+  (when (or (= ns g-ns-user) (= g-file-ns null)) (return))
+  (when (= g-file-imports null) (set! g-file-imports (new ImportVec g-arena)))
+  (let (mine:&ImportVec (unsafe/cast &ImportVec g-file-imports)
+        tbl:&FileNsVec (unsafe/cast &FileNsVec g-file-ns))
+    (dotimes (i (count tbl))
+      (let (e:&FileNs (invoke tbl i))
+        (when (= (e 'ns) ns)
+          (match (get g-path-imports (e 'path))
+            ((some theirs)
+              (doseq (b theirs (VecIter &ImportBind))
+                (let (have:bool false)
+                  (doseq (m mine (VecIter &ImportBind))
+                    (when (and (= (m 'path) (b 'path)) (= (m 'prefix) (b 'prefix))
+                               (= (m 'private) (b 'private)) (= (m 'bind-none) (b 'bind-none)))
+                      (set! have true)))
+                  (when (not have) (conj mine b)))))
+            (none 0)))))))
+
 ; Confirm what an import form did. Success and the dedup no-op were both silent,
 ; so a swallowed retry looked exactly like a fresh import (repl-libraries.md §3.5).
 (defn repl-report-import (form:?&Node fresh:i32):void
@@ -783,7 +829,7 @@
       (cond (and (not (symbol-none? h)) (= h "ns"))
               ; Stage 12: set the current namespace. emit-ns is silent on a
               ; second `ns` under the REPL flag (g-interactive), as designed.
-              (do (emit-ns (as ptr f)) (set! is-expr 0))
+              (do (emit-ns (as ptr f)) (repl-adopt-ns-imports g-current-ns) (set! is-expr 0))
             (and (not (symbol-none? h)) (= h "defconst"))
               (do (open-module-streams)
                   (set! g-out &g-decl-stream)
@@ -877,7 +923,7 @@
                   (emit-all g-repl-preamble g-decl-stream)
                   (clear-module-buffers)
                   (repl-note-globals-decls pre-len))
-            (and (not (symbol-none? h)) (= h "defn"))
+            (and (not (symbol-none? h)) (or (= h "defn") (= h "defn-")))
               ; Redefinition strategy: each defn produces a stable thunk
               ; @<fname> (defined once on first sight) that loads its current
               ; impl from @<fname>.tgt and dispatches. The function body is
@@ -887,149 +933,165 @@
               ; @<fname>.impl.<N+1>, and @<fname>.tgt is repointed. Existing
               ; callers and `&foo` bind to the thunk and pick up the
               ; new impl transparently.
-              (let (name-node:ptr (node-at form 1)
-                    fname:Symbol (symbol-none)  ret-name:Symbol (symbol-none))
-                (when (not (node-empty? (as ?&Node name-node)))
-                  (require-sig-name (as ?&Node name-node) "defn: name" (f 'line))
-                  (extract-name-type name-node (as &Symbol &fname)
-                                               (as &Symbol &ret-name)))
-                (cond
-                  (symbol-none? fname)
-                    (repl-error (f 'line) "defn: missing name")
-                  ; R3 (repl-libraries.md §6): a bounded-generic / parametric-
-                  ; receiver template emits no `define` at all — it is stamped
-                  ; per call site — so the thunk + @name.impl.N machinery below
-                  ; has nothing to rename and reported a spurious
-                  ; `lookup of <name>.impl.0 failed`. Registering it is the
-                  ; whole job; the stamps are drained by repl-flush-mono at
-                  ; whichever entry first calls it.
-                  (!= (defn-is-generic-template f) 0)
-                    (do (open-module-streams)
-                        (let (one-form:ptr (node-list1 form (f 'line)))
-                          (prescan-defn-signatures one-form))
-                        (drain-where-checks)
-                        (set! g-out g-def-stream)
-                        (emit-defn (as ptr f))
-                        (drain-pending-union-irs)
-                        (repl-absorb-type-buf)
-                        (clear-module-buffers)
-                        (emit stderr "  defined\n"))
-                  true
-                    ; Derive fname-ir the same way batch does for a solitary
-                    ; defn: ns-ir-base composes the current namespace's prefix
-                    ; onto ir-name-token(fname), so `?`→_QMARK / `!`→_BANG and
-                    ; hyphens pass through unchanged. This is exactly the symbol
-                    ; emit-defn writes (via defn-ir-name → ns-ir-base), so the
-                    ; thunk / @fname.impl.N / @fname.tgt machinery and the
-                    ; rewrite of "@fname(" all reference the real emitted symbol.
-                    ; Raw sanitize-for-ir diverged (arena-alloc → arena_alloc,
-                    ; full? → full_) and broke redefinition of any such name.
-                    ; The REPL only handles the solitary (non-overloaded) case,
-                    ; which is precisely defn-ir-name's ns-ir-base fallback.
-                    (let (fname-ir:Symbol (ns-ir-base fname)
-                          is-redef:i32 0
-                          ; B2b: definition-side (is this a redefinition?), so
-                          ; the KEY lookup — same question `scope-define` answers.
-                          old-sym:?&Sym (scope-lookup-key g-globals fname))
-                      (when (!= old-sym null)
-                        (set! is-redef 1)
-                        (let (old-rt:ptr (old-sym 'tracker))
-                          (when (!= old-rt null)
-                            (let (rerr:ptr (LLVMOrcResourceTrackerRemove old-rt))
-                              (when (!= rerr null)
-                                (repl-error (f 'line)
-                                  (fstr "redefinition: tracker remove failed: "
-                                        (as CStr (LLVMGetErrorMessage rerr))))))
-                            (LLVMOrcReleaseResourceTracker old-rt)
-                            (set! (old-sym 'tracker) null))))
-                      (let (impl-id:i32 (unsafe/cast i32 g-defn-impl-counter)
-                            impl-name:Symbol (symbol-none))
-                        (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
-                        (set! impl-name (symbol-intern (fstr fname-ir ".impl." impl-id)))
-                        ; When redefining, remove the old method from the
-                        ; generic before prescan adds the new one.
-                        ; Otherwise finalize-generics sees a duplicate signature.
-                        (when (and (!= is-redef 0) (!= old-sym null))
-                          (let (old-g:?&Generic (generic-lookup fname))
-                            (when (!= old-g null)
-                              (let (old-ft:&Type (unsafe/cast &Type (old-sym 'type)))
-                                (when (= (old-ft 'kind) TY-FN)
-                                  ; §14.4: materialize the fn Type's param Vector back
-                                  ; into a raw Type*[] — generic-remove-matching-user-method
-                                  ; compares against Method.param-types (still a raw array).
-                                  (let (onp:i32 (old-ft 'num-params)
-                                        oparr:ptr (if (> onp 0)
-                                                    (arena-alloc (* onp (ptr-bytes)))
-                                                    null))
-                                    (dotimes (ok onp)
-                                      (set! (aref (unsafe/cast &ptr oparr) ok) (as ptr ((field-at (old-ft 'params) ok) 'type))))
-                                    (generic-remove-matching-user-method
-                                      old-g oparr onp)))))))
-                        (open-module-streams)
-                        (let (one-form:ptr (node-list1 form (f 'line)))
-                          (prescan-defn-signatures one-form))
-                        (set! g-out g-def-stream)
-                        (emit-defn (as ptr f))
-                        (jit-ensure-init (f 'line))
-                        ; First definition: JIT the thunk module and add a
-                        ; declare for @fname-ir to the preamble so subsequent
-                        ; modules can call it.
-                        (when (= is-redef 0)
-                          ; B2b: reads back the Sym `emit-defn` just wrote — a
-                          ; KEY, not a reference.
-                          (let (sym:?&Sym (scope-lookup-key g-globals fname))
-                            (when (!= sym null)
-                              (let (ft:&Type (unsafe/cast &Type (sym 'type)))
-                                (when (= (ft 'kind) TY-FN)
-                                  (jit-thunk-module (f 'line) fname-ir (as ptr ft))
-                                  ; ABI-lower the preamble declare the same way
-                                  ; emit-defn lowered the define it names — raw
-                                  ; type-to-ir disagreed on any by-value struct
-                                  ; param/return, on every target.
-                                  (let (rinfo:&AbiInfo
-                                          (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
-                                    (emit g-repl-preamble "declare "
-                                          (abi-ret-ir rinfo (ft 'ret)) " @" fname-ir "(")
-                                    (let (need-comma:i32 0)
-                                      (when (= (rinfo 'kind) ABI-MEMORY)
-                                        (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
-                                              ") align " (rinfo 'align))
-                                        (set! need-comma 1))
-                                      (abi-args-begin rinfo)
-                                      (dotimes (pi (ft 'num-params))
-                                        (when (!= need-comma 0) (emit g-repl-preamble ", "))
-                                        (abi-print-param-to g-repl-preamble
-                                          (abi-classify-arg ((field-at (ft 'params) pi) 'type))
-                                          ((field-at (ft 'params) pi) 'type)
-                                          (symbol-none))
-                                        (set! need-comma 1)))
-                                    (emit g-repl-preamble ")\n")
-                                    ; R3/D8: a later macro JIT module is
-                                    ; assembled with this preamble, so its own
-                                    ; declare latch has to know this line exists.
-                                    (repl-preamble-note-decl
-                                      (symbol-intern (fstr "@" fname-ir)))))))))
-                        ; R3 constraint 4: after the thunk (a lifted lambda can
-                        ; call @fname-ir recursively, so its declare must be in
-                        ; the preamble first) and into a module of its own — the
-                        ; tracker created below is removed on the next
-                        ; redefinition of THIS defn, which would take every
-                        ; unrelated stamp drained beside it.
-                        (repl-flush-mono (f 'line))
-                        ; JIT the impl module under a fresh tracker, renaming
-                        ; the captured "@fname-ir(" to "@impl-name(".
-                        (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
-                          (repl-jit-module-rt-rewrite (f 'line) rt fname-ir impl-name)
-                          ; Patch @fname-ir.tgt to point at @impl-name. Stash
-                          ; the tracker on the latest Sym for the next
-                          ; redefinition to remove.
-                          (when (= (update-fn-tgt (f 'line) fname-ir impl-name) 0)
+              ; `defn-` too: the flag is ReplState's, so an error path restores it.
+              (do (set! g-defining-private (if (= h "defn-") 1 0))
+                (let (name-node:ptr (node-at form 1)
+                      fname:Symbol (symbol-none)  ret-name:Symbol (symbol-none))
+                  (when (not (node-empty? (as ?&Node name-node)))
+                    (require-sig-name (as ?&Node name-node) "defn: name" (f 'line))
+                    (extract-name-type name-node (as &Symbol &fname)
+                                                 (as &Symbol &ret-name)))
+                  (cond
+                    (symbol-none? fname)
+                      (repl-error (f 'line) "defn: missing name")
+                    ; R3 (repl-libraries.md §6): a bounded-generic / parametric-
+                    ; receiver template emits no `define` at all — it is stamped
+                    ; per call site — so the thunk + @name.impl.N machinery below
+                    ; has nothing to rename and reported a spurious
+                    ; `lookup of <name>.impl.0 failed`. Registering it is the
+                    ; whole job; the stamps are drained by repl-flush-mono at
+                    ; whichever entry first calls it.
+                    (!= (defn-is-generic-template f) 0)
+                      (do (open-module-streams)
+                          (let (one-form:ptr (node-list1 form (f 'line)))
+                            (prescan-defn-signatures one-form))
+                          (drain-where-checks)
+                          (set! g-out g-def-stream)
+                          (emit-defn (as ptr f))
+                          (drain-pending-union-irs)
+                          (repl-absorb-type-buf)
+                          (clear-module-buffers)
+                          (emit stderr "  defined\n"))
+                    true
+                      ; Derive fname-ir the same way batch does for a solitary
+                      ; defn: ns-ir-base composes the current namespace's prefix
+                      ; onto ir-name-token(fname), so `?`→_QMARK / `!`→_BANG and
+                      ; hyphens pass through unchanged. This is exactly the symbol
+                      ; emit-defn writes (via defn-ir-name → ns-ir-base), so the
+                      ; thunk / @fname.impl.N / @fname.tgt machinery and the
+                      ; rewrite of "@fname(" all reference the real emitted symbol.
+                      ; Raw sanitize-for-ir diverged (arena-alloc → arena_alloc,
+                      ; full? → full_) and broke redefinition of any such name.
+                      ; The REPL only handles the solitary (non-overloaded) case,
+                      ; which is precisely defn-ir-name's ns-ir-base fallback.
+                      (let (fname-ir:Symbol (ns-ir-base fname)
+                            is-redef:i32 0
+                            ; B2b: definition-side (is this a redefinition?), so
+                            ; the KEY lookup — same question `scope-define` answers.
+                            old-sym:?&Sym (scope-lookup-key g-globals fname)
+                          old-ft:?&Type (if-some (o old-sym) (o 'type) null))
+                        (when (!= old-sym null)
+                          (set! is-redef 1)
+                          (let (old-rt:ptr (old-sym 'tracker))
+                            ; D-KEEP (run-repl.md): the program's thread may be running it.
+                            (when (and (!= old-rt null) (= g-repl-program-live 0))
+                              (let (rerr:ptr (LLVMOrcResourceTrackerRemove old-rt))
+                                (when (!= rerr null)
+                                  (repl-error (f 'line)
+                                    (fstr "redefinition: tracker remove failed: "
+                                          (as CStr (LLVMGetErrorMessage rerr))))))
+                              (LLVMOrcReleaseResourceTracker old-rt)
+                              (set! (old-sym 'tracker) null))))
+                        (let (impl-id:i32 (unsafe/cast i32 g-defn-impl-counter)
+                              impl-name:Symbol (symbol-none))
+                          (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
+                          (set! impl-name (symbol-intern (fstr fname-ir ".impl." impl-id)))
+                          ; When redefining, remove the old method from the
+                          ; generic before prescan adds the new one.
+                          ; Otherwise finalize-generics sees a duplicate signature.
+                          (when (and (!= is-redef 0) (!= old-sym null))
+                            (let (old-g:?&Generic (generic-lookup fname))
+                              (when (!= old-g null)
+                                (let (old-ft:&Type (unsafe/cast &Type (old-sym 'type)))
+                                  (when (= (old-ft 'kind) TY-FN)
+                                    ; §14.4: materialize the fn Type's param Vector back
+                                    ; into a raw Type*[] — generic-remove-matching-user-method
+                                    ; compares against Method.param-types (still a raw array).
+                                    (let (onp:i32 (old-ft 'num-params)
+                                          oparr:ptr (if (> onp 0)
+                                                      (arena-alloc (* onp (ptr-bytes)))
+                                                      null))
+                                      (dotimes (ok onp)
+                                        (set! (aref (unsafe/cast &ptr oparr) ok) (as ptr ((field-at (old-ft 'params) ok) 'type))))
+                                      (generic-remove-matching-user-method
+                                        old-g oparr onp)))))))
+                          (open-module-streams)
+                          (let (one-form:ptr (node-list1 form (f 'line)))
+                            (prescan-defn-signatures one-form))
+                          (set! g-out g-def-stream)
+                          (emit-defn (as ptr f))
+                          ; A `defn-`'s IR name is its file's private one, not `ns-ir-base`'s.
+                          (if-some (ds (scope-lookup-key g-globals fname))
+                            (when (> ((ds 'ir-name) 'len) 1)
+                              ; The running program's callers were compiled against the old one.
+                              (when (and (!= is-redef 0) (!= g-repl-program-live 0)
+                                         (= (type-eq old-ft (ds 'type)) 0))
+                                (die-at (f 'line) (fstr "defn: the program is running, and its calls to '" fname
+                                                        "' pass the old signature; keep it, or restart")))
+                              (set! fname-ir (symbol-intern (strview-drop-bytes (ds 'ir-name) 1)))
+                              (set! impl-name (symbol-intern (fstr fname-ir ".impl." impl-id))))
+                            0)
+                          (jit-ensure-init (f 'line))
+                          ; First definition: JIT the thunk module and add a
+                          ; declare for @fname-ir to the preamble so subsequent
+                          ; modules can call it.
+                          (when (= is-redef 0)
+                            ; B2b: reads back the Sym `emit-defn` just wrote — a
+                            ; KEY, not a reference.
                             (let (sym:?&Sym (scope-lookup-key g-globals fname))
                               (when (!= sym null)
-                                (set! (sym 'tracker) rt))))))
-                      (if (!= is-redef 0)
-                        (emit stderr "  redefined\n")
-                        (emit stderr "  defined\n")))))
+                                (let (ft:&Type (unsafe/cast &Type (sym 'type)))
+                                  (when (= (ft 'kind) TY-FN)
+                                    (jit-thunk-module (f 'line) fname-ir (as ptr ft))
+                                    ; ABI-lower the preamble declare the same way
+                                    ; emit-defn lowered the define it names — raw
+                                    ; type-to-ir disagreed on any by-value struct
+                                    ; param/return, on every target.
+                                    (let (rinfo:&AbiInfo
+                                            (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
+                                      (emit g-repl-preamble "declare "
+                                            (abi-ret-ir rinfo (ft 'ret)) " @" fname-ir "(")
+                                      (let (need-comma:i32 0)
+                                        (when (= (rinfo 'kind) ABI-MEMORY)
+                                          (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
+                                                ") align " (rinfo 'align))
+                                          (set! need-comma 1))
+                                        (abi-args-begin rinfo)
+                                        (dotimes (pi (ft 'num-params))
+                                          (when (!= need-comma 0) (emit g-repl-preamble ", "))
+                                          (abi-print-param-to g-repl-preamble
+                                            (abi-classify-arg ((field-at (ft 'params) pi) 'type))
+                                            ((field-at (ft 'params) pi) 'type)
+                                            (symbol-none))
+                                          (set! need-comma 1)))
+                                      (emit g-repl-preamble ")\n")
+                                      ; R3/D8: a later macro JIT module is
+                                      ; assembled with this preamble, so its own
+                                      ; declare latch has to know this line exists.
+                                      (repl-preamble-note-decl
+                                        (symbol-intern (fstr "@" fname-ir)))))))))
+                          ; R3 constraint 4: after the thunk (a lifted lambda can
+                          ; call @fname-ir recursively, so its declare must be in
+                          ; the preamble first) and into a module of its own — the
+                          ; tracker created below is removed on the next
+                          ; redefinition of THIS defn, which would take every
+                          ; unrelated stamp drained beside it.
+                          (repl-flush-mono (f 'line))
+                          ; JIT the impl module under a fresh tracker, renaming
+                          ; the captured "@fname-ir(" to "@impl-name(".
+                          (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
+                            (repl-jit-module-rt-rewrite (f 'line) rt fname-ir impl-name)
+                            ; Patch @fname-ir.tgt to point at @impl-name. Stash
+                            ; the tracker on the latest Sym for the next
+                            ; redefinition to remove.
+                            (when (= (update-fn-tgt (f 'line) fname-ir impl-name) 0)
+                              (let (sym:?&Sym (scope-lookup-key g-globals fname))
+                                (when (!= sym null)
+                                  (set! (sym 'tracker) rt))))))
+                        (if (!= is-redef 0)
+                          (emit stderr "  redefined\n")
+                          (emit stderr "  defined\n")))))
+                  (set! g-defining-private 0))
             (and (not (symbol-none? h)) (= h "compile-time"))
               ; R4: the CT module is assembled inside emit-compile-time; close
               ; this entry's own buffers after it and carry their types forward.
@@ -1138,7 +1200,7 @@
                     ; G-3 (§4.5): an imported `defvar`'s run-time initializer is
                     ; left queued under `g-interactive`; it runs from a module of
                     ; its own below, since ORC never runs `llvm.global_ctors`.
-                    (repl-jit-module (f 'line))
+                    (repl-jit-import-module (f 'line) pre-len)
                     ; R3 (D7): a stamp, a lifted lambda and a closure
                     ; invoke/drop are emitted into this module by the drain at
                     ; the tail of emit-toplevel-forms, and none of them is a
@@ -1170,33 +1232,7 @@
                                 (set! is-dup 1))
                               (when (= is-dup 0)
                                 (repl-preamble-note-decl (symbol-intern (sym 'ir-name)))
-                                ; ABI-lower exactly as the define does (see the
-                                ; first-definition declare above). need-comma
-                                ; rather than `pi != 0` / `num-params != 0`
-                                ; because an sret prefix already occupies the
-                                ; first operand slot even at zero parameters.
-                                (let (rinfo:&AbiInfo
-                                        (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
-                                  (emit g-repl-preamble "declare " (abi-ret-ir rinfo (ft 'ret))
-                                        " " (sym 'ir-name) "(")
-                                  (let (need-comma:i32 0)
-                                    (when (= (rinfo 'kind) ABI-MEMORY)
-                                      (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
-                                            ") align " (rinfo 'align))
-                                      (set! need-comma 1))
-                                    (abi-args-begin rinfo)
-                                    (dotimes (pi (ft 'num-params))
-                                      (when (!= need-comma 0) (emit g-repl-preamble ", "))
-                                      (abi-print-param-to g-repl-preamble
-                                        (abi-classify-arg ((field-at (ft 'params) pi) 'type))
-                                        ((field-at (ft 'params) pi) 'type)
-                                        (symbol-none))
-                                      (set! need-comma 1))
-                                    (when (!= (ft 'variadic) 0)
-                                      (let (sep:StrView "")
-                                        (when (!= need-comma 0) (set! sep ", "))
-                                        (emit g-repl-preamble sep "..."))))
-                                  (emit g-repl-preamble ")\n"))))))
+                                (repl-declare-fn-to &g-repl-preamble (sym 'ir-name) ft)))))
                         (inc! si)))
                     ; Last, because an initializer can stamp what nothing else
                     ; did (a collection literal's `init`), and that stamp may
@@ -1284,6 +1320,24 @@
                               (!= (is-float-type (result 'type)) 0)
                                 (emit g-body-stream "  ret " (type-to-ir (result 'type)) " "
                                       (result 'val) "\n")
+                              ; An aggregate comes back as a heap copy for
+                              ; `repl-print-aggregate`. A literal's view is only its
+                              ; data pointer until it is given a length here.
+                              (or (= result-kind TY-STRUCT) (= result-kind TY-UNION))
+                                (let (ty:StrView (type-to-ir (result 'type))
+                                      rv:StrView (result 'val)
+                                      g:StrView (new-tmp) n:StrView (new-tmp) m:StrView (new-tmp))
+                                  (when (and (!= (result 'is-lit) 0) (!= (type-is-strview (result 'type)) 0))
+                                    (let (l:StrView (new-tmp) a:StrView (new-tmp) b:StrView (new-tmp))
+                                      (emit g-body-stream "  " l " = call i64 @strlen(ptr " rv ")\n")
+                                      (emit g-body-stream "  " a " = insertvalue " ty " undef, ptr " rv ", 0\n")
+                                      (emit g-body-stream "  " b " = insertvalue " ty " " a ", i64 " l ", 1\n")
+                                      (set! rv b)))
+                                  (emit g-body-stream "  " g " = getelementptr " ty ", ptr null, i32 1\n")
+                                  (emit g-body-stream "  " n " = ptrtoint ptr " g " to i64\n")
+                                  (emit g-body-stream "  " m " = call ptr @malloc(i64 " n ")\n")
+                                  (emit g-body-stream "  store " ty " " rv ", ptr " m "\n")
+                                  (emit g-body-stream "  ret ptr " m "\n"))
                               true
                                 (emit g-body-stream "  ret void\n")))
                       ; Build function definition
@@ -1294,7 +1348,8 @@
                                   (= result-kind TY-I16))
                           (set! ret-ir "i32"))
                         (when (or (= result-kind TY-I64) wide-int) (set! ret-ir "i64"))
-                        (when (= result-kind TY-PTR) (set! ret-ir "ptr"))
+                        (when (or (= result-kind TY-PTR) (= result-kind TY-STRUCT) (= result-kind TY-UNION))
+                          (set! ret-ir "ptr"))
                         (when (= result-kind TY-F32) (set! ret-ir "float"))
                         (when (= result-kind TY-F64) (set! ret-ir "double"))
                         (when (or (= result-kind TY-F16)
@@ -1354,6 +1409,8 @@
                                     (= result-kind TY-F32)
                                       (repl-print-f32
                                         (unsafe/cast ((fn f32)()) (unsafe/cast ptr addr)))
+                                    (or (= result-kind TY-STRUCT) (= result-kind TY-UNION))
+                                      (repl-print-aggregate (unsafe/funcall-ptr-ptr (unsafe/cast ptr addr)) result)
                                     (= result-kind TY-VOID)
                                       (funcall-void (unsafe/cast ptr addr))
                                     true
@@ -1586,6 +1643,138 @@
 
 ; Build a JIT module from the current module streams and add it to the JIT.
 ; Includes the REPL preamble (accumulated declarations/types) in the module.
+; ABI-lowered exactly as the define is. need-comma rather than `pi != 0`,
+; because an sret prefix occupies the first operand slot even at zero parameters.
+(defn repl-declare-fn-to (out:&String irn:StrView ft:&Type):void
+  (let (rinfo:&AbiInfo (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
+    (emit out "declare " (abi-ret-ir rinfo (ft 'ret)) " " irn "(")
+    (let (need-comma:i32 0)
+      (when (= (rinfo 'kind) ABI-MEMORY)
+        (emit out "ptr sret(" (type-to-ir (ft 'ret)) ") align " (rinfo 'align))
+        (set! need-comma 1))
+      (abi-args-begin rinfo)
+      (dotimes (pi (ft 'num-params))
+        (when (!= need-comma 0) (emit out ", "))
+        (abi-print-param-to out
+          (abi-classify-arg ((field-at (ft 'params) pi) 'type))
+          ((field-at (ft 'params) pi) 'type)
+          (symbol-none))
+        (set! need-comma 1))
+      (when (!= (ft 'variadic) 0)
+        (emit out (if (!= need-comma 0) ", " "") "...")))
+    (emit out ")\n")))
+
+; RL-2 (design/stage27-build/run-repl.md D-OWN): the program's own files are
+; those under the entry's directory, less the stdlib.
+(defvar g-repl-own-dir:Symbol)
+(defvar g-repl-own-memo:&(HashMap Symbol bool) (new (HashMap Symbol bool) g-arena))
+
+(defn repl-own-path? (path:Symbol):bool
+  (when (or (symbol-none? g-repl-own-dir) (symbol-none? path)) (return false))
+  (match (get g-repl-own-memo path) ((some b) (return b)) (none 0))
+  (let (own:bool false)
+    (when (= (path-under-ct-lib-root path) 0)
+      (match (real-path (symbol-as-view path))
+        ((ok r) (set! own (strview-has-prefix (string-as-view &r) (symbol-as-view g-repl-own-dir)))
+                (drop &r))
+        ((err e) 0)))
+    (assoc g-repl-own-memo path own)
+    (return own)))
+
+; The import's own functions that get a thunk: one `Sym` per IR name, `main`
+; left alone, since the program thread enters it by name.
+(defn repl-owned-defns (from:i32 out:&(Vector &Sym)):void
+  (let (si:i32 from)
+    (while (< si (g-globals 'len))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (g-globals 'syms)) si))
+            ft:?&Type (sym 'type)
+            irn:StrView (sym 'ir-name))
+        (when (and (!= ft null) (= (ft 'kind) TY-FN) (> (irn 'len) 1)
+                   (not (= irn "@main")) (repl-own-path? (sym 'src-file)))
+          (let (dup:bool false)
+            (doseq (o out (VecIter &Sym))
+              (when (= (o 'ir-name) irn) (set! dup true)))
+            (when (not dup) (conj out sym)))))
+      (inc! si))))
+
+; The import's definitions, each owned `define @f(` renamed to its impl (with
+; `internal` dropped: its thunk lives in another module), and `found` marking
+; which names had a define here at all — a template has none.
+(defn repl-rename-defines (body:StrView syms:&(Vector &Sym) impls:&(Vector Symbol)
+                           found:&(Vector bool) out:&String):void
+  (while (> (body 'len) 0)
+    (let (line:StrView body)
+      (match (strview-find-byte &body 10)
+        ((some nl) (do (set! line (strview-take-bytes body (+ nl 1)))
+                       (set! body (strview-drop-bytes body (+ nl 1)))))
+        (none (set! body "")))
+      (let (done:bool false)
+        (when (strview-has-prefix line "define ")
+          (dotimes (k (count syms))
+            (when (not done)
+              (let (pat:StrView (fstr ((invoke syms k) 'ir-name) "("))
+                (match (strview-find line pat)
+                  ((some at)
+                    (let (head:StrView (strview-take-bytes line at))
+                      (when (strview-has-prefix head "define internal ")
+                        (set! head (fstr "define " (strview-drop-bytes head 16))))
+                      (emit out head "@" (invoke impls k) "(" (strview-drop-bytes line (+ at (pat 'len))))
+                      (set! (found k) true)
+                      (set! done true)))
+                  (none 0))))))
+        (when (not done) (emit out line))))))
+
+; An import under `-i FILE`: its owned functions are JIT'd as `@f.impl.N`
+; behind thunks, so a `defn` at the prompt can replace them while `main` runs.
+(defn repl-jit-import-module (line:i32 from:i32):void
+  (let (syms:(Vector &Sym) (make (Vector &Sym)))
+    (when (not (symbol-none? g-repl-own-dir)) (repl-owned-defns from &syms))
+    (when (= (count &syms) 0)
+      (drop &syms)
+      (repl-jit-module line)
+      (return))
+    (drain-pending-union-irs)
+    (repl-absorb-type-buf)
+    (let (impls:(Vector Symbol) (make (Vector Symbol))
+          found:(Vector bool) (make (Vector bool))
+          (defs String) (make String)
+          (irs String) (make String))
+      (doseq (sym &syms (VecIter &Sym))
+        (conj &impls (symbol-intern (fstr (strview-drop-bytes (sym 'ir-name) 1) ".impl." (as i64 g-defn-impl-counter))))
+        (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
+        (conj &found false))
+      (repl-rename-defines (string-as-view g-def-buf) &syms &impls &found &defs)
+      (emit irs "; ModuleID = '<repl>'\n")
+      (emit irs "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
+      (repl-put-preamble irs (symbol-none))
+      (emit-string-table irs 0 0 null)
+      (emit-all irs g-decl-stream)
+      ; The calls the module makes to its renamed functions now reach the thunks.
+      (dotimes (k (count &syms))
+        (when (invoke &found k)
+          (repl-declare-fn-to &irs ((invoke &syms k) 'ir-name) (unsafe/cast &Type ((invoke &syms k) 'type)))))
+      (emit-all irs defs)
+      (let (v:StrView (string-as-view irs))
+        (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+          (emit stderr "----- IR -----\n" v "----- END -----\n"))
+        (jit-add-module-rt v line null))
+      (clear-module-buffers)
+      ; Every thunk before the first `.tgt` update, whose lookup materializes
+      ; the import, which calls them all.
+      (dotimes (k (count &syms))
+        (when (invoke &found k)
+          (jit-thunk-module line (symbol-intern (strview-drop-bytes ((invoke &syms k) 'ir-name) 1))
+                            ((invoke &syms k) 'type))))
+      (dotimes (k (count &syms))
+        (when (invoke &found k)
+          (update-fn-tgt line (symbol-intern (strview-drop-bytes ((invoke &syms k) 'ir-name) 1))
+                         (invoke &impls k))))
+      (drop &irs)
+      (drop &defs)
+      (drop &found)
+      (drop &impls))
+    (drop &syms)))
+
 (defn repl-jit-module (line:i32):void
   (repl-jit-module-rt-rewrite line null (symbol-none) (symbol-none)))
 
@@ -2249,7 +2438,115 @@
     (drop &pf)))
 
 ; REPL main loop
-(defn repl-main ():void
+; One read's worth of forms, each under its own snapshot.
+(defn repl-eval-text (text:StrView):void
+  ; A syntax error has already been reported; nothing to reset.
+  (match (read-source-or-report text repl-rmacros)
+    ((ok parsed)
+      (do
+        ; `desugar` can die too, and runs before any form does.
+        (set! g-repl-forms null)
+        (repl-snapshot &g-repl-saved)
+        (when (!= (repl-protect repl-protect-desugar parsed) 0)
+          (repl-restore &g-repl-saved)
+          (repl-error 0 "error (recovered)"))
+        ; One snapshot per form, so a form that dies rolls back only
+        ; its own registrations.
+        (let (fc:ptr g-repl-forms)
+          (while (> (node-len fc) 0)
+            (let (f:ptr (node-first (unsafe/cast &Node fc)))
+              (repl-snapshot &g-repl-saved)
+              (when (!= (repl-protect repl-protect-eval f) 0)
+                (repl-restore &g-repl-saved)
+                (repl-error (node-line f 0) "error (recovered)")))
+            (set! fc (node-rest (unsafe/cast &Node fc)))))))
+    ((err e) (do))))
+
+; `-i FILE` (design/stage27-build/run-repl.md): the program `main` runs beside
+; the prompt. Read by the program thread only once, before it starts.
+(defvar g-repl-entry:Symbol)
+(defvar g-repl-program-live:i32 0)
+(defvar g-repl-main-addr:ptr null)
+(defvar g-repl-main-void:i32 0)
+(defvar :volatile g-repl-main-done:i32 0)
+(defvar g-repl-main-rc:i32 0)
+(defvar g-repl-main-tid:pthread_t 0)
+
+; Runs beside the compiler, so it touches none of the compiler's state: `emit`
+; and `fstr` format into one shared buffer and the arena, which the prompt's
+; compile is using.
+(defn repl-program-thread (arg:ptr):ptr
+  (let (o:String (make String))
+    (if (!= g-repl-main-void 0)
+      (do (funcall-void g-repl-main-addr)
+          (str-into &o "  main returned\n"))
+      ; A nullary `main` ignores the two arguments, as `--run`'s does.
+      (let (mf:(fn i32)(i32 ptr) (unsafe/cast ((fn i32)(i32 ptr)) g-repl-main-addr))
+        (set! g-repl-main-rc (mf g-run-argc g-run-argv))
+        (str-into &o "  main returned " g-repl-main-rc "\n")))
+    (let (v:StrView (string-as-view &o))
+      (fwrite (as ptr (v 'data)) 1 (as i64 (v 'len)) stderr))
+    (drop &o))
+  (set! g-repl-main-done 1)
+  (return null))
+
+; The namespace the entry file declared: the import recorded it under the
+; spelling `resolve-import` chose, so the paths are compared resolved.
+(defn repl-entry-ns ():Symbol
+  (when (= g-file-ns null) (return g-ns-user))
+  (match (real-path (symbol-as-view g-repl-entry))
+    ((err e) (return g-ns-user))
+    ((ok want)
+      (let (w:Symbol (symbol-intern (string-as-view &want))
+            tbl:&FileNsVec (unsafe/cast &FileNsVec g-file-ns))
+        (drop &want)
+        (dotimes (i (count tbl))
+          (let (e:&FileNs (invoke tbl i))
+            (match (real-path (symbol-as-view (e 'path)))
+              ((ok got)
+                (let (same:bool (= (symbol-intern (string-as-view &got)) w))
+                  (drop &got)
+                  (when same (return (e 'ns)))))
+              ((err e2) 0))))
+        (return g-ns-user)))))
+
+; Import the entry, enter its namespace, and start `main` on its own thread.
+; False when there is no program to run, which ends the session.
+(defn repl-start-program ():bool
+  (match (real-path (let (d:Symbol (path-dir g-repl-entry)) (if (symbol-none? d) "." (symbol-as-view d))))
+    ((ok d) (set! g-repl-own-dir (symbol-intern (fstr (string-as-view &d) "/"))) (drop &d))
+    ((err e) 0))
+  (let (t:String (make String))
+    (str-into &t "(import-use ")
+    (diag-write-string &t (symbol-as-view g-repl-entry))
+    (str-into &t ")")
+    (repl-eval-text (string-as-view &t))
+    (drop &t))
+  (let (ns:Symbol (repl-entry-ns)
+        ms:?&Sym (scope-lookup-key g-globals (ns-qualify-in ns (symbol-intern "main"))))
+    (when (or (= ms null) (!= ((unsafe/cast &Type (ms 'type)) 'kind) TY-FN))
+      (emit stderr "nucleusc: -i " g-repl-entry ": no 'main' function to run\n")
+      (return false))
+    (set! g-repl-main-void (if (= (-> (unsafe/cast &Type (ms 'type)) (_ 'ret) (unsafe/cast &Type _) (_ 'kind)) TY-VOID) 1 0))
+    (let (addr:i64 0)
+      (jit-lookup-addr "main" (as ptr &addr))
+      (when (= addr 0)
+        (emit stderr "nucleusc: -i " g-repl-entry ": 'main' did not link\n")
+        (return false))
+      (set! g-repl-main-addr (unsafe/cast ptr addr)))
+    (when (!= ns g-ns-user)
+      (let (t:String (make String))
+        (str-into &t "(ns " ns ")")
+        (repl-eval-text (string-as-view &t))
+        (drop &t)))
+    (set! g-repl-program-live 1)
+    (when (!= (pthread_create &g-repl-main-tid null repl-program-thread null) 0)
+      (emit stderr "nucleusc: -i " g-repl-entry ": cannot start a thread for 'main'\n")
+      (return false))
+    (emit stderr "  running main\n")
+    (return true)))
+
+(defn repl-main ():i32
   (emit stderr "Nucleus REPL (type Ctrl-D to exit)\n")
   ; Line-buffer stdout so JIT'd printf output is visible immediately even when
   ; the REPL is driven by a pipe (stdin not a tty makes stdout block-buffered
@@ -2269,6 +2566,8 @@
   ; Tolerates failure so a session still starts without lib/nucleus/core.nuc; the
   ; user just gets "unknown type" for everything the prelude defines.
   (repl-preload-prelude)
+  (when (and (not (symbol-none? g-repl-entry)) (not (repl-start-program)))
+    (return 1))
   (let (running:i32 1)
     (while (!= running 0)
       (match (repl-read-input)
@@ -2276,25 +2575,10 @@
           (do (emit stderr "\n") (set! running 0)))
         ((some input)
           (let ((text String) input)
-              ; A syntax error has already been reported; nothing to reset.
-              (match (read-source-or-report (string-as-view &text) repl-rmacros)
-                ((ok parsed)
-                  (do
-                    ; `desugar` can die too, and runs before any form does.
-                    (set! g-repl-forms null)
-                    (repl-snapshot &g-repl-saved)
-                    (when (!= (repl-protect repl-protect-desugar parsed) 0)
-                      (repl-restore &g-repl-saved)
-                      (repl-error 0 "error (recovered)"))
-                    ; One snapshot per form, so a form that dies rolls back only
-                    ; its own registrations.
-                    (let (fc:ptr g-repl-forms)
-                      (while (> (node-len fc) 0)
-                        (let (f:ptr (node-first (unsafe/cast &Node fc)))
-                          (repl-snapshot &g-repl-saved)
-                          (when (!= (repl-protect repl-protect-eval f) 0)
-                            (repl-restore &g-repl-saved)
-                            (repl-error (node-line f 0) "error (recovered)")))
-                        (set! fc (node-rest (unsafe/cast &Node fc)))))))
-                ((err e) (do)))
-              (drop &text)))))))
+            (repl-eval-text (string-as-view &text))
+            (drop &text))))))
+  ; D-EOF: the end of input doesn't stop the program it was poking.
+  (when (= g-repl-program-live 0) (return 0))
+  (when (= g-repl-main-done 0) (emit stderr "  waiting for main to return\n"))
+  (pthread_join g-repl-main-tid null)
+  (return g-repl-main-rc))

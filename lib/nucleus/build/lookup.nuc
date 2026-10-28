@@ -1,0 +1,373 @@
+; Stage 27 — what a library is, wherever it was found: a project directory with a
+; build.edn, or an installed manifest; and the places §8.5 searches for one.
+;
+; Design: design/stage27-build/overview.md §8.5; plan.md BT-8.
+
+(ns nucleus.build.lookup)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.keyword)
+(import-use nucleus.node)
+(import-use nucleus.edn)
+(import-use nucleus.file)
+(import-use nucleus.build.config)
+(import-use nucleus.build.exec)
+(import-use nucleus.build.pkg)
+(import-use nucleus.build.resolve)
+(import-use "stdlib.h")
+
+; §8.5's places, most binding first.
+(defconst TIER-LOCAL 1)
+(defconst TIER-CONFIG 2)
+(defconst TIER-REGISTRY 3)
+(defconst TIER-INSTALLED 4)
+
+; `source` goes on -I for a library used from source; `include` and `archive`
+; are an install's, for prebuilt use. `config` is a project's own build.edn.
+(defstruct Library
+  name:StrView
+  version:StrView
+  roots:&(Vector StrView)
+  dir:StrView
+  source:StrView
+  include:StrView
+  archive:StrView
+  compiler:StrView
+  header-format:i64
+  target:StrView             ; an install's, as its manifest records it
+  config:?&BuildConfig
+  tier:i32
+  where:StrView)
+
+(defn library-new ():Library
+  (let (r:&(Vector StrView) (unsafe/cast &(Vector StrView) (malloc (sizeof (Vector StrView)))))
+    (set! @r (make (Vector StrView)))
+    (return (Library "" "" r "" "" "" "" "" 0 "" null 0 ""))))
+
+(defn library-provides? (l:&Library root:StrView):bool
+  (return (view-has? (l 'roots) root)))
+
+; ---------------------------------------------------------------------------
+; Paths
+; ---------------------------------------------------------------------------
+
+(defn lk-intern (s:&String):StrView (return (symbol-as-view (symbol-intern (string-as-view s)))))
+
+(defn lk-join (dir:StrView rel:StrView):StrView
+  (when (and (> (rel 'len) 0) (= (aref (rel 'data) 0) 47)) (return rel))
+  (let (s:String (str dir "/" rel)) (return (lk-intern &s))))
+
+(defn lk-parent (p:StrView):StrView
+  (match (strview-rfind-byte &p 47)
+    ((some k) (return (if (= k 0) "/" (strview-take-bytes p k))))
+    (none (return p))))
+
+(defn lk-base (p:StrView):StrView
+  (match (strview-rfind-byte &p 47)
+    ((some k) (return (strview-drop-bytes p (+ k 1))))
+    (none (return p))))
+
+; `~/x` is under $HOME, as a shell would read it.
+(defn lk-expand (p:StrView base:StrView):StrView
+  (when (or (= p "~") (strview-has-prefix p "~/"))
+    (match (env-var "HOME")
+      ((some h) (return (lk-join h (strview-drop-bytes p (if (= (p 'len) 1) 1 2)))))
+      (none 0)))
+  (return (lk-join base p)))
+
+(defn lk-nuc? (nm:StrView):bool (return (strview-has-suffix nm ".nuc")))
+
+(defn lk-hidden? (rel:StrView):bool
+  (return (or (strview-has-prefix rel ".") (strview-contains rel "/."))))
+
+; The files under `dir` named `*suffix`, each less its first `cut` bytes.
+(defn files-under (dir:StrView cut:usize suffix:StrView out:&(Vector StrView)):void
+  (match (walk-dir dir)
+    ((err e) 0)
+    ((ok d)
+      (let (de:DirEntries d)
+        (dotimes (i (dir-count &de))
+          (let (rel:StrView (strview-drop-bytes (dir-name &de i) cut))
+            (when (and (strview-has-suffix rel suffix) (not (lk-hidden? rel)))
+              (conj out (symbol-as-view (symbol-intern rel))))))
+        (drop &de)))))
+
+; The roots a source directory provides when `:provides` doesn't say: each
+; top-level directory holding a `.nuc` file, and each top-level `.nuc`'s stem.
+(defn derive-roots (sr:StrView out:&(Vector StrView)):void
+  (match (read-dir sr)
+    ((err e) 0)
+    ((ok d)
+      (let (de:DirEntries d
+            cut:usize (+ (sr 'len) 1))
+        (dotimes (i (dir-count &de))
+          (let (nm:StrView (dir-name &de i))
+            (when (not (strview-has-prefix nm "."))
+              (if (dir-is-dir? &de i)
+                (let (found:(Vector StrView) (make (Vector StrView))
+                      sub:String (str sr "/" nm))
+                  (files-under (string-as-view &sub) cut ".nuc" &found)
+                  (when (> (count &found) 0) (view-add out (symbol-as-view (symbol-intern nm))))
+                  (drop &sub)
+                  (drop &found))
+                (when (lk-nuc? nm)
+                  (view-add out (symbol-as-view (symbol-intern (strview-take-bytes nm (- (nm 'len) 4))))))))))
+        (drop &de))))
+  (view-sort out))
+
+; ---------------------------------------------------------------------------
+; A project directory
+; ---------------------------------------------------------------------------
+
+; `path`'s configuration into `c`; `label` names it in messages.
+(defn config-load (path:StrView label:StrView c:&BuildConfig err:&String):bool
+  (match (exec-read-file path)
+    (none
+      (string-clear err)
+      (str-into err "cannot read " label)
+      (return false))
+    ((some text)
+      (let (t:String text
+            ok:bool (config-decode (string-as-view &t) label c err))
+        (drop &t)
+        (return ok)))))
+
+; The project at `dir`, from its build.edn alone: a dependency's build-local.edn
+; is its own checkout's business. `label` is how messages name its build.edn.
+(defn library-from-project (dir:StrView label:StrView tier:i32 where:StrView out:&Library
+                            err:&String):bool
+  (let (c:&BuildConfig (unsafe/cast &BuildConfig (malloc (sizeof BuildConfig)))
+        cfg:String (str dir "/build.edn"))
+    (set! @c (build-config))
+    (when (not (config-load (string-as-view &cfg) label c err))
+      (drop &cfg)
+      (return false))
+    (drop &cfg)
+    (let (l:Library (library-new)
+          src:String (str dir "/src"))
+      (set! (l 'name) (if ((c 'name) 'set) ((c 'name) 'value) (lk-base dir)))
+      (set! (l 'version) ((c 'version) 'value))
+      (set! (l 'dir) dir)
+      (set! (l 'source)
+            (cond ((c 'source-root) 'set) (lk-join dir ((c 'source-root) 'value))
+                  (dir-exists? (string-as-view &src)) (lk-intern &src)
+                  true dir))
+      (drop &src)
+      (if (> (count (ref c 'provides)) 0)
+        (dotimes (i (count (ref c 'provides))) (view-add (l 'roots) (invoke (ref c 'provides) i)))
+        (derive-roots (l 'source) (l 'roots)))
+      (set! (l 'config) c)
+      (set! (l 'tier) tier)
+      (set! (l 'where) where)
+      (set! @out l)
+      (return true))))
+
+; ---------------------------------------------------------------------------
+; An installed manifest: $PREFIX/lib/<multiarch>/nucleus/NAME.edn (§8.4)
+; ---------------------------------------------------------------------------
+
+(defn lk-edn-str (m:?&Node key:StrView):StrView
+  (match (edn-str (edn-get m key))
+    ((ok v) (return v))
+    ((err e) (return ""))))
+
+(defn library-from-manifest (path:StrView out:&Library err:&String):bool
+  (match (exec-read-file path)
+    (none
+      (string-clear err)
+      (str-into err "cannot read " path)
+      (return false))
+    ((some text)
+      (let (t:String text
+            ok:bool false)
+        (match (edn-parse (string-as-view &t))
+          ((err e)
+            (string-clear err)
+            (str-into err path ":" (e 'line) ": error: " (e 'msg)))
+          ((ok m)
+            (let (l:Library (library-new)
+                  libdir:StrView (lk-parent (lk-parent path))
+                  ma:StrView (lk-base libdir)
+                  prefix:StrView (lk-parent (lk-parent libdir))
+                  pv:?&Node (edn-get m "provides")
+                  objs:?&Node (edn-get m "objects")
+                  share:String (str prefix "/share/nucleus/src")
+                  inc:String (str prefix "/include/" ma)
+                  has-src:bool false)
+              (set! (l 'name) (lk-edn-str m "name"))
+              (set! (l 'version) (lk-edn-str m "version"))
+              (set! (l 'compiler) (lk-edn-str m "compiler"))
+              (set! (l 'target) (lk-edn-str m "target"))
+              (match (edn-int (edn-get m "header-format")) ((ok n) (set! (l 'header-format) n)) ((err e) 0))
+              (dotimes (i (edn-count pv))
+                (match (edn-str (edn-nth pv i)) ((ok s) (view-add (l 'roots) s)) ((err e) 0)))
+              (dotimes (i (count (l 'roots)))
+                (let (r:StrView (invoke (l 'roots) i)
+                      d:String (str (string-as-view &share) "/" r)
+                      f:String (str (string-as-view &share) "/" r ".nuc"))
+                  (when (or (dir-exists? (string-as-view &d)) (file-exists? (string-as-view &f)))
+                    (set! has-src true))
+                  (drop &d)
+                  (drop &f)))
+              (when has-src (set! (l 'source) (lk-intern &share)))
+              (set! (l 'include) (lk-intern &inc))
+              (let (a:StrView (lk-edn-str objs "static"))
+                (when (> (a 'len) 0) (set! (l 'archive) (lk-join libdir a))))
+              (set! (l 'tier) TIER-INSTALLED)
+              (set! (l 'where) path)
+              (drop &share)
+              (drop &inc)
+              (if (= ((l 'name) 'len) 0)
+                (do (string-clear err)
+                    (str-into err path ": a manifest needs :name"))
+                (do (set! @out l)
+                    (set! ok true))))))
+        (drop &t)
+        (return ok)))))
+
+; Every manifest under the per-user, local and system prefixes, in that order.
+(defn installed-manifests (home:StrView ma:StrView out:&(Vector StrView)):void
+  (let (dirs:(Vector StrView) (make (Vector StrView)))
+    (when (> (home 'len) 0)
+      (let (d:String (str home "/.local/lib/" ma "/nucleus")) (conj &dirs (lk-intern &d))))
+    (let (d:String (str "/usr/local/lib/" ma "/nucleus")) (conj &dirs (lk-intern &d)))
+    (let (d:String (str "/usr/lib/" ma "/nucleus")) (conj &dirs (lk-intern &d)))
+    (dotimes (i (count &dirs))
+      (let (dir:StrView (invoke &dirs i))
+        (match (read-dir dir)
+          ((err e) 0)
+          ((ok d)
+            (let (de:DirEntries d
+                  names:(Vector StrView) (make (Vector StrView)))
+              (dotimes (k (dir-count &de))
+                (let (nm:StrView (dir-name &de k))
+                  (when (and (not (dir-is-dir? &de k)) (strview-has-suffix nm ".edn"))
+                    (conj &names (symbol-as-view (symbol-intern nm))))))
+              (view-sort &names)
+              (dotimes (k (count &names)) (conj out (lk-join dir (invoke &names k))))
+              (drop &names)
+              (drop &de))))))
+    (drop &dirs)))
+
+; The manifest a `.pc` file names in its `nucleus_manifest` variable, or "".
+(defn pkg-config-manifest (name:StrView):StrView
+  (let (args:(Vector StrView) (make (Vector StrView))
+        out:String (make String)
+        errs:String (make String))
+    (conj &args "--variable=nucleus_manifest")
+    (conj &args name)
+    (let (st:i32 (pkg-config-run &args &out &errs)
+          v:StrView (string-as-view &out)
+          r:StrView (strview-trim &v)
+          res:StrView (if (and (= st 0) (> (r 'len) 0)) (symbol-as-view (symbol-intern r)) ""))
+      (drop &errs)
+      (drop &out)
+      (drop &args)
+      (return res))))
+
+; Where a hand-installed `.nuch` may sit (§8.5 place 4, last).
+(defn include-dirs (home:StrView ma:StrView out:&(Vector StrView)):void
+  (when (> (home 'len) 0)
+    (let (d:String (str home "/.local/include/" ma)) (conj out (lk-intern &d))))
+  (let (d:String (str "/usr/local/include/" ma)) (conj out (lk-intern &d)))
+  (let (d:String (str "/usr/include/" ma)) (conj out (lk-intern &d)))
+  (when (> (home 'len) 0)
+    (let (d:String (str home "/.local/include")) (conj out (lk-intern &d))))
+  (conj out "/usr/local/include")
+  (conj out "/usr/include"))
+
+; The NAME of a header's `(library NAME …)` line, or "".
+(defn nuch-library-name (path:StrView):StrView
+  (match (exec-read-file path)
+    (none (return ""))
+    ((some text)
+      (let (t:String text
+            v:StrView (string-as-view &t)
+            key:StrView "\n(library "
+            res:StrView "")
+        (match (strview-find &v &key)
+          (none 0)
+          ((some at)
+            (let (rest:StrView (strview-drop-bytes v (+ at (key 'len))))
+              (match (strview-find-byte &rest 32)
+                ((some k) (set! res (symbol-as-view (symbol-intern (strview-take-bytes rest k)))))
+                (none 0)))))
+        (drop &t)
+        (return res)))))
+
+; ---------------------------------------------------------------------------
+; The user registry: library-paths.edn (§8.5 place 3)
+; ---------------------------------------------------------------------------
+
+; `{:libraries {gtkw "~/src/gtkw"} :search ["~/src/nucleus-libs"]}`. Each entry
+; is a project directory, in file order, so a later file's entry comes later.
+(defstruct RegEntry name:StrView dir:StrView file:StrView)
+
+(defn registry-load (path:StrView into:&(Vector RegEntry) err:&String):bool
+  (match (exec-read-file path)
+    (none
+      (string-clear err)
+      (str-into err "cannot read " path)
+      (return false))
+    ((some text)
+      (let (t:String text
+            base:StrView (lk-parent path)
+            ok:bool true)
+        (match (edn-parse (string-as-view &t))
+          ((err e)
+            (string-clear err)
+            (str-into err path ":" (e 'line) ": error: " (e 'msg))
+            (set! ok false))
+          ((ok m)
+            (if (!= (edn-kind m) EDN-MAP)
+              (do (string-clear err)
+                  (str-into err path ": error: expected a map with :libraries and :search")
+                  (set! ok false))
+              (dotimes (i (edn-count m))
+                (let (key:StrView (match (edn-keyword (edn-key m i)) ((ok kw) (keyword-name kw)) ((err e) ""))
+                      v:?&Node (edn-val m i)
+                      line:i32 (node-line (as ptr v) 1))
+                  (cond (and (= key "libraries") (= (edn-kind v) EDN-MAP))
+                          (dotimes (j (edn-count v))
+                            (let (nm:StrView (config-name (edn-key v j)))
+                              (match (edn-str (edn-val v j))
+                                ((ok d) (when (> (nm 'len) 0) (conj into (RegEntry nm (lk-expand d base) path))))
+                                ((err e) (when ok
+                                           (string-clear err)
+                                           (str-into err path ":" line ": error: :libraries maps a name to a directory, as a string")
+                                           (set! ok false))))))
+                        (and (= key "search") (= (edn-kind v) EDN-VECTOR))
+                          (dotimes (j (edn-count v))
+                            (match (edn-str (edn-nth v j))
+                              ((ok d)
+                                (let (dir:StrView (lk-expand d base))
+                                  (match (read-dir dir)
+                                    ((err e) 0)
+                                    ((ok dd)
+                                      (let (de:DirEntries dd
+                                            subs:(Vector StrView) (make (Vector StrView)))
+                                        (dotimes (k (dir-count &de))
+                                          (when (and (dir-is-dir? &de k) (not (strview-has-prefix (dir-name &de k) ".")))
+                                            (let (sub:StrView (lk-join dir (dir-name &de k))
+                                                  cfg:String (str sub "/build.edn"))
+                                              (when (file-exists? (string-as-view &cfg)) (conj &subs sub))
+                                              (drop &cfg))))
+                                        (view-sort &subs)
+                                        (dotimes (k (count &subs)) (conj into (RegEntry "" (invoke &subs k) path)))
+                                        (drop &subs)
+                                        (drop &de))))))
+                              ((err e) 0)))
+                        true
+                          (when ok
+                            (string-clear err)
+                            (str-into err path ":" line
+                                      ": error: expected :libraries (a map) or :search (a vector), got :" key)
+                            (set! ok false))))))))
+        (drop &t)
+        (return ok)))))

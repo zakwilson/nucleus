@@ -33,6 +33,14 @@ registered before dying no longer resolves. See
 §3.4 for what is *not* rolled back (the preamble, the string pool, the JIT
 session) and why.
 
+`nucleusc -i FILE` (what `nucleus run-repl` runs) starts the file's `main` on a
+second thread, so session output and program output interleave on one line
+(`nuc> argc 3`). Tests should match with `grep -q '…$'`, never against a golden
+transcript, and should wait at the prompt with `(while (= g 0) (usleep 1000))`
+rather than with a fixed sleep. Code on the program thread (`repl-program-thread`) must not
+use `emit`/`fstr`: they share `g-emit-buf` and the arena with the compiler
+running on the prompt's thread.
+
 Prompts depend on stdin. On a tty, `nuc> `/`...> ` are printed only when no line is already waiting (`repl-input-waiting`). On a pipe, one is printed per read, which the `tests/expected/repl-*.out` transcripts rely on. To see what the Emacs buffer shows, drive `editor/nucleus-repl.el` with `emacs --batch`, not a pipe.
 
 stdio.h, stdlib.h, string.h, ctype.h, and unistd.h are pre-loaded at startup,

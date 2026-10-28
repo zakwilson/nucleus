@@ -291,3 +291,4 @@ Stage 21 item 7 classified 2,294 pointer declarations this way (ptr-is-unchecked
   [conventions.md](conventions.md). `nucleus.syntax` is inside the closure too,
   since `nucleus.read` imports it. Only `nucleus.refactor` is outside, and
   changing it needs only `make test` and the header check.
+- **`.gitignore`'s `build/` matched `lib/nucleus/build/`**, the build tool's own library, so commit 5c139db left its sources out. `!/lib/nucleus/build/` now re-includes it. A new directory named `build` anywhere else needs the same exception.

@@ -1,0 +1,153 @@
+; Stage 27 — version comparison and constraints, with pkg-config's semantics,
+; so a Nucleus library version and a C package version never disagree.
+;
+; Design: design/stage27-build/plan.md D-VERCMP and BT-1. The algorithm is
+; pkgconf's `pkgconf_compare_version` (rpmvercmp with `~` sorting first).
+
+(ns nucleus.build.version)
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+
+(deferror version-constraint-invalid "invalid version constraint")
+
+(defn ver-digit? (c:ui8):bool (return (and (>= c 48) (<= c 57))))
+(defn ver-alpha? (c:ui8):bool
+  (return (or (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122)))))
+(defn ver-alnum? (c:ui8):bool (return (or (ver-digit? c) (ver-alpha? c))))
+(defn ver-lower (c:ui8):ui8 (return (if (and (>= c 65) (<= c 90)) (+ c 32) c)))
+
+(defn ver-at (v:&StrView i:usize):ui8 (return (aref (v 'data) (as i64 i))))
+
+; Separators are every byte that is neither alphanumeric nor `~`.
+(defn ver-skip (v:&StrView i:usize):usize
+  (let (k:usize i)
+    (while (and (< k (v 'len)) (not (ver-alnum? (ver-at v k))) (!= (ver-at v k) 126))
+      (set! k (+ k 1)))
+    (return k)))
+
+(defn ver-seg-end (v:&StrView i:usize num:bool):usize
+  (let (k:usize i)
+    (while (and (< k (v 'len))
+                (if num (ver-digit? (ver-at v k)) (ver-alpha? (ver-at v k))))
+      (set! k (+ k 1)))
+    (return k)))
+
+(defn ver-same-nocase (a:&StrView b:&StrView):bool
+  (when (!= (a 'len) (b 'len)) (return false))
+  (dotimes (k (a 'len))
+    (when (!= (ver-lower (ver-at a k)) (ver-lower (ver-at b k))) (return false)))
+  (return true))
+
+; One segment pair; numeric segments compare by value, ignoring leading zeros.
+(defn ver-seg-cmp (a:&StrView i:usize ei:usize b:&StrView j:usize ej:usize num:bool):i32
+  (let (p:usize i
+        q:usize j)
+    (when num
+      (while (and (< p ei) (= (ver-at a p) 48)) (set! p (+ p 1)))
+      (while (and (< q ej) (= (ver-at b q) 48)) (set! q (+ q 1)))
+      (when (> (- ei p) (- ej q)) (return 1))
+      (when (< (- ei p) (- ej q)) (return -1)))
+    (while (and (< p ei) (< q ej))
+      (when (< (ver-at a p) (ver-at b q)) (return -1))
+      (when (> (ver-at a p) (ver-at b q)) (return 1))
+      (set! p (+ p 1))
+      (set! q (+ q 1)))
+    (return (cond (and (= p ei) (= q ej)) 0
+                  (= p ei) -1
+                  true 1))))
+
+(defn ver-tail (a:&StrView i:usize b:&StrView j:usize):i32
+  (return (cond (and (>= i (a 'len)) (>= j (b 'len))) 0
+                (>= i (a 'len)) -1
+                true 1)))
+
+; -1, 0 or 1, as `a` sorts before, with or after `b`.
+(defn version-cmp (a:StrView b:StrView):i32
+  (when (ver-same-nocase &a &b) (return 0))
+  (let (i:usize 0
+        j:usize 0)
+    (while (or (< i (a 'len)) (< j (b 'len)))
+      (set! i (ver-skip &a i))
+      (set! j (ver-skip &b j))
+      (let (ta:bool (and (< i (a 'len)) (= (ver-at &a i) 126))
+            tb:bool (and (< j (b 'len)) (= (ver-at &b j) 126)))
+        (cond
+          (or ta tb)
+            (do
+              (when (not ta) (return 1))
+              (when (not tb) (return -1))
+              (set! i (+ i 1))
+              (set! j (+ j 1)))
+          (or (>= i (a 'len)) (>= j (b 'len)))
+            (return (ver-tail &a i &b j))
+          true
+            (let (num:bool (ver-digit? (ver-at &a i))
+                  ei:usize (ver-seg-end &a i num)
+                  ej:usize (ver-seg-end &b j num))
+              (when (= ej j) (return (if num 1 -1)))
+              (let (r:i32 (ver-seg-cmp &a i ei &b j ej num))
+                (when (!= r 0) (return r)))
+              (set! i ei)
+              (set! j ej)))))
+    (return (ver-tail &a i &b j))))
+
+; ---------------------------------------------------------------------------
+; Constraints: `>= 4.10`, `= 1.2`, `< 2`, `!= 3.0`
+; ---------------------------------------------------------------------------
+
+(defconst VER-ANY 0)
+(defconst VER-LT 1)
+(defconst VER-LE 2)
+(defconst VER-EQ 3)
+(defconst VER-NE 4)
+(defconst VER-GE 5)
+(defconst VER-GT 6)
+
+; `version` borrows the parsed text, which the caller keeps alive.
+(defstruct VersionConstraint op:i32 version:StrView)
+
+(defn ver-op-text (op:i32):StrView
+  (return (case op
+            VER-LT "<"
+            VER-LE "<="
+            VER-EQ "="
+            VER-NE "!="
+            VER-GE ">="
+            VER-GT ">"
+            "")))
+
+; An empty string is no constraint. A bare version is refused: pkg-config has
+; no such spelling, and `=` versus `>=` is the author's to choose.
+(defn version-constraint-parse (text:StrView):!VersionConstraint
+  (let (s:StrView (strview-trim &text))
+    (when (= (s 'len) 0) (return (ok (VersionConstraint VER-ANY ""))))
+    ; Two-byte operators first, so `<=` is not read as `<` and a version `=…`.
+    (let (op:i32 (cond (strview-has-prefix s "<=") VER-LE
+                       (strview-has-prefix s ">=") VER-GE
+                       (strview-has-prefix s "!=") VER-NE
+                       (strview-has-prefix s "<") VER-LT
+                       (strview-has-prefix s ">") VER-GT
+                       (strview-has-prefix s "=") VER-EQ
+                       true VER-ANY)
+          n:usize ((ver-op-text op) 'len))
+      (when (= op VER-ANY) (return (err! version-constraint-invalid)))
+      (let (rest:StrView (strview-drop-bytes s n)
+            v:StrView (strview-trim &rest))
+        (when (= (v 'len) 0) (return (err! version-constraint-invalid)))
+        (dotimes (k (v 'len))
+          (when (strview-is-ascii-ws (ver-at &v k))
+            (return (err! version-constraint-invalid))))
+        (return (ok (VersionConstraint op v)))))))
+
+(defn version-satisfies? (v:StrView c:&VersionConstraint):bool
+  (when (= (c 'op) VER-ANY) (return true))
+  (let (r:i32 (version-cmp v (c 'version)))
+    (return (case (c 'op)
+              VER-LT (< r 0)
+              VER-LE (<= r 0)
+              VER-EQ (= r 0)
+              VER-NE (!= r 0)
+              VER-GE (>= r 0)
+              VER-GT (> r 0)
+              false))))

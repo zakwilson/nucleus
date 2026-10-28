@@ -969,7 +969,7 @@
     (drop &o)
     (set! o (try (rf4-nucleusc pv "--" "x" "")))
     (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "-- without --run"))
-    (try (check-contains (string-as-view (ref o 'err)) "there is no --run"))
+    (try (check-contains (string-as-view (ref o 'err)) "passes arguments to a --run or -i program; there is none"))
     (drop &o)
     (set! o (try (rf4-nucleusc "--run" pv "-o" "x.bin")))
     (try (check-eq-int (as i64 (exit-code (ref o 'status))) 2 "--run with -o"))

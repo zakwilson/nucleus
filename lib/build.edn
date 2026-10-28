@@ -1,6 +1,6 @@
-; The standard library. `make install` runs `nucleus install` here (plan.md BT-9).
+; The standard library. `make install` runs `nucleus install` here
 {:kind :library
  :name "nucleus"
- :version "0.1.0"
+ :version "0.0.0"
  :source-root "."
  :provides [nucleus]}

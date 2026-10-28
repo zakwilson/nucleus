@@ -21,7 +21,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--dump-ast` | Print the file's own top-level forms — the reader's output, before `desugar` and before the prelude is prepended — one form per line to stdout, then exit 0. A collection literal prints as the reader produced it — `[1 2]` is `(vector-lit 1 2)` — with no hygiene gensym: the compiler mints that at emit time, so it is not part of the tree. |
 | `--resolve` | **Unstable format.** Compile the unit exactly as `--emit-llvm` would, discard the IR, and write a resolution report to stdout: one EDN map per line, starting with `{:record :report :version 4 :unit "FILE"}`, then a `:file` record for each file the unit read, a `:def` record for each top-level definition, giving the byte span of its name, the key its registry stores it under, the symbol it emits and whether macro bodies call the compiler's own copy of it, and a `:ref` record for each name the compiler resolved while emitting the unit (a local, a binder, a global, a call's head, a type, a field, a union arm, a macro call), giving the span of the name and what it resolved to. Every occurrence is one record, however many copies of it the compiler emitted (generic instances, closure bodies, desugared definitions), and `:via` names the copy it was found in; copies that disagree make the record `:ambiguous`. A definition or reference a macro produced carries the macro and the call's span, plus the operand that spelled its name when exactly one did and the macro could not have spelled it itself; a reference with no span says why. The last line, `:coverage`, counts the references by outcome and role. `:version` changes whenever a record's shape does; a reader should refuse a version it does not know. A failed compile writes its diagnostics to stderr, writes no report and exits 1. Cannot be combined with `-i`, `--run`, `--emit-llvm`, `-c`, `-o`, the header modes or `--dump-ast` (exit 2). See [Reading a resolution report](refactoring.md#reading-a-resolution-report). |
 | `--report-qq-resolution` | Print, to stderr, one `qq-resolution:` line for each name a macro, `~e` or `compile-time` quasiquote resolves in its own file, with the full name it is rewritten to, and for each binder in a template that would be refused for naming one (see [A template's names mean the macro file's names](macros.md#a-templates-names-mean-the-macro-files-names)). Compilation is otherwise unchanged. |
-| `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
+| `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). With a file, `nucleusc -i prog.nuc [-- args…]` imports it, enters its namespace, and runs its `main` on a thread of its own beside the prompt (see [Running a program at the prompt](#running-a-program-at-the-prompt)). |
 | `--run` / `--` | `nucleusc --run tool.nuc -- args…` compiles the unit exactly as `-o` would, then JIT-compiles it in-process and calls its `main` instead of linking: no object file, no link driver. `main` gets the source path as `argv[0]` and the words after `--` as the rest; the compiler exits with `main`'s return value (0 for a `void` `main`). See [Running a program without linking](#running-a-program-without-linking). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`, and before the compiler's own library (see [Where an import is found](toplevel.md#where-an-import-is-found)). |
 | `--diagnostics=text\|edn` | Format for compiler diagnostics on stderr. Default `text` (`path:line: error: msg` plus indented `  note:` lines). With `edn`, each diagnostic is one EDN map on one line, read back by `lib/nucleus/edn.nuc` — see [Structured diagnostics](#structured-diagnostics). |
@@ -380,9 +380,11 @@ Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, an
 
 Supported top-level forms in the REPL: `ns`, `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `defunion`, `deftype`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `import-ct`, `require`, `require-ct`, `unsafe/import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression. A void-typed expression is evaluated for its effect and prints nothing — a `printf` inside a void `defn`'s body runs, `(dotimes ...)` runs, `(gtk_init)` runs.
 
-Result printing is type-aware: integer kinds print as decimal (unsigned kinds and `usize` as unsigned), string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. That spelling is not special syntax the reader recognizes — `#`, `<` and `>` are all ordinary symbol characters, so `#<ptr 0x...>` reads back as plain symbols with no error — it exists only to make an unreadable value visibly distinct from one that does, not to round-trip as input.
+Result printing is type-aware: integer kinds print as decimal (unsigned kinds and `usize` as unsigned), string literals print as `"..."` with escapes, and so does any `StrView` or `String` result: `(str 8)` prints `"8"`. The `String` is the expression's temporary, and is dropped once printed. Any other struct or union result prints its type, as in `#<(Vector i32)>` or `#<Pt>`. Quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. That spelling is not special syntax the reader recognizes — `#`, `<` and `>` are all ordinary symbol characters, so `#<ptr 0x...>` reads back as plain symbols with no error — it exists only to make an unreadable value visibly distinct from one that does, not to round-trip as input.
 
 `macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`). If the form is not a macro call (head is missing or not a registered macro), the REPL prints `not a macro call: <form>` rather than echoing the input unchanged. `macroexpand-all` expands the head to fixpoint and then recursively expands every subform; quoted/quasiquoted forms are left untouched.
+
+`(ns NAME)` at the prompt enters a namespace. When files imported into the session declare that namespace, their import bindings join the prompt's, so a name such a file flattened in (`str` from its `(import-use nucleus.fmt)`) resolves at the prompt too. They stay after a later `ns`.
 
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed. Any other C library needs its header imported and its shared object loaded into the session before its functions are callable — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt).
 
@@ -423,9 +425,66 @@ Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `
 
 Globals can be redefined too. A second `defvar` of the same name and type confirms with `redefined` and replaces the value in the existing storage, so functions compiled before it see the new value. The new initializer can take any form a first `defvar` accepts, and with no initializer the global is reset to zero. A `defvar` with a different type allocates new storage under a suffixed IR name and confirms with `redefined with a new type; code compiled earlier still uses the old storage`: code compiled from then on uses the new global, but functions compiled earlier keep reading and writing the old one until they are redefined. A redefinition that fails leaves the previous global and its value unchanged. `defvar` and `defconst` may also replace each other at the prompt. Code compiled earlier keeps the old constant's value, since a literal constant is substituted where it is used, and keeps the old storage if the global had any.
 
+### Running a program at the prompt
+
+`nucleusc -i prog.nuc [-- args...]` runs a program while the prompt stays
+open. `nucleus run-repl` starts it this way. The REPL:
+
+1. imports `prog.nuc` as `(import-use "prog.nuc")` would, and enters its
+   namespace (`(ns …)`), so the program's globals and functions are reachable
+   by their bare names, as is everything the file imported;
+2. calls `main` on a new thread, with `argv[0]` set to the file and the rest
+   taken from after `--`. A nullary `main` is called with no arguments, as
+   under `--run`;
+3. prints `  running main`, and later `  main returned N` (or `  main returned`
+   for a void `main`) when it does.
+
+```
+$ nucleusc -i counter.nuc
+  imported counter.nuc
+  running main
+nuc> ticks
+  412
+nuc> (set! stop 1)
+  1
+nuc>
+  main returned 0
+```
+
+The prompt evaluates on the process's main thread while the program runs on
+its own, so reading a global sees its current value and `set!` changes it in
+place. Neither is synchronized with the program: mark a global the two
+threads share `:volatile`, and use a toolkit's own way to run code on its
+thread (`g_idle_add` for GTK) instead of calling it from the prompt. A
+program that uses the compiler's own library globals shares them with the
+compiler, which compiles every prompt entry on the main thread. Those globals
+are `g-arena` and the symbol intern tables in `nucleus.intern` and
+`nucleus.node` (see the note on globals above). A program that allocates
+from `g-arena` or interns symbols races with what you type, so give it an
+arena of its own.
+
+**The program's own functions can be redefined while it runs.** A `defn` or
+`defn-` at the prompt, in the program's namespace, replaces the function for
+every caller, including the loop already running. Its next call runs the new
+body. The program's own files are those under the entry file's directory,
+less the standard library. Their functions are compiled behind the same
+`@<name>` thunk a prompt `defn` gets. Imported libraries are compiled as
+usual, without the thunk. The old code isn't freed, because the program's
+thread may still be inside it. A redefinition that changes the signature is
+refused while the program runs, since its callers pass the old arguments:
+
+```
+<repl>:1: error: defn: the program is running, and its calls to 'step' pass the old signature; keep it, or restart
+```
+
+When the input ends, the REPL waits for `main` to return, printing
+`  waiting for main to return` if it hasn't, and exits with `main`'s status,
+as `--run` does. Ctrl-C ends both. A file with no `main` is refused:
+`nucleusc: -i prog.nuc: no 'main' function to run`.
+
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
-- Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
+- Redefining a function with a different signature is allowed by the REPL when no program is running, but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
 - `(import-use nucleus.node)` brings in the AST utilities — the readers `node-len`, `node-at`, `node-first`, `node-rest`, `node-kind`, `node-is-list`, `node-empty?`, `node-line`; the builders `node-list-new`, `node-push`, `node-extend`, `node-list-done`, `node-cons`, `node-list1`…`node-list5`, `node-set-at`, `node-splice-at`; and `alloc-node` / `node-int` / `intern-symbol`. They allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` and `node-first` return a *nullable* `?&Node` (out of range or an empty list answers `none`); `node-head-sym` reads a form's head symbol, or none. Read either result's kind with `node-kind` — which answers `NODE-NIL` both for a null node and for `()` (see [Empty lists in a declaration](#empty-lists-in-a-declaration)) — and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)). The same import carries the `Coll`/`Seq` conformances, so a list `Node` answers `count`, `(xs i)`, `conj` and `doseq` — see [A form is a collection](macros.md#a-form-is-a-collection).
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 

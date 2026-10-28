@@ -1,0 +1,177 @@
+; Stage 27 — pkg-config as a library: the REPL's `pkg-config` meta form, the
+; compiler's `--pkg-config=` and import annotations, and the build tool all split
+; its output the same way.
+;
+; Design: design/stage27-build/plan.md BT-3 (P4).
+
+(ns nucleus.build.pkg)
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.process)
+(import-use nucleus.coll)
+
+; `--cflags` words, then `--libs` split by role. `other` is what is neither `-L`
+; nor `-l` (`-pthread`, `-Wl,…`): a batch link passes it on, the REPL cannot.
+(defstruct PkgFlags
+  cflags:(Vector Symbol)
+  lib-dirs:(Vector Symbol)
+  libs:(Vector Symbol)
+  other:(Vector Symbol))
+
+(defn pkg-flags ():PkgFlags
+  (return (PkgFlags (make (Vector Symbol)) (make (Vector Symbol))
+                    (make (Vector Symbol)) (make (Vector Symbol)))))
+
+(extend PkgFlags Drop)
+(defn drop (self:&PkgFlags):void
+  (drop (ref self 'cflags))
+  (drop (ref self 'lib-dirs))
+  (drop (ref self 'libs))
+  (drop (ref self 'other)))
+
+; One `pkg-config <args…>` child, stdout into `out` and its diagnosis into
+; `errs`. -1 = did not spawn.
+(defn pkg-config-run (args:&(Vector StrView) out:&String errs:&String):i32
+  (let (c:Command (command "pkg-config")
+        status:i32 -1)
+    (dotimes (i (count args))
+      (command-arg &c (invoke args i)))
+    (command-capture &c true)
+    (match (spawn &c)
+      ((ok p)
+       (match (process-capture &p out errs)
+         (ok
+          (match (process-wait &p)
+            ((ok st) (set! status (exit-code &st)))
+            ((err e) (set! status -1))))
+         ((err e) (set! status -1))))
+      ((err e) (set! status -1)))
+    (drop &c)
+    (return status)))
+
+; Split pkg-config's output on whitespace. A backslash escapes the byte after
+; it — a path with a space prints as `with\ space` (probed with pkgconf 2.x).
+(defn pkg-config-words (out:&String into:&(Vector Symbol)):void
+  (let (v:StrView (string-as-view out)
+        n:usize (v 'len)
+        w:String (make String)
+        i:usize 0)
+    (while (< i n)
+      (let (c:ui8 (aref (v 'data) (as i64 i)))
+        (cond (and (= c 92) (< (+ i 1) n))
+                (do (set! i (+ i 1))
+                    (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) (as i64 i)) 1))
+              (or (= c 32) (= c 9) (= c 10) (= c 13))
+                (do (when (> (byte-len &w) 0)
+                      (conj into (symbol-intern (string-as-view &w))))
+                    (string-clear &w))
+              true
+                (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) (as i64 i)) 1)))
+      (set! i (+ i 1)))
+    (when (> (byte-len &w) 0)
+      (conj into (symbol-intern (string-as-view &w))))
+    (drop &w)))
+
+; The child's diagnosis, or its exit code when it said nothing. pkg-config
+; puts the line that matters first (`Package 'x' was not found …`).
+(defn pkg-config-failure (errs:&String status:i32):String
+  (let (ev:StrView (string-as-view errs))
+    (when (> (ev 'len) 0)
+      (match (strview-find-byte &ev 10)
+        ((some k) (return (str "pkg-config: " (strview-take-bytes ev k))))
+        (none (return (str "pkg-config: " ev)))))
+    ; `spawn` reports an exec that failed as exit 127 with nothing said.
+    (when (or (< status 0) (= status 127)) (return (str "pkg-config: not found")))
+    (return (str "pkg-config: exited " status))))
+
+(defn pkg-config-mode (pkgs:&(Vector Symbol) mode:StrView out:&String errs:&String):i32
+  (let (args:(Vector StrView) (make (Vector StrView)))
+    (conj &args mode)
+    (dotimes (i (count pkgs))
+      (conj &args (symbol-as-view (invoke pkgs i))))
+    (let (st:i32 (pkg-config-run &args out errs))
+      (drop &args)
+      (return st))))
+
+; `--cflags` and `--libs` for `pkgs` into `into`. Both children succeed before
+; anything is added. Empty on success, else the message to report.
+(defn pkg-config-query (pkgs:&(Vector Symbol) into:&PkgFlags):String
+  (let (cf:String (make String) cf-err:String (make String)
+        lb:String (make String) lb-err:String (make String)
+        msg:String (make String))
+    (let (st:i32 (pkg-config-mode pkgs "--cflags" &cf &cf-err))
+      (when (!= st 0)
+        (drop &msg)
+        (set! msg (pkg-config-failure &cf-err st))))
+    (when (= (byte-len &msg) 0)
+      (let (st:i32 (pkg-config-mode pkgs "--libs" &lb &lb-err))
+        (when (!= st 0)
+          (drop &msg)
+          (set! msg (pkg-config-failure &lb-err st)))))
+    (when (= (byte-len &msg) 0)
+      (let (libs:(Vector Symbol) (make (Vector Symbol)))
+        (pkg-config-words &cf (ref into 'cflags))
+        (pkg-config-words &lb &libs)
+        (dotimes (i (count &libs))
+          (let (w:StrView (symbol-as-view (invoke &libs i)))
+            (cond (strview-has-prefix w "-L")
+                    (conj (ref into 'lib-dirs) (symbol-intern (strview-drop-bytes w 2)))
+                  (strview-has-prefix w "-l")
+                    (conj (ref into 'libs) (symbol-intern (strview-drop-bytes w 2)))
+                  true
+                    (conj (ref into 'other) (invoke &libs i)))))
+        (drop &libs)))
+    (drop &cf) (drop &cf-err)
+    (drop &lb) (drop &lb-err)
+    (return msg)))
+
+; True when every spec (`gtk4`, `gtk4 >= 4.10`) is installed: pkg-config's own
+; constraint check, so its answer is the build's (plan.md D-VERCMP).
+(defn pkg-config-exists? (specs:&(Vector StrView)):bool
+  (let (args:(Vector StrView) (make (Vector StrView))
+        out:String (make String)
+        errs:String (make String))
+    (conj &args "--exists")
+    (dotimes (i (count specs)) (conj &args (invoke specs i)))
+    (let (st:i32 (pkg-config-run &args &out &errs))
+      (drop &errs)
+      (drop &out)
+      (drop &args)
+      (return (= st 0)))))
+
+; The packages `name` names in `Requires:` and `Requires.private:`, without
+; their constraints. Both, because pkg-config's `--cflags` follows both.
+(defn pkg-config-requires (name:StrView out:&(Vector StrView)):void
+  (let (args:(Vector StrView) (make (Vector StrView)))
+    (conj &args "--print-requires")
+    (conj &args "--print-requires-private")
+    (conj &args name)
+    (let (o:String (make String)
+          e:String (make String))
+      (when (= (pkg-config-run &args &o &e) 0)
+        (let (v:StrView (string-as-view &o)
+              start:usize 0
+              k:usize 0)
+          (while (<= k (v 'len))
+            (when (or (= k (v 'len)) (= (as i32 (aref (v 'data) (as i64 k))) 10))
+              (let (line:StrView (strview-take-bytes (strview-drop-bytes v start) (- k start))
+                    w:usize 0)
+                (while (and (< w (line 'len))
+                            (let (c:i32 (as i32 (aref (line 'data) (as i64 w))))
+                              (not (or (= c 32) (= c 9) (= c 60) (= c 61) (= c 62) (= c 33)))))
+                  (set! w (+ w 1)))
+                (when (> w 0)
+                  (let (nm:StrView (symbol-as-view (symbol-intern (strview-take-bytes line w)))
+                        seen:bool false)
+                    (dotimes (i (count out)) (when (= (invoke out i) nm) (set! seen true)))
+                    (when (not seen) (conj out nm)))))
+              (set! start (+ k 1)))
+            (set! k (+ k 1)))))
+      (drop &e)
+      (drop &o))
+    (drop &args)))
