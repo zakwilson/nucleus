@@ -4811,3 +4811,23 @@ name. `stamp-defunion-register` now clears the flag around the registration,
 since an instance belongs to every namespace.
 
 Test: `s21-template-instance-under-defn-private` in `tests/suite-s21.nuc`.
+
+## DOOM-port bug fix: `try` took its arm shape from an untyped operand (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-033, with the ISSUE-029 diagnostic).
+`try` picked `(ok)` or `(ok v)` from `node-type` of its operand. `node-type`
+returns null for a macro call such as `(- 5 1)`, and an overloaded callee is
+resolved only from its argument types, so `(try (f (- 5 1)))` came back
+untyped. `try` then assumed one binder, which fails for a `!void` with
+"match: arm 'ok' binder count does not match its field count". When the type
+is unknown, `emit-try` now emits the operand, spills it to a slot, and reads
+the arm shape off the value's real type (`emit-try-spilled`). Both paths check
+first that the operand is a result: a union with `ok` and `err` arms, or a
+niche-laid `!&T`. A void call is refused with "try: the operand must be a
+result (a !T, or a union with ok and err arms), but its type is void" instead
+of the expanded match's scrutinee error.
+
+Tests: `s21-try-untyped-overloaded-operand` and `s21-try-not-a-result` in
+`tests/suite-s21.nuc`.
+
+Gate: 1610 pass, the same 18 fail. Bootstrap PASS.

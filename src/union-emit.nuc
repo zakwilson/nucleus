@@ -1850,33 +1850,61 @@
       (when (< oi 0) (return 1))
       (return ((invoke (ud 'arms) (as usize oi)) 'nfields)))))
 
+; A `!&T` has no union behind it: its error is a niche in the pointer.
+(defn try-result? (t:?&Type):bool
+  (return (or (!= (result-union-of t) null)
+              (= (niche-layout-of t) LAYOUT-NICHE-ERRPTR))))
+
+(defn try-not-result (t:?&Type line:i32):void
+  (die-at line (fstr "try: the operand must be a result (a !T, or a union with ok and err arms), but its type is "
+                     (type-display t))))
+
 (defn emit-try (call:ptr scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2)
       (die-at (cc 'line) "try: expects exactly one operand — (try expr)"))
     (let (ln:i32 (cc 'line)
           rnode:ptr (node-at cc 1)
-          nf:i32 (try-ok-nfields (as ptr (node-type (as ?&Node rnode) scope)))
-          ev:ptr (as ptr (nucleus_gensym)))
-      ; ((err E) (return (err! E)))
-      (let (err-pat:ptr (node-list2 'err ev ln)
-            err-body:ptr (node-list2 'return
-                           (node-list2 'err! ev ln) ln)
-            ok-pat:ptr null
-            ok-body:ptr null)
-        (if (= nf 0)
-          (do (set! ok-pat (node-list1 'ok ln))
-              (set! ok-body (node-list1 'do ln)))
-          (let (vv:ptr (as ptr (nucleus_gensym)))
-            (set! ok-pat (node-list2 'ok vv ln))
-            (set! ok-body vv)))
-        (let (ok-arm:ptr (node-list2 ok-pat ok-body ln)
-              err-arm:ptr (node-list2 err-pat err-body ln))
-          (return (emit-match
-                    (node-list4 'match
-                      rnode
-                      ok-arm err-arm ln)
-                    scope)))))))
+          rt:?&Type (node-type (as ?&Node rnode) scope))
+      (when (= rt null) (return (emit-try-spilled rnode scope ln)))
+      (when (not (try-result? rt)) (try-not-result rt ln))
+      (return (emit-try-match rnode (try-ok-nfields (as ptr rt)) scope ln)))))
+
+; node-type leaves the operand unknown (a macro in an argument, say), so the
+; ok arm's shape is read off the emitted value instead (nuc-doom ISSUE-033).
+(defn emit-try-spilled (rnode:ptr scope:&Scope ln:i32):&Val
+  (let (cv:&Val (emit-node (as ?&Node rnode) scope))
+    (when (not (try-result? (cv 'type))) (try-not-result (cv 'type) ln))
+    (let (ct:&Type (unsafe/cast &Type (cv 'type))
+          slot:StrView (new-tmp)
+          align:i32 (abi-slot-align ct)
+          inner:&Scope (scope-new scope)
+          rn:&Node (unsafe/cast &Node (nucleus_gensym))
+          sv:?&Val (coerce-int-val cv ct ln))
+      (when (= sv null) (die-at ln "try: the operand's result cannot be stored"))
+      (emit g-entry-stream "  " slot " = alloca " (type-to-ir ct) ", align " align "\n")
+      (emit g-body-stream "  store " (type-to-ir ct) " " (sv 'val)
+            ", ptr " slot ", align " align "\n")
+      (scope-define inner (rn 's) ct slot 1)
+      (return (emit-try-match (as ptr rn) (try-ok-nfields (as ptr ct)) inner ln)))))
+
+; (match r ((ok v) v) ((err E) (return (err! E)))), or a bare `ok` for a `!void`.
+(defn emit-try-match (rnode:ptr nf:i32 scope:&Scope ln:i32):&Val
+  (let (ev:ptr (as ptr (nucleus_gensym))
+        err-pat:ptr (node-list2 'err ev ln)
+        err-body:ptr (node-list2 'return (node-list2 'err! ev ln) ln)
+        ok-pat:ptr null
+        ok-body:ptr null)
+    (if (= nf 0)
+      (do (set! ok-pat (node-list1 'ok ln))
+          (set! ok-body (node-list1 'do ln)))
+      (let (vv:ptr (as ptr (nucleus_gensym)))
+        (set! ok-pat (node-list2 'ok vv ln))
+        (set! ok-body vv)))
+    (return (emit-match (node-list4 'match rnode
+                          (node-list2 ok-pat ok-body ln)
+                          (node-list2 err-pat err-body ln) ln)
+                        scope))))
 
 ; ============================================================
 ; `(__init-then CALL VALUE [UNDO])`, from `new`/`make`: a special form for `try`'s

@@ -3987,6 +3987,30 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; `try` sized its ok arm from node-type, which leaves a macro-call argument
+; untyped, so an overloaded call came back null and the arm took one binder
+; for `!void`'s zero fields (nuc-doom ISSUE-033).
+(deftest s21-try-untyped-overloaded-operand
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn f (x:i32):!void (printf \"f %d\\n\" x) (ok))
+(defn f (x:f64):!void (ok))
+(defn g ():!void
+  (try (f (- 5 1)))
+  (ok))
+(defn main ():i32
+  (match (g) ((ok) 0) ((err e) 1)))
+")))
+    (try (check-golden (string-as-view &out) "f 4\n"))
+    (drop &out))
+  (return (ok)))
+
+; `try` on a non-result named the match it expands to, not the operand
+; (nuc-doom ISSUE-029).
+(deftest s21-try-not-a-result
+  (try (s21-type-refused "(defn v ():void (return)) (defn g ():!void (try (v)) (ok))" 3
+                         "try: the operand must be a result (a !T, or a union with ok and err arms), but its type is void"))
+  (return (ok)))
+
 ; A template instance first stamped inside a `defn-` was private to that
 ; namespace, so another namespace stamped it again under the same IR name and
 ; the macro JIT module refused the redefinition (nuc-doom ISSUE-032).
