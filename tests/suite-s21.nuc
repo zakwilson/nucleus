@@ -3969,6 +3969,24 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; The prescan registered an aggregate defconst only with an annotation or a
+; struct head, so a bare (array T …) used above it was undefined (nuc-doom
+; ISSUE-031).
+(deftest s21-array-defconst-forward-use
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.strview)
+(defn name (i:i32):StrView (aref NAMES i))
+(defn num (i:i32):i32 (aref NUMS i))
+(defconst- NAMES (array StrView \"a\" \"bc\"))
+(defconst NUMS (array i32 4 5 (5 9)))
+(defn main ():i32
+  (printf \"%d %d %d\\n\" (unsafe/cast i32 ((name 1) 'len)) (num 1) (num 5))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "2 5 9\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
 ; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
 (deftest s21-fn-reads-stored-global

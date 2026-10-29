@@ -4780,3 +4780,20 @@ already makes.
 Test: `s21-string-literal-field-access` in `tests/suite-s21.nuc`.
 
 Gate: 1605 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: an array `defconst` used above its definition was undefined (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-031). `docs/toplevel.md` says a constant
+may be used above its definition. For `(defconst NAMES (array StrView "a"
+"bc"))`, that use failed with "not defined anywhere in this compilation unit",
+plus a note that no import reaches the file being compiled.
+`prescan-defconst-stored` registered a stored constant only when its type was
+known early, from an annotation or a struct literal's head. It now also sizes
+a bare `(array T …)` from its initializers (`prescan-array-lit-type`, through
+the same `const-array-lit-etype` that emission uses), so the forward reference
+sees the global's real type.
+
+Test: `s21-array-defconst-forward-use` in `tests/suite-s21.nuc` (covers a
+designated index too).
+
+Gate: 1607 pass, the same 18 fail. Bootstrap PASS.

@@ -20287,8 +20287,18 @@
   ; this prescan Sym as the same definition rather than an earlier one.
   (sym-set-src-loc (as ptr sym) line))
 
+; An unannotated `(array T …)` literal, sized by its initializers as
+; `defconst-value-type` sizes it at emission (nuc-doom ISSUE-031).
+(defn prescan-array-lit-type (val:?&Node line:i32):?&Type
+  (when (< (node-len val) 3) (return null))
+  (set! g-array-ok 2)
+  (let (n:i32 0
+        ety:&Type (const-array-lit-etype val (as &i32 &n) line))
+    (set! g-array-ok 0)
+    (return (array-type ety n))))
+
 ; A stored constant's storage, when its type is known this early: an annotation
-; on a compound value, or a struct literal's head.
+; on a compound value, a struct literal's head, or an array literal's.
 (defn prescan-defconst-stored (cc:&Node name:?&Node val:?&Node):void
   (when (!= (prescan-literal-kind? val) 0)
     (let (nm:Symbol (symbol-none)
@@ -20307,7 +20317,8 @@
         (if (defconst-annotated? name)
           (set! ty (extract-decl-name-and-type-provisional name (as &Symbol &nm)
                      (node-line name (cc 'line))))
-          (when (!= sd null) (set! ty (type-for-sdef sd))))
+          (cond (!= sd null) (set! ty (type-for-sdef sd))
+                (= hd 'array) (set! ty (prescan-array-lit-type val (cc 'line)))))
         (when (or (= ty null) (symbol-none? nm)) (return))
         (let (vsym:&Sym (scope-define g-globals nm ty (fstr "@" (def-ir-base nm)) 1))
           (when (ct-withheld?) (set! (vsym 'ct-only) 1))
