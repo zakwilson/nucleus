@@ -3987,6 +3987,43 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; A template instance first stamped inside a `defn-` was private to that
+; namespace, so another namespace stamped it again under the same IR name and
+; the macro JIT module refused the redefinition (nuc-doom ISSUE-032).
+(deftest s21-template-instance-under-defn-private
+  (let (dir:String (try (test-scratch-sub "tpriv")))
+    (let (a:String (try (write-into (string-as-view &dir) "s21tpa.nuc" "(ns s21tpa)
+(import-use \"stdio.h\")
+(defn- num (x:i32 y:i32 v:i32 w:i32):!i32 (printf \"a %d\\n\" v) (ok x))
+(defn- pct (x:i32 y:i32 v:i32):!void
+  (try (num x y v -1))
+  (ok))
+(defn a-draw ():!void
+  (try (pct 1 2 3))
+  (ok))
+"))
+          b:String (try (write-into (string-as-view &dir) "s21tpb.nuc" "(ns s21tpb)
+(import-use \"stdio.h\")
+(defn- num (x:i32 y:i32 big:bool v:i32 w:i32):!void (printf \"b %d\\n\" v) (ok))
+(defn- pct (x:i32 y:i32 v:i32):!void
+  (num x y true v 3))
+(defn b-draw ():!void
+  (try (pct 4 5 6))
+  (ok))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use s21tpb)
+(import-use s21tpa)
+(defn main ():i32
+  (match (a-draw) ((ok) 0) ((err e) 1))
+  (match (b-draw) ((ok) 0) ((err e) 1))
+  0)
+"))
+          out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+      (try (check-golden (string-as-view &out) "a 3\nb 6\n"))
+      (drop &out) (drop &m) (drop &b) (drop &a))
+    (drop &dir))
+  (return (ok)))
+
 ; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
 ; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
 (deftest s21-fn-reads-stored-global

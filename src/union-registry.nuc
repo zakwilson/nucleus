@@ -2041,6 +2041,16 @@
       (set! g-type-key-ok saved)
       (return t))))
 
+; An instance is shared by every namespace, even when first asked for inside a
+; `defn-`: a private one is missed by the next lookup and stamped again under
+; the same IR name (nuc-doom ISSUE-032).
+(defn stamp-defunion-register (iname:Symbol arms:ptr line:i32):&UnionDef
+  (let (saved:i32 g-defining-private)
+    (set! g-defining-private 0)
+    (let (ud:&UnionDef (defunion-register iname arms line))
+      (set! g-defining-private saved)
+      (return ud))))
+
 (defn union-template-stamp-types-in (ut:?&UnionTemplate argts:ptr nargs:i32 line:i32):&Type
   (let (utt:ptr:UnionTemplate ut)
     (when (!= nargs (utt 'ntv))
@@ -2057,7 +2067,7 @@
                                                 (utt 'ntv))
               ctx:StrView (template-stamp-context (utt 'src-file) iname line)
               here:NameEnv (name-env-enter (utt 'src-ns) (utt 'src-file) (utt 'src-imports))
-              ud2:&UnionDef (defunion-register iname arms-subst line)
+              ud2:&UnionDef (stamp-defunion-register iname arms-subst line)
               ; Copied, as struct-template-stamp-types-in does: the caller's
               ; `argts` may be reused.
               origin-args:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))

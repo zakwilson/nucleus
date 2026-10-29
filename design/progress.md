@@ -4797,3 +4797,17 @@ Test: `s21-array-defconst-forward-use` in `tests/suite-s21.nuc` (covers a
 designated index too).
 
 Gate: 1607 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a template instance first stamped inside a `defn-` was private (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-032). Two namespaces that each held a
+`defn-` returning `!void` failed to build. The macro JIT module reported
+"redefinition of type %nuc_Result.void.Err". `union-template-stamp-types-in`
+registered the instance through `defunion-register`, which reads
+`g-defining-private`. That flag was still set from the enclosing `defn-`, so
+the shared instance became private to the first namespace. The next lookup
+from another namespace missed it and stamped a second one under the same IR
+name. `stamp-defunion-register` now clears the flag around the registration,
+since an instance belongs to every namespace.
+
+Test: `s21-template-instance-under-defn-private` in `tests/suite-s21.nuc`.
