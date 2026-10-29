@@ -1445,8 +1445,8 @@
       ; garbage, not a verifier error. Refuse instead.
       (when (!= ty (type-to-ir g-fn-ret-type))
         (die-at g-form-line
-          (fstr "internal: aggregate return of a " ty " where the declared return type is "
-                (type-to-ir g-fn-ret-type))))
+          (fstr g-cur-fname ": internal: aggregate return of a " (type-display (vv 'type))
+                " where the declared return type is " (type-to-ir g-fn-ret-type))))
       (when (= k ABI-MEMORY)
         (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " g-fn-sret-name "\n")
         (emit g-body-stream "  ret void\n")

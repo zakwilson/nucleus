@@ -6837,6 +6837,12 @@
           ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
           ; body types `(aref a i)` exactly as emission does.
           (set! ty (array-lit-binding-type ty (node-at (as ptr binds) (+ i 1))))
+          ; CE-1 lockstep: emit-let types a bare binding by its init. Unmodeled,
+          ; the binding would let an outer name of the same spelling type the
+          ; body (nuc-doom ISSUE-023), so the whole block is unmodeled instead.
+          (when (and (= ty null) (= ((unsafe/cast &Node bname) 'kind) NODE-SYM))
+            (set! ty (as ptr (node-type (node-at (as ptr binds) (+ i 1)) inner)))
+            (when (= ty null) (return null)))
           (when (!= ty null) (scope-define inner name ty (symbol-as-view name) 1)))
         (set! i (+ i 2)))
       (let (last:ptr null

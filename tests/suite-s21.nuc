@@ -3937,6 +3937,24 @@ int main(void) {
                          "f: implicit return type mismatch — returned value of type either Fx or &Gx does not match declared return type Fx"))
   (return (ok)))
 
+; node-type skipped an untyped let binding, so a tail naming it typed as the
+; same-named function: refused for a scalar, an internal error for a struct
+; (nuc-doom ISSUE-023).
+(deftest s21-untyped-let-shadows-function
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Fx v:i32)
+(defn twice (x:i32):i32 (* x 2))
+(defn fx (c:Fx):Fx c)
+(defn a (c:i32):i32 (let (twice c) twice))
+(defn b (c:Fx):Fx (let (fx c) fx))
+(defn main ():i32
+  (printf \"%d %d %d\\n\" (a 4) ((b (Fx 5)) 'v) (twice 3))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "4 5 6\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
 ; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
 (deftest s21-fn-reads-stored-global

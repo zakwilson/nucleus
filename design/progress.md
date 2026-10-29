@@ -4750,3 +4750,19 @@ a return instead of returning zero. The niche-Maybe path doesn't record it yet.
 Test: `s21-struct-literal-match-arm` in `tests/suite-s21.nuc`.
 
 Gate: 1604 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: an untyped `let` binding lost its tail to a same-named function (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-023). In `(let (floor x) floor)`, the
+tail typed as libm's `floor`, though codegen loaded the local. `emit-node`
+stamps every Val with `node-type`'s answer, and `node-type-block` registered
+only bindings with a spelled type. The CE-1 inferred binding was missing, so
+the tail name fell through to the global. A scalar return was refused, and a
+struct return died with "internal: aggregate return of a (f64):f64" at line 0.
+`node-type-block` now types a bare binding by its init, as `emit-let` does, and
+calls the whole block unmodeled when it can't. The internal aggregate-return
+error also names its function now, since its line is 0.
+
+Test: `s21-untyped-let-shadows-function` in `tests/suite-s21.nuc`.
+
+Gate: 1605 pass, the same 18 fail. Bootstrap PASS.
