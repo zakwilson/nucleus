@@ -3915,6 +3915,28 @@ int main(void) {
                          "f: implicit return type mismatch — returned value of type either Fx (line 3) or &Gx (line 3) does not match declared return type Fx"))
   (return (ok)))
 
+; The same join for match arms, on the union, enum and niche-Maybe paths: they
+; returned zeroinitializer (nuc-doom ISSUE-022).
+(deftest s21-struct-literal-match-arm
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct P v:i32)
+(defunion Shape (circle r:i32) (sq w:i32))
+(defenum Color RED GREEN)
+(defn u (s:Shape d:P):P (match s ((circle r) (P r)) ((sq w) d)))
+(defn e (c:i32 d:P):P (match c (RED (P 1)) (GREEN d)))
+(defn n (m:?&P d:P):P (match m ((some x) (P 4)) (none d)))
+(defn main ():i32
+  (let (q:P (P 6))
+    (printf \"%d %d %d %d %d %d\\n\" ((u (Shape-circle 3) (P 7)) 'v) ((u (Shape-sq 4) (P 7)) 'v)
+            ((e RED (P 7)) 'v) ((e GREEN (P 7)) 'v) ((n &q (P 7)) 'v) ((n null (P 7)) 'v)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "3 7 1 7 4 7\n"))
+    (drop &out))
+  (try (s21-type-refused "(defstruct Fx v:i32) (defstruct Gx v:i32) (defunion S (a x:i32) (b y:i32)) (defn f (s:S):Fx (match s ((a x) (Fx 1)) ((b y) (Gx 2))))" 3
+                         "f: implicit return type mismatch — returned value of type either Fx or &Gx does not match declared return type Fx"))
+  (return (ok)))
+
 ; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
 ; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
 (deftest s21-fn-reads-stored-global

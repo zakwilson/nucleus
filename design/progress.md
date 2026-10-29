@@ -4736,3 +4736,17 @@ with the fields.
 Test: `s21-cycle-keeps-c-typedef-layout` in `tests/suite-s21.nuc`.
 
 Gate: 1603 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a struct-literal `match` arm returned zero (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-022), the `match` half of ISSUE-003. A
+match whose arms were a struct value and a compound literal (`&S`) collapsed to
+void and returned `zeroinitializer`, on the union, enum and niche-Maybe paths.
+Both match joins (`emit-match-clauses`, `emit-niche-match-arm`) now call
+`join-struct-branch`, as cond does. `emit-match-clauses` also records the
+`join-why`, so a union or enum match whose arms truly disagree is refused at
+a return instead of returning zero. The niche-Maybe path doesn't record it yet.
+
+Test: `s21-struct-literal-match-arm` in `tests/suite-s21.nuc`.
+
+Gate: 1604 pass, the same 18 fail. Bootstrap PASS.

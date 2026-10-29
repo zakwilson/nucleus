@@ -1114,6 +1114,7 @@
         result-lit:i32 0
         result-taint:ptr null
         result-frame:i32 0
+        why:StrView ""
         ci:i32 0)
     ; The dispatch: every non-default clause is a case on its arm/member value.
     (emit g-body-stream "  switch " disc-ty " " disc ", label %" def-lbl " [")
@@ -1165,6 +1166,8 @@
                 ; to CStr (no IR) so the join/phi stays a plain pointer — unless
                 ; the join is known to want a view. See join-strlit-branch.
                 (set! bv (join-strlit-branch bv my-want (cc 'line)))
+                ; A compound-literal arm joins by value, as cond's does (nuc-doom ISSUE-022).
+                (set! bv (join-struct-branch bv my-want (cc 'line)))
                 (let (join-lbl:StrView (fstr "match.join" id "." ci)
                       bty:ptr (bv 'type))
                   ; cond's strict cross-branch typing: same type everywhere or
@@ -1173,9 +1176,15 @@
                   ; LW-6: literal branches widen to a typed int sibling.
                   (if (= result-type null)
                     (do (set! result-type bty) (set! result-lit (bv 'is-lit)))
-                    (do
+                    (let (prev:ptr result-type)
                       (set! result-type (type-join result-type bty result-lit (bv 'is-lit)))
-                      (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))))
+                      (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))
+                      ; Kept so a return can refuse the lost value (reject-lost-join).
+                      (when (and (str-empty? &why)
+                                 (!= ((unsafe/cast &Type prev) 'kind) TY-VOID)
+                                 (!= ((unsafe/cast &Type bty) 'kind) TY-VOID)
+                                 (= ((unsafe/cast &Type result-type) 'kind) TY-VOID))
+                        (set! why (fstr "either " (type-display prev) " or " (type-display bty))))))
                   (when (= ((unsafe/cast &Type bty) 'kind) TY-VOID)
                     (set! result-type ty-void))
                   (set! result-frame (taint-join-frame result-taint result-frame bv))
@@ -1198,7 +1207,9 @@
       (set! g-block-term 1))
     (if (or (= result-type null)
             (= ((unsafe/cast &Type result-type) 'kind) TY-VOID))
-      (return (alloc-val ty-void ""))
+      (let (vv:&Val (alloc-val ty-void ""))
+        (set! (vv 'join-why) why)
+        (return vv))
       (let (tmp:StrView (new-tmp)
             ty-ir:StrView (type-to-ir result-type)
             k:usize 0)
@@ -1557,6 +1568,7 @@
       ; collapses to CStr (no IR) so the join/phi stays a plain pointer — unless
       ; the join is known to want a view. See join-strlit-branch.
       (set! bv (join-strlit-branch bv want g-form-line))
+      (set! bv (join-struct-branch bv want g-form-line))
       (let (join-lbl:StrView (fstr "match.join" id "." which)
             bty:ptr (bv 'type)
             rt:ptr (aref (unsafe/cast &ptr rtbox) 0)

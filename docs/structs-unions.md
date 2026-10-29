@@ -236,9 +236,9 @@ can be written directly:
 
 The same applies to every `set!` place, union-variant construction, and
 call arguments (which have always accepted it). It also applies to an
-`if`/`cond` branch when the form itself fills a by-value `S` slot:
+`if`/`cond` branch or `match` arm when the form itself fills a by-value `S` slot:
 `(if c BIG (S 3))` returned from an `S` function joins both branches as `S`.
-A cond whose branches still disagree is an error at a return. It is never
+A cond or match whose branches still disagree is an error at a return. It is never
 the zero that a valueless body returns. An overloaded or generic call
 counts the literal as a by-value `S` too: `(conj &v (Pt 1 2))` on a
 `(Vector Pt)` binds `T = Pt`, and `(rq &v (Pt 3 4))` reaches a `p:Pt` overload.
