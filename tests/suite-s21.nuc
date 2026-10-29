@@ -4030,6 +4030,36 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; With nucleus.error loaded only by `import-ct`, an `err` site called
+; `err-find-handler`, which the program never defined (nuc-doom ISSUE-039).
+; Imported for real as well, the handler chain must still be consulted.
+(deftest s21-err-with-error-lib-ct-only
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-ct nucleus.error)
+(deferror nope \"nope\")
+(defn f (x:i32):!i32 (if (> x 0) (ok x) (err nope)))
+(defn main ():i32
+  (match (f 1) ((ok v) (printf \"ok %d\\n\" v)) ((err e) (printf \"err\\n\")))
+  (match (f 0) ((ok v) (printf \"ok %d\\n\" v)) ((err e) (printf \"err\\n\")))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "ok 1\nerr\n"))
+    (drop &out))
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-ct nucleus.error)
+(import-use nucleus.error)
+(deferror nope \"nope\")
+(defn f (x:i32):!i64 (if (> x 0) (ok (as i64 x)) (err nope)))
+(defn fix (ctx:ptr detail:ptr):?i64 (some 42))
+(defn main ():i32
+  (with-handler (nope i64 fix null)
+    (match (f 0) ((ok v) (printf \"repaired %lld\\n\" v)) ((err e) (printf \"err\\n\"))))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "repaired 42\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A char literal in a global aggregate was "not a compile-time constant",
 ; though `(char "x")` was (nuc-doom ISSUE-034).
 (deftest s21-char-literal-in-global-aggregate

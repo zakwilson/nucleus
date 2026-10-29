@@ -4863,3 +4863,19 @@ registration, as `stamp-defunion-register` does for union instances
 Test: `s21-stamp-under-defn-private-in-user-ns` in `tests/suite-s21.nuc`.
 
 Gate: 1612 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: `err` called an undefined handler lookup under `import-ct` (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-039). A program that loads
+`nucleus.error` only through `import-ct`, directly or through a compile-time
+library that imports it, failed on its first `(err e)` with "use of undefined
+value '@nuc_err-find-handler'". `error-lib-in-scope` saw the library's names
+registered and emitted the handler-chain check, but `import-ct` registers
+those names without defining them in the program. It now treats a `ct-only`
+`g-handler-top` or `err-find-handler` as absent when emitting program IR, as
+`require-node-runtime` already does for the node runtime. A program that also
+imports the library for real still consults the chain.
+
+Test: `s21-err-with-error-lib-ct-only` in `tests/suite-s21.nuc`.
+
+Gate: 1613 pass, the same 18 fail. Bootstrap PASS.

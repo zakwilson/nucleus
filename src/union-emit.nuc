@@ -882,7 +882,16 @@
   (when (= (core-global "g-handler-top") null) (return 0))
   (when (= (core-global "err-find-handler") null) (return 0))
   (when (= (as ptr (core-struct "Handler")) null) (return 0))
+  ; Loaded by `import-ct` alone, the library has no definitions in the program,
+  ; so the program has no chain either (nuc-doom ISSUE-039).
+  (when (and (!= (emitting-program-ir) 0)
+             (or (ct-only-global? "g-handler-top") (ct-only-global? "err-find-handler")))
+    (return 0))
   (return 1))
+
+(defn ct-only-global? (bare:StrView):bool
+  (let (s:&Sym (unsafe/cast &Sym (core-global bare)))
+    (return (!= (s 'ct-only) 0))))
 
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type
 ; Err (TY-ERR). Only then does errors.md §11.1 emit the handler check; a custom
