@@ -4879,3 +4879,24 @@ imports the library for real still consults the chain.
 Test: `s21-err-with-error-lib-ct-only` in `tests/suite-s21.nuc`.
 
 Gate: 1613 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: an array field of a struct binding decayed into a copy (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-040). With `t:Thing` a let-bound struct
+and `flags:(array i32 3)` a field, `(set! (aref (t 'flags) 0) 1)` and
+`&(aref (t 'flags) 2)` silently acted on a temporary. SV-1 copies a by-value
+receiver into a fresh slot before every field read. For a scalar field the
+copy is harmless, but an array field decays to a pointer into it. Both read
+paths (`_get` and head-position `(s field)`) now use a binding's own slot,
+through `binding-storage`, which `emit-lvalue-receiver` already used for
+places. They copy only a true temporary.
+
+The change removes a copy from many field reads in the compiler's own source,
+so it moves the bootstrap. `build/nucleusc.ll` differs from `stage2.ll` until
+the boot is converged (`context/build.md`, "After a codegen change"). The new
+compiler was checked as a fixed point (stage2 emits stage2.ll byte for byte)
+before `update-bootstrap`.
+
+Test: `s21-array-field-of-struct-binding` in `tests/suite-s21.nuc`.
+
+Gate: 1614 pass, the same 18 fail. Bootstrap PASS after convergence.

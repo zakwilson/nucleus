@@ -4030,6 +4030,28 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; An array field of a by-value struct binding decayed to a pointer into a copy,
+; so stores through it were silently lost (nuc-doom ISSUE-040).
+(deftest s21-array-field-of-struct-binding
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Thing hp:i32 flags:(array i32 3))
+(defn bump (t:Thing):i32
+  (set! (aref (t 'flags) 1) 5)
+  (aref (_get t 'flags) 1))
+(defn main ():i32
+  (let (t:Thing (Thing))
+    (set! (aref (t 'flags) 0) 1)
+    (let (p &(aref (t 'flags) 2))
+      (set! @p 9))
+    (set! (aref (_get t 'flags) 1) 4)
+    (printf \"%d %d %d %d\\n\" (aref (t 'flags) 0) (aref (t 'flags) 1) (aref (t 'flags) 2) (bump t))
+    (printf \"%d\\n\" (aref (t 'flags) 1)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "1 4 9 5\n4\n"))
+    (drop &out))
+  (return (ok)))
+
 ; With nucleus.error loaded only by `import-ct`, an `err` site called
 ; `err-find-handler`, which the program never defined (nuc-doom ISSUE-039).
 ; Imported for real as well, the handler chain must still be consulted.

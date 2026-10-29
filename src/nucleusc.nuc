@@ -6964,7 +6964,9 @@
 ; so it takes a binding, whose slot is used directly. A temporary stays an error:
 ; the store would land in something about to be discarded. (`ref` materializes
 ; one instead: emit-place-receiver.)
-(defn emit-lvalue-receiver (rnode:?&Node scope:&Scope what:StrView line:i32):&Val
+; A by-value struct or union binding's own slot as a `(ref S)`, or null when
+; `rnode` names no such binding.
+(defn binding-storage (rnode:?&Node scope:&Scope line:i32):?&Val
   (let (rn:?&Node rnode)
     (when (and (!= rn null) (= (rn 'kind) NODE-SYM))
       (if-some (sym (scope-lookup scope (rn 's)))
@@ -6983,21 +6985,33 @@
                   (set! (rv 'taint) (sym 'home))
                   (set! (rv 'taint-frame) 1))
                 (return rv)))))
-        0))
-    (let (p:&Val (emit-node rnode scope)
-          pk:i32 (-> p (as &Val _) (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
-      (when (or (= pk TY-STRUCT) (= pk TY-UNION))
-        (die-at line
-          (fstr what
-                ": the receiver is a temporary struct value, so it has no address -- bind it to a name first")))
-      (return p))))
+        0)))
+  (return null))
+
+; A field read's receiver: a binding's own slot, else the value copied into a
+; temporary (SV-1). A copy would do for a scalar field, but an array field
+; decays to a pointer, and stores through it must reach the binding
+; (nuc-doom ISSUE-040).
+(defn field-read-receiver (rnode:?&Node v:&Val scope:&Scope line:i32):&Val
+  (when-some (rv (binding-storage rnode scope line)) (return rv))
+  (return (materialize-struct-value v scope line)))
+
+(defn emit-lvalue-receiver (rnode:?&Node scope:&Scope what:StrView line:i32):&Val
+  (when-some (rv (binding-storage rnode scope line)) (return rv))
+  (let (p:&Val (emit-node rnode scope)
+        pk:i32 (-> p (as &Val _) (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
+    (when (or (= pk TY-STRUCT) (= pk TY-UNION))
+      (die-at line
+        (fstr what
+              ": the receiver is a temporary struct value, so it has no address -- bind it to a name first")))
+    (return p)))
 
 (defn emit-field-get (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) "_get expects 2 args"))
-    (let (p:&Val (materialize-struct-value (emit-node (node-at cc 1) scope)
-                                              scope (cc 'line))
+    (let (p:&Val (field-read-receiver (node-at cc 1) (emit-node (node-at cc 1) scope)
+                                      scope (cc 'line))
           pt:(ptr Type) (p 'type)
           ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
                    ((pt 'elem) 'kind)
@@ -7163,7 +7177,7 @@
 (defn emit-get-intrinsic (n:?&Node scope:&Scope callee-val:&Val sel-node:?&Node line:i32):&Val
   ; SV-1: reached only after every user `get`/`invoke` method has failed to
   ; match, so a by-value struct here really is a field access on a value.
-  (let (cv:(ptr Val) (as ptr:Val (materialize-struct-value
+  (let (cv:(ptr Val) (as ptr:Val (field-read-receiver (node-at n 0)
                                    (unsafe/cast &Val callee-val) scope line))
         ct:(ptr Type) (cv 'type)
         ek:i32 (if (and (= (ct 'kind) TY-PTR) (!= (ct 'elem) null))
