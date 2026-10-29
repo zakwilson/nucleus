@@ -4235,7 +4235,31 @@
                          ; binding's own storage, so its address is recoverable.
                          'lvalue-sym  sym)
             (return rv))))
-      (die-at (node-line n line) (undefined-name-message (nn 's))))))
+      (do
+        (when-some (fv (generic-fn-value nn (node-line n line))) (return fv))
+        (die-at (node-line n line) (undefined-name-message (nn 's)))))))
+
+; A `defn` name used as a value when the name is overloaded somewhere in the
+; unit, so it has no solitary `g-globals` binding. Overloading is per namespace
+; (docs/generics.md): if the spelling reaches exactly one method — the filter a
+; bare call applies — the value is that method. Null when no generic answers.
+(defn generic-fn-value (nn:(ptr Node) line:i32):?&Val
+  (let (g:?&Generic (generic-lookup-ref (nn 's)))
+    (when (= g null) (return null))
+    (let (gg:&Generic (unsafe/cast &Generic g)
+          n:i32 (unsafe/cast i32 (count (gg 'methods))))
+      (when (= n 0) (return null))
+      (when (> n 1)
+        (die-at line (fstr "cannot use overloaded '" (nn 's) "' as a value — " n
+                           " methods are visible here\n  note: wrap the one you mean in a (fn …)")))
+      (let (m:&Method (as &Method (invoke (gg 'methods) 0)))
+        (when (or (!= (m 'kind) METHOD-USER) (symbol-none? (m 'ir-name)) (= (m 'fn-type) null))
+          (return null))
+        (avr-reject-fn-value line (fstr "using function '" (nn 's) "' as a value"))
+        (let (s:&Sym (new Sym g-arena))
+          (set-fields! s 'name (nn 's) 'type (m 'fn-type) 'ir-name (symbol-as-view (m 'ir-name)))
+          (macro-jit-ensure-decl s line))
+        (return (alloc-val (m 'fn-type) (symbol-as-view (m 'ir-name))))))))
 
 ; Stage 16 (design/stage16-ergonomics/as-sugar.md): a value-position `:type`
 ; annotation is an `as` CAST of the named binding — `baz:CStr` is `(as CStr baz)`

@@ -439,7 +439,7 @@
     (return (f &c))))
 ")))
     (try (check (not (c 'ok?)) "a value reference to an overloaded name is refused"))
-    (try (check-contains (string-as-view (ref c 'raw-text)) "undefined: area"))
+    (try (check-contains (string-as-view (ref c 'raw-text)) "cannot use overloaded 'area' as a value"))
     (drop &c))
   (return (ok)))
 

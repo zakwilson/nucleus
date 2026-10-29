@@ -4816,3 +4816,27 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
     (drop &out)
     (drop &want))
   (return (ok)))
+
+; A function name used as a value had no binding once another namespace in the
+; unit defined the same name, though overloading is per namespace: the file's
+; own lone method is the value (nuc-doom ISSUE-042).
+(deftest s21-fn-value-shares-name-with-other-ns
+  (let (dir:String (try (test-scratch-sub "fv")))
+    (let (lib:String (try (write-into (string-as-view &dir) "s21fvlib.nuc" "(ns s21fvlib)
+(defn pick (a:i64 b:i64):i64 a)
+"))
+          own:String (try (write-into (string-as-view &dir) "s21fvm.nuc" "(ns s21fvm)
+(defn- pick (x:i32):bool (> x 2))
+(defn- apply (f:(fn bool)(i32)):bool (f 5))
+(defn run ():i32 (if (apply pick) 1 0))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use \"stdio.h\")
+(import-use s21fvlib)
+(import-use s21fvm)
+(defn main ():i32 (printf \"%d %d\\n\" (run) (unsafe/cast i32 (pick 7 8))) 0)
+"))
+          out:String (try (build-run-file (string-as-view &dir) "" (string-as-view &m))))
+      (try (check-golden (string-as-view &out) "1 7\n"))
+      (drop &out) (drop &m) (drop &own) (drop &lib))
+    (drop &dir))
+  (return (ok)))

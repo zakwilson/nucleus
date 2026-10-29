@@ -4900,3 +4900,26 @@ before `update-bootstrap`.
 Test: `s21-array-field-of-struct-binding` in `tests/suite-s21.nuc`.
 
 Gate: 1614 pass, the same 18 fail. Bootstrap PASS after convergence.
+
+## DOOM-port bug fix: a function name as a value, when another namespace shares it (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-042). `doom.play.map` passes its private
+`check-line` to an iterator. In the port's test program, which also imports
+`nucleus.test` and so its public `check-line`, the reference failed with
+"undefined: check-line" and a note blaming an import cycle. Two methods of one
+bare name make the generic mangled, and a mangled generic has no solitary
+`g-globals` binding for a value reference to find. Overloading is per
+namespace, though (docs/generics.md), and the file's own method is the only one
+its bare spelling reaches.
+
+`emit-symbol-ref-bound` now asks `generic-fn-value` before reporting an
+undefined name. A spelling that reaches exactly one user method, through
+`generic-lookup-ref`'s visibility filter, yields that method's symbol. One that
+reaches several is refused with "cannot use overloaded 'f' as a value — N
+methods are visible here", instead of "undefined". This is only the error path,
+so no program that compiled before changes, and the bootstrap doesn't move.
+`s22-macro-overload-not-a-value` now expects the new message.
+
+Test: `s21-fn-value-shares-name-with-other-ns` in `tests/suite-s21.nuc`.
+
+Gate: 1615 pass, the same 18 fail. Bootstrap PASS.
