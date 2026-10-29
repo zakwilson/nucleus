@@ -4011,6 +4011,21 @@ int main(void) {
                          "try: the operand must be a result (a !T, or a union with ok and err arms), but its type is void"))
   (return (ok)))
 
+; A char literal in a global aggregate was "not a compile-time constant",
+; though `(char "x")` was (nuc-doom ISSUE-034).
+(deftest s21-char-literal-in-global-aggregate
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct It n:i32 key:Char)
+(defvar it:It (It 1 \\n))
+(defvar cs:(array Char 2) (array Char \\a \\b))
+(defn main ():i32
+  (printf \"%d %d\\n\" (as i32 (it 'key)) (as i32 (aref cs 1)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "110 98\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A template instance first stamped inside a `defn-` was private to that
 ; namespace, so another namespace stamped it again under the same IR name and
 ; the macro JIT module refused the redefinition (nuc-doom ISSUE-032).

@@ -4831,3 +4831,17 @@ Tests: `s21-try-untyped-overloaded-operand` and `s21-try-not-a-result` in
 `tests/suite-s21.nuc`.
 
 Gate: 1610 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a char literal was not a constant in a global aggregate (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-034). `(defvar it:It (It 1 \n))`, with
+`key:Char` a field of `It`, failed with "defvar: init must be a compile-time
+constant", and so did `(array Char \a \b)`. `(char "n")`, which the docs call
+sugar for the same literal, was accepted. `defvar-init-ir` had no case for
+`NODE-CHAR`. A scalar `Char` global only worked because it fell back to a
+run-time initializer, and an aggregate element has no such fallback. A char
+literal at a `Char` destination now renders as its codepoint.
+
+Test: `s21-char-literal-in-global-aggregate` in `tests/suite-s21.nuc`.
+
+Gate: 1611 pass, the same 18 fail. Bootstrap PASS.

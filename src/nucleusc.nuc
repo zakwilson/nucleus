@@ -16007,6 +16007,10 @@
           (fstr "defvar: integer literal " (fstr (nn 'i)) " does not fit "
                 (type-display ty))))
       (return (fstr (nn 'i))))
+    ; A char literal is its codepoint, as `(char "x")` already folds; without
+    ; this a `Char` field of a global aggregate was refused (nuc-doom ISSUE-034).
+    (when (and (= (nn 'kind) NODE-CHAR) (= ty-kind TY-CHAR))
+      (return (fstr (nn 'i))))
     ; Float literal: f32 or f64.
     ; Stage 15 W2d: the old comment here claimed "LLVM accepts the same
     ; decimal/hex form for both" — measured FALSE. LLVM accepts a decimal
