@@ -4011,6 +4011,25 @@ int main(void) {
                          "try: the operand must be a result (a !T, or a union with ok and err arms), but its type is void"))
   (return (ok)))
 
+; A template method first stamped inside a `defn-`, in a file with no `ns`, was
+; defined under its bare name while the call used the mangled one, so the IR
+; did not parse (nuc-doom ISSUE-038).
+(deftest s21-stamp-under-defn-private-in-user-ns
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(defn- size (v:&(Vector ui8)):i32 (unsafe/cast i32 (count v)))
+(defn main ():i32
+  (let (v (make (Vector ui8)))
+    (conj &v 1)
+    (conj &v 2)
+    (printf \"%d\\n\" (size &v)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "2\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A char literal in a global aggregate was "not a compile-time constant",
 ; though `(char "x")` was (nuc-doom ISSUE-034).
 (deftest s21-char-literal-in-global-aggregate

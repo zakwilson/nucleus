@@ -4845,3 +4845,21 @@ literal at a `Char` destination now renders as its codepoint.
 Test: `s21-char-literal-in-global-aggregate` in `tests/suite-s21.nuc`.
 
 Gate: 1611 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a template method stamped inside a `defn-` lost its symbol (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-038). In a file with no `ns`, a
+`(defn- size (v:&(Vector ui8)):i32 (unsafe/cast i32 (count v)))` that was the
+first use of `count` on `(Vector ui8)` failed with "use of undefined value
+'@nuc_count.pnuc_Vector.u8'". `generic-instantiate-in` registered the stamp
+while the enclosing `defn-` still had `g-defining-private` set. In the `user`
+namespace, `priv-key-define` then filed it under the file's private generic.
+`defn-ir-name`, which looks in the public generic, missed it when the body was
+emitted, so the definition fell back to the bare `@nuc_count`. The call site
+used the mangled name. `stamp-register-method` now clears the flag around the
+registration, as `stamp-defunion-register` does for union instances
+(ISSUE-032). The stamp's privacy is still set from the template afterwards.
+
+Test: `s21-stamp-under-defn-private-in-user-ns` in `tests/suite-s21.nuc`.
+
+Gate: 1612 pass, the same 18 fail. Bootstrap PASS.

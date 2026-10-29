@@ -3379,6 +3379,18 @@
               (node-cons name-node
                 (node-cons new-params body-src line) line) line))))
 
+; A stamp registers under the public key even when first asked for inside a
+; `defn-`. In a file with no `ns`, the private key would file it under a generic
+; that `defn-ir-name` never consults, and the definition would lose its mangled
+; name (nuc-doom ISSUE-038). Its privacy is the template's, set by the caller.
+(defn stamp-register-method (fname:Symbol ret:?&Type param-types:ptr nparams:i32
+                             body:?&Node):&Method
+  (let (saved:i32 g-defining-private)
+    (set! g-defining-private 0)
+    (let (m:&Method (generic-register-method fname ret param-types nparams 0 0 body))
+      (set! g-defining-private saved)
+      (return m))))
+
 ; Monomorphize a generic template for a concrete argument tuple: reuse a cached
 ; instantiation if present, else stamp a concrete method (registered now so the
 ; call site can name its symbol; its body is queued for later emission).
@@ -3463,7 +3475,7 @@
           (set! nargs (defn-params-count stamped-params)))
         (name-env-set here)
         (set! g-mono-context req-ctx)
-        (let (newm:ref:Method (generic-register-method (gg 'name) sret ptypes nargs 0 0 stamped)
+        (let (newm:ref:Method (stamp-register-method (gg 'name) sret ptypes nargs stamped)
               ; Stage 12 N4: mangle the stamped concrete method under the
               ; template's *defining* namespace, not the call site's current one.
               ; Stage 15 W9 item 23: that is the TEMPLATE method's namespace, not
