@@ -4923,3 +4923,18 @@ so no program that compiled before changes, and the bootstrap doesn't move.
 Test: `s21-fn-value-shares-name-with-other-ns` in `tests/suite-s21.nuc`.
 
 Gate: 1615 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: `--list-imports` blamed a syntax error on the importer (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-044). An extra `)` in `doom/config.nuc`
+was reported by `nucleus build` as `main.nuc:161: error: unexpected )`, with
+the line from the right file but the path from the file that imported it.
+`list-imports-file` (`src/deps.nuc`) set `g-source-path` only after
+`read-source-or-die` had read the file, so a reader error inside it carried
+the previous file's path. It is set before the read now. A plain compile was
+already right, so only the build tool's import scan, which runs first, was
+affected.
+
+Test: `s21-list-imports-error-names-its-file` in `tests/suite-s21.nuc`.
+
+Gate: 1616 pass, the same 18 fail. Bootstrap PASS.

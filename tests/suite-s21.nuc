@@ -4840,3 +4840,29 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
       (drop &out) (drop &m) (drop &own) (drop &lib))
     (drop &dir))
   (return (ok)))
+
+; `--list-imports` read each file before naming it as the current source, so a
+; syntax error in an imported file was reported at the importer's path
+; (nuc-doom ISSUE-044).
+(deftest s21-list-imports-error-names-its-file
+  (let (dir:String (try (test-scratch-sub "li"))
+        dv:StrView (string-as-view &dir)
+        flags:(Vector StrView) (make (Vector StrView)))
+    (let (lib:String (try (write-into dv "s21li.nuc" "(ns s21li)
+
+(defn f ():i32 1))
+"))
+          m:String (try (write-into dv "main.nuc" "(import-use s21li)
+(defn main ():i32 (f))
+")))
+      (conj &flags "-I")
+      (conj &flags ".")
+      (conj &flags "--list-imports")
+      (let (r:Ran (try (bt-compile-in dv &flags "main.nuc")))
+        (try (check (not (r 'ok?)) "the scan fails"))
+        (try (check-contains (string-as-view (ref r 'err)) "s21li.nuc:3: error: unexpected )"))
+        (drop &r))
+      (drop &m) (drop &lib))
+    (drop &flags)
+    (drop &dir))
+  (return (ok)))
