@@ -6945,7 +6945,11 @@
 ; cursor needed laundering through an alloca. The four access sites keep their
 ; single pointer-to-struct path; the copy into addressable storage happens here.
 (defn materialize-struct-value (p:&Val scope:&Scope line:i32):&Val
-  (let (pv:&Val p
+  ; A string literal's Val is still its bare data pointer: build the view
+  ; before storing it as one (nuc-doom ISSUE-027).
+  (let (pv:&Val (if (and (!= (p 'is-lit) 0) (!= (p 'type) null) (!= (type-is-strview (p 'type)) 0))
+                  (join-strlit-branch p (as ptr (strview-type)) line)
+                  p)
         pt:ptr (pv 'type))
     (when (= pt null) (return p))
     (let (k:i32 ((unsafe/cast &Type pt) 'kind))
@@ -6953,7 +6957,7 @@
       (let (rt:&Type (make-type TY-PTR))
         (set! (rt 'elem) pt)
         (set! (rt 'pkind) PTR-REF)
-        (return (tc3-materialize p (as ?&Type rt) (as ?&Type pt)
+        (return (tc3-materialize pv (as ?&Type rt) (as ?&Type pt)
                                  scope line))))))
 
 ; SV-1's other half. A member place needs the receiver's own STORAGE, not a copy,

@@ -4766,3 +4766,17 @@ error also names its function now, since its line is 0.
 Test: `s21-untyped-let-shadows-function` in `tests/suite-s21.nuc`.
 
 Gate: 1605 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port bug fix: a field access on a string literal emitted invalid IR (2026-10-29)
+
+Found by the nuc-doom port (its ISSUE-027). `("abc" 'data)`, or the same on a
+string `defconst`, failed with "failed to parse generated IR … '%tN' defined
+with type 'ptr' but expected '%nuc_StrView'". A literal's Val is its bare
+rodata pointer, typed StrView. `materialize-struct-value` stored that pointer
+as a whole StrView to get an addressable receiver. It now builds the view with
+`join-strlit-branch` first, the conversion every other StrView-taking site
+already makes.
+
+Test: `s21-string-literal-field-access` in `tests/suite-s21.nuc`.
+
+Gate: 1605 pass, the same 18 fail. Bootstrap PASS.

@@ -3955,6 +3955,20 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; A field access on a string literal or string defconst stored the literal's
+; bare data pointer as a StrView: invalid IR (nuc-doom ISSUE-027).
+(deftest s21-string-literal-field-access
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.strview)
+(defconst WORD \"abc\")
+(defn main ():i32
+  (printf \"%c %d\\n\" (as i32 (aref (WORD 'data) 1)) (unsafe/cast i32 (\"abcd\" 'len)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "b 4\n"))
+    (drop &out))
+  (return (ok)))
+
 ; A stored global (aggregate defconst, defvar) is a reference, not a capture: `fn`
 ; refused it as a "runtime local" because is-local is 1 for globals (ISSUE-010).
 (deftest s21-fn-reads-stored-global
