@@ -301,9 +301,11 @@ struct S { int a; long b; } x, y;
 `png_image` and `Rec`/`RecAlias` are second names for the body; `png_imagep` is
 a pointer typedef (`ptr`, whatever the body was); `RecArr` is an array of it,
 which decays in parameter position exactly as a first-position array typedef
-does. In the last line `x` and `y` are C **variables**, which Nucleus does not
-import at all — only `struct S` is taken from the line, and the declarators are
-consumed so the declaration after them is read from the right place.
+does. In the last line `x` and `y` are C **variables** defined with the
+struct, which are not imported — only `struct S` is taken from the line, and the
+declarators are consumed so the declaration after them is read from the right
+place. An `extern` variable declaration is imported; see
+[Variables from a C header](compiler.md#variables-from-a-c-header).
 
 A member whose type the parser genuinely cannot represent — an array whose extent does not fold to a compile-time constant, a declarator list of mixed pointer depth, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members, multi-declarator lines and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
 

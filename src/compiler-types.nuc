@@ -645,6 +645,8 @@
   c-const:i32
   ; `--resolve`: the local's binder span, an `RBind` (src/resolve.nuc); null otherwise.
   rs-bind:ptr
+  ; A C header's `extern` variable, which yields to a Nucleus definition as `c-const` does.
+  c-var:i32
   ; Appended at the END deliberately: inserting a field mid-struct shifts the
   ; GEP index of every field after it in every function that touches one, which
   ; would bury this change's real bootstrap diff under hundreds of unrelated

@@ -1225,6 +1225,76 @@
                                         ptypes (st 'num-params) (st 'variadic)
                                         "" 0 decl-start)))))))))
 
+; `extern T name[, name…];`, a header's variable, imported as `(extern name:T)`
+; would be (nuc-doom ISSUE-006). Declines (0) a function or function pointer.
+(defn c-parse-extern-var-decl (buf:ptr pos:i64 len:i64 out-end:&i64):i32
+  (set! g-cheader-unrep 0)
+  (let (decl-start:i64 pos
+        te:i64 0
+        ty:ptr (c-parse-type buf pos len (as &i64 &te))
+        why:StrView (if (!= g-cheader-unrep 0) g-cheader-unrep-why "")
+        quiet:i32 (if (!= g-cheader-unrep 0) g-cheader-unrep-quiet 0)
+        p:i64 (c-skip-ws buf te len)
+        first:bool true)
+    (when (= ty null) (return 0))
+    (while true
+      (let (stars:i32 0)
+        (while (and (< p len) (= (cstr-byte-at buf p) 42))
+          (inc! stars)
+          (set! p (c-skip-type-quals buf (+ p 1) len)))
+        (let (ne:i64 0
+              name:Symbol (c-read-ident buf p len (as &i64 &ne)))
+          (when (= (symbol-len name) 0) (return 0))
+          (set! p (c-skip-ws buf ne len))
+          (when (and first (< p len) (= (cstr-byte-at buf p) 40)) (return 0))
+          (set! first false)
+          (let (vwhy:StrView why
+                arr:bool (and (< p len) (= (cstr-byte-at buf p) 91)))
+            (while (and (< p len) (= (cstr-byte-at buf p) 91))
+              (while (and (< p len) (!= (cstr-byte-at buf p) 93)) (set! p (+ p 1)))
+              (when (< p len) (set! p (c-skip-ws buf (+ p 1) len))))
+            (when (and (str-empty? &vwhy) arr) (set! vwhy "an array variable"))
+            (when (and (str-empty? &vwhy) (!= stars 0))
+              (set! vwhy "a declarator with its own '*' after a comma"))
+            (when (str-empty? &vwhy)
+              (when (!= (opaque-sdef-of (as ?&Type ty)) null) (set! vwhy "a variable of an opaque type")))
+            ; `__attribute__`s and an `__asm__` label, as after a function.
+            (let (more:bool true)
+              (while more
+                (set! more false)
+                (let (ae:i64 0
+                      at:Symbol (c-read-ident buf p len (as &i64 &ae)))
+                  (when (or (= at "__attribute__") (= at "__asm__"))
+                    (set! p (c-skip-ws buf ae len))
+                    (when (and (< p len) (= (cstr-byte-at buf p) 40))
+                      (set! p (c-skip-ws buf (c-skip-parens buf p len) len)))
+                    (set! more true)))))
+            (if (str-empty? &vwhy)
+              (cheader-define-extern-var name (unsafe/cast &Type ty) buf decl-start)
+              (cheader-record-skip name vwhy (cheader-line-at buf decl-start) quiet))))
+        (when (>= p len) (set! @out-end p) (return 1))
+        (when (= (cstr-byte-at buf p) 59) (set! @out-end (+ p 1)) (return 1))
+        (when (!= (cstr-byte-at buf p) 44) (return 0))
+        (set! p (c-skip-ws buf (+ p 1) len))))
+    (return 0)))
+
+; Register and declare one header variable, under the rules a header constant
+; follows: `_`-names stay out, and an existing definition of the name wins.
+(defn cheader-define-extern-var (name:Symbol ty:&Type buf:ptr decl-start:i64):void
+  (when (and (!= (cmacro-private-name? name) 0) (= g-import-include-private 0)) (return))
+  (when (or (!= (scope-lookup-key g-globals name) null) (cconst-name-taken? name)) (return))
+  (let (irn:StrView (fstr "@" (ir-name-token (symbol-as-view name))))
+    (link-claim-c-decl (symbol-intern irn) name (symbol-intern (type-to-ir ty))
+                       g-cheader-file (cheader-line-at buf decl-start))
+    (when (= (scope-frame-find-ir g-globals irn) null)
+      (if (!= g-interactive 0)
+        (when (= (repl-preamble-has-decl (symbol-intern irn)) 0)
+          (repl-preamble-note-decl (symbol-intern irn))
+          (emit g-repl-preamble irn " = external global " (type-to-ir ty) "\n\n"))
+        (emit g-out irn " = external global " (type-to-ir ty) "\n")))
+    (let (sym:&Sym (scope-define g-globals name (as ptr ty) irn 1))
+      (set! (sym 'c-var) 1))))
+
 ; Stage 16 C2 (design/stage16-ergonomics/cheader-parser-vs-libclang.md §3): a
 ; declaration the parser DECLINED to read as a function is dropped, and the use
 ; site then says only `unknown: f — not defined anywhere in this compilation
@@ -3134,7 +3204,7 @@
     (while more
       (set! more false)
       (if-some (s (scope-lookup g-globals name))
-        (when (!= (s 'c-const) 0)
+        (when (or (!= (s 'c-const) 0) (!= (s 'c-var) 0))
           (set! (s 'name) (symbol-intern (fstr "#c/" (s 'name))))
           (set! more true))
         0))))
@@ -3539,8 +3609,11 @@
                     ; Try function declaration (handles both `extern int foo(...)` and
                     ; bare `int foo(...)` — c-parse-type skips `extern` internally).
                     (let (decl-end:i64 0
-                          ok:i32 (c-parse-func-decl buf pos buf-len
-                                                    (as &i64 &decl-end) line))
+                          ok:i32 (if (= tok "extern")
+                                   (c-parse-extern-var-decl buf pos buf-len (as &i64 &decl-end))
+                                   0))
+                      (when (= ok 0)
+                        (set! ok (c-parse-func-decl buf pos buf-len (as &i64 &decl-end) line)))
                       (if (!= ok 0)
                         (set! pos decl-end)
                         ; Not a function — skip to semicolon or next line

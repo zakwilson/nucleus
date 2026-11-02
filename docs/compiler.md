@@ -1120,6 +1120,26 @@ puts both libraries in libc.
   yet. Use the `pkg-config` meta form (see
   [Using a C library at the prompt](#using-a-c-library-at-the-prompt)).
 
+## Variables from a C header
+
+A header's `extern` variable declarations are imported as if each were written
+`(extern name:T)`, so `stderr`, `stdout`, `optind` and `optarg` need no
+declaration of their own:
+
+```lisp
+(import-use "stdio.h")
+(fprintf stderr "to stderr\n")
+```
+
+`extern FILE *stderr;` imports as a `(ptr FILE)`; a comma list such as
+`extern int optind, opterr, optopt;` imports each name. As with constants, a
+`_`-prefixed name stays out unless the import is `unsafe/import-private`, and
+any Nucleus definition of the same name wins over the header's. An explicit
+`(extern stderr:ptr)` beside the import is still accepted and declares the
+same symbol once. Three shapes are skipped, and a use names the reason: an
+array variable (`extern char *tzname[2];`), a declarator after a comma with
+its own `*`, and a variable of an opaque type.
+
 ## Integer constants from a C header
 
 A C header's **object-like `#define`s whose replacement list is an integer

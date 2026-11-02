@@ -22,3 +22,20 @@
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "3"))
     (drop &out)))
+
+; ISSUE-006: a header's `extern` variables are imported; a Nucleus definition
+; of the same name still wins, and an explicit extern is the same symbol.
+(deftest doom-c-header-variables
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use \"unistd.h\")
+(import-use \"time.h\")
+(extern stdout:ptr)
+(defn timezone ():i32 7)
+(defn main ():i32
+  (fprintf stderr \"e\\n\")
+  (fprintf stdout \"optind=%d tz=%d\\n\" optind (timezone))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "e\noptind=1 tz=7"))
+    (drop &out)))

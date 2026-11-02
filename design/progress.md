@@ -4977,3 +4977,18 @@ Test: `doom-ok-statement` in the new `tests/suite-doom.nuc`; diagnostics row
 `doom-ok-no-result`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a C header's variables are imported (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-006). `extern int optind;` and the like
+needed a hand-written `(extern optind:i32)`. The header scanner now parses an
+`extern` declaration that isn't a function (`c-parse-extern-var-decl`,
+`src/cheader.nuc`) and defines each variable as an external global, as an
+`extern` form would. A comma list is read; arrays, a later declarator with its
+own `*`, and opaque types are skipped with their reasons. Like a header
+constant, a header variable yields to a Nucleus definition of the same name
+(`Sym.c-var`). Private names follow `unsafe/import-private`.
+
+Test: `doom-c-header-variables` in `tests/suite-doom.nuc`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
