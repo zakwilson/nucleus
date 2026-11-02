@@ -240,6 +240,14 @@ The same applies to every `set!` place, union-variant construction, and
 call arguments (which have always accepted it). It also applies to an
 `if`/`cond` branch or `match` arm when the form itself fills a by-value `S` slot:
 `(if c BIG (S 3))` returned from an `S` function joins both branches as `S`.
+With no slot to fill, an `if`/`cond` (and a pointer `if-some`, which lowers to
+one) still joins a literal branch with an `S`-valued sibling as `S`:
+`(let (h (if-some (s x) (s 'floor-height) (Fixed 0))) …)` binds a `Fixed`.
+
+An untyped `let` binding of a literal binds the value too:
+`(let (step (Fixed 24)) (* step x))` makes `step` a `Fixed`, as
+`step:Fixed` would. A binding that wants the literal's address says so with
+an `&S` annotation, or takes `&step`.
 A cond or match whose branches still disagree is an error at a return. It is never
 the zero that a valueless body returns. An overloaded or generic call
 counts the literal as a by-value `S` too: `(conj &v (Pt 1 2))` on a

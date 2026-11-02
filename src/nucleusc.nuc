@@ -11781,7 +11781,9 @@
               (when (and (= ty null)
                          (= ((unsafe/cast &Node bname) 'kind) NODE-SYM))
                 (set! pre-v (as ptr (emit-node-as binds (+ i 1) bval-node inner)))
-                (set! ty ((unsafe/cast &Val pre-v) 'type)))
+                (set! ty ((unsafe/cast &Val pre-v) 'type))
+                ; An `(S …)` literal binds as the S value it reads as (nuc-doom ISSUE-025).
+                (when (arg-struct-literal? bval-node ty inner) (set! ty ((unsafe/cast &Type ty) 'elem))))
               (when (= ty null)
                 (die-at (node-line bname (cc 'line)) (fstr "let: missing :type on '" name "'")))
               ; Stage 15 W5d (ergonomics.md §3.10): an `(array T …)` initializer
@@ -12021,6 +12023,9 @@
           ; call) consumes it via emit-generic-call's consume-once, so re-arm it
           ; before each clause's value tail (body). Byte-identical when null.
           my-want:ptr g-want-type
+          join-want:ptr (if (and (!= g-want-type null) (= ((unsafe/cast &Type g-want-type) 'kind) TY-STRUCT))
+                          g-want-type
+                          (cond-literal-join-want cc (/ nargs 2) scope))
           id:i32 (new-label-id)
           end-lbl:StrView (fstr "cond.end" id)
           fall-lbl:StrView (fstr "cond.fall" id)
@@ -12089,7 +12094,7 @@
             (when (= bterm 0)
               ; A string-literal branch joins as a StrView, or as CStr under a CStr want.
               (set! bv (join-strlit-branch bv my-want (cc 'line)))
-              (set! bv (join-struct-branch bv my-want (cc 'line)))
+              (set! bv (join-struct-branch bv join-want (cc 'line)))
               (let (join-lbl:StrView (fstr "cond.join" id "." i)
                     bty:ptr (bv 'type)
                     bline:i32 (node-line body-node 0))

@@ -417,3 +417,26 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
     (drop &m)
     (drop &b)
     (drop &a)))
+
+; ISSUE-025: an untyped `let` of a struct literal binds the value, and a literal
+; branch beside an S-valued sibling joins as S with no want.
+(deftest doom-struct-literal-value-let
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Fixed v:i32)
+(defn _* (a:Fixed b:Fixed):Fixed (return (Fixed (* (a 'v) (b 'v)))))
+(defstruct Sector floor-height:Fixed)
+(defn pick (x:?&Sector):Fixed
+  (let (h (if-some (s x) (s 'floor-height) (Fixed 0)))
+    (return h)))
+(defn main ():i32
+  (let (step (Fixed 24) other:Fixed (Fixed 2) sec:Sector (Sector (Fixed 9)))
+    (let (p (* step other))
+      (set! step other)
+      (let (q (if (> (p 'v) 10) (Fixed 1) other))
+        (printf \"%d %d %d %d %d\\n\" (p 'v) (step 'v) (q 'v) (get (pick &sec) 'v)
+                (get (pick null) 'v)))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "48 2 1 9 0"))
+    (drop &out)))

@@ -1587,6 +1587,27 @@
       (return (and (= (hit 'kind) BK-STRUCT) (= (hit 'payload) sd)))
       (return false))))
 
+; With no want, a cond whose `(S …)` literal branch has an S-valued sibling joins
+; as S: the type to hand join-struct-branch, else null (nuc-doom ISSUE-025).
+(defn cond-literal-join-want (cc:&Node npairs:i32 scope:&Scope):ptr
+  (let (lit:ptr null)
+    (dotimes (i npairs)
+      (let (b:?&Node (node-at cc (+ 2 (* i 2))))
+        (when (and (= lit null) (= (node-kind b) NODE-LIST) (> (node-len b) 0)
+                   (= (node-kind (node-at b 0)) NODE-SYM)
+                   (= (find-macro ((unsafe/cast &Node (node-at b 0)) 's)) null))
+          (if-some (hit (binding-find ((unsafe/cast &Node (node-at b 0)) 's) scope BK-DISPATCH-FIRST
+                                      BINDING-KIND-COUNT 0 NK-NONE))
+            (when (= (hit 'kind) BK-STRUCT)
+              (set! lit (as ptr (type-for-sdef (unsafe/cast &StructDef (hit 'payload))))))
+            0))))
+    (when (= lit null) (return null))
+    (dotimes (i npairs)
+      (let (t:?&Type (node-type (node-at cc (+ 2 (* i 2))) scope))
+        (when (and (!= t null) (= (t 'kind) TY-STRUCT) (!= (type-eq t (as ?&Type lit)) 0))
+          (return lit))))
+    (return null)))
+
 ; `argtypes` with each struct-literal argument read as its struct, or null when none is one.
 (defn literal-arg-types (argtypes:ptr arg-nodes:ptr nargs:i32 scope:?&Scope):ptr
   (when (= arg-nodes null) (return null))
@@ -6854,7 +6875,9 @@
           ; body (nuc-doom ISSUE-023), so the whole block is unmodeled instead.
           (when (and (= ty null) (= ((unsafe/cast &Node bname) 'kind) NODE-SYM))
             (set! ty (as ptr (node-type (node-at (as ptr binds) (+ i 1)) inner)))
-            (when (= ty null) (return null)))
+            (when (= ty null) (return null))
+            (when (arg-struct-literal? (node-at (as ptr binds) (+ i 1)) ty inner)
+              (set! ty ((unsafe/cast &Type ty) 'elem))))
           (when (!= ty null) (scope-define inner name ty (symbol-as-view name) 1)))
         (set! i (+ i 2)))
       (let (last:ptr null

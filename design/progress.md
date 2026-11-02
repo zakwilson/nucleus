@@ -5304,3 +5304,19 @@ recursively. A forward reference within one file folds the same way.
 Test: `doom-computed-const-across-cycle` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: an untyped `let` of a struct literal binds the value (2026-11-02)
+
+From the nuc-doom port's ISSUE-025: `(let (step (Fixed 24)) (* step x))`
+failed with "no matching method for '_*' with operand types (&Fixed, Fixed)",
+because a compound literal is an `&S` and an untyped binding took that type.
+`emit-let`'s inferred-type path and `node-type-block` (the lockstep) now bind
+an `(S …)` literal (`arg-struct-literal?`) as `S`, loading it as a `:S`
+binding does. With no struct want, `emit-cond` asks
+`cond-literal-join-want` whether a branch is an `(S …)` literal and a
+sibling types as `S`; if so the literal branch joins as `S`
+(`join-struct-branch`), where the join used to collapse to void.
+
+Test: `doom-struct-literal-value-let` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
