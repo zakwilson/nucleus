@@ -67,6 +67,9 @@ compiler emit different IR than it consumes and `stage1.ll != stage2.ll`. A form
 that `node-type` deliberately does not model returns null (codegen then keeps its
 own type) — that's the escape hatch for control-flow/expansion-dependent results
 (`cond`, macros, `quasiquote`), not a license to skip updating modelled forms.
+A call to a template method (`(conj v x)` on a `Vector`) is one of those nulls, so
+a check that types an operand with `node-type` must treat null as "unknown", not as
+"not this type".
 
 **The structural fix for this class is a shared rule function, not two mirrored
 copies.** Stage 15 W2a is the worked example: `node-type-call`'s intrinsic-binop
@@ -7756,3 +7759,9 @@ only variables: a C function needs a header import.
 ## Read `argv` with `argv-view`, not `(as CStr …)`
 `cstr-residue` (`scripts/check-cstr.py`) counts every `CStr` in `src/`, so a
 new argv read fails `make test`. `argv-view` in `src/nucleusc.nuc` is the one seam.
+
+## `lib/` code has no `fstr`
+
+`fstr` and `emit` are compiler internals (`g-emit-buf`, the arena); a library file
+that calls one compiles inside the compiler but fails standalone, e.g. in the
+suite's `--emit-cheader` step. Build text in `lib/` with `String` and `str`, then `drop`.
