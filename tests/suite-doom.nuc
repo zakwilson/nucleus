@@ -440,3 +440,38 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "48 2 1 9 0"))
     (drop &out)))
+
+; ISSUE-021: an element or a field of a field is a place without `&`, and
+; (Slice T) hands out elements by reference.
+(deftest doom-nested-places-and-slice
+  (let (out:String (try (build-run-source "(import-use nucleus.slice)
+(import-use \"stdio.h\")
+(defstruct V2 x:i32 y:i32)
+(defstruct Mobj pos:V2 hp:i32)
+(defvar g-mobjs:(array Mobj 4))
+(defn main ():i32
+  (let (m:Mobj (Mobj (V2 1 2) 3) pm:&Mobj (ref (aref g-mobjs 0)) i:i32 2
+        s:(Slice Mobj) (slice-of (ref (aref g-mobjs 0)) 4))
+    (set! ((aref g-mobjs i) 'hp) 50)
+    (set! (((aref g-mobjs 1) 'pos) 'x) 7)
+    (set! ((m 'pos) 'y) 9)
+    (set! ((pm 'pos) 'x) 11)
+    (inc! ((aref g-mobjs i) 'hp) 5)
+    (inc! (((&s 3) 'pos) 'y) 4)
+    (printf \"%d %d %d %d %d %zu %zu\\n\" ((aref g-mobjs 2) 'hp) (((aref g-mobjs 1) 'pos) 'x)
+            ((m 'pos) 'y) (((aref g-mobjs 0) 'pos) 'x) (((aref g-mobjs 3) 'pos) 'y)
+            (count &s) (index-of &s (&s 2))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "55 7 9 11 4 4 2"))
+    (drop &out)))
+
+; ISSUE-021: a slice index past the end exits rather than reading past it.
+(deftest doom-slice-bounds-exit
+  (try (check-source-exit "(import-use nucleus.slice)
+(defvar g:(array i32 3))
+(defn main ():i32
+  (let (s:(Slice i32) (slice-of (ref (aref g 0)) 3) i:i32 3)
+    (return (deref (&s i)))))
+" 1)))

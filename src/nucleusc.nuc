@@ -7176,8 +7176,91 @@
   (when-some (rv (binding-storage rnode scope line)) (return rv))
   (return (materialize-struct-value v scope line)))
 
+(defn pointer-typed? (n:?&Node scope:&Scope):bool
+  (if-some (t (node-type n scope)) (return (= (t 'kind) TY-PTR)) (return false)))
+
+(defn quoted-selector-node? (n:?&Node):bool
+  (return (and (= (node-kind n) NODE-LIST) (= (node-len n) 2) (= (node-at n 0) 'quote))))
+
+; A receiver with storage of its own, as C's lvalue: a binding, a pointee, an
+; element, or a field of one of those. A call result is not (nuc-doom ISSUE-021).
+(defn storage-place? (n:?&Node scope:&Scope):bool
+  (when (= (node-kind n) NODE-SYM)
+    (if-some (sym (scope-lookup scope ((unsafe/cast &Node n) 's)))
+      (return (= (sym 'is-const) 0))
+      (return false)))
+  (when (or (!= (node-kind n) NODE-LIST) (< (node-len n) 2)) (return false))
+  (let (hd:?&Node (node-at n 0)
+        len:i32 (node-len n))
+    (when (and (= hd 'deref) (= len 2)) (return true))
+    (when (and (= hd 'aref) (= len 3))
+      (return (or (storage-place? (node-at n 1) scope) (pointer-typed? (node-at n 1) scope))))
+    (when (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+      (return (or (pointer-typed? (node-at n 1) scope) (storage-place? (node-at n 1) scope))))
+    (when (and (= len 2) (quoted-selector-node? (node-at n 1)))
+      (return (or (pointer-typed? hd scope) (storage-place? hd scope))))
+    (return false)))
+
+; A storage place's type even where node-type leaves an array base unmodeled.
+(defn place-value-type (n:?&Node scope:&Scope):?&Type
+  (when (!= (node-kind n) NODE-LIST) (return (node-type n scope)))
+  (let (len:i32 (node-len n)
+        hd:?&Node (node-at n 0)
+        base:?&Node null
+        sel:?&Node null)
+    (when (and (= hd 'aref) (= len 3))
+      (when-some (bt (place-value-type (node-at n 1) scope))
+        (when (and (or (= (bt 'kind) TY-ARRAY) (= (bt 'kind) TY-PTR)) (!= (bt 'elem) null))
+          (return (bt 'elem))))
+      (return null))
+    (cond (and (= len 2) (quoted-selector-node? (node-at n 1))) (do (set! base hd) (set! sel (node-at n 1)))
+          (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+            (do (set! base (node-at n 1)) (set! sel (node-at n 2)))
+          true 0)
+    (when (= sel null) (return (node-type n scope)))
+    (when-some (bt (place-value-type base scope))
+      (let (st:&Type bt)
+        (when (and (= (st 'kind) TY-PTR) (!= (st 'elem) null)) (set! st (unsafe/cast &Type (st 'elem))))
+        (when (and (= (st 'kind) TY-STRUCT) (!= (st 'sdef) null))
+          (let (sd:&StructDef (unsafe/cast &StructDef (st 'sdef))
+                fi:i32 (struct-field-idx sd ((unsafe/cast &Node (node-at sel 1)) 's)))
+            (when (>= fi 0) (return ((field-at (sd 'fields) fi) 'type)))))))
+    (return null)))
+
+; `(B 'f)`, `(get B 'f)` or `(_get B 'f)` as the list `(B 'f)`, else null.
+(defn field-place-parts (n:?&Node):?&Node
+  (when (!= (node-kind n) NODE-LIST) (return null))
+  (let (len:i32 (node-len n)
+        hd:?&Node (node-at n 0))
+    (when (and (= len 2) (quoted-selector-node? (node-at n 1))) (return n))
+    (when (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+      (return (node-list2 (node-at n 1) (node-at n 2) (node-line n 0))))
+    (return null)))
+
 (defn emit-lvalue-receiver (rnode:?&Node scope:&Scope what:StrView line:i32):&Val
   (when-some (rv (binding-storage rnode scope line)) (return rv))
+  ; `((aref a i) 'f)`: the element's own address, not a copy of it.
+  (when (and (= (node-kind rnode) NODE-LIST) (storage-place? rnode scope))
+    (when-some (t (place-value-type rnode scope))
+      (when (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION))
+        (return (emit-node (node-list2 'ref rnode (node-line rnode line)) scope)))))
+  ; A field of a call node-type cannot type, such as `((&s i) 'pos)`: emit the
+  ; base once, then the field's own address, or its value when it is no struct.
+  (when-some (fp (field-place-parts rnode))
+    (let (base:?&Node (node-at fp 0)
+          sel:?&Node (node-at fp 1))
+      (when (and (= (node-kind base) NODE-LIST) (= (node-type base scope) null))
+        (let (bv:&Val (emit-node base scope)
+              bt:&Type (unsafe/cast &Type (bv 'type)))
+          (when (or (= (bt 'kind) TY-STRUCT) (= (bt 'kind) TY-UNION))
+            (die-at line
+              (fstr what ": the receiver is a temporary struct value, so it has no address -- bind it to a name first")))
+          (let (fa:&Val (emit-member-address bv sel line)
+                ft:&Type (unsafe/cast &Type ((unsafe/cast &Type (fa 'type)) 'elem)))
+            (when (or (= (ft 'kind) TY-STRUCT) (= (ft 'kind) TY-UNION)) (return fa))
+            (let (t:StrView (new-tmp))
+              (emit-load t (type-to-ir ft) (fa 'val) ft)
+              (return (alloc-val ft t))))))))
   (let (p:&Val (emit-node rnode scope)
         pk:i32 (-> p (as &Val _) (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
     (when (or (= pk TY-STRUCT) (= pk TY-UNION))

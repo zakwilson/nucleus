@@ -1466,3 +1466,7 @@
 {:name "doom-break-outside-loop" :expect :reject
  :file "tests/fixtures/doom-break-outside-loop.nuc" :line 3
  :messages ["break: not inside a while loop (or a loop macro over one)"]}
+; A field of a call result is still not a place (nuc-doom ISSUE-021).
+{:name "doom-temporary-receiver" :expect :reject
+ :file "tests/fixtures/doom-temporary-receiver.nuc" :line 4
+ :messages [".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"]}

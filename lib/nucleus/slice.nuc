@@ -1,0 +1,50 @@
+; (Slice T): a fixed-length view of elements another owner keeps in place — a
+; pointer and a length, bounds-checked, handing elements out by reference, as
+; C's &a[i] is. Unlike a Vector it never grows, so its elements never move.
+
+(ns nucleus.slice)
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use nucleus.coll)
+
+(extern stderr:ptr)
+
+(defstruct (Slice T) data:(ptr T) len:usize)
+
+(defn slice-bounds (i:i64 n:usize):void
+  (fprintf stderr "slice: index %lld out of bounds (len %llu)\n" i (as ui64 n))
+  (exit 1))
+
+; The `n` elements starting at `p`.
+(defn slice-of (p:(ptr T) n:usize):(Slice T)
+  (return ((Slice T) p n)))
+
+(defn count (self:&(Slice T)):usize
+  (return (_get self 'len)))
+
+(defn invoke (self:&(Slice T) i:usize):&T
+  (when (>= i (_get self 'len)) (slice-bounds (unsafe/cast i64 i) (_get self 'len)))
+  (return (unsafe/cast &T (unsafe/ptr+ (_get self 'data) (unsafe/cast i64 i)))))
+
+(defn invoke (self:&(Slice T) i:i64):&T
+  (when (or (< i 0) (>= (unsafe/cast usize i) (_get self 'len)))
+    (slice-bounds i (_get self 'len)))
+  (return (unsafe/cast &T (unsafe/ptr+ (_get self 'data) i))))
+
+(defn invoke (self:&(Slice T) i:i32):&T
+  (return (invoke self (as i64 i))))
+
+(defn set (self:&(Slice T) i:usize v:T):void
+  (set! (deref (invoke self i)) v))
+
+(defn set (self:&(Slice T) i:i64 v:T):void
+  (set! (deref (invoke self i)) v))
+
+(defn set (self:&(Slice T) i:i32 v:T):void
+  (set! (deref (invoke self (as i64 i))) v))
+
+; The index of an element of this slice, for code that subtracts the base as C does.
+(defn index-of (self:&(Slice T) p:&T):usize
+  (return (unsafe/cast usize (/ (- (unsafe/cast i64 p) (unsafe/cast i64 (_get self 'data)))
+                                (as i64 (sizeof T))))))

@@ -1,0 +1,4 @@
+; A call result has no storage, so its field is still not a place (nuc-doom ISSUE-021).
+(defstruct V2 x:i32 y:i32)
+(defn mk ():V2 (return (V2 1 2)))
+(defn main ():i32 (set! ((mk) 'x) 3) 0)

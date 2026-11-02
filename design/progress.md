@@ -5320,3 +5320,20 @@ sibling types as `S`; if so the literal branch joins as `S`
 Test: `doom-struct-literal-value-let` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: nested places without `&`, and `(Slice T)` (2026-11-02)
+
+From the nuc-doom port's ISSUE-021: `(set! ((aref a i) 'f) v)` and
+`(set! ((s 'inner) 'x) v)` needed an explicit `&` on the receiver.
+`emit-lvalue-receiver` now takes the address of a receiver that is a storage
+place (`storage-place?`: a binding, a pointee, an element, or a field of one,
+typed by `place-value-type`) through `ref`. A field whose base is a call
+node-type cannot type, such as `((&s i) 'pos)`, emits the base once and
+takes the field's address. A call result is still refused. New
+`lib/nucleus/slice.nuc`: `(Slice T)`, a pointer and a length whose `invoke`
+returns `&T`, bounds-checked for unsigned and signed indexes.
+
+Test: `doom-nested-places-and-slice`, `doom-slice-bounds-exit` in
+`tests/suite-doom.nuc`; diagnostics row `doom-temporary-receiver`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

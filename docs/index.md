@@ -127,6 +127,8 @@ what it uses. See [The node runtime is a library](toplevel.md#the-node-runtime-i
 Additional libraries available via `import-use`:
 - `(import-use nucleus.macros)` — standard macros (already in prelude)
 - `(import-use nucleus.numeric)` — `Eq`, `Ord`, `Num` protocols for operators
+- `(import-use nucleus.math)` — `(min a b)`, `(max a b)`, `(clamp x lo hi)` over any `Ord` type and `(abs a)` over the built-in numbers: generics bounded by `nucleus.numeric`'s protocols. They sit beside `nucleus.combinators`' one-argument iterator `min`/`max`. The most negative integer's `abs` is itself, as in C
+- `(import-use nucleus.slice)` — `(Slice T)`, a bounds-checked pointer and length over elements another owner keeps in place: `(slice-of p n)`, `count`, `(s i)` returning `&T` (any integer index), `set`, `index-of`
 - `(import-use nucleus.error)` — `try`, `with-handler`, `signal`, `err-find-handler`
 - `(import-use nucleus.node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
 - `(import-use nucleus.arena)` — the process arena `g-arena` and `arena-alloc`
