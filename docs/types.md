@@ -885,6 +885,11 @@ result type is that unified type (a comparison always yields `bool`). The rule i
   `(<= ans:ui32 K)` behaves exactly as `(<= ans:ui32 512)`, in either operand
   order. A *local* binding that shadows the constant is an ordinary typed
   value, not a literal.
+- An operand that is **arithmetic over such literals** — `+ - * / %`, the
+  bit operators and shifts, nothing else — is folded first and adapts as the
+  one literal it comes to, so `(- (- BIG 1) x:ui32)` types as `(- BIG x)` does,
+  and as a `defconst` of `(- BIG 1)` would. An `(as T …)` or `(sizeof T)`
+  inside it carries a type, so such an operand is typed as written.
 - **Two typed operands of the same kind widen** to the wider one:
   `(+ i32-value i64-value)` is `i64`, `(+ f32-value f64-value)` is `f64`.
 - Everything else is a compile error at the operator: a float operand against an

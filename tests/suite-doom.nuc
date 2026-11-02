@@ -128,3 +128,18 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "7 7 7 2"))
     (drop &out)))
+
+; ISSUE-017: a constant operator tree folds before it is typed, so it adapts to
+; the other operand as one literal, as its leaves and a `defconst` of it do.
+(deftest doom-constant-tree-adapts
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defconst BIG 0x40000000)
+(defn f (x:ui32):ui32 (- (- BIG 1) x))
+(defn g (x:ui32):ui32 (+ x (* 2 (- 0x40000000 1))))
+(defn main ():i32
+  (printf \"%u %u %d\\n\" (f 1) (g 2) (if (< (- BIG 1) (f 0)) 1 0))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1073741822 2147483648 0"))
+    (drop &out)))

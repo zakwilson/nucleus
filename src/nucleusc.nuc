@@ -4996,24 +4996,57 @@
         (when (!= (bop 'is-cmp) 0) (set! rtype ty-bool))
         (return (alloc-val rtype tmp))))))
 
+(defn literal-tree-op? (h:Symbol):bool
+  (return (or (= h "+") (= h "-") (= h "*") (= h "/") (= h "%")
+              (= h "_+") (= h "_-") (= h "_*") (= h "_/")
+              (= h "_bit-and") (= h "_bit-or") (= h "_bit-xor")
+              (= h "bit-and") (= h "bit-or") (= h "bit-xor") (= h "bit-shl") (= h "bit-shr"))))
+
+; Arithmetic over integer literals and names for them, and nothing else: no `as`,
+; no `sizeof`, whose operands carry a type of their own. Read as written, since
+; expanding an operand would run a user macro a second time.
+(defn literal-operator-tree? (n:?&Node scope:&Scope):bool
+  (when (= (node-kind n) NODE-INT) (return true))
+  (when (= (node-kind n) NODE-SYM) (return (!= (node-is-const-int-literal n scope) 0)))
+  (when (or (!= (node-kind n) NODE-LIST) (< (node-len n) 2)) (return false))
+  (let (h:?&Node (node-at n 0))
+    (when (!= (node-kind h) NODE-SYM) (return false))
+    (when (not (literal-tree-op? ((unsafe/cast &Node h) 's))) (return false))
+    (let (i:i32 1)
+      (while (< i (node-len n))
+        (when (not (literal-operator-tree? (node-at n i) scope)) (return false))
+        (set! i (+ i 1))))
+    (return true)))
+
+; An operand that is such a tree, folded, so it adapts to the other operand as
+; one literal, as a `defconst` of it would (nuc-doom ISSUE-017).
+(defn fold-literal-operand (n:?&Node scope:&Scope line:i32):?&Node
+  (when (!= (node-kind n) NODE-LIST) (return n))
+  (when (not (literal-operator-tree? n scope)) (return n))
+  (let (v:i64 0)
+    (when (= (const-fold-int n (as &i64 &v) line) 0) (return n))
+    (return (node-int v))))
+
 (defn emit-binop (call:?&Node scope:&Scope op:?&BinOp):&Val
   (let (cc:(ptr Node) call
         bop:(ptr BinOp) op)
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) (fstr (bop 'name) " expects 2 args")))
-    (let (a:&Val (emit-node-at call 1 scope)
-          b:&Val (emit-node-at call 2 scope)
+    (let (an:?&Node (fold-literal-operand (node-at cc 1) scope (cc 'line))
+          bn:?&Node (fold-literal-operand (node-at cc 2) scope (cc 'line))
+          a:&Val (emit-node-as call 1 an scope)
+          b:&Val (emit-node-as call 2 bn scope)
           ts:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
           ns:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
       ; No overload exists here, so a struct-literal operand has nothing to compare it by value.
       (set! (aref (unsafe/cast &ptr ts) 0) (a 'type))
       (set! (aref (unsafe/cast &ptr ts) 1) (b 'type))
-      (set! (aref (unsafe/cast &ptr ns) 0) (node-at cc 1))
-      (set! (aref (unsafe/cast &ptr ns) 1) (node-at cc 2))
+      (set! (aref (unsafe/cast &ptr ns) 0) an)
+      (set! (aref (unsafe/cast &ptr ns) 1) bn)
       (let (vt:ptr (operator-value-types ts ns 2 scope))
         (when (!= vt null)
           (die-at (cc 'line) (operator-refusal op (aref (unsafe/cast &ptr vt) 0) (aref (unsafe/cast &ptr vt) 1) true))))
-      (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op scope (cc 'line))))))
+      (return (emit-binop-vals a b an bn op scope (cc 'line))))))
 
 ; ============================================================
 ; Cast

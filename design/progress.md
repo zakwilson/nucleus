@@ -5101,3 +5101,18 @@ folded as if the literal were written there.
 Test: `doom-defvar-from-aggregate-const` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a constant operator tree adapts as one literal (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-017). `(- BIG x)` compiled at
+`x:ui32`, but `(- (- BIG 1) x)` was "mixed signed/unsigned operands", because
+only a leaf literal adapts and the subtree was typed `i32` first. A binop
+operand that is arithmetic over integer literals and names for them
+(`literal-operator-tree?`, `src/nucleusc.nuc`) is now folded by
+`const-fold-int` before it is typed, and adapts as the literal it comes to.
+`emit-binop` and `node-type`'s binop branch both fold, so the two stay in
+lockstep. A tree with an `as` or `sizeof` is left as written.
+
+Test: `doom-constant-tree-adapts` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
