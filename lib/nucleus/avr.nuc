@@ -13,7 +13,7 @@
 ;
 ; Self-contained by design: this file imports nothing and uses only
 ; compiler-builtin special forms (`let`/`while`/`set!`/`deref`/`ptr-set!`/
-; `unsafe/cast`/`return`) and builtin binops (`bit-and`/`bit-or`/`bit-xor`/
+; `unsafe/cast`/`return`) and builtin binops (`_bit-and`/`_bit-or`/`_bit-xor`/
 ; `bit-shl`). That keeps it usable from an `(exclude-prelude)` freestanding
 ; program. Since Stage 16 the prelude emits no IR, so excluding it is optional;
 ; this file stays prelude-free anyway, so it is usable either way.
@@ -56,18 +56,18 @@
 
 ; Nonzero iff `bit` is set in the register at `addr`.
 (defn reg8-test-bit (addr:usize bit:ui8):ui8
-  (return (bit-and (reg8-read addr) (bit-mask bit))))
+  (return (_bit-and (reg8-read addr) (bit-mask bit))))
 
 ; Read-modify-write bit operations (classic-AVR idiom; the modern Dx parts use
 ; the dedicated SET/CLR/TGL registers directly instead — see avr-blink-dx).
 (defn reg8-set-bit! (addr:usize bit:ui8):void
-  (reg8-write addr (bit-or (reg8-read addr) (bit-mask bit))))
+  (reg8-write addr (_bit-or (reg8-read addr) (bit-mask bit))))
 
 (defn reg8-clear-bit! (addr:usize bit:ui8):void
-  (reg8-write addr (bit-and (reg8-read addr) (bit-xor (bit-mask bit) 255))))
+  (reg8-write addr (_bit-and (reg8-read addr) (_bit-xor (bit-mask bit) 255))))
 
 (defn reg8-toggle-bit! (addr:usize bit:ui8):void
-  (reg8-write addr (bit-xor (reg8-read addr) (bit-mask bit))))
+  (reg8-write addr (_bit-xor (reg8-read addr) (bit-mask bit))))
 
 ; --- interrupt service routines (AVR-5) ---
 ;

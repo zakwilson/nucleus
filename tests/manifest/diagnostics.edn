@@ -1454,3 +1454,7 @@
 {:name "doom-as-i64-to-f64" :expect :reject
  :file "tests/fixtures/doom-as-i64-to-f64.nuc" :line 3
  :messages ["as: lossy conversion from i64 to f64 -- use unsafe/cast"]}
+; A binary primitive given three operands in a constant initializer (nuc-doom ISSUE-009).
+{:name "doom-const-op-arity" :expect :reject
+ :file "tests/fixtures/doom-const-op-arity.nuc" :line 3
+ :messages ["_bit-or expects 2 args"]}

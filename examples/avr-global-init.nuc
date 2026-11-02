@@ -43,6 +43,6 @@
     ; target pointer (W9 item 15), so a `ui8` counter indexes correctly here
     ; and on a host alike.
     (reg8-write PORTB (aref g-pattern g-step))
-    (set! g-step (bit-and (_+ g-step 1) 3))
+    (set! g-step (_bit-and (_+ g-step 1) 3))
     (delay g-limit))
   (return 0))

@@ -353,9 +353,9 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 | `*` | Multiplication | `a * b` |
 | `/` | Division (signed: `sdiv`, unsigned: `udiv`) | `a / b` |
 | `%` | Remainder (signed: `srem`, unsigned: `urem`) | `a % b` |
-| `bit-and` | Bitwise AND | `a & b` |
-| `bit-or` | Bitwise OR | `a \| b` |
-| `bit-xor` | Bitwise XOR | `a ^ b` |
+| `bit-and` | Bitwise AND; variadic, a macro over the binary `_bit-and` as `+` is over `_+` (`(bit-and)` is `-1`) | `a & b & c` |
+| `bit-or` | Bitwise OR; variadic over `_bit-or` (`(bit-or)` is `0`) | `a \| b \| c` |
+| `bit-xor` | Bitwise XOR; variadic over `_bit-xor` (`(bit-xor)` is `0`) | `a ^ b ^ c` |
 | `bit-shl` | Shift left | `a << b` |
 | `bit-shr` | Shift right (signed: arithmetic `ashr`, unsigned: logical `lshr`) | `a >> b` |
 | `=` | Equal | `a == b` |
@@ -367,7 +367,7 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 
 Operators are **ordinary generic functions**. Each built-in operator is a generic; when the operands are built-in numerics (or pointers, for comparisons) the resolver selects the built-in method, which emits its inline instruction (`add nsw`, `icmp slt`, …) directly — a **front-end peephole**, not an LLVM pass — so there is no `call` and the IR is byte-identical to a non-polymorphic compiler even at `-O0`.
 
-There is no unary bitwise complement operator; `bit-not` (`lib/nucleus/macros.nuc`) is a one-argument macro over `bit-xor` instead — see [Standard Macros](macros.md#standard-macros-libmacrosnuc).
+There is no unary bitwise complement operator; `bit-not` (`lib/nucleus/macros.nuc`) is a one-argument macro over `_bit-xor` instead — see [Standard Macros](macros.md#standard-macros-libmacrosnuc).
 
 **Mixed operands now resolve**: an untyped integer literal adapts to the other operand's numeric type (`(+ x 1)` with `x:i64`), an untyped *float* literal adapts to the other operand's float width (`(* alpha 2.0)` with `alpha:f32` is `f32`), and a narrower typed integer/float widens to the wider (`(+ i32 i64)`, `(+ f32 f64)`). The same literal adaptation applies outside binops, at any typed target — `(let (a:f32 0.1) …)`, an `f32` argument, an `f32` `return`; see [Types](types.md#built-in-types). A name bound by `defconst` or a `defenum` member counts as the literal it stands for, so `(<= ans:ui32 K)` with `(defconst K 512)` resolves exactly as `(<= ans:ui32 512)` does (a local binding that *shadows* the constant is an ordinary typed value). Genuinely mismatched operands (e.g. two different typed pointers in arithmetic, or mixed signedness of two typed values) are still rejected.
 

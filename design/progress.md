@@ -5209,3 +5209,23 @@ Needs a boot built from the "Boot for ISSUE-009/018/026" commit.
 Test: `doom-inc-any-place` in `tests/suite-doom.nuc`; `dc-inc` updated.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: variadic bit operators (2026-11-02)
+
+From the nuc-doom port's ISSUE-009: `bit-or` took exactly two operands, and in
+a constant initializer `(bit-or A B C)` failed as "init must be a compile-time
+constant", hiding the arity. The primitives are now `_bit-and`, `_bit-or`
+and `_bit-xor`, and `lib/nucleus/macros.nuc` defines variadic `bit-and`
+(identity `-1`), `bit-or` and `bit-xor` (identity `0`) over them, as `+` is
+over `_+`; `bit-not` expands to `_bit-xor`. `const-fold-int` reports a
+foldable operator with the wrong arity as `<op> expects 2 args`, as the value
+path does. Prelude-free code (`lib/nucleus/avr.nuc`, the `exclude-prelude`
+AVR examples) spells the primitives.
+
+Needs a boot built from the "Boot for ISSUE-009/018/026" commit, which accepts
+the new names beside the old.
+
+Test: `doom-variadic-bit-ops` in `tests/suite-doom.nuc`; diagnostics row
+`doom-const-op-arity`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

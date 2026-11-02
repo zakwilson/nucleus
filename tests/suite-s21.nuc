@@ -4270,8 +4270,8 @@ int main(void) {
                          "define (defn _+ (a:Pt b:Pt):Pt …)"))
     (try (s21-op-refused rem "no matching method for '%': Pt is not a number, and '%' takes integers or floats"
                          "define (defn % (a:Pt b:Pt):Pt …)"))
-    (try (s21-op-refused bits "no matching method for 'bit-and': Pt is not an integer, and 'bit-and' takes integers"
-                         "define (defn bit-and (a:Pt b:Pt):Pt …)"))
+    (try (s21-op-refused bits "no matching method for '_bit-and': Pt is not an integer, and '_bit-and' takes integers"
+                         "define (defn _bit-and (a:Pt b:Pt):Pt …)"))
     (try (s21-type-refused mixed 3 "no matching method for '=' with operand types (Pt, i32)"))
     (try (s21-op-refused maybe "no matching method for '=' with operand types (?&Pt, Pt)"
                          "a ?&Pt operand is not read through, since it may be null — narrow it first")))

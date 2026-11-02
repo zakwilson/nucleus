@@ -94,8 +94,26 @@
         (= (ast-len args) 2)  `(_or ~(ast-at args 0) ~(ast-at args 1))
         true                  `(macfoldr _or false ~@args)))
 
+(defmacro bit-and (:rest args)
+  (cond (= (ast-len args) 0)  `-1
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_bit-and ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _bit-and -1 ~@args)))
+
+(defmacro bit-or (:rest args)
+  (cond (= (ast-len args) 0)  `0
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_bit-or ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _bit-or 0 ~@args)))
+
+(defmacro bit-xor (:rest args)
+  (cond (= (ast-len args) 0)  `0
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_bit-xor ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _bit-xor 0 ~@args)))
+
 (defmacro bit-not (x)
-  `(bit-xor ~x -1))
+  `(_bit-xor ~x -1))
 
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)

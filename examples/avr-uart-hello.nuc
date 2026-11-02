@@ -30,7 +30,7 @@
 (defn uart-init ():void
   (reg16-write UBRR0 51)
   (reg8-set-bit! UCSR0B TXEN0)
-  (reg8-write UCSR0C (bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
+  (reg8-write UCSR0C (_bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
 
 ; Spin until the transmit data register is empty (UDRE0 set).
 (defn uart-wait-ready ():void

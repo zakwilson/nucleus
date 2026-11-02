@@ -1,0 +1,4 @@
+; A primitive operator with the wrong arity in a constant says so (nuc-doom ISSUE-009).
+(defconst A 1)
+(defconst FLAGS (array i32 (_bit-or A 2 4)))
+(defn main ():i32 (return (aref FLAGS 0)))

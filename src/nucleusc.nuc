@@ -4319,9 +4319,6 @@
     (add-binop v (symbol-intern "_*")     "mul nsw"  "mul"      0)
     (add-binop v (symbol-intern "_/")     "sdiv"     "udiv"     0)
     (add-binop v (symbol-intern "%")       "srem"     "urem"     0)
-    (add-binop v (symbol-intern "bit-and") "and"      "and"      0)
-    (add-binop v (symbol-intern "bit-or")  "or"       "or"       0)
-    (add-binop v (symbol-intern "bit-xor") "xor"      "xor"      0)
     (add-binop v (symbol-intern "_bit-and") "and"     "and"      0)
     (add-binop v (symbol-intern "_bit-or")  "or"      "or"       0)
     (add-binop v (symbol-intern "_bit-xor") "xor"     "xor"      0)
@@ -15298,10 +15295,6 @@
 ; struct's own guard runs (before that the struct prescan always won the race
 ; and the clash was reported at the protocol's line as "a type").
 (defn guard-name-kind (name:Symbol line:i32 newk:i32):void
-  ; Boot shim: the next commits' prelude defines these as macros.
-  (when (and (= newk NK-MACRO)
-             (or (= name "bit-and") (= name "bit-or") (= name "bit-xor") (= name "inc!") (= name "dec!")))
-    (return))
   (cconst-yield name)
   (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
     (die-at line
@@ -15490,7 +15483,7 @@
   (if (!= left 0) (return (bit-shl a b)) (return (bit-shr a b))))
 
 ; The foldable binary operators, by their POST-macroexpansion spelling: the
-; variadic `+`/`-`/`*`/`/` and `bit-not` are macros (lib/nucleus/macros.nuc) that expand
+; variadic `+`/`-`/`*`/`/`, the bit operators and `bit-not` are macros (lib/nucleus/macros.nuc) that expand
 ; to these, so a source-level `(+ a b c)` arrives as nested `_+` cells.
 ; Comparisons and `_and`/`_or` are deliberately absent — they yield bool and belong
 ; to a value domain this folder does not model (see the G-1 record).
@@ -15501,9 +15494,9 @@
         (= h "_*")      (return 3)
         (= h "_/")      (return 4)
         (= h "%")       (return 5)
-        (or (= h "bit-and") (= h "_bit-and")) (return 6)
-        (or (= h "bit-or") (= h "_bit-or"))   (return 7)
-        (or (= h "bit-xor") (= h "_bit-xor")) (return 8)
+        (= h "_bit-and") (return 6)
+        (= h "_bit-or")  (return 7)
+        (= h "_bit-xor") (return 8)
         (= h "bit-shl") (return 9)
         (= h "bit-shr") (return 10)
         true            (return 0)))
@@ -15637,6 +15630,8 @@
         ; operands are folded, so a non-constant call whose arguments happen to
         ; be malformed arithmetic — `(f (/ 1 0))` — reports "not a constant"
         ; rather than a division-by-zero the program never performs.
+        (when (and (!= nargs 2) (!= (cfold-op-code ((unsafe/cast &Node hd) 's)) 0))
+          (die-at nl (fstr ((unsafe/cast &Node hd) 's) " expects 2 args")))
         (when (= nargs 2)
           (let (op:i32 (cfold-op-code ((unsafe/cast &Node hd) 's)))
             (when (!= op 0)

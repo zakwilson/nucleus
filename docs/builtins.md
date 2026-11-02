@@ -1051,9 +1051,9 @@ places a memory-safety bug could hide.
 | `*` | Multiplication | `a * b` |
 | `/` | Division (signed: `sdiv`, unsigned: `udiv`) | `a / b` |
 | `%` | Remainder (signed: `srem`, unsigned: `urem`) | `a % b` |
-| `bit-and` | Bitwise AND | `a & b` |
-| `bit-or` | Bitwise OR | `a \| b` |
-| `bit-xor` | Bitwise XOR | `a ^ b` |
+| `bit-and` | Bitwise AND; variadic, a macro over the binary `_bit-and` as `+` is over `_+` (`(bit-and)` is `-1`) | `a & b & c` |
+| `bit-or` | Bitwise OR; variadic over `_bit-or` (`(bit-or)` is `0`) | `a \| b \| c` |
+| `bit-xor` | Bitwise XOR; variadic over `_bit-xor` (`(bit-xor)` is `0`) | `a ^ b ^ c` |
 | `bit-shl` | Shift left | `a << b` |
 | `bit-shr` | Shift right (signed: arithmetic `ashr`, unsigned: logical `lshr`) | `a >> b` |
 | `=` | Equal | `a == b` |

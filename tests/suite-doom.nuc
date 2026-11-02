@@ -280,3 +280,20 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "11 -2 1 6 9 4 3 253 2.5 4 0"))
     (drop &out)))
+
+; ISSUE-009: bit-and/bit-or/bit-xor are variadic, in a constant as in a body.
+(deftest doom-variadic-bit-ops
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defconst A 1)
+(defconst B 2)
+(defconst C 4)
+(defconst FLAGS (array i32 (bit-or A B C) (bit-and 7 6 5) (bit-xor A B C B)))
+(defn main ():i32
+  (let (a:ui32 12)
+    (printf \"%d %d %d %u %u %u %d %d\\n\" (aref FLAGS 0) (aref FLAGS 1) (aref FLAGS 2)
+            (bit-and a 4 5) (bit-or a 1 2 64) (bit-xor a 3) (bit-and) (bit-or a)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 4 5 4 79 15 -1 12"))
+    (drop &out)))
