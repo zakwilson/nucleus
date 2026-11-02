@@ -1,0 +1,4 @@
+; A parameter named like a function hides it; the error names both (nuc-doom ISSUE-019).
+(defn fx (n:i32):i32 (* n 2))
+(defn g (fx:i32):i32 (fx 3))
+(defn main ():i32 (g 1))

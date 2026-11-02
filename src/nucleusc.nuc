@@ -7422,6 +7422,31 @@
   (let (cv:&Val callee-val
         line:i32 (n 'line)
         total:i32 (+ nargs 1)
+; A head that is a local and also names a function: the local wins, so say so
+; rather than report a type with no `invoke` (nuc-doom ISSUE-019).
+(defn die-if-local-shadows-fn (head:?&Node scope:&Scope cv:&Val line:i32):void
+  (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return))
+  (let (name:Symbol (head 's)
+        cur:?&Scope scope
+        local:i32 0
+        root:?&Scope null)
+    (while (!= cur null)
+      (let (sc:&Scope cur)
+        (if (= (sc 'parent) null)
+          (set! root sc)
+          (when (!= (scope-frame-find sc name) null) (set! local 1)))
+        (set! cur (sc 'parent))))
+    (when (= local 0) (return))
+    (let (gs:?&Sym (if (= root null) null (globals-lookup-ref root name))
+          is-fn:i32 (if (!= (generic-lookup name) null) 1 0))
+      (when (and (!= gs null) (= (gs 'is-local) 0)
+                 (-> gs (_ 'type) (unsafe/cast &Type _) (_ 'kind) (= _ TY-FN)))
+        (set! is-fn 1))
+      (when (!= is-fn 0)
+        (die-at line (fstr "'" name "' here is a local of type " (type-display (cv 'type))
+                           ", which shadows the function '" name
+                           "'; rename the local to call the function"))))))
+
         args:ptr (arena-alloc (* (as i64 (+ total 1)) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (as i64 (+ total 1)) (ptr-bytes)))
         arg-nodes:ptr (arena-alloc (* (as i64 (+ total 1)) (ptr-bytes))))
@@ -7473,6 +7498,8 @@
         (die-at line "value is not callable: no `invoke` method is defined for this type"))
       (let (m:&Method (generic-resolve g argtypes arg-nodes total line null scope))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
+      (when (or (= g null) (= (generic-has-receiver-method g (cv 'type)) 0))
+        (die-if-local-shadows-fn (node-at n (- arg-start 1)) scope cv line))
 
 ; Is `a` a `(ref …)` cell that is a VALUE address — `&x`, `&(expr)`, or the
 ; 2-argument field form — rather than the `(ref T)` type a fused `q:(ref T)`

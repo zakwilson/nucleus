@@ -4949,3 +4949,17 @@ ruling on ISSUE-012: the Maybe-shaped union fix stays, with a note to revisit
 it in `design/deferred/overview.md`.
 
 Gate: documentation only.
+
+## DOOM-port fix: a local that shadows a function, called as one (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-019). A parameter named like a function,
+`(defn f (fx:i32) (fx 2))`, made the call head the local, and the error was
+that an `i32` has no `invoke`. When the head is a local whose type has no
+receiver method and a function of that name is in scope, the error now says
+"'fx' here is a local of type i32, which shadows the function 'fx'; rename the
+local to call the function". `die-if-local-shadows-fn` (`src/nucleusc.nuc`)
+runs only on the error path, so nothing that compiled changes.
+
+Test: diagnostics row `doom-local-shadows-fn`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.

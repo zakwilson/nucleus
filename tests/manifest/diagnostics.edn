@@ -1437,3 +1437,7 @@
 {:name "aoe-generic-operand-checked" :expect :reject
  :file "tests/fixtures/aoe-generic-operand-checked.nuc" :line 3
  :messages ["in generic body: unknown function 'no-such-fn'"]}
+; A local that shadows a function, called as one (nuc-doom ISSUE-019).
+{:name "doom-local-shadows-fn" :expect :reject
+ :file "tests/fixtures/doom-local-shadows-fn.nuc" :line 3
+ :messages ["'fx' here is a local of type i32, which shadows the function 'fx'"]}
