@@ -864,3 +864,14 @@ flag, so an `-O0` and an `-O3` build of the same target share outputs and
 rebuild each other. Cargo keys its output directories by profile as well as
 by target. A `:profiles` map in `build.edn` would follow the per-target
 pattern, with outputs in `build/<target>/<profile>/`.
+
+## A Maybe-shaped union's layout is chosen by its arm names
+
+Deferred by the user 2026-11-02 (nuc-doom ISSUE-012, fixed in `dd3f165`). A
+two-arm union of a payload-less arm and a `&T` arm takes the niche layout only
+when the arms are named `some`/`none` (or `ok`/`err` for the error niche),
+because the niche constructors and `match` know only those names
+(`union-layout-classify`, `src/union-registry.nuc`). So renaming an arm changes
+the layout, which `docs/structs-unions.md` says user code shouldn't have to
+know. Revisit by letting the niche eliminators carry the union's own arm
+names, so any two-arm union of that shape gets the niche.

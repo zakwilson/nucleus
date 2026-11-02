@@ -4938,3 +4938,14 @@ affected.
 Test: `s21-list-imports-error-names-its-file` in `tests/suite-s21.nuc`.
 
 Gate: 1616 pass, the same 18 fail. Bootstrap PASS.
+
+## DOOM-port fix: `case` had a stale second syntax in the docs (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-020). `docs/builtins.md`'s control-flow
+table described a clause form, `(KEY body...)` with `_` as the default,
+lowering to `switch`, which has never existed. The row now gives the flat
+macro form and points at the Standard Macros row. The same entry records the
+ruling on ISSUE-012: the Maybe-shaped union fix stays, with a note to revisit
+it in `design/deferred/overview.md`.
+
+Gate: documentation only.
