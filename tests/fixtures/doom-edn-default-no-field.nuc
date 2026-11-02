@@ -1,0 +1,5 @@
+; An :edn-default for a name that is not a field (nuc-doom ISSUE-045).
+(import-use nucleus.edn)
+(defstruct P x:i32 y:i32)
+(derive-edn (P :edn-default (z 0)))
+(defn main ():i32 0)

@@ -1470,3 +1470,7 @@
 {:name "doom-temporary-receiver" :expect :reject
  :file "tests/fixtures/doom-temporary-receiver.nuc" :line 4
  :messages [".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"]}
+; An :edn-default naming no field of the struct (nuc-doom ISSUE-045).
+{:name "doom-edn-default-no-field" :expect :reject
+ :file "tests/fixtures/doom-edn-default-no-field.nuc" :line 4
+ :messages ["derive-edn: :edn-default names no field of user/P"]}

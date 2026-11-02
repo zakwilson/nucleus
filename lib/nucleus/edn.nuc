@@ -809,8 +809,8 @@
         (none (return (= left name))))))
   (return false))
 
-; Strict keys: each is a keyword naming a field, and each field has one.
-(defn edn-struct-keys (m:?&Node tag:StrView fields:StrView):ReadResult
+; Each key is a keyword naming one of `fields`, and each of `required` has one.
+(defn edn-struct-keys (m:?&Node tag:StrView fields:StrView required:StrView):ReadResult
   (let (len:usize (edn-count m)
         i:usize 0)
     (while (< i len)
@@ -822,7 +822,7 @@
               (drop &s)
               (return (edn-err edn-unknown-key (node-line k (node-line m 0)) &msg))))))
       (set! i (+ i 1))))
-  (let (left:StrView fields)
+  (let (left:StrView required)
     (while (> (left 'len) 0)
       (let (word:StrView left)
         (match (strview-find-byte &left 32)
@@ -854,18 +854,56 @@
      (set! (sn 's) ~sym)
      sn))
 
-; One struct's three codec functions, named `enc`/`dec`/`rel`. An anonymous
-; struct field gets gensym-named codecs of its own, tagged `#nucleus/struct`.
-(defmacro edn-derive-struct (t tag enc dec rel)
+; One struct's three codec functions, named `enc`/`dec`/`rel`, under derive-edn's
+; `opts` for it (design/doom-port-fixes/edn-defaults.md). An anonymous struct
+; field gets gensym-named codecs of its own, tagged `#nucleus/struct`.
+(defmacro edn-derive-struct (t tag enc dec rel opts)
   (let (fields:&Node (struct-fields t)
         out:&Node (node-list-new (t 'line))
         encb:&Node (node-list-new (t 'line))
         decb:&Node (node-list-new (t 'line))
         undo:&Node (node-list-new (t 'line))
+        relb:&Node (node-list-new (t 'line))
+        commit:&Node (node-list-new (t 'line))
+        flags:&Node (node-list-new (t 'line))
         names:&String (alloca String)
-        tags:&Node (edn-str-node (tag 's)))
+        required:&String (alloca String)
+        tags:&Node (edn-str-node (tag 's))
+        defaults:ptr:Node null
+        keep:bool false
+        nopts:i32 (ast-len opts)
+        j:i32 0)
     (init names)
+    (init required)
     (node-push out 'do)
+    (while (< j nopts)
+      (let (o:ptr:Node (ast-at opts j)
+            ov:StrView (if (= (o 'kind) NODE-KEYWORD) (symbol-as-view (o 's)) "")
+            nxt:ptr:Node (if (< (+ j 1) nopts) (ast-at opts (+ j 1)) null))
+        (if (= ov "edn-keep-absent")
+          (set! keep true)
+          (if (and (= ov "edn-default") (!= nxt null) (= (nxt 'kind) NODE-LIST))
+            (do (set! defaults nxt) (set! j (+ j 1)))
+            (macro-error o "derive-edn: expected :edn-default (field value …) or :edn-keep-absent"))))
+      (set! j (+ j 1)))
+    (when (and keep (!= defaults null))
+      (macro-error t "derive-edn: :edn-default has no effect beside :edn-keep-absent"))
+    (when (!= defaults null)
+      (when (!= (% (ast-len defaults) 2) 0)
+        (macro-error defaults "derive-edn: :edn-default wants field-value pairs"))
+      (set! j 0)
+      (while (< j (ast-len defaults))
+        (let (dn:ptr:Node (ast-at defaults j)
+              found:bool false)
+          (dotimes (i (ast-len fields))
+            (let (fnm:ptr:Node (ast-at (ast-at fields i) 0))
+              (when (and (= (dn 'kind) NODE-SYM)
+                         (= (symbol-as-view (dn 's)) (symbol-as-view (fnm 's))))
+                (set! found true))))
+          (when (not found)
+            (let (m:String (str "derive-edn: :edn-default names no field of " (symbol-as-view (tag 's))))
+              (macro-error dn (string-as-view &m)))))
+        (set! j (+ j 2))))
     (dotimes (i (ast-len fields))
       (let (f:ptr:Node (ast-at fields i)
             fname:ptr:Node (ast-at f 0)
@@ -874,7 +912,14 @@
             fd:ptr:Node `edn-decode
             fr:ptr:Node `edn-release
             key:&Node (edn-str-node (fname 's))
-            place:ptr:Node `(ref dst '~fname))
+            place:ptr:Node `(ref dst '~fname)
+            dflt:ptr:Node null)
+        (when (!= defaults null)
+          (set! j 0)
+          (while (< j (ast-len defaults))
+            (when (= (symbol-as-view ((ast-at defaults j) 's)) (symbol-as-view (fname 's)))
+              (set! dflt (ast-at defaults (+ j 1))))
+            (set! j (+ j 2))))
         (let (hd:ptr:Node ftype)
           (when (= (ftype 'kind) NODE-LIST) (set! hd (ast-at ftype 0)))
           (let (hv:StrView (if (and (!= hd null) (= (hd 'kind) NODE-SYM)) (symbol-as-view (hd 's)) ""))
@@ -889,19 +934,49 @@
               (set! fe (gensym))
               (set! fd (gensym))
               (set! fr (gensym))
-              (node-push out `(edn-derive-struct ~ftype nucleus/struct ~fe ~fd ~fr)))))
+              (node-push out `(edn-derive-struct ~ftype nucleus/struct ~fe ~fd ~fr ())))))
         (when (> i 0) (str-into names " "))
         (str-into names (symbol-as-view (fname 's)))
+        (when (and (not keep) (= dflt null))
+          (when (> (byte-len required) 0) (str-into required " "))
+          (str-into required (symbol-as-view (fname 's))))
         (let (kt:String (str (if (= i 0) ":" " :") (symbol-as-view (fname 's)) " "))
           (node-push encb `(edn-put out ~(edn-str-node (symbol-intern (string-as-view &kt))))))
         (node-push encb `(try (~fe out ~place)))
-        (let (prior:&Node undo)
-          (node-push decb `(let (r:ReadResult (edn-at-key (~fd ~place (edn-get m ~key)) ~key))
-                             (when (edn-failed? &r) ~@prior (return r))))
-          (set! undo (node-list-new (t 'line)))
-          (node-push undo `(~fr ~place))
-          (doseq (u prior NodeIter) (node-push undo u)))))
-    (let (fstr-node:&Node (edn-str-node (symbol-intern (string-as-view names))))
+        (let (prior:&Node undo
+              prel:&Node relb
+              read:ptr:Node `(edn-at-key (~fd ~place (edn-get m ~key)) ~key))
+          (if keep
+            ; Old values are released only once every read has succeeded, so a
+            ; failed read can put the whole snapshot back.
+            (let (had:ptr:Node (gensym))
+              (node-push flags had)
+              (node-push flags 'false)
+              (node-push decb
+                `(when (!= (edn-get m ~key) null)
+                   (let (r:ReadResult ~read)
+                     (when (edn-failed? &r) ~@prior (set! (deref dst) saved) (return r)))
+                   (set! ~had true)))
+              (set! undo (node-list-new (t 'line)))
+              (node-push undo `(when ~had (~fr ~place)))
+              (doseq (u prior NodeIter) (node-push undo u))
+              (node-push commit `(when ~had (~fr (ref saved '~fname)))))
+            (do
+              (if (= dflt null)
+                (node-push decb `(let (r:ReadResult ~read)
+                                   (when (edn-failed? &r) ~@prior (return r))))
+                (node-push decb `(if (= (edn-get m ~key) null)
+                                   (set! (dst '~fname) ~dflt)
+                                   (let (r:ReadResult ~read)
+                                     (when (edn-failed? &r) ~@prior (return r))))))
+              (set! undo (node-list-new (t 'line)))
+              (node-push undo `(~fr ~place))
+              (doseq (u prior NodeIter) (node-push undo u))))
+          (set! relb (node-list-new (t 'line)))
+          (node-push relb `(~fr ~place))
+          (doseq (u prel NodeIter) (node-push relb u)))))
+    (let (fstr-node:&Node (edn-str-node (symbol-intern (string-as-view names)))
+          req-node:&Node (edn-str-node (symbol-intern (string-as-view required))))
       (node-push out
         `(defn ~enc (out:&String dst:(ref ~t)):!void
            (edn-put out "#")
@@ -910,22 +985,37 @@
            ~@encb
            (edn-put out "}")
            (return (ok))))
+      (if keep
+        (node-push out
+          `(defn ~dec (dst:(ref ~t) n:?&Node):ReadResult
+             (let (m:?&Node (try (edn-struct-map n ~tags)))
+               (try (edn-struct-keys m ~tags ~fstr-node ~req-node))
+               (let ((saved ~t) (deref dst) ~@flags)
+                 ~@decb
+                 ~@commit
+                 (return (ok n))))))
+        (node-push out
+          `(defn ~dec (dst:(ref ~t) n:?&Node):ReadResult
+             (let (m:?&Node (try (edn-struct-map n ~tags)))
+               (try (edn-struct-keys m ~tags ~fstr-node ~req-node))
+               ~@decb
+               (return (ok n))))))
       (node-push out
-        `(defn ~dec (dst:(ref ~t) n:?&Node):ReadResult
-           (let (m:?&Node (try (edn-struct-map n ~tags)))
-             (try (edn-struct-keys m ~tags ~fstr-node))
-             ~@decb
-             (return (ok n)))))
-      (node-push out
-        `(defn ~rel (dst:(ref ~t)):void ~@undo (return))))
+        `(defn ~rel (dst:(ref ~t)):void ~@relb (return))))
     out))
 
 ; `(derive-edn T …)`: an EdnCodec conformance for each named struct `T`,
-; written as `#ns/T {:field value …}`.
+; written as `#ns/T {:field value …}`. `(T option …)` passes options for `T`.
 (defmacro derive-edn (:rest types)
   (let (out:&Node (node-list-new (types 'line)))
     (node-push out 'do)
-    (doseq (t types NodeIter)
-      (node-push out `(edn-derive-struct ~t ~(type-name t) ~'edn-encode ~'edn-decode ~'edn-release))
-      (node-push out `(extend ~t EdnCodec)))
+    (doseq (spec types NodeIter)
+      (let (t:ptr:Node spec
+            opts:&Node (node-list-new (spec 'line)))
+        (when (and (= (spec 'kind) NODE-LIST) (> (ast-len spec) 1)
+                   (= ((ast-at spec 1) 'kind) NODE-KEYWORD))
+          (set! t (ast-at spec 0))
+          (dotimes (i (- (ast-len spec) 1)) (node-push opts (ast-at spec (+ i 1)))))
+        (node-push out `(edn-derive-struct ~t ~(type-name t) ~'edn-encode ~'edn-decode ~'edn-release ~opts))
+        (node-push out `(extend ~t EdnCodec))))
     out))

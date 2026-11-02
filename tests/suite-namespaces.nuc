@@ -1456,7 +1456,7 @@
 (macroexpand (derive-edn Pt))
 "))
         tv:StrView (string-as-view &t))
-    (try (check-contains tv "(nucleus.edn/edn-derive-struct Pt user/Pt edn-encode edn-decode edn-release) (extend Pt nucleus.edn/EdnCodec)"))
+    (try (check-contains tv "(nucleus.edn/edn-derive-struct Pt user/Pt edn-encode edn-decode edn-release ()) (extend Pt nucleus.edn/EdnCodec)"))
     (try (check-not-contains tv "#h"))
     (drop &t))
   (return (ok)))

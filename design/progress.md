@@ -5337,3 +5337,23 @@ Test: `doom-nested-places-and-slice`, `doom-slice-bounds-exit` in
 `tests/suite-doom.nuc`; diagnostics row `doom-temporary-receiver`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `derive-edn` reads absent keys under two options (2026-11-02)
+
+From the nuc-doom port's ISSUE-045: a derived codec refused any map missing a
+field's key, so a config file written before a setting existed couldn't load.
+`derive-edn` now takes `(T option …)`:
+
+- `:edn-default (field expr …)` fills an absent key with the expression,
+  evaluated in the caller's file.
+- `:edn-keep-absent` leaves an absent key's field as the (valid) destination
+  held it. A failed read puts every replaced field back from a snapshot, and
+  old values are released only once every field has read.
+
+`edn-struct-keys` takes a separate required-field list. Design:
+[doom-port-fixes/edn-defaults.md](doom-port-fixes/edn-defaults.md).
+
+Test: `doom-edn-defaults` in `tests/suite-doom.nuc`; diagnostics row
+`doom-edn-default-no-field`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

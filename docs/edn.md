@@ -163,7 +163,8 @@ local with the same name, does not capture the derived code.
      (`expected #geom/Point, got #geom/Pt`, or `…, got a map` when untagged).
   2. The tagged value must be a map: otherwise `edn-type`.
   3. Every key must be a keyword naming a field: otherwise `edn-unknown-key`.
-  4. Every field must have a key: otherwise `edn-missing-key`.
+  4. Every field must have a key: otherwise `edn-missing-key`. The options
+     under [Absent keys](#absent-keys) relax this rule.
   5. Each field reads through its own codec.
 - **Errors name the path** to the value that failed, outermost key first, at
   that value's line: `:replicas :port: 70000 is out of range for ui16`.
@@ -176,6 +177,35 @@ local with the same name, does not capture the derived code.
   whose type has no codec fails where the derived code is compiled, with no
   matching `edn-decode`. Template structs, unions and bit-fields are not
   supported.
+
+### Absent keys
+
+A struct written as `(T option …)` in the `derive-edn` call reads absent keys
+leniently. That lets a newer program read a file written before a field
+existed:
+
+```lisp
+(defstruct Opt (iwad String) volume:i32 sens:f64)
+(defstruct Cfg (name String) volume:i32 (keys (Vector String)))
+(derive-edn (Opt :edn-default (volume 8 iwad (str "doom1.wad")))
+            (Cfg :edn-keep-absent))
+```
+
+- **`:edn-default (field value …)`**: a field listed here may be absent. Its
+  value is then the expression, evaluated in the calling file at read time and
+  stored as the field's new owned value. Fields not listed keep the strict rule.
+  Listing a name that is not a field is refused at the call
+  (`derive-edn: :edn-default names no field of user/Opt`).
+- **`:edn-keep-absent`**: every key may be absent, and an absent key leaves
+  that field as it was. The destination must therefore hold a **valid value**
+  before the read: this mode replaces it rather than filling uninitialized
+  storage. A field read from the map releases the value it replaces, but only
+  once every field has read. A read that fails puts the destination back as it
+  was, so a bad config file changes nothing. The two options can't be combined
+  on the same struct.
+
+Unknown keys are refused in both modes, and a nested struct field reads by its
+own type's rules.
 
 **Codecs can live in a separate library.** Nothing is derived unless asked, so
 a library's types carry no EDN code. A companion library can derive codecs for
@@ -235,7 +265,7 @@ which another format's library can derive from the same way.
 ## Not yet
 
 - No built-in readers for `#inst` or `#uuid`: they are ordinary tagged values.
-- No codecs for unions, enums, template structs, nullable fields, or default
-  values; no float, composite or `String` keys.
+- No codecs for unions, enums, template structs or nullable fields; no float,
+  composite or `String` keys.
 - No pretty-printing, and no bignum or decimal type behind `N`/`M`.
 - Strings are interned; a non-interning reader for large inputs is deferred.

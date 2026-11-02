@@ -475,3 +475,60 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
   (let (s:(Slice i32) (slice-of (ref (aref g 0)) 3) i:i32 3)
     (return (deref (&s i)))))
 " 1)))
+
+; ISSUE-045: derive-edn's :edn-default fills an absent key; :edn-keep-absent
+; leaves the destination's value, and a failed read puts every field back.
+(deftest doom-edn-defaults
+  (let (out:String (try (build-run-source "(import-use nucleus.io)
+(import-use nucleus.fmt)
+(import-use nucleus.string)
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.read)
+(import-use nucleus.edn)
+(import-use \"malloc.h\")
+(defstruct Cfg (name String) vol:i32 (keys (Vector String)))
+(defstruct Opt (name String) vol:i32 sens:f64)
+(derive-edn (Cfg :edn-keep-absent) (Opt :edn-default (vol 8 name (str \"doom1.wad\"))))
+(defn node (src:StrView):?&Node
+  (match (edn-parse src) ((ok v) (return v)) ((err e) (return null))))
+(defn say (r:ReadResult):void
+  (match r ((ok v) (println \"ok\")) ((err e) (println (e 'msg)))))
+(defn in-use ():i64
+  (let (mi:mallinfo2 (mallinfo2)) (return (as i64 (mi 'uordblks)))))
+(defn main ():i32
+  (let (c:&Cfg (alloca Cfg) o:&Opt (alloca Opt)
+        good:?&Node (node \"#user/Cfg {:name \\\"b\\\" :keys [\\\"y\\\" \\\"z\\\"]}\")
+        bad:?&Node (node \"#user/Cfg {:name \\\"c\\\" :keys [\\\"y\\\" 3]}\"))
+    (set! (c 'name) (str \"a\"))
+    (set! (c 'vol) 3)
+    (set! (c 'keys) (make (Vector String)))
+    (conj (ref c 'keys) (str \"x\"))
+    (say (edn-read c (node \"#user/Cfg {:vol 5}\")))
+    (println (string-as-view (ref c 'name)) \" \" (c 'vol) \" \" (count (ref c 'keys)))
+    (say (edn-read c bad))
+    (println (string-as-view (ref c 'name)) \" \" (c 'vol) \" \" (count (ref c 'keys)))
+    (say (edn-read c (node \"#user/Cfg {:bogus 1}\")))
+    (let (before:i64 (in-use))
+      (dotimes (i 20000) (edn-read c bad) (edn-read c good))
+      (println (if (< (- (in-use) before) 100000) \"no leak\" \"leak\")))
+    (println (string-as-view (ref c 'name)) \" \" (c 'vol) \" \" (count (ref c 'keys)))
+    (say (edn-read o (node \"#user/Opt {:sens 1.5}\")))
+    (println (string-as-view (ref o 'name)) \" \" (o 'vol))
+    (edn-release o)
+    (say (edn-read o (node \"#user/Opt {:vol 2}\")))
+    (edn-release c))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "ok
+a 5 1
+:keys: expected a string, got an integer
+a 5 1
+unknown key :bogus for #user/Cfg
+no leak
+b 5 2
+ok
+doom1.wad 8
+missing key :sens for #user/Opt"))
+    (drop &out)))
