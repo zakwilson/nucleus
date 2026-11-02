@@ -476,6 +476,9 @@
                   "bit-and" "band"
                   "bit-or" "bor"
                   "bit-xor" "bxor"
+                  "_bit-and" "band"
+                  "_bit-or" "bor"
+                  "_bit-xor" "bxor"
                   "bit-shl" "bshl"
                   "bit-shr" "bshr"})
     (match (mnemonic (symbol-as-view name))

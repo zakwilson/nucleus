@@ -4322,6 +4322,9 @@
     (add-binop v (symbol-intern "bit-and") "and"      "and"      0)
     (add-binop v (symbol-intern "bit-or")  "or"       "or"       0)
     (add-binop v (symbol-intern "bit-xor") "xor"      "xor"      0)
+    (add-binop v (symbol-intern "_bit-and") "and"     "and"      0)
+    (add-binop v (symbol-intern "_bit-or")  "or"      "or"       0)
+    (add-binop v (symbol-intern "_bit-xor") "xor"     "xor"      0)
     (add-binop v (symbol-intern "bit-shl") "shl"      "shl"      0)
     (add-binop v (symbol-intern "bit-shr") "ashr"     "lshr"     0)
     (add-binop v (symbol-intern "=")       "icmp eq"  "icmp eq"  1)
@@ -12064,13 +12067,23 @@
             (set! (rv 'taint-frame) result-frame)
             (return rv)))))))
 
+(defn while-step-form (cc:&Node):?&Node
+  (when (and (>= (node-len cc) 4) (= (node-kind (node-at cc 2)) NODE-KEYWORD)
+             (= ((unsafe/cast &Node (node-at cc 2)) 's) "step"))
+    (return (node-at cc 3)))
+  (return null))
+
 (defn emit-while (call:?&Node scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (< (node-len cc) 2) (die-at (cc 'line) "while: missing condition"))
     (let (id:i32 (new-label-id)
           cond-lbl:StrView (fstr "while.cond" id)
           body-lbl:StrView (fstr "while.body" id)
-          end-lbl:StrView (fstr "while.end" id))
+          end-lbl:StrView (fstr "while.end" id)
+          ; `(while test :step e body...)`: `e` runs after each pass.
+          step:?&Node (while-step-form cc)
+          body-from:i32 (if (= (while-step-form cc) null) 2 4)
+          step-lbl:StrView (fstr "while.step" id))
       ; Stage 10 narrowing: the loop re-executes, so any binding the loop
       ; assigns loses a narrowing established outside it — kill those before
       ; anything inside the loop is emitted (the emit-set backstop catches
@@ -12094,10 +12107,16 @@
             wfacts:&(Vector Symbol) (new (Vector Symbol) g-arena))
         (test-true-nonnull (node-at cc 1) wfacts)
         (narrow-names scope wfacts)
-        (let (i:i32 2)
+        (let (i:i32 body-from)
           (while (< i (node-len cc))
             (emit-node (node-at cc i) scope)
             (inc! i)))
+        (when (!= step null)
+          (when (= g-block-term 0)
+            (emit g-body-stream "  br label %" step-lbl "\n"))
+          (emit g-body-stream step-lbl ":\n")
+          (set! g-block-term 0)
+          (emit-node step scope))
         (narrow-restore wmark))
       (dec! g-loop-depth)
       (when (= g-block-term 0)
@@ -15253,6 +15272,10 @@
 ; struct's own guard runs (before that the struct prescan always won the race
 ; and the clash was reported at the protocol's line as "a type").
 (defn guard-name-kind (name:Symbol line:i32 newk:i32):void
+  ; Boot shim: the next commits' prelude defines these as macros.
+  (when (and (= newk NK-MACRO)
+             (or (= name "bit-and") (= name "bit-or") (= name "bit-xor") (= name "inc!") (= name "dec!")))
+    (return))
   (cconst-yield name)
   (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
     (die-at line
@@ -15452,9 +15475,9 @@
         (= h "_*")      (return 3)
         (= h "_/")      (return 4)
         (= h "%")       (return 5)
-        (= h "bit-and") (return 6)
-        (= h "bit-or")  (return 7)
-        (= h "bit-xor") (return 8)
+        (or (= h "bit-and") (= h "_bit-and")) (return 6)
+        (or (= h "bit-or") (= h "_bit-or"))   (return 7)
+        (or (= h "bit-xor") (= h "_bit-xor")) (return 8)
         (= h "bit-shl") (return 9)
         (= h "bit-shr") (return 10)
         true            (return 0)))

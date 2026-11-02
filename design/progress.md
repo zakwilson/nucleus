@@ -5076,3 +5076,14 @@ default, sharing `emit-unwrap-or-result`'s code with Result's `ok` arm.
 Test: `doom-value-maybe-forms` in `tests/suite-doom.nuc`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## Boot for ISSUE-009/018/026 (2026-11-02)
+
+A bootstrap step. The compiler accepts `_bit-and`/`_bit-or`/`_bit-xor`
+beside the old bit primitives and takes `while`'s `:step` clause. It also
+lets the prelude define `bit-and`/`bit-or`/`bit-xor`/`inc!`/`dec!` as
+macros (`guard-name-kind`). Every commit after this one needs a boot built
+from it (`make update-bootstrap`, or context/build.md's C0 recipe for the host
+boot), because ISSUE-009, 018 and 026 make the prelude use these.
+
+Gate: builds with the previous boot; after `make update-bootstrap`, bootstrap PASS.
