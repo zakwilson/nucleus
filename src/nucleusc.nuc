@@ -193,7 +193,7 @@
      ; it, and macrolet-bind refuses to shadow anything else in this set).
      "macrolet"
      ; mutation
-     "set!" "inc!" "dec!"
+     "set!"
      ; memory / pointers
      "array" "label" "goto" "label-addr" "goto-ptr"
      "." ".&" "cast" "as" "as-checked" "addr-of" "deref"
@@ -9425,58 +9425,6 @@
                                 (member-place-cell self-sym
                                   (quoted-selector cname-sym line) line)
                                 val-rw line)))))))))
-        ; inc!/dec! on a captured name: read-modify-write through the env field.
-        ; (inc! c) -> mode 0/1: (set! (self 'c) (+ (_get self 'c) 1))
-        ;         -> mode 2:   (set! (deref (_get self 'c)) (+ (deref (_get self 'c)) 1))
-        ; (dec! uses - instead of +). A non-captured target falls through.
-        (when (and (or (= h "inc!") (= h "dec!"))
-                   (= (node-len node) 2))
-          (let (tgt:&Node (unsafe/cast &Node (node-at node 1)))
-            (when (= (tgt 'kind) NODE-SYM)
-              (let (cname:Symbol (symbol-none)
-                    cti:Symbol (symbol-none))
-                (split-typed (tgt 's)
-                             (as &Symbol &cname)
-                             (as &Symbol &cti))
-                (when (and (not (symbol-none? cname))
-                           (= (fn-bound-has bound cname) 0)
-                           (!= (fn-bound-has caps cname) 0))
-                  (let (op-sym:ptr (if (= h "inc!")
-                                     (as ptr (intern-node (symbol-intern "+")))
-                                     (as ptr (intern-node (symbol-intern "-"))))
-                        cname-sym:ptr (as ptr (intern-node cname)))
-                    (if (= mode 2)
-                      (let (fa1:ptr
-                              (node-list3 (intern-node (symbol-intern "_get"))
-                                self-sym
-                                (quoted-selector cname-sym line) line)
-                            fa2:ptr
-                              (node-list3 (intern-node (symbol-intern "_get"))
-                                self-sym
-                                (quoted-selector cname-sym line) line)
-                            deref-node:ptr
-                              (node-list2 (intern-node (symbol-intern "deref"))
-                                fa2 line)
-                            arith:ptr
-                              (node-list3 op-sym
-                                deref-node
-                                (fn-make-int-node 1) line))
-                        (return (set-place-cell
-                                  (node-list2 (intern-node (symbol-intern "deref"))
-                                    fa1 line)
-                                  arith line)))
-                      (let (read-field:ptr
-                              (node-list3 (intern-node (symbol-intern "_get"))
-                                self-sym
-                                (quoted-selector cname-sym line) line)
-                            arith:ptr
-                              (node-list3 op-sym
-                                read-field
-                                (fn-make-int-node 1) line))
-                        (return (set-place-cell
-                                  (member-place-cell self-sym
-                                    (quoted-selector cname-sym line) line)
-                                  arith line))))))))))
         ; let / with: init exprs see the outer set; the body sees `bound`
         ; extended by the new binding names (a shadowing binding stops rewrite).
         (when (or (= h "let") (= h "with"))
@@ -12572,45 +12520,6 @@
       (return dst))))
 
 ; ============================================================
-; Stage 8: inc! / dec!
-; ============================================================
-
-(defn emit-inc-dec (call:?&Node scope:&Scope op-instr:StrView op-name:Symbol):&Val
-  (let (cc:&Node (unsafe/cast &Node call))
-    (when (!= (node-len cc) 2) (die-at (cc 'line) (fstr op-name " expects 1 arg")))
-    (let (target:&Node (unsafe/cast &Node (node-at cc 1)))
-      (when (!= (target 'kind) NODE-SYM)
-        (die-at (node-line (as ptr target) (cc 'line)) (fstr op-name ": target must be symbol")))
-      ; Strip any :type annotation so typed names from macro expansions resolve.
-      (let (nm:Symbol (symbol-none)
-            type-ignored:Symbol (symbol-none))
-        (split-typed (target 's)
-                     (as &Symbol &nm)
-                     (as &Symbol &type-ignored))
-        (let (sym:?&Sym (scope-lookup scope nm))
-          (when (and (!= g-resolve 0) (!= sym null)) (resolve-note-sym target nm (unsafe/cast &Sym sym)))
-          (when (and (!= sym null) (or (!= (sym 'is-const) 0) (!= (sym 'readonly-global) 0)))
-            (die-at (node-line (as ptr target) (cc 'line))
-              (fstr op-name ": cannot assign to '" nm "' -- it is a constant")))
-          (when (or (= sym null) (= (sym 'is-local) 0))
-            (die-at (node-line (as ptr target) (cc 'line)) (fstr op-name ": undefined local")))
-          (when (= (is-int-type (sym 'type)) 0)
-            (die-at (cc 'line) (fstr op-name ": must be integer")))
-          (let (ir:StrView (type-to-ir (sym 'type))
-                t1:StrView (new-tmp))
-            (emit-load t1 ir (sym 'ir-name) (sym 'type))
-            (let (t2:StrView (new-tmp))
-              (emit g-body-stream "  " t2 " = " op-instr " nsw " ir " " t1 ", 1\n")
-              (emit-store ir t2 (sym 'ir-name) (sym 'type))
-              (return (alloc-val ty-void "")))))))))
-
-(defn emit-inc (call:?&Node scope:&Scope):&Val
-  (return (emit-inc-dec call scope "add" (symbol-intern "inc!"))))
-
-(defn emit-dec (call:?&Node scope:&Scope):&Val
-  (return (emit-inc-dec call scope "sub" (symbol-intern "dec!"))))
-
-; ============================================================
 ; Stage 8: labels and goto (incl. computed goto via blockaddress)
 ; ============================================================
 
@@ -15185,8 +15094,6 @@
           (die-at (nn 'line) (fstr (symbol-as-view h) " outside quasiquote")))
         (when (= hp 'while) (return (emit-while n scope)))
         (when (= hp 'set!) (return (emit-set n scope)))
-        (when (= hp 'inc!) (return (emit-inc n scope)))
-        (when (= hp 'dec!) (return (emit-dec n scope)))
         (when (= hp 'label) (return (emit-label n scope)))
         (when (= hp 'goto) (return (emit-goto n scope)))
         (when (= hp 'label-addr) (return (emit-label-addr n scope)))

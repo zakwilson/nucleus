@@ -7433,7 +7433,6 @@
             (let (sym:?&Sym (scope-lookup scope nm))
               (when (= sym null) (return ty-void))
               (return (sym 'type)))))
-        (when (= hp 'inc!) (return ty-void))
         (when (= hp 'not) (return ty-bool))
         (when (= hp '_and) (return ty-bool))
         (when (= hp '_or) (return ty-bool))

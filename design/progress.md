@@ -5191,3 +5191,21 @@ Test: `doom-signed-index-as-checked`, `doom-negative-index-exits` and
 `doom-as-checked-traps` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `inc!`/`dec!` take any place and an amount (2026-11-02)
+
+From the nuc-doom port's ISSUE-018: `inc!` took only a variable, so
+`(inc! (p 'count))` was spelled out as a `set!`. `inc!` and `dec!` are now
+macros in `lib/nucleus/macros.nuc`: `(inc! place n)` is
+`(set! place (_+ place n))`, `n` defaulting to 1, for any place `set!` takes.
+`__step!` binds each computed index along the place's base chain to a
+gensym first, so `(inc! (aref a (next-id)))` calls `next-id` once. The
+special form, `emit-inc-dec`, its node-type arm and the closure rewriter's
+`inc!` branch are gone: the expansion is a `set!`, which the rewriter already
+handles. A constant target now reports `set!: cannot assign to 'K'`.
+
+Needs a boot built from the "Boot for ISSUE-009/018/026" commit.
+
+Test: `doom-inc-any-place` in `tests/suite-doom.nuc`; `dc-inc` updated.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

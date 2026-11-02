@@ -34,7 +34,7 @@
 (defn delay (n:ui16):void
   (let (:volatile i:ui16 0)
     (while (< i n)
-      (inc! i))))
+      (set! i (_+ i 1)))))
 
 (defn main ():i32
   (reg8-set-bit! DDRB 0)

@@ -23,7 +23,7 @@
 (defn delay ():void
   (let (:volatile i:usize 0)
     (while (< i 20000)
-      (inc! i))))
+      (set! i (_+ i 1)))))
 
 (defn main ():i32
   ; PA0 as output: write 1 to bit 0 of DIRSET (write-1-to-set semantics).

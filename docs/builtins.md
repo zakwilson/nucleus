@@ -817,6 +817,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
+| `inc!` / `dec!` | `(inc! place)`, `(inc! place n)` | `(set! place (+ place n))`, `n` defaulting to 1; any `set!` place, with a computed index evaluated once. See [Standard macros](macros.md). |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
@@ -914,8 +915,6 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
 | `while` | Loop; yields `void` | `while` |
 | `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
-| `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |
-| `dec!` | Decrement a variable by 1 (or by an optional delta). Yields the new value. | `x--` / `x -= n` |
 | `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
 | `goto` | Unconditional jump to a label declared anywhere in the current function. | `goto label` |
 | `label-addr` | Yields a `ptr` to a label (for computed gotos). | `&&label` (GCC) |

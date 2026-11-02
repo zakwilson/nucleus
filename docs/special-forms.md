@@ -32,8 +32,6 @@ failure.
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. A value is constructed with no keyword, `(Shape rect 3.0 4.0)` or `((Result i64 Err) ok 5)`. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | `switch` on the tag |
 | `while` | Loop; yields `void`. Same condition rule as `cond` — see [Condition position](#condition-position-a-nullable-value-is-a-condition). | `while` |
 | `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
-| `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |
-| `dec!` | Decrement a variable by 1 (or by an optional delta). Yields the new value. | `x--` / `x -= n` |
 | `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
 | `goto` | Unconditional jump to a label declared anywhere in the current function. | `goto label` |
 | `label-addr` | Yields a `ptr` to a label (for computed gotos). | `&&label` (GCC) |
@@ -148,12 +146,12 @@ costs a heap allocation (process-default libc allocator); dispatch is via an
 indirect vtable call. See [Type erasure](generics.md#type-erasure-boxedfn-and-dyn-protocol) in `docs/generics.md`.
 
 **Mutable capture (`set!`/`inc!`/`dec!` on a captured name).** A closure body
-may **mutate** a captured name with `set!`, `inc!`, or `dec!`. The rewrite
-depends on the closure's capture mode:
+may **mutate** a captured name with `set!`, or with `inc!`/`dec!`, macros that
+expand to `set!`. The rewrite depends on the closure's capture mode:
 
 - **`vfn`/`mfn` (by-value capture):** the env field holds the value. `(set! c v)`
-  rewrites to `(set! (self 'c) v)` (field store); `(inc! c)` / `(dec! c)` expand to
-  the read-modify-write equivalent `(set! (self 'c) (op (_get self 'c) 1))`. The mutation
+  rewrites to `(set! (self 'c) v)` (field store), so `(inc! c)`, which is
+  `(set! c (+ c 1))`, becomes `(set! (self 'c) (+ (_get self 'c) 1))`. The mutation
   lands in the env field and **persists across successive calls** to the same
   closure instance (since `invoke` receives `self` as a `(ref Env)` — a mutable
   reference). The outer binding is unaffected (it was copied/moved into the env at
@@ -161,8 +159,8 @@ depends on the closure's capture mode:
 
 - **`cfn` (by-reference capture):** the env field holds a *pointer* into the outer
   binding's storage. `(set! c v)` rewrites to `(set! (deref (_get self 'c)) v)` — a store
-  through the captured pointer. `(inc! c)` / `(dec! c)` become `(set! (deref (_get self 'c))
-  (op (deref (_get self 'c)) 1))`. The **outer binding sees the mutation** after each
+  through the captured pointer, and `(inc! c)` becomes `(set! (deref (_get self 'c))
+  (+ (deref (_get self 'c)) 1))`. The **outer binding sees the mutation** after each
   call, as with any by-reference write-back. The existing L1 store-sink safety
   checks are preserved.
 

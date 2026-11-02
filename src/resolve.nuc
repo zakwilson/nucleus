@@ -484,7 +484,7 @@
                   (resolve-capture o j scope)))))
     (when (and (= (node-len o) 2) (= (node-kind (node-at o 0)) NODE-SYM))
       (let (h:Symbol ((unsafe/cast &Node (node-at o 0)) 's))
-        (when (or (= h "ref") (= h "inc!") (= h "dec!"))
+        (when (= h "ref")
           (resolve-capture o 1 scope))))))
 
 ; A capturing closure's `invoke`: `(defn invoke ((self …) params…) ret body…)`

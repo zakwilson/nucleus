@@ -171,6 +171,66 @@
 (defmacro null? (x)
   `(= ~x null))
 
+; (inc! place) / (inc! place n), and dec! — add (subtract) n, default 1, to any
+; place `set!` takes. A computed index in the place is evaluated once.
+(defmacro inc! (place :rest amount)
+  (when (> (ast-len amount) 1) (macro-error place "inc!: expects a place and an optional amount"))
+  `(__step! _+ ~place ~(cond (= (ast-len amount) 0) `1 true (ast-at amount 0))))
+
+(defmacro dec! (place :rest amount)
+  (when (> (ast-len amount) 1) (macro-error place "dec!: expects a place and an optional amount"))
+  `(__step! _- ~place ~(cond (= (ast-len amount) 0) `1 true (ast-at amount 0))))
+
+; Hoists the first computed index along the place's base chain into a binding,
+; then expands again until every index is a name, literal or quoted selector.
+(defmacro __step! (op place n)
+  (let ((cur (ptr Node)) place
+        (levels ?&Node) null
+        nlev:i32 0
+        hk:i32 -1
+        hj:i32 -1
+        done:i32 0)
+    (when (!= (cur 'kind) NODE-LIST) (set! done 1))
+    (while (= done 0)
+      (set! levels `(~@levels ~cur))
+      (set! nlev (+ nlev 1))
+      (let ((h (ptr Node)) (ast-at cur 0)
+            b:i32 -1
+            j:i32 1
+            len:i32 (ast-len cur))
+        (cond (= (h 'kind) NODE-LIST) (set! b 0)
+              (or (= h 'aref) (= h '.) (= h 'get) (= h '_get)) (do (set! b 1) (set! j 2))
+              true 0)
+        (while (and (< j len) (< hk 0))
+          (let ((e (ptr Node)) (ast-at cur j))
+            (when (and (= (e 'kind) NODE-LIST) (not (= (ast-at e 0) 'quote)))
+              (set! hk (- nlev 1))
+              (set! hj j)))
+          (set! j (+ j 1)))
+        (cond (>= hk 0) (set! done 1)
+              (and (>= b 0) (= ((as (ptr Node) (ast-at cur b)) 'kind) NODE-LIST)) (set! cur (ast-at cur b))
+              true (set! done 1))))
+    (cond (< hk 0)
+            `(set! ~place (~op ~place ~n))
+          true
+            (let (g:ptr (gensym)
+                  (new ?&Node) g
+                  idx:i32 hj
+                  m:i32 hk)
+              (while (>= m 0)
+                (let ((lv (ptr Node)) (ast-at levels m)
+                      (out ?&Node) null
+                      k:i32 0
+                      len:i32 (ast-len lv))
+                  (while (< k len)
+                    (set! out (cond (= k idx) `(~@out ~new) true `(~@out ~(ast-at lv k))))
+                    (set! k (+ k 1)))
+                  (set! new out)
+                  (set! m (- m 1))
+                  (when (>= m 0)
+                    (set! idx (cond (= ((as (ptr Node) (ast-at (ast-at levels m) 0)) 'kind) NODE-LIST) 0 true 1)))))
+              `(let (~g ~(ast-at (ast-at levels hk) hj)) (__step! ~op ~new ~n))))))
+
 ; (for (var:type init) test step body) — counted loop.
 ; Expands to (let (var:type init) (while test body step)).
 ; var:type appears as the let binding name (type annotation required).

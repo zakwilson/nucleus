@@ -52,7 +52,7 @@
 (defn delay ():void
   (let (:volatile i:usize 0)
     (while (< i 20000)
-      (inc! i))))
+      (set! i (_+ i 1)))))
 
 (defn main ():i32
   (uart-init)

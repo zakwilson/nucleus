@@ -833,7 +833,7 @@
  :messages ["set!: cannot assign to 'O' -- it is a constant"]}
 {:name "dc-inc" :expect :reject
  :file "tests/fixtures/dc-inc.nuc" :line 3
- :messages ["inc!: cannot assign to 'K' -- it is a constant"]}
+ :messages ["set!: cannot assign to 'K' -- it is a constant"]}
 {:name "dc-addr" :expect :reject
  :file "tests/fixtures/dc-addr.nuc" :line 3
  :messages ["ref: constant 'K' has no storage -- bind it with let or defvar to take its address"]}
