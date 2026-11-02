@@ -24,6 +24,8 @@
 
 (import-use "stdio.h")
 (import-use "string.h")
+(import-use "stdlib.h")
+(extern stderr:ptr)
 
 (import-use nucleus.error)
 (import-use nucleus.string-errors)
@@ -138,6 +140,63 @@
 (extend ui64 ToStr)
 (defn to-str (self:ui64 out:&String):!void
   (string-push-u64 out self) (return (ok)))
+
+; --- other bases -------------------------------------------------------------
+;
+; `(radix v 16)` is `v`'s text in base 16, as a value: `(str "0x" (hex v))`.
+; A negative value is written as `-` and its magnitude, as in base 10.
+
+(defstruct Radix mag:ui64 neg:bool base:ui64)
+
+(defn radix-of (mag:ui64 neg:bool base:i32):Radix
+  (when (or (< base 2) (> base 36))
+    (fprintf stderr "nucleus.fmt: radix %d is not between 2 and 36\n" base)
+    (exit 1))
+  (return (Radix mag neg (as ui64 (unsafe/cast ui32 base)))))
+
+(defn radix (v:i64 base:i32):Radix
+  (if (< v 0)
+    (return (radix-of (- 0 (as ui64 v)) true base))
+    (return (radix-of (as ui64 v) false base))))
+(defn radix (v:i32 base:i32):Radix (return (radix (as i64 v) base)))
+(defn radix (v:ui64 base:i32):Radix (return (radix-of v false base)))
+(defn radix (v:ui32 base:i32):Radix (return (radix-of (as ui64 v) false base)))
+(defn radix (v:usize base:i32):Radix (return (radix-of (as ui64 v) false base)))
+
+(defn hex (v:i64):Radix (return (radix v 16)))
+(defn hex (v:i32):Radix (return (radix v 16)))
+(defn hex (v:ui64):Radix (return (radix v 16)))
+(defn hex (v:ui32):Radix (return (radix v 16)))
+(defn hex (v:usize):Radix (return (radix v 16)))
+(defn oct (v:i64):Radix (return (radix v 8)))
+(defn oct (v:i32):Radix (return (radix v 8)))
+(defn oct (v:ui64):Radix (return (radix v 8)))
+(defn oct (v:ui32):Radix (return (radix v 8)))
+(defn oct (v:usize):Radix (return (radix v 8)))
+(defn bin (v:i64):Radix (return (radix v 2)))
+(defn bin (v:i32):Radix (return (radix v 2)))
+(defn bin (v:ui64):Radix (return (radix v 2)))
+(defn bin (v:ui32):Radix (return (radix v 2)))
+(defn bin (v:usize):Radix (return (radix v 2)))
+
+(extend Radix ToStr)
+(defn to-str (self:Radix out:&String):!void
+  (let (buf:&ui8 (as &ui8 (alloca ui8 64))
+        n:usize 0
+        x:ui64 (self 'mag)
+        b:ui64 (self 'base))
+    (when (self 'neg) (string-push-char out \-))
+    (when (= x 0) (string-push-char out \0))
+    (while (> x 0)
+      ; A digit is below 36, so the narrowing is exact.
+      (let (d:ui64 (% x b))
+        (set! (aref buf (as i64 n)) (unsafe/cast ui8 (if (< d 10) (+ 48 d) (+ 87 d)))))
+      (set! x (/ x b))
+      (set! n (+ n 1)))
+    (while (> n 0)
+      (set! n (- n 1))
+      (string-push-char out (as Char (as ui32 (aref buf (as i64 n)))))))
+  (return (ok)))
 
 ; --- text ------------------------------------------------------------------
 

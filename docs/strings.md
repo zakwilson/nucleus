@@ -669,13 +669,18 @@ target it.
 The receiver is **by value**, which is what lets a literal be an argument:
 `(to-str 42 out)` works, where a `(ref Self)` receiver would make the literal
 an rvalue with no address to take. Conformers: `i64`, `i32`, `usize`, `ui64`,
-`StrView`, `CStr`, `Char`, `bool`, `f64`, `f32`.
+`StrView`, `CStr`, `Char`, `bool`, `f64`, `f32`, and `Radix` (below).
 
 `String` deliberately does **not** conform — by value would be a move. Write it
 through `(string-as-view s)`, which is O(1).
 
 Integers are formatted natively (`string-push-i64` / `string-push-u64`, also
-public). Floats delegate to `snprintf` — `%.17g` for `f64`, `%.9g` for `f32` —
+public). `(radix v base)` is `v` written in `base`, 2 to 36, with lowercase
+digits: a `Radix` value that conforms to `ToStr`, so `(str "0x" (radix v 16))`
+works. `hex`, `oct` and `bin` are `radix` at 16, 8 and 2. Each takes an `i32`,
+`i64`, `ui32`, `ui64` or `usize`; a negative value is written as `-` and its
+magnitude, `(hex -255)` as `-ff`. A base outside 2 to 36 stops the program
+with a message. Floats delegate to `snprintf` — `%.17g` for `f64`, `%.9g` for `f32` —
 permanently and deliberately; shortest-round-trip float printing is a separate
 algorithm and the interface is native either way.
 

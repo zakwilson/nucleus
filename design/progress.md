@@ -5116,3 +5116,17 @@ lockstep. A tree with an `as` or `sizeof` is left as written.
 Test: `doom-constant-tree-adapts` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `radix`, `hex`, `oct` and `bin` in nucleus.fmt (2026-11-02)
+
+From the nuc-doom port's ISSUE-028: `str` had no way to write an integer in
+another base, so the port used `snprintf` with `%x`. `(radix v base)` returns
+a `Radix` (magnitude, sign, base) that conforms to `ToStr`, so
+`(str "0x" (radix v 16))` works; `hex`, `oct` and `bin` are `radix` at 16, 8
+and 2. Each has `i32`, `i64`, `ui32`, `ui64` and `usize` overloads, since
+nothing in `nucleus.numeric` names "an integer". A base outside 2..36 exits
+with a message.
+
+Test: `doom-fmt-radix` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

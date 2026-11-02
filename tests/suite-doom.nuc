@@ -143,3 +143,19 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "1073741822 2147483648 0"))
     (drop &out)))
+
+; ISSUE-028: `radix`, and `hex`/`oct`/`bin` over it, write an integer in a base.
+(deftest doom-fmt-radix
+  (let (out:String (try (build-run-source "(import-use nucleus.fmt)
+(import-use nucleus.string)
+(import-use \"stdio.h\")
+(defn main ():i32
+  (let (u:ui32 48879 n:i64 -255 z:usize 0
+        s:String (str \"0x\" (hex u) \" \" (hex n) \" \" (oct 8) \" \" (bin 5) \" \" (radix 35 36) \" \" (bin z)
+                      \" \" (hex (as ui64 18446744073709551615))))
+    (printf \"%s\\n\" (string-as-cstr &s)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "0xbeef -ff 10 101 z 0 ffffffffffffffff"))
+    (drop &out)))
