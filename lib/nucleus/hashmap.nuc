@@ -315,6 +315,12 @@
 ; Drop conformance: free all three arrays through the stored allocator.
 ; Nulls the pointers and zeroes count/cap so double-drop is safe (no-op).
 ; ---------------------------------------------------------------------------
+; clear!: no entries, the buckets kept for reuse.
+(defn clear! (self:&(HashMap K V)):void
+  (when (!= (as ptr (self 'states)) null)
+    (memset (as ptr (self 'states)) 0 (as i64 (self 'cap))))
+  (set! (self 'count) 0))
+
 (defn drop (self:&(HashMap K V)):void
   (when (!= (as ptr (self 'keys)) null)
     (let (ah:&Alloc (ref self 'alloc)

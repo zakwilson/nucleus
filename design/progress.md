@@ -5130,3 +5130,16 @@ with a message.
 Test: `doom-fmt-radix` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `clear!` and `truncate!` on Vector and HashMap (2026-11-02)
+
+From the nuc-doom port's ISSUE-036: the port reset a reused buffer with
+`(set! (v 'len) 0)` and rebuilt a `HashMap` per save. `(clear! v)` and
+`(truncate! v n)` on `(Vector T)`, and `(clear! m)` on `(HashMap K V)`, empty
+the collection and keep its storage. A Vector holds its elements bitwise and
+never drops them, so neither does `clear!`; the map's version zeroes the
+bucket states.
+
+Test: `doom-collection-clear` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

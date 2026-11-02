@@ -247,6 +247,8 @@ An owning collection may not escape by `return` without `move`; `new` places it 
 (contains?:i32  ((self (ref (Vector T))) elem:T))
 (insert:void    ((self (ref (Vector T))) i:usize elem:T))
 (remove-at:void ((self (ref (Vector T))) i:usize))
+(clear!:void    ((self (ref (Vector T)))))
+(truncate!:void ((self (ref (Vector T))) n:usize))
 
 ; Capacity
 (capacity:usize ((self (ref (Vector T)))))
@@ -262,7 +264,7 @@ Bulk append (free functions, not protocol methods):
 
 Both are a single bulk copy rather than `conj` in a loop, which costs a bounds test, a capacity test and a call per element. The copy is bitwise — exactly what `conj`'s element store already is — so there is no narrower requirement on `T`. They are not spelled `extend`: that is the protocol-conformance form, and a symbol may name only one kind of thing.
 
-`conj` and `append` are equivalent for `Vector` (both append at the back). `insert` with `i == len` is equivalent to `append`; `i > len` panics. `remove-at` deletes the element at index `i`, shifting `(i, len)` left by one; `i >= len` panics.
+`conj` and `append` are equivalent for `Vector` (both append at the back). `insert` with `i == len` is equivalent to `append`; `i > len` panics. `remove-at` deletes the element at index `i`, shifting `(i, len)` left by one; `i >= len` panics. `clear!` empties the vector and `truncate!` keeps its first `n` elements (an `n` at or past the length changes nothing); both keep the capacity for reuse. Like `drop`, neither drops the elements: a `Vector` holds them bitwise.
 
 **Integer literals widen automatically.** A bare integer literal passed as an element, index, or key argument adapts to the method's concrete type without a cast — `(conj v 3)` and `(v 0)` on a `(Vector i64)` widen `3`/`0` to `i64`/`usize` respectively, exactly as plain functions already do. Some examples below still spell the explicit `(as usize 1)` form; both compile identically. (An untyped literal only *widens* — an already-typed value of a wider or wrong-sign type still needs an explicit `as`/`unsafe/cast`, and a call ambiguous between two integer overloads is an error.)
 
@@ -350,6 +352,9 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 ; count / empty?
 (count:usize  ((self (ref (HashMap K V)))))
 (empty?:i32   ((self (ref (HashMap K V)))))
+
+; Reuse
+(clear!:void  ((self (ref (HashMap K V)))))   ; no entries; the buckets kept
 ```
 
 `get` returns `(Maybe V)`. Match on the result to distinguish hit from miss:

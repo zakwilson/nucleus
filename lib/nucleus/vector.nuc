@@ -163,6 +163,15 @@
       (set! j (+ j 1))))
   (set! (self 'len) (- (_get self 'len) 1)))
 
+; clear!: no elements, capacity kept. A Vector never drops its elements, so
+; neither does this.
+(defn clear! (self:&(Vector T)):void
+  (set! (self 'len) 0))
+
+; truncate!: keep the first n elements; n at or past the length changes nothing.
+(defn truncate! (self:&(Vector T) n:usize):void
+  (when (< n (_get self 'len)) (set! (self 'len) n)))
+
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
 ; Minimal + reserve/capacity/with-capacity).
