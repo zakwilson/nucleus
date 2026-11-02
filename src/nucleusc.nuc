@@ -5939,6 +5939,19 @@
 ; asked for it (`ImportBind.private`) is still available.
 ; ------------------------------------------------------------
 
+; A function's methods may come from several namespaces; a value may not.
+(defn ambiguous-value-sym? (s:&Sym):bool
+  (return (or (= (s 'type) null) (!= ((unsafe/cast &Type (s 'type)) 'kind) TY-FN))))
+
+; Two namespaces' `(extern stderr:ptr)`, or one C constant each imported, are
+; one entity under two keys.
+(defn same-value-entity? (a:&Sym b:&Sym):bool
+  (let (an:StrView (a 'ir-name) bn:StrView (b 'ir-name))
+    (when (and (not (str-empty? &an)) (= an bn)) (return true)))
+  (return (and (!= (a 'const-lit) 0) (!= (b 'const-lit) 0)
+               (= (a 'const-lit-i64) (b 'const-lit-i64))
+               (!= (type-eq (a 'type) (b 'type)) 0))))
+
 ; Resolve a source REFERENCE against the global scope. `sc` is the global frame
 ; (the unique null-parent Scope); `name` is the spelling as written.
 (defn globals-lookup-ref (sc:?&Scope name:Symbol):?&Sym
@@ -5957,13 +5970,28 @@
       ; §8.3 row 1: `import-use`/`import-only` flatten the imported namespace
       ; into the unqualified space. Public names only — a flattened namespace is
       ; someone else's file.
-      (dotimes (i (file-imports-count))
-        (match (file-flattened-ns-at i)
-          ((some fns)
-            (when (and (!= fns g-current-ns) (!= fns "user"))
-              (let (hit:?&Sym (scope-frame-find-public sc (ns-qualify-in fns name)))
-                (when (!= hit null) (return hit)))))
-          (none 0)))
+      ; Two flattened namespaces defining the value is an ambiguity, not an order.
+      (let (first:ptr null
+            first-ns:Symbol (symbol-none))
+        (dotimes (i (file-imports-count))
+          (match (file-flattened-ns-at i)
+            ((some fns)
+              (when (and (!= fns g-current-ns) (!= fns "user"))
+                (let (hit:?&Sym (scope-frame-find-public sc (ns-qualify-in fns name)))
+                  (when (!= hit null)
+                    (cond (= first null)
+                            (do (set! first (as ptr hit)) (set! first-ns fns))
+                          (and (!= first (as ptr hit)) (!= fns first-ns)
+                               (ambiguous-value-sym? (unsafe/cast &Sym first))
+                               (ambiguous-value-sym? (unsafe/cast &Sym hit))
+                               (not (same-value-entity? (unsafe/cast &Sym first) (unsafe/cast &Sym hit))))
+                            (die-at g-form-line
+                              (fstr (fstr name " — defined in namespaces '" first-ns "' and '" fns "'")
+                                    (fstr "\n  note: write '" (ns-qualified-spelling first-ns name)
+                                          "' or '" (ns-qualified-spelling fns name) "' here")))
+                          true 0)))))
+            (none 0)))
+        (when (!= first null) (return (unsafe/cast &Sym first))))
       ; And `user` last: it is the unqualified space itself and the prelude's
       ; namespace, flattened into every file by construction. Without this a file
       ; with an explicit `(ns …)` cannot name a prelude global or `printf` at

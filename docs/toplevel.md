@@ -529,6 +529,20 @@ Two further consequences, both deliberate:
   namespace two identical signatures are still an error at the definition — that
   pair really would emit one symbol twice, and it is the function row of the
   redefinition rule below.
+* **A value two flattened namespaces define is ambiguous at a bare use.** A
+  `defvar`, `defconst` or enum member has no argument types to choose by, so
+  a bare `nodes` that both `import-use`d namespaces define is an error rather
+  than the first import's:
+
+  ```
+  c.nuc:4: error: nodes — defined in namespaces 'na' and 'nb'
+    note: write 'na/nodes' or 'nb/nodes' here
+  ```
+
+  A local binding, the file's own namespace and a qualified spelling all
+  resolve as before. Two names for one entity are not a collision: the same
+  C `extern` declared in two namespaces, or the same C constant imported into
+  each, is one value.
 
 Bounded-generic templates (`:where`) and their stamped instances follow the
 same rule: a stamp belongs to the namespace that declared the template, not to

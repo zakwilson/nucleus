@@ -349,3 +349,46 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "drop 0 drop 1 drop 2 416 5 6 30"))
     (drop &out)))
+
+; ISSUE-041: a value two flattened namespaces define is ambiguous at a bare use;
+; a local, a qualified spelling and a function's methods are not.
+(defn doom41-write-libs ():!StrView
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "doom41a.nuc" "(ns doom41a)
+(defvar nodes:i32 1)
+(defstruct A v:i32)
+(defn show (x:A):i32 (return (x 'v)))
+"))
+        b:String (try (test-write-file "doom41b.nuc" "(ns doom41b)
+(defvar nodes:i32 2)
+(defstruct B v:i32)
+(defn show (x:B):i32 (return (+ (x 'v) 100)))
+")))
+    (drop &b)
+    (drop &a)
+    (return (ok dir))))
+
+(deftest doom-ambiguous-value-name
+  (let (dir:StrView (try (doom41-write-libs))
+        m:String (try (test-write-file "doom41bad.nuc" "(import-use doom41a)
+(import-use doom41b)
+(defn main ():i32 (return nodes))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (compile-path-in dir mv))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
+    (try (check-error-at (ref c 'diags) mv 3 "nodes — defined in namespaces 'doom41a' and 'doom41b'"))
+    (try (check-contains raw-text "write 'doom41a/nodes' or 'doom41b/nodes' here"))
+    (drop &c)
+    (drop &m)))
+
+(deftest doom-unambiguous-value-uses
+  (let (dir:StrView (try (doom41-write-libs))
+        m:String (try (test-write-file "doom41ok.nuc" "(import-use doom41a)
+(import-use doom41b)
+(defn main ():i32
+  (let (nodes:i32 30)
+    (return (+ nodes doom41a/nodes doom41b/nodes (show (A 4)) (show (B 5))))))
+")))
+    (try (check-file-exit dir (string-as-view &m) 142))
+    (drop &m)))

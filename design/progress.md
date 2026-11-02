@@ -5268,3 +5268,21 @@ Test: `doom-break-continue` in `tests/suite-doom.nuc`; diagnostics row
 `doom-break-outside-loop`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a value two flattened namespaces define is ambiguous (2026-11-02)
+
+From the nuc-doom port's ISSUE-041: with `(import-use a)` and
+`(import-use b)` both defining `nodes`, a bare `nodes` silently meant the
+first import's, so import order chose the binding. `globals-lookup-ref` now
+scans every flattened namespace. A second hit that is a different value is
+an error at the use, `nodes — defined in namespaces 'a' and 'b'`, with a
+note naming both qualified spellings. A function's methods still merge
+across namespaces (`ambiguous-value-sym?` skips `TY-FN` symbols). Two keys
+for one entity, an `extern` with one link name or a C constant with one
+value (`same-value-entity?`), are not a collision. A local, the file's own
+namespace and a qualified spelling resolve as before.
+
+Test: `doom-ambiguous-value-name` and `doom-unambiguous-value-uses` in
+`tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
