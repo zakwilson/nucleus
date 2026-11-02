@@ -12758,6 +12758,11 @@
 
 ; (array T e0 e1 ... | (idx v) ...) -> &T to a stack array of int elements.
 (defn emit-array-lit (call:?&Node scope:&Scope):&Val
+  (return (emit-array-lit-n call scope -1)))
+
+; `want-len` >= 0 is an array field's length: the literal may be shorter (the
+; rest zero-fill, as in a global initializer) but not longer.
+(defn emit-array-lit-n (call:?&Node scope:&Scope want-len:i32):&Val
   (let (cc:&Node (unsafe/cast &Node call)
         nargs:i32 (- (node-len cc) 1))
     (when (< nargs 1)
@@ -12788,6 +12793,10 @@
         (let (length:i32 pos-count)
           (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
           (when (= length 0) (die-at (cc 'line) "array: at least one initializer required"))
+          (when (>= want-len 0)
+            (when (> length want-len)
+              (die-at (cc 'line) (fstr "array: too many initializers for a " want-len "-element array field")))
+            (set! length want-len))
           (let (vals:ptr (arena-alloc (* length 8))
                 seen:ptr (arena-alloc (* length 4))
                 pos-cursor:i32 0
@@ -12854,6 +12863,20 @@
                   (val-taint-frame rv scope)
                   (return rv))))))))))
 
+; An `(array T ...)` literal into an array field, as the field's own value.
+(defn struct-lit-array-field (arg:?&Node ftype:&Type scope:&Scope line:i32):?&Val
+  (when (or (!= (ftype 'kind) TY-ARRAY) (!= (node-kind arg) NODE-LIST) (< (node-len arg) 2)
+            (!= (node-at arg 0) 'array))
+    (return null))
+  (let (etype:&Type (parse-type-from-node (node-at arg 1) (node-line (node-at arg 1) line)))
+    (when (= (type-eq etype (ftype 'elem)) 0)
+      (die-at line (fstr "struct literal: an array of " (type-display etype)
+                         " does not fill an array field of " (type-display (ftype 'elem))))))
+  (let (lit:&Val (emit-array-lit-n arg scope (ftype 'arr-len))
+        t:StrView (new-tmp))
+    (emit g-body-stream "  " t " = load " (type-to-ir ftype) ", ptr " (lit 'val) "\n")
+    (return (alloc-val (as ptr ftype) t))))
+
 ; A `(name v)` initializer is designated only when `name` is a field of `sd`, or
 ; names nothing at all (a misspelt field, reported as one); else it is a value.
 (defn struct-lit-designated (sd:?&StructDef arg:?&Node scope:?&Scope):i32
@@ -12902,8 +12925,10 @@
                   (fstr "struct literal: field '" (fname-node 's) "' specified twice")))
               (set! (aref (unsafe/cast &i32 seen) fidx) 1)
               (let (ftype:ptr ((field-at (sdef 'fields) fidx) 'type)
-                    v:&Val (maybe-box-into-slot (emit-node-as arg 1 (arg-target-rewrite vexpr ftype) scope)
-                                                ftype scope (cc 'line))
+                    av:?&Val (struct-lit-array-field vexpr (unsafe/cast &Type ftype) scope (cc 'line))
+                    v:&Val (if-some (a av) a
+                             (maybe-box-into-slot (emit-node-as arg 1 (arg-target-rewrite vexpr ftype) scope)
+                                                  ftype scope (cc 'line)))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line)
@@ -12916,11 +12941,15 @@
               (when (>= pos-idx nfields)
                 (die-at (node-line (as ptr arg) (cc 'line)) "struct literal: too many positional initializers"))
               (let (ftype:ptr ((field-at (sdef 'fields) pos-idx) 'type)
-                    v:&Val (maybe-box-into-slot (emit-node-as call (+ 1 i) (arg-target-rewrite arg ftype) scope)
-                                                ftype scope (cc 'line))
+                    av:?&Val (struct-lit-array-field arg (unsafe/cast &Type ftype) scope (cc 'line))
+                    v:&Val (if-some (a av) a
+                             (maybe-box-into-slot (emit-node-as call (+ 1 i) (arg-target-rewrite arg ftype) scope)
+                                                  ftype scope (cc 'line)))
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
-                  (die-at (cc 'line) "struct literal: type mismatch for positional initializer"))
+                  (die-at (cc 'line)
+                    (fstr "struct literal: type mismatch for field '" ((field-at (sdef 'fields) pos-idx) 'name)
+                          "' (positional initializer)")))
                 (set! (aref (unsafe/cast &i32 seen) pos-idx) 1)
                 (set! (aref (unsafe/cast &ptr vals) pos-idx) coerced)
                 (inc! pos-idx)))))

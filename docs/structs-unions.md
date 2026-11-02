@@ -197,12 +197,14 @@ is refused, as `s.xs = …` is in C); write through the decayed pointer with
 an element place, or copy with `memcpy`. `(ref r 'cells)` gives the same address as
 `(r 'cells)`.
 
-A `defvar` of a struct with an array field can be given a constant initializer
-that nests both — see
-[Global initializers](toplevel.md#global-initializers):
+A struct literal fills an array field from an `(array T ...)` literal, in a
+`defvar`'s constant initializer (see
+[Global initializers](toplevel.md#global-initializers)) and at run time alike.
+A shorter literal zero-fills the rest of the field; a longer one is an error:
 
 ```lisp
 (defvar g-row:Row (Row 1 (array i32 9 8 7 6) 2))
+(defn mk-row (t:i32):Row (Row t (array i32 t (* t 2)) 0))
 ```
 
 `--emit-cheader` renders the field with C's postfix declarator; `--emit-nuch`

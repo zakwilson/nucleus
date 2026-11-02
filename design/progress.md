@@ -5229,3 +5229,19 @@ Test: `doom-variadic-bit-ops` in `tests/suite-doom.nuc`; diagnostics row
 `doom-const-op-arity`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: an array literal fills an array field at run time (2026-11-02)
+
+From the nuc-doom port's ISSUE-030: `(Row t (array i32 5 6))` worked in a
+`defvar` initializer but failed in a function with "struct literal: type
+mismatch for positional initializer". `emit-struct-lit` now gives an array
+field's `(array T ...)` initializer, positional or designated, to
+`struct-lit-array-field`, which emits the literal at the field's length
+(`emit-array-lit-n`: a shorter literal zero-fills, as the global path does; a
+longer one is refused) and loads it as the field's value. A remaining
+positional type mismatch names its field.
+
+Test: `doom-array-field-literal` in `tests/suite-doom.nuc`; diagnostics row
+`doom-array-field-too-long`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

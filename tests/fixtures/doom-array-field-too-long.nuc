@@ -1,0 +1,4 @@
+; An array literal longer than the array field it fills (nuc-doom ISSUE-030).
+(defstruct Row tag:i32 cells:(array i32 2))
+(defn mk (t:i32):Row (Row t (array i32 5 6 7)))
+(defn main ():i32 (return ((mk 1) 'tag)))

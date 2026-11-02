@@ -1458,3 +1458,7 @@
 {:name "doom-const-op-arity" :expect :reject
  :file "tests/fixtures/doom-const-op-arity.nuc" :line 3
  :messages ["_bit-or expects 2 args"]}
+; An array literal longer than the array field it fills (nuc-doom ISSUE-030).
+{:name "doom-array-field-too-long" :expect :reject
+ :file "tests/fixtures/doom-array-field-too-long.nuc" :line 3
+ :messages ["array: too many initializers for a 2-element array field"]}

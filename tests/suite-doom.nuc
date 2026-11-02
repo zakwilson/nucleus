@@ -297,3 +297,19 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "7 4 5 4 79 15 -1 12"))
     (drop &out)))
+
+; ISSUE-030: an array literal fills an array field at run time, as in a global.
+(deftest doom-array-field-literal
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Row tag:i32 cells:(array i32 3))
+(defn mk (t:i32):Row (Row t (array i32 5 (+ t 1))))
+(defn mk2 (t:i32):Row (Row (cells (array i32 (2 t))) (tag 9)))
+(defn main ():i32
+  (let (r:Row (mk 3) s:Row (mk2 4))
+    (printf \"%d %d %d %d %d %d %d\\n\" (r 'tag) (aref (r 'cells) 0) (aref (r 'cells) 1)
+            (aref (r 'cells) 2) (s 'tag) (aref (s 'cells) 0) (aref (s 'cells) 2)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3 5 4 0 9 0 4"))
+    (drop &out)))
