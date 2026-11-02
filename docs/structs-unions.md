@@ -323,8 +323,11 @@ struct with_pad      { char pad[15 * sizeof(int) - sizeof(void*)]; int x; };  /*
 
 The extent may be a decimal literal, a macro that expands to one, a
 multi-dimensional `[a][b]…` (folded right-to-left into nested array types), or
-a constant expression — `+ - * / % << >> ( )`, integer literals, and
-`sizeof(type)` — evaluated by the importer's own integer evaluator. **The
+a constant expression — the arithmetic, shift, bitwise, comparison and logical
+operators, `?:`, casts, integer and character literals, enumerators and
+`sizeof(type)` — evaluated by the importer's own integer evaluator, the same
+one [header constants](compiler.md#integer-constants-from-a-c-header) use. So
+SDL's `Uint8 padding[sizeof(void *) <= 8 ? 56 : …]` sizes `SDL_Event`. **The
 expression is folded for the emission *target*, never the preprocessing
 host**: `clang -E` always preprocesses for the machine running the compiler
 even under `--target=`, so an extent naming `sizeof(long)` or `sizeof(void*)`

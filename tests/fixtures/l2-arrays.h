@@ -51,7 +51,7 @@ struct l2_chararr { unsigned short sa_family; char sa_data[14]; };
 /* Each of these must leave the struct OPAQUE with a located error. An extent
    the evaluator guesses at is exactly the silent-wrong class L1/L2 remove. */
 
-/* An enum constant: a name, and the evaluator resolves no names. */
+/* An enum constant folds now (nuc-doom ISSUE-011), so this one lays out. */
 enum { L2_ENUM_N = 5 };
 struct l2_unfoldable_enum { int u[L2_ENUM_N]; int b; };
 

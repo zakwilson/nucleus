@@ -1,0 +1,5 @@
+; A function-like C macro is named as one, not as "not defined" (nuc-doom ISSUE-002).
+(import-use "stdint.h")
+(defn main ():i32
+  (let (x:i64 (INT64_C 5))
+    (return (unsafe/cast i32 x))))

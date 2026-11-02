@@ -13,10 +13,12 @@
 #define MP_AND   (0xFF & 0x3C)
 #define MP_NEG   (-3)
 #define MP_MAX   9223372036854775807
+#define MP_LOGIC (1 && 2)
+#define MP_COND  (sizeof(void *) <= 8 ? 56 : 3 * sizeof(void *))
+#define MP_CMP   ((0u - 1 > 0) + (-1 < 0) * 2 + (3 != 3) * 4 + !0 * 8)
 
 /* None of these is an integer constant expression. */
 #define MP_FN(x) ((x) + 1)
 #define MP_STR   "not an integer"
 #define MP_FLOAT 3.5
-#define MP_LOGIC (1 && 2)
 #define MP_OVER  99223372036854775807

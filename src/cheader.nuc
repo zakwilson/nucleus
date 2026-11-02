@@ -2016,9 +2016,8 @@
             (when (!= (cmacro-value tok (as &i64 &mv)) 0)
               (set! @out-end e)
               (return mv))))
-        ; Enumerators too, but not in an array extent: that would lay out structs
-        ; that were opaque, as c-cexpr-top's bitwise levels would.
-        (when (or (!= g-cmacro-folding 0) (!= g-cenum-folding 0))
+        ; Enumerators too, which are integer constants wherever they appear.
+        (do
           (let (ev:i64 0)
             (when (!= (cenum-value tok (as &i64 &ev)) 0)
               (set! g-cexpr-rank (c-value-rank ev))
@@ -2037,9 +2036,13 @@
         (let (v:i64 (c-cexpr-unary buf (+ p 1) len out-end ok))
           (return (c-norm (- 0 v) g-cexpr-rank))))
       ; `~` flips the operand's own width: `~0u` is 4294967295, not -1.
-      (when (and (= c 126) (or (!= g-cmacro-folding 0) (!= g-cenum-folding 0)))
+      (when (= c 126)
         (let (v:i64 (c-cexpr-unary buf (+ p 1) len out-end ok))
           (return (c-norm (bit-xor v -1) g-cexpr-rank))))
+      (when (and (= c 33) (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 61)))
+        (let (v:i64 (c-cexpr-unary buf (+ p 1) len out-end ok))
+          (set! g-cexpr-rank (c-rank-int))
+          (return (if (= v 0) 1 0))))
       (return (c-cexpr-primary buf p len out-end ok)))))
 
 (defn c-cexpr-mul (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
@@ -2099,12 +2102,72 @@
     (set! @out-end e)
     (return v)))
 
+; C's comparison: an `int` 0 or 1, compared in the operands' common type.
+; `op` is `<` `>` `l` (<=) `g` (>=) `=` (==) `!` (!=).
+(defn c-compare (op:i32 a:i64 ra:i32 b:i64 rb:i32):i64
+  (let (r:i32 (if (> ra rb) ra rb)
+        x:i64 (c-norm a r)
+        y:i64 (c-norm b r)
+        lt:bool (if (and (c-rank-unsigned? r) (>= (c-rank-bits r) 64))
+                  (< (unsafe/cast ui64 x) (unsafe/cast ui64 y))
+                  (< x y))
+        eq:bool (= x y)
+        res:bool (case op
+                   60  lt
+                   62  (not (or lt eq))
+                   108 (or lt eq)
+                   103 (not lt)
+                   61  eq
+                   (not eq)))
+    (set! g-cexpr-rank (c-rank-int))
+    (return (if res 1 0))))
+
+(defn c-cexpr-rel (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-shift buf pos len (as &i64 &e) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (< p len)
+          (let (c:i32 (cstr-byte-at buf p)
+                eqn:bool (and (< (+ p 1) len) (= (cstr-byte-at buf (+ p 1)) 61)))
+            (when (or (= c 60) (= c 62))
+              (let (lr:i32 g-cexpr-rank
+                    e2:i64 0
+                    r:i64 (c-cexpr-shift buf (+ p (if eqn 2 1)) len (as &i64 &e2) ok)
+                    op:i32 (cond (not eqn) c (= c 60) 108 true 103))
+                (set! v (c-compare op v lr r g-cexpr-rank))
+                (set! e e2)
+                (set! more 1)))))))
+    (set! @out-end e)
+    (return v)))
+
+(defn c-cexpr-eq (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-rel buf pos len (as &i64 &e) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (< (+ p 1) len)
+          (let (c:i32 (cstr-byte-at buf p))
+            (when (and (or (= c 61) (= c 33)) (= (cstr-byte-at buf (+ p 1)) 61))
+              (let (lr:i32 g-cexpr-rank
+                    e2:i64 0
+                    r:i64 (c-cexpr-rel buf (+ p 2) len (as &i64 &e2) ok))
+                (set! v (c-compare c v lr r g-cexpr-rank))
+                (set! e e2)
+                (set! more 1)))))))
+    (set! @out-end e)
+    (return v)))
+
 ; C's three bitwise levels, `&` tightest. Added for the macro fold
 ; (platform-constants.md §4) — `S_IRWXU` is `(__S_IREAD|__S_IWRITE|__S_IEXEC)`.
 ; Each refuses the doubled form, or `a && b` would fold as `a & (&b)`.
 (defn c-cexpr-bitand (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-shift buf pos len (as &i64 &e) ok)
+        v:i64 (c-cexpr-eq buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -2113,7 +2176,7 @@
           (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 38))
             (let (lr:i32 g-cexpr-rank
                   e2:i64 0
-                  r:i64 (c-cexpr-shift buf (+ p 1) len (as &i64 &e2) ok))
+                  r:i64 (c-cexpr-eq buf (+ p 1) len (as &i64 &e2) ok))
               (set! v (c-arith 38 v lr r g-cexpr-rank ok))
               (set! e e2)
               (set! more 1))))))
@@ -2155,19 +2218,59 @@
     (set! @out-end e)
     (return v)))
 
-; The evaluator's entry point. Only the macro fold takes the bitwise levels:
-; `c-array-extent` still enters at `c-cexpr-shift`, so no struct that was opaque
-; before suddenly lays out and no emitted byte moves.
+; `&&` and `||`: an `int` 0 or 1. Both sides are folded, so a side that does
+; not fold refuses the whole expression even where C would not evaluate it.
+(defn c-cexpr-logic (and?:bool buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (e:i64 0
+        v:i64 (if and? (c-cexpr-bitor buf pos len (as &i64 &e) ok)
+                       (c-cexpr-logic true buf pos len (as &i64 &e) ok))
+        ch:i32 (if and? 38 124)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (and (< (+ p 1) len) (= (cstr-byte-at buf p) ch) (= (cstr-byte-at buf (+ p 1)) ch))
+          (let (e2:i64 0
+                r:i64 (if and? (c-cexpr-bitor buf (+ p 2) len (as &i64 &e2) ok)
+                               (c-cexpr-logic true buf (+ p 2) len (as &i64 &e2) ok)))
+            (set! v (if and? (if (and (!= v 0) (!= r 0)) 1 0)
+                             (if (or (!= v 0) (!= r 0)) 1 0)))
+            (set! g-cexpr-rank (c-rank-int))
+            (set! e e2)
+            (set! more 1)))))
+    (set! @out-end e)
+    (return v)))
+
+; `c ? a : b`, right-associative, in the two arms' common type (nuc-doom
+; ISSUE-011: SDL_Event's padding extent is one).
+(defn c-cexpr-cond (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (e:i64 0
+        c:i64 (c-cexpr-logic false buf pos len (as &i64 &e) ok)
+        p:i64 (c-skip-body-ws buf e len))
+    (when (or (>= p len) (!= (cstr-byte-at buf p) 63))
+      (set! @out-end e)
+      (return c))
+    (let (e2:i64 0
+          a:i64 (c-cexpr-top buf (+ p 1) len (as &i64 &e2) ok)
+          ra:i32 g-cexpr-rank
+          q:i64 (c-skip-body-ws buf e2 len))
+      (when (or (>= q len) (!= (cstr-byte-at buf q) 58))
+        (set! @ok 0) (set! @out-end q) (return 0))
+      (let (b:i64 (c-cexpr-cond buf (+ q 1) len out-end ok)
+            rb:i32 g-cexpr-rank
+            r:i32 (if (> ra rb) ra rb))
+        (set! g-cexpr-rank r)
+        (return (c-norm (if (!= c 0) a b) r))))))
+
+; The evaluator's entry point, for a macro body, an enumerator and an array extent alike.
 (defn c-cexpr-top (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
-  (when (and (= g-cmacro-folding 0) (= g-cenum-folding 0))
-    (return (c-cexpr-shift buf pos len out-end ok)))
-  (return (c-cexpr-bitor buf pos len out-end ok)))
+  (return (c-cexpr-cond buf pos len out-end ok)))
 
 ; One `[ … ]` extent, `pos` at the `[`. Sets out-end past the `]`; clears `ok`
 ; for anything that does not fold to a positive i32 count.
 (defn c-array-extent (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i32
   (let (e:i64 0
-        v:i64 (c-cexpr-shift buf (+ pos 1) len (as &i64 &e) ok))
+        v:i64 (c-cexpr-top buf (+ pos 1) len (as &i64 &e) ok))
     (set! e (c-skip-body-ws buf e len))
     (if (and (< e len) (= (cstr-byte-at buf e) 93))
       (set! e (+ e 1))
@@ -3143,6 +3246,7 @@
 (defvar g-cmacro-baseline-ready:i32 0)
 (defvar g-cmacro-folding:i32 0)
 (defvar g-cmacro-buf:ptr null)
+(defvar g-cmacro-header:Symbol (symbol-none))
 
 (defn cheader-macro-reset ():void
   (let (v:&(Vector &CMacro) (new (Vector &CMacro) g-arena)
@@ -3403,7 +3507,9 @@
             name:Symbol (c-read-ident buf (c-skip-ws buf de line-end) line-end
                                       (as &i64 &ne)))
         (when (= (symbol-len name) 0) (return))
-        (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40)) (return))
+        (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40))
+          (cmacro-record-skip name "is a function-like macro, which is not imported; write what it expands to")
+          (return))
         (let (m:ref:CMacro (new CMacro g-arena))
           (set-fields! m
                        'name       name
@@ -3456,9 +3562,24 @@
 (defn cheader-macro-register ():void
   (dotimes (i (unsafe/cast i32 (count g-cmacros)))
     (let (m:ref:CMacro (invoke g-cmacros i:usize))
-      (when (and (!= (m 'folded) 0)
-                 (not (contains? g-cmacro-baseline (m 'name))))
-        (cheader-define-int-const (m 'name) (m 'val))))))
+      (if (!= (m 'folded) 0)
+        (when (not (contains? g-cmacro-baseline (m 'name)))
+          (cheader-define-int-const (m 'name) (m 'val)))
+        (cmacro-record-skip (m 'name) "is a macro whose body does not fold to an integer constant, which is not imported")))))
+
+; A header macro the importer leaves out, kept so an unresolved use can say why
+; (nuc-doom ISSUE-002). Only while importing a header, not the predefine baseline.
+(defn cmacro-record-skip (name:Symbol why:StrView):void
+  (when (symbol-none? g-cmacro-header) (return))
+  (when (or (contains? g-cmacro-baseline name) (!= (cmacro-private-name? name) 0)) (return))
+  (match (cheader-skip-note name) (none 0) ((some _seen) (return)))
+  (when (= g-cheader-skipped null)
+    (set! g-cheader-skipped (new (Vector &CheaderSkip) g-arena)))
+  (let (tbl:&(Vector &CheaderSkip) (unsafe/cast &(Vector &CheaderSkip) g-cheader-skipped)
+        e:&CheaderSkip (new CheaderSkip g-arena))
+    (set! (e 'name) name)
+    (set! (e 'note) (symbol-intern (fstr g-cmacro-header " defines '" name "', but it " why)))
+    (conj tbl e)))
 
 (defn cheader-macro-baseline-load ():void
   (when (!= g-cmacro-baseline-ready 0) (return))
@@ -3492,9 +3613,11 @@
     (when (= buf null) (return))
     (cheader-macro-reset)
     (set! g-cmacro-buf buf)
+    (set! g-cmacro-header header-path)
     (cheader-macro-scan buf buf-len)
     (cheader-macro-fold)
     (cheader-macro-register)
+    (set! g-cmacro-header (symbol-none))
     (cheader-macro-reset)))
 
 (defn emit-c-include-in (header-path:Symbol line:i32):void

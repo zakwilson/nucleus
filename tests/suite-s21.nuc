@@ -2681,16 +2681,15 @@ int main(void) {
     (drop &h))
   (return (ok)))
 
-; What does not fold is not a name: the ternary, the implicit step after it, and
-; the reserved name, which `unsafe/import-private` still reaches.
+; The reserved name is not a name, though `unsafe/import-private` still reaches
+; it. A ternary folds since nuc-doom ISSUE-011, and so does the step after it.
 (deftest s21-cenum-refused
   (let (h:String (try (test-write-file "s21e.h" (s21-enum-header)))
         hv:StrView (string-as-view &h))
-    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return S21E_TERNARY))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21E_TERNARY"))
-      (drop &a))
-    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return S21E_AFTER_TERNARY))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21E_AFTER_TERNARY"))
+    (let (a:String (str "(import-use \"" hv "\")\n(import-use nucleus.io)\n(defn main ():i32 (print S21E_TERNARY \" \" S21E_AFTER_TERNARY \"\\n\") (return 0))\n")
+          out:String (try (build-run-source (string-as-view &a))))
+      (try (check-golden (string-as-view &out) "2 3\n"))
+      (drop &out)
       (drop &a))
     (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return _S21E_PRIVATE))\n"))
       (try (s21-exit1-at (string-as-view &a) 2 "undefined: _S21E_PRIVATE"))
@@ -2860,7 +2859,7 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
   ; C says a shift past the width is not a constant, so it is not a name.
   (let (h:String (try (test-write-file "s21o.h" (s21-ops-header)))
         a:String (str "(import-use \"" (string-as-view &h) "\")\n(defn main ():i32 (return S21O_SHIFT_WIDE))\n"))
-    (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21O_SHIFT_WIDE"))
+    (try (s21-exit1-at (string-as-view &a) 2 "undefined: 'S21O_SHIFT_WIDE' — its C header declaration was skipped"))
     (drop &a)
     (drop &h))
   (return (ok)))
@@ -3415,13 +3414,13 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
   (let (h:String (try (test-write-file "s21u.h" (s21-bigdec-header)))
         hv:StrView (string-as-view &h))
     (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return (as i32 S21U_TOO_BIG)))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21U_TOO_BIG"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: 'S21U_TOO_BIG' — its C header declaration was skipped"))
       (drop &a))
     (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return (as i32 S21U_TOO_BIG_HEX)))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21U_TOO_BIG_HEX"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: 'S21U_TOO_BIG_HEX' — its C header declaration was skipped"))
       (drop &a))
     (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return (as i32 S21U_TOO_BIG_OCT)))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21U_TOO_BIG_OCT"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: 'S21U_TOO_BIG_OCT' — its C header declaration was skipped"))
       (drop &a))
     (drop &h))
   (return (ok)))

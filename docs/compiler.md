@@ -1165,16 +1165,22 @@ than a silent wrap.
 
 **What is imported.** Only what folds. The evaluator handles literals (decimal,
 octal, `0x`, with `u`/`U`/`l`/`L` suffixes), character constants (`'x'`, `'\n'`,
-`'\x41'`), unary `+`/`-`/`~`, `* / %`, `+ -`, `<< >>`, `& ^ |`, parentheses,
+`'\x41'`), unary `+`/`-`/`~`/`!`, `* / %`, `+ -`, `<< >>`, the comparisons
+`< > <= >= == !=`, `& ^ |`, `&& ||`, `?:`, parentheses,
 casts, `sizeof`, references to other macros from the same header, and
 references to the header's enumerators — so `S_IRWXU`, written
 `(__S_IREAD|__S_IWRITE|__S_IEXEC)`, folds even though none of its three parts is
-importable. A cast to an integer type converts as C does: `((Uint32)-1)` is
-`4294967295` and `(gint)(1u << 31)` is `-2147483648`. Anything else is skipped
-silently: function-like macros (`#define MAX(a,b) …`), string bodies,
-floating-point bodies, `&&`/`||`, `?:`, comparisons, a body that references a
+importable. A comparison, `!`, `&&` and `||` give an `int` 0 or 1, and `?:`
+takes its two arms' common type; both sides of `&&`, `||` and `?:` must fold,
+even the one C would not evaluate. A cast to an integer type converts as C does: `((Uint32)-1)` is
+`4294967295` and `(gint)(1u << 31)` is `-2147483648`. Anything else is skipped:
+function-like macros (`#define MAX(a,b) …`), string bodies,
+floating-point bodies, a body that references a
 macro that did not itself fold, and a character constant above `0x7f` (its value
-depends on whether the target's `char` is signed).
+depends on whether the target's `char` is signed). A skipped name is remembered,
+so using one is an error that names the header and the reason, such as
+`stdint.h defines 'INT64_C', but it is a function-like macro, which is not
+imported`, rather than "not defined anywhere".
 
 **Every operation is typed as C types it.** A literal takes the first of `int`,
 `long`, `long long` that holds it — with the `unsigned` twin of each in between

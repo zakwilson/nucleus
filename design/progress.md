@@ -4992,3 +4992,33 @@ constant, a header variable yields to a Nucleus definition of the same name
 Test: `doom-c-header-variables` in `tests/suite-doom.nuc`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: an unimported C macro says why (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-002). `INT64_C(5)` from `<stdint.h>` was
+"undefined: 'INT64_C'", with no hint that the header defines it. The macro
+importer now records each function-like macro, and each object-like one whose
+body doesn't fold, as a skipped declaration with its reason. Using the name
+reports "its C header declaration was skipped (stdint.h defines 'INT64_C', but
+it is a function-like macro, which is not imported; write what it expands
+to)". Baseline and private names aren't recorded.
+
+Test: diagnostics row `doom-c-fn-macro`; `s17-cmacro-refused`,
+`s21-cconst-*` and the `S21O_`/`S21U_` rows now expect the reason.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: the header constant evaluator folds `?:` and comparisons (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-011). `SDL_Event`'s padding,
+`sizeof(void *) <= 8 ? 56 : …`, left the union opaque. The evaluator in
+`src/cheader.nuc` gained `!`, the relational and equality operators, `&&`,
+`||` and `?:` (right-associative, arms in their common rank), typed as C
+types them. Array extents now enter at the top level too, so the bitwise
+levels and enumerators fold there as they did in macros and enums.
+
+Test: `doom-c-extent-conditional` in `tests/suite-doom.nuc`; `MP_COND` and
+`MP_CMP` in `tests/layout/macros.h`. `MP_LOGIC`, `l2_unfoldable_enum` and
+`S21E_TERNARY` fold now, and their tests say so.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.

@@ -183,11 +183,10 @@ int main(void){
   (return (ok)))
 
 ; An extent the evaluator cannot fold abandons the struct and leaves the name
-; opaque, rather than guessing a count. Two shapes: a name (an enum constant —
-; the evaluator resolves no names) and a zero extent. `[]` used to be a third;
-; Stage 16 C1a made it a flexible array member, checked positively below.
+; opaque, rather than guessing a count: a zero extent. `[]` used to be another;
+; Stage 16 C1a made it a flexible array member, checked positively below. An
+; enum constant was a third until nuc-doom ISSUE-011 (tests/suite-doom.nuc).
 (deftest l2-layout-unfoldable
-  (try (check-opaque-at "tests/fixtures/l2-arrays.h" "l2_unfoldable_enum" "56"))
   (try (check-opaque-at "tests/fixtures/l2-arrays.h" "l2_unfoldable_zero" "62"))
   (return (ok)))
 

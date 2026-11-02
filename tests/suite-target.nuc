@@ -468,10 +468,10 @@
 ; `MP_PUB` folds THROUGH the private `_MP_BASE` (010 | 0x20), so the admitted
 ; set is not merely "the ones with simple bodies".
 (deftest s17-cmacro-admitted
-  (let (src:String (macro-src "MP_PUB \" \" MP_SHIFT \" \" MP_XOR \" \" MP_AND \" \" MP_NEG \" \" MP_MAX")
+  (let (src:String (macro-src "MP_PUB \" \" MP_SHIFT \" \" MP_XOR \" \" MP_AND \" \" MP_NEG \" \" MP_MAX \" \" MP_LOGIC \" \" MP_COND \" \" MP_CMP")
         out:String (try (build-run-source (string-as-view &src))))
     (try (check-eq (string-as-view &out)
-                   "40 16 255 60 -3 9223372036854775807\n"))
+                   "40 16 255 60 -3 9223372036854775807 1 56 11\n"))
     (drop &out)
     (drop &src))
   (return (ok)))
@@ -479,11 +479,19 @@
 ; A name that was never registered, said so at the line that used it. The shell
 ; asked only whether the compile failed, which any other error also satisfies.
 (defn check-macro-unknown (name:StrView):!void
+  (return (check-macro-unknown-as name (str "undefined: " name " "))))
+
+; A header macro the importer read and left out is named with its reason (nuc-doom ISSUE-002).
+(defn check-macro-skipped (name:StrView why:StrView):!void
+  (return (check-macro-unknown-as name
+            (str "undefined: '" name "' — its C header declaration was skipped (tests/layout/macros.h defines '"
+                 name "', but it " why))))
+
+(defn check-macro-unknown-as (name:StrView want:String):!void
   (let (src:String (macro-src name)
         p:String (try (test-write-file "t.nuc" (string-as-view &src)))
         pv:StrView (string-as-view &p)
-        c:Compiled (try (compile-path pv))
-        want:String (str "undefined: " name))
+        c:Compiled (try (compile-path pv)))
     (try (check-error-at (ref c 'diags) pv 3 (string-as-view &want)))
     (drop &want)
     (drop &c)
@@ -527,11 +535,10 @@
 ; is not the header's macro at all.
 (deftest s17-cmacro-refused
   (try (check-macro-unknown "_MP_BASE"))
-  (try (check-macro-unknown "MP_FN"))
-  (try (check-macro-unknown "MP_STR"))
-  (try (check-macro-unknown "MP_FLOAT"))
-  (try (check-macro-unknown "MP_LOGIC"))
-  (try (check-macro-unknown "MP_OVER"))
+  (try (check-macro-skipped "MP_FN" "is a function-like macro, which is not imported"))
+  (try (check-macro-skipped "MP_STR" "is a macro whose body does not fold to an integer constant"))
+  (try (check-macro-skipped "MP_FLOAT" "is a macro whose body does not fold to an integer constant"))
+  (try (check-macro-skipped "MP_OVER" "is a macro whose body does not fold to an integer constant"))
   (let (pre:String (try (first-clang-predefine)))
     (when (> (byte-len &pre) 0)
       (try (check-macro-unknown (string-as-view &pre))))

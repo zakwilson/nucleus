@@ -39,3 +39,27 @@
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "e\noptind=1 tz=7"))
     (drop &out)))
+
+; ISSUE-011: an array extent with `?:`, a comparison or an enumerator folds,
+; so the struct lays out as C lays it out instead of turning opaque.
+(deftest doom-c-extent-conditional
+  (let (dir:String (try (test-scratch-sub "ext"))
+        dv:StrView (string-as-view &dir))
+    (let (h:String (try (write-into dv "ext.h" "enum { EXT_N = 3 };
+typedef union { int type; unsigned char padding[sizeof(void *) <= 8 ? 56 : sizeof(void *) == 16 ? 64 : 3 * sizeof(void *)]; } Ev;
+struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
+"))
+          m:String (try (write-into dv "main.nuc" "(import-use \"ext.h\")
+(import-use \"stdio.h\")
+(defn main ():i32
+  (let (e:&Ev (alloca Ev))
+    (set! (e 'type) 5)
+    (printf \"%d %d %d\\n\" (unsafe/cast i32 (sizeof Ev)) (unsafe/cast i32 (sizeof Row)) (e 'type)))
+  0)
+"))
+          cf:String (str "--cflag=-I" dv)
+          out:String (try (build-run-file dv (string-as-view &cf) (string-as-view &m)))
+          ov:StrView (string-as-view &out))
+      (try (check-eq (strview-trim-end &ov) "56 16 5"))
+      (drop &out) (drop &cf) (drop &m) (drop &h))
+    (drop &dir)))
