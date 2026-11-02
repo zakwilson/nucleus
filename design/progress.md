@@ -5022,3 +5022,17 @@ Test: `doom-c-extent-conditional` in `tests/suite-doom.nuc`; `MP_COND` and
 `S21E_TERNARY` fold now, and their tests say so.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a file reached by two spellings is loaded once (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-015). An absolute entry path beside a
+relative `-I` gave a file two spellings, so an import cycle through it was
+loaded twice and its definitions collided. `resolve-import` now passes each
+path through `first-spelling`, which canonicalizes it with `real-path` and
+answers the spelling the file was first reached by. The already-loaded and
+cycle checks then see one name. The memo is node-cell lists, not a
+`HashMap Symbol Symbol`, which a compiler built by the older boot miscompiled.
+
+Test: `doom-import-one-spelling` in `tests/suite-doom.nuc`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.

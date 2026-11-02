@@ -21599,9 +21599,9 @@
       (let (linked:Symbol (ct-source-path name rel))
         (when (not (symbol-none? linked)) (return linked)))
       (let (nuc-path:Symbol (try-import-path (fstr rel ".nuc")))
-        (when (not (symbol-none? nuc-path)) (return (entry-spelling nuc-path))))
+        (when (not (symbol-none? nuc-path)) (return (first-spelling (entry-spelling nuc-path)))))
       (let (nuch-path:Symbol (try-import-path (fstr rel ".nuch")))
-        (when (not (symbol-none? nuch-path)) (return nuch-path)))))
+        (when (not (symbol-none? nuch-path)) (return (first-spelling nuch-path))))))
   (return (symbol-none)))
 
 (defn ct-linked? (path:Symbol):bool
@@ -21629,6 +21629,29 @@
 ; The unit's root reached under another spelling is the root: `nucleus build` in
 ; `lib/` compiles `nucleus/core.nuc`, which the prelude finds through `-I`.
 (defvar g-unit-entry-real:Symbol)
+; One file, one spelling: a file reached again under another path (an absolute
+; entry beside a relative `-I`) takes the spelling it was first reached by, so
+; the import lists see it once (nuc-doom ISSUE-015).
+(defvar (g-spelling-of ?&Node) null)
+(defvar (g-spelling-of-real ?&Node) null)
+(defn first-spelling (path:Symbol):Symbol
+  (let (hit:ptr (import-list-find g-spelling-of path))
+    (when (!= hit null) (return (cell-aux (unsafe/cast &Node hit)))))
+  (let (out:Symbol path)
+    (match (real-path (symbol-as-view path))
+      ((ok s)
+        (let (real:Symbol (symbol-intern (string-as-view &s))
+              seen:ptr (import-list-find g-spelling-of-real real))
+          (drop &s)
+          (if (!= seen null)
+            (set! out (cell-aux (unsafe/cast &Node seen)))
+            (do (set! g-spelling-of-real (import-list-push g-spelling-of-real real))
+                (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of-real))) path)))))
+      ((err e) 0))
+    (set! g-spelling-of (import-list-push g-spelling-of path))
+    (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of))) out)
+    (return out)))
+
 (defn entry-spelling (path:Symbol):Symbol
   (when (or (symbol-none? g-unit-entry-path) (= path g-unit-entry-path)) (return path))
   (let (pd:Symbol (path-dir g-unit-entry-path)
