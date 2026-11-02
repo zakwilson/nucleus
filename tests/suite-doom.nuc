@@ -90,3 +90,22 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
       (try (check-eq (strview-trim-end &ov) "1"))
       (drop &out) (drop &abs) (drop &m) (drop &b) (drop &a))
     (drop &dir)))
+
+; ISSUE-007: `unwrap-or`, `if-some` and `when-some` take a value Maybe, such as
+; the `?usize` a search answers.
+(deftest doom-value-maybe-forms
+  (let (out:String (try (build-run-source "(import-use nucleus.strview)
+(import-use \"stdio.h\")
+(defn main ():i32
+  (let (hay:StrView \"abcabc\" c:StrView \"c\" z:StrView \"z\")
+    (printf \"%zu %zu\\n\" (unwrap-or (strview-find &hay &c) 99)
+                          (unwrap-or (strview-find &hay &z) 99))
+    (printf \"%zu\\n\" (if-some (k (strview-find &hay &c)) (+ k 10) 0))
+    (if-some (k (strview-find &hay &z)) (printf \"found\\n\") (printf \"none\\n\"))
+    (when-some (k (strview-find &hay &c)) (printf \"at \") (printf \"%zu\\n\" k))
+    (when-some (k (strview-find &hay &z)) (printf \"not reached\\n\")))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "2 99\n12\nnone\nat 2"))
+    (drop &out)))

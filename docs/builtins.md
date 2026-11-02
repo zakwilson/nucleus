@@ -801,8 +801,7 @@ behavior if policy declines:
 ```
 
 `signal` requires `(import-use nucleus.error)` (it references the handler chain). Its result
-is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
-pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
+is a **value** `(Maybe T)`, eliminated with `match`, `if-some` or `unwrap-or`. The **v1 repair-type-is-a-value-type limitation** applies: a
 `(ref X)` niche-pointer repair is not a struct, so the struct-return call path
 cannot carry it (`examples/signal.nuc`).
 
@@ -961,8 +960,8 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
 | `as-ref` | `(as-ref p)` — launder an unchecked pointer (`(ptr T)`) into `?&T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |
-| `unwrap-or` | `(unwrap-or m default)` — the `(ref T)` inside, or `default` (evaluated only on the none path; must itself be `(ref ...)`-compatible). | `p ? p : d` |
-| `if-some` | `(if-some (x m) then else)` — if `m` is non-null, bind `x:(ref T)` in `then`; else evaluate `else`. Desugars to `cond`, so its value/typing rules match `if`. **`m` must be a nullable *pointer* (`?T`).** A value `(Maybe T)` over a non-pointer — `(Maybe StrView)`, `(Maybe i32)` — is eliminated with `match`; `if-some` refuses it with "value must be (Maybe (ref ...))". | `if ((x = m)) … else …` |
+| `unwrap-or` | `(unwrap-or m default)` — the `(ref T)` inside, or `default` (evaluated only on the none path; must itself be `(ref ...)`-compatible). Over a value `(Maybe T)`, such as the `?usize` `strview-find` answers, the `T` payload, or `default` as a `T`. | `p ? p : d` |
+| `if-some` | `(if-some (x m) then else)` — if `m` is non-null, bind `x:(ref T)` in `then`; else evaluate `else`. Desugars to `cond`, so its value/typing rules match `if`. Over a value `(Maybe T)` — `(Maybe StrView)`, `?usize` — it is `(match m ((some x) then) (none else))`, so `x` is the `T` payload. | `if ((x = m)) … else …` |
 | `when-some` | `(when-some (x m) body…)` — one-armed `if-some`. | `if ((x = m)) { … }` |
 | `move` | `(move b)` — transfer ownership of a `with`-owned binding out: disarms its scope-exit cleanup, yields the value with its escape taint cleared, and marks `b` consumed (later uses are "use after move"; reassignment revives it). | — |
 | `defer` | `(defer expr)` — register `expr` as an ad-hoc cleanup on the enclosing binding scope (nearest `let`/`with`/function body), re-emitted at every exit path in reverse registration order. Lexical, not dynamic: it runs at scope exit whether or not control reached the `defer` site. | `goto cleanup` discipline |

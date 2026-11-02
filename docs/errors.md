@@ -362,7 +362,6 @@ behavior if policy declines:
 ```
 
 `signal` requires `(import-use nucleus.error)` (it references the handler chain). Its result
-is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
-pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
+is a **value** `(Maybe T)`, eliminated with `match`, `if-some` or `unwrap-or`. The **v1 repair-type-is-a-value-type limitation** applies: a
 `(ref X)` niche-pointer repair is not a struct, so the struct-return call path
 cannot carry it (`examples/signal.nuc`).

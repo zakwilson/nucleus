@@ -5061,3 +5061,18 @@ program over its sources. `clean` removes the test program's outputs too.
 Test: `doom-nucleus-test` in `tests/suite-build.nuc`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `unwrap-or`, `if-some` and `when-some` take a value Maybe (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-007). The stdlib's searches answer a
+value Maybe (`strview-find` gives `?usize`), but the three short forms took
+only a pointer Maybe and advised an `as-ref` cast that couldn't apply.
+`unwrap-or` over a value Maybe now reads the `some` payload or evaluates the
+default, sharing `emit-unwrap-or-result`'s code with Result's `ok` arm.
+`if-some`/`when-some` emit the `match` they abbreviate, through the new
+`emit-match-val`, which takes an already-emitted scrutinee. Anything else gets
+"value must be a Maybe, not T". `unwrap` stays pointer- and result-only.
+
+Test: `doom-value-maybe-forms` in `tests/suite-doom.nuc`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.

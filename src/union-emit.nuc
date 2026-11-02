@@ -146,11 +146,11 @@
 
 ; (unwrap-or r default) over a Result: the `ok` payload, or `default` (evaluated
 ; only on the err path; it must satisfy the ok payload type).
-(defn emit-unwrap-or-result (v:&Val ud:&UnionDef default-node:ptr scope:&Scope line:i32):&Val
+(defn emit-unwrap-or-result (v:&Val ud:&UnionDef arm:StrView default-node:ptr scope:&Scope line:i32):&Val
   (let (vv:&Val v
         udd:&UnionDef ud
         sd:&StructDef (udd 'sdef)
-        oi:i32 (union-arm-index ud (symbol-intern "ok"))
+        oi:i32 (union-arm-index ud (symbol-intern arm))
         ok-ty:ptr ((invoke (udd 'arms) oi:usize) 'ptype)
         poff:i32 (union-payload-off ud)
         base:StrView (new-tmp)
@@ -350,10 +350,13 @@
                   ((v 'type) 'elem) (node-at cc 2) scope (cc 'line))))
       (let (rud:?&UnionDef (result-union-of (v 'type)))
         (when (!= rud null)
-          (return (emit-unwrap-or-result v rud
+          (return (emit-unwrap-or-result v rud "ok"
                                          (node-at cc 2) scope (cc 'line)))))
+      (let (vud:?&UnionDef (value-maybe-union-of (v 'type)))
+        (when (!= vud null)
+          (return (emit-unwrap-or-result v vud "some" (node-at cc 2) scope (cc 'line)))))
       (when (!= (ptr-pkind (v 'type)) PTR-MAYBE)
-        (die-at (cc 'line) "unwrap-or: value must be (Maybe (ref ...)) — launder an unchecked pointer with (as-ref ...)"))
+        (die-at (cc 'line) (fstr "unwrap-or: value must be a Maybe or a result, not " (type-display (v 'type)))))
       (let (ref-ty:ptr (type-as-pkind (v 'type) PTR-REF)
             isn:StrView (new-tmp)
             id:i32 (new-label-id)
@@ -397,6 +400,16 @@
 ; narrowing point, so x reads as (ref T) exactly inside the then arm (and stays
 ; Maybe in the else arm). Reuses cond's phi typing, fall-through, and
 ; after-the-form narrowing rules wholesale.
+; Over a value `(Maybe T)`: the `match` the form abbreviates, on the emitted `mv`.
+(defn emit-if-some-value (cc:&Node xnode:&Node mv:&Val scope:&Scope is-when:i32):&Val
+  (let (ln:i32 (cc 'line)
+        some-pat:&Node (node-list2 'some xnode ln)
+        then-c:&Node (if (!= is-when 0)
+                       (node-cons some-pat (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)) ln)
+                       (node-list2 some-pat (node-at cc 2) ln))
+        else-c:&Node (node-list2 'none (if (and (= is-when 0) (= (node-len cc) 4)) (node-at cc 3) (node-list1 'do ln)) ln))
+    (return (emit-match-val (node-list4 'match 'nil then-c else-c ln) scope mv))))
+
 (defn emit-if-some (call:ptr scope:&Scope is-when:i32):&Val
   (let (cc:&Node (unsafe/cast &Node call)
         tag:StrView "if-some")
@@ -412,9 +425,10 @@
         (when (!= (xnode 'kind) NODE-SYM)
           (die-at (binder 'line) (fstr tag ": name must be a symbol")))
         (let (mv:&Val (emit-node (node-at (as ptr binder) 1) scope))
+          (when (!= (value-maybe-union-of (mv 'type)) null)
+            (return (emit-if-some-value cc xnode mv scope is-when)))
           (when (!= (ptr-pkind (mv 'type)) PTR-MAYBE)
-            (die-at (cc 'line) (fstr tag
-                                     ": value must be (Maybe (ref ...)) — launder an unchecked pointer with (as-ref ...)")))
+            (die-at (cc 'line) (fstr tag ": value must be a Maybe, not " (type-display (mv 'type)))))
           ; W9 item 39: a binder name becomes an LLVM local identifier, so it takes
           ; the same transform a defn name does. Every `%<binder>.addr.N` producer
           ; in this file applies it; `scope-define` still keys on the source name.
@@ -1608,11 +1622,16 @@
     (when (< (node-len cc) 3)
       (die-at (cc 'line) "match: expects a scrutinee and at least one clause"))
     (let (my-want:ptr g-want-type
-          sv:&Val (emit-node (node-at cc 1) scope)
-          st:&Type (unsafe/cast &Type (sv 'type)))
+          sv:&Val (emit-node (node-at cc 1) scope))
       ; TC-5 part 2: the scrutinee (a generic call) may have consumed the want;
       ; re-arm so clause/arm-body emitters distribute it to value tails.
       (set! g-want-type my-want)
+      (return (emit-match-val call scope sv)))))
+
+; `match` over a scrutinee already emitted as `sv`; `call`'s operand 1 is not read.
+(defn emit-match-val (call:ptr scope:&Scope sv:&Val):&Val
+  (let (cc:&Node (unsafe/cast &Node call))
+    (let (st:&Type (unsafe/cast &Type (sv 'type)))
       (case (niche-layout-of (sv 'type))
         LAYOUT-NICHE-ERRPTR
           (return (emit-match-niche-errptr call scope sv
