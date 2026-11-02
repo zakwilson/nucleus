@@ -5087,3 +5087,17 @@ from it (`make update-bootstrap`, or context/build.md's C0 recipe for the host
 boot), because ISSUE-009, 018 and 026 make the prelude use these.
 
 Gate: builds with the previous boot; after `make update-bootstrap`, bootstrap PASS.
+
+## DOOM-port fix: a `defvar` initialized by an aggregate `defconst` (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-016). `(defvar g:Fx ZERO)` with
+`(defconst ZERO (Fx 0))` was refused as "a Fx slot must be initialized with a
+(Fx ...) compound literal", so the port wrote the literal at 24 sites. An
+aggregate `defconst` now keeps its value node (`Sym.const-init`), and
+`const-aggregate-init` substitutes it wherever a global initializer names the
+constant, whole or as an element of a larger literal. The global is then
+folded as if the literal were written there.
+
+Test: `doom-defvar-from-aggregate-const` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

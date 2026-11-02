@@ -916,7 +916,9 @@ compile-time values a `defvar` initializer does, in two kinds:
   read-only storage (an LLVM `constant`), and each use reads it like a global.
   `(ORIGIN 'x)`, `(aref TABLE 2)` and `(sum TABLE 4)` all work; an array
   constant decays to `&T` where a pointer is wanted. On a target with separate
-  program and data memory (AVR), such a table stays in flash.
+  program and data memory (AVR), such a table stays in flash. A global
+  initializer that names one, `(defvar g:Pt ORIGIN)` or `(Line ORIGIN ORIGIN)`,
+  takes its value at compile time, as if the literal were written there.
 
 ```lisp
 (defconst PI 3.25)

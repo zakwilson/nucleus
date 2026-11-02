@@ -109,3 +109,22 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "2 99\n12\nnone\nat 2"))
     (drop &out)))
+
+; ISSUE-016: a `defvar` initialized by an aggregate `defconst`, whole or as an
+; element, folds the constant's value.
+(deftest doom-defvar-from-aggregate-const
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Fx v:i32)
+(defstruct Pair a:Fx b:Fx)
+(defconst ZERO (Fx 7))
+(defconst PZ (Pair ZERO (Fx 2)))
+(defvar g:Fx ZERO)
+(defvar h:Pair (Pair ZERO ZERO))
+(defvar k:Pair PZ)
+(defn main ():i32
+  (printf \"%d %d %d %d\\n\" (g 'v) ((h 'b) 'v) ((k 'a) 'v) ((k 'b) 'v))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 7 7 2"))
+    (drop &out)))

@@ -15963,6 +15963,7 @@
 ; re-rendering at the target width, `pkind-flow-check`, `(as CStr …)`,
 ; `&g`) applies to an ELEMENT exactly as it applies to a whole global.
 (defn defvar-write-const (init:?&Node ty:?&Type encl:i32):void
+  (set! init (const-aggregate-init init))
   (let (tt:(ptr Type) ty
         tk:i32 (tt 'kind))
     (when (= tk TY-ARRAY)
@@ -16648,6 +16649,7 @@
   (guard-name-kind name (cc 'line) NK-VALUE)
   (when (repl-redefine-global cc name (as ?&Type ty) init-node attr-flags) (return))
   (guard-value-redefinition name (cc 'line))
+  (set! init-node (const-aggregate-init init-node))
   ; G-5 step 4: a non-null typed-pointer global must be initialized.
   (when (= init-node null)
     (defvar-require-init name (as ?&Type ty) (cc 'line)))
@@ -16813,7 +16815,18 @@
               (die-at line
                 (fstr "defconst: '" name
                       "' needs a run-time initializer; a constant's value must be known at compile time -- use defvar")))
-            (emit-global-def cc name ty val DECL-ATTR-CONST)))))))
+            (emit-global-def cc name ty val DECL-ATTR-CONST)
+            (if-some (s (scope-lookup g-globals name)) (set! (s 'const-init) (as ptr val)) 0)))))))
+
+; The value an aggregate `defconst` named by `n` was written with, else `n`
+; (nuc-doom ISSUE-016).
+(defn const-aggregate-init (n:?&Node):?&Node
+  (when (!= (node-kind n) NODE-SYM) (return n))
+  (if-some (s (scope-lookup g-globals ((unsafe/cast &Node n) 's)))
+    (when (and (!= (s 'readonly-global) 0) (!= (s 'const-init) null))
+      (return (const-aggregate-init (unsafe/cast &Node (s 'const-init)))))
+    0)
+  (return n))
 
 ; A defconst's name without its annotation, from any spelling a defvar name takes.
 (defn defconst-bare-name (n:?&Node):Symbol
@@ -21627,6 +21640,29 @@
         (when (not (symbol-none? nuch-path)) (return (first-spelling nuch-path))))))
   (return (symbol-none)))
 
+; One file, one spelling: a file reached again under another path (an absolute
+; entry beside a relative `-I`) takes the spelling it was first reached by, so
+; the import lists see it once (nuc-doom ISSUE-015).
+(defvar (g-spelling-of ?&Node) null)
+(defvar (g-spelling-of-real ?&Node) null)
+(defn first-spelling (path:Symbol):Symbol
+  (let (hit:ptr (import-list-find g-spelling-of path))
+    (when (!= hit null) (return (cell-aux (unsafe/cast &Node hit)))))
+  (let (out:Symbol path)
+    (match (real-path (symbol-as-view path))
+      ((ok s)
+        (let (real:Symbol (symbol-intern (string-as-view &s))
+              seen:ptr (import-list-find g-spelling-of-real real))
+          (drop &s)
+          (if (!= seen null)
+            (set! out (cell-aux (unsafe/cast &Node seen)))
+            (do (set! g-spelling-of-real (import-list-push g-spelling-of-real real))
+                (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of-real))) path)))))
+      ((err e) 0))
+    (set! g-spelling-of (import-list-push g-spelling-of path))
+    (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of))) out)
+    (return out)))
+
 (defn ct-linked? (path:Symbol):bool
   (return (and (not (symbol-none? path)) (!= (import-list-has g-linked-paths path) 0))))
 
@@ -21652,29 +21688,6 @@
 ; The unit's root reached under another spelling is the root: `nucleus build` in
 ; `lib/` compiles `nucleus/core.nuc`, which the prelude finds through `-I`.
 (defvar g-unit-entry-real:Symbol)
-; One file, one spelling: a file reached again under another path (an absolute
-; entry beside a relative `-I`) takes the spelling it was first reached by, so
-; the import lists see it once (nuc-doom ISSUE-015).
-(defvar (g-spelling-of ?&Node) null)
-(defvar (g-spelling-of-real ?&Node) null)
-(defn first-spelling (path:Symbol):Symbol
-  (let (hit:ptr (import-list-find g-spelling-of path))
-    (when (!= hit null) (return (cell-aux (unsafe/cast &Node hit)))))
-  (let (out:Symbol path)
-    (match (real-path (symbol-as-view path))
-      ((ok s)
-        (let (real:Symbol (symbol-intern (string-as-view &s))
-              seen:ptr (import-list-find g-spelling-of-real real))
-          (drop &s)
-          (if (!= seen null)
-            (set! out (cell-aux (unsafe/cast &Node seen)))
-            (do (set! g-spelling-of-real (import-list-push g-spelling-of-real real))
-                (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of-real))) path)))))
-      ((err e) 0))
-    (set! g-spelling-of (import-list-push g-spelling-of path))
-    (cell-aux-set (unsafe/cast &Node (node-first (unsafe/cast &Node g-spelling-of))) out)
-    (return out)))
-
 (defn entry-spelling (path:Symbol):Symbol
   (when (or (symbol-none? g-unit-entry-path) (= path g-unit-entry-path)) (return path))
   (let (pd:Symbol (path-dir g-unit-entry-path)
