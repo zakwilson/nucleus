@@ -36,12 +36,20 @@
   (_* (a:Self b:Self):Self)
   (_/ (a:Self b:Self):Self))
 
-; Built-in conformances (signed integers and doubles). `(extend T Ord)` records
+; Built-in conformances: every integer and float type. `(extend T Ord)` records
 ; `(T, Eq)` too, via the Ord→Eq inheritance edge.
 (extend i32 Ord) (extend i32 Num)
 (extend i64 Ord) (extend i64 Num)
 (extend f64 Ord) (extend f64 Num)
 (extend f32 Ord) (extend f32 Num)
+(extend i8 Ord) (extend i8 Num)
+(extend i16 Ord) (extend i16 Num)
+(extend ui8 Ord) (extend ui8 Num)
+(extend ui16 Ord) (extend ui16 Num)
+(extend ui32 Ord) (extend ui32 Num)
+(extend ui64 Ord) (extend ui64 Num)
+(extend usize Ord) (extend usize Num)
+(extend ssize Ord) (extend ssize Num)
 
 ; C-style strings are Eq (content comparison via strcmp), but not Ord — the
 ; built-in `=` / `!=` on two CStr lower to a strcmp, so the conformance is

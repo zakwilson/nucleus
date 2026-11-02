@@ -5143,3 +5143,18 @@ bucket states.
 Test: `doom-collection-clear` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `nucleus.math` with min, max, abs and clamp (2026-11-02)
+
+From the nuc-doom port's ISSUE-035: the port hand-wrote `imin`/`imax`/`iabs`.
+The new `lib/nucleus/math.nuc` defines `min`, `max` and `clamp` as generics
+bounded by `Ord`, and `abs` by `Ord` and `Num`, so a user type that conforms
+gets the first three. `abs` compares with a literal `0`, so it needs a type a
+literal converts to. `nucleus.numeric` now conforms every integer type to
+`Ord` and `Num`, not only `i32` and `i64`, so `usize` and the unsigned types
+take them. The two-argument `min`/`max` overload beside `nucleus.combinators`'
+iterator ones.
+
+Test: `doom-math-scalars` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

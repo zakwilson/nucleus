@@ -1,0 +1,19 @@
+; Scalar min, max, abs and clamp over the nucleus.numeric protocols, so a user
+; type that conforms to Ord (and Num, for abs) gets them too.
+
+(ns nucleus.math)
+
+(import-use nucleus.numeric)
+
+(defn min (a:T b:T :where (Ord T)):T (return (if (< b a) b a)))
+
+(defn max (a:T b:T :where (Ord T)):T (return (if (< a b) b a)))
+
+; `lo` when `x` is below it, `hi` when above; `lo` must not exceed `hi`.
+(defn clamp (x:T lo:T hi:T :where (Ord T)):T
+  (return (if (< x lo) lo (if (< hi x) hi x))))
+
+; The most negative integer has no positive counterpart and comes back
+; unchanged, as C's abs gives.
+(defn abs (a:T :where (Ord T) (Num T)):T
+  (return (if (< a 0) (- 0 a) a)))

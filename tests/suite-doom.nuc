@@ -186,3 +186,18 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "5 4 1 7 1 1 30 -1"))
     (drop &out)))
+
+; ISSUE-035: nucleus.math's scalar min/max/abs/clamp, beside the iterator `min`.
+(deftest doom-math-scalars
+  (let (out:String (try (build-run-source "(import-use nucleus.math)
+(import-use nucleus.combinators)
+(import-use \"stdio.h\")
+(defn main ():i32
+  (let (a:i32 -5 u:usize 9 f:f64 -2.5)
+    (printf \"%d %d %d %zu %zu %g %d\\n\" (min a 3) (max a 3) (abs a) (min u 4) (clamp u 1 5)
+            (abs f) (clamp 12 0 10)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "-5 3 5 4 5 2.5 10"))
+    (drop &out)))
