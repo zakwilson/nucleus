@@ -50,6 +50,7 @@
   kind:StrSetting
   version:StrSetting
   entry:StrSetting
+  tests:StrSetting             ; the test program's entry, for `nucleus test`
   source-root:StrSetting
   out-dir:StrSetting
   triple:StrSetting
@@ -75,7 +76,7 @@
 
 (defn build-config ():BuildConfig
   (return (BuildConfig (str-setting) (str-setting) (str-setting) (str-setting)
-                       (str-setting) (str-setting)
+                       (str-setting) (str-setting) (str-setting)
                        (str-setting) (str-setting) (str-setting) (str-setting) (str-setting)
                        (make (Vector StrView)) (str-setting) (make (Vector TargetConfig))
                        (IntSetting 0 (Loc "" 0) false)
@@ -114,7 +115,7 @@
 ; Decoding one file
 ; ---------------------------------------------------------------------------
 
-(defconst CONFIG-KEYS ":name :kind :version :entry :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target")
+(defconst CONFIG-KEYS ":name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target")
 (defconst TARGET-KEYS ":triple :mcpu :mmcu :sysroot :linker :runner :opt :cflags :link-args :libs :c-sources :pkg-config :shared :deps")
 
 (defn config-line (n:?&Node fallback:i32):i32
@@ -332,7 +333,7 @@
 ; A key only the project sets, refused inside target `target`; a key only a
 ; target sets, refused at the top. "" for neither.
 (defn config-misplaced (key:StrView target:StrView):String
-  (let (project-only:bool (or (= key "name") (= key "kind") (= key "version") (= key "entry")
+  (let (project-only:bool (or (= key "name") (= key "kind") (= key "version") (= key "entry") (= key "tests")
                               (= key "source-root") (= key "out-dir") (= key "provides")
                               (= key "user-registry") (= key "targets") (= key "default-target"))
         target-only:bool (or (= key "triple") (= key "mcpu") (= key "mmcu") (= key "sysroot")
@@ -361,6 +362,7 @@
                   (cond (= key "name") (config-str-setting (ref c 'name) v key file line err true)
                         (= key "version") (config-str-setting (ref c 'version) v key file line err false)
                         (= key "entry") (config-str-setting (ref c 'entry) v key file line err false)
+                        (= key "tests") (config-str-setting (ref c 'tests) v key file line err false)
                         (= key "source-root") (config-str-setting (ref c 'source-root) v key file line err false)
                         (= key "out-dir") (config-str-setting (ref c 'out-dir) v key file line err false)
                         (= key "triple") (config-str-setting (ref c 'triple) v key file line err false)
@@ -452,6 +454,7 @@
   (merge-setting (ref into 'kind) (ref from 'kind))
   (merge-setting (ref into 'version) (ref from 'version))
   (merge-setting (ref into 'entry) (ref from 'entry))
+  (merge-setting (ref into 'tests) (ref from 'tests))
   (merge-setting (ref into 'source-root) (ref from 'source-root))
   (merge-setting (ref into 'out-dir) (ref from 'out-dir))
   (merge-setting (ref into 'triple) (ref from 'triple))

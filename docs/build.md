@@ -15,6 +15,7 @@ form. The design is in `design/stage27-build/`.
 ```
 nucleus build     [-j N] [-O0..-O3] [--target=T]... [--all-targets]
 nucleus run       [-j N] [-O0..-O3] [--target=T] [-- ARGS...]
+nucleus test      [-j N] [-O0..-O3] [--target=T] [-- ARGS...]
 nucleus run-repl  [-j N] [-O0..-O3] [--target=T] [--repl-format=text|json] [-- ARGS...]
 nucleus repl      [-j N] [-O0..-O3] [--target=T] [--repl-format=text|json]
 nucleus clean     [--target=T]... [--all-targets]
@@ -40,17 +41,18 @@ step's command, so switching it rebuilds nothing.
 |---------|--------------|
 | `build` | Brings `build/<name>` up to date, or for a library its headers, objects and archive (see [Library projects](#library-projects)). A named target builds under `build/<target>/` (see [Targets](#targets)). Prints `nucleus: building <output> (<reason>)` for each step it runs, or `nucleus: <name> is up to date`. |
 | `run` | Compiles and runs the program in this process (`nucleusc --run`), passing what follows `--`. Its exit status is the program's. A project with `:c-sources` is built and the binary run instead, because a C object can't join a JIT session. So is a target with a `:runner`, through the runner. A target this machine can't run, and that has no runner, is refused. |
+| `test` | Builds the test program, `build/<name>-tests`, from the file `:tests` names, and runs it, passing what follows `--`. Its exit status is the test program's. The test program shares the project's source root and settings, so its entry imports the project's files as the program does. A library's tests are a program too. A project without `:tests` is refused. A target with a `:runner` runs the tests through it. |
 | `run-repl` | Runs the program with a REPL beside it: `nucleusc -i ENTRY -- ARGS` with the project's flags. `main` runs on its own thread, and the prompt starts in the entry file's namespace. The prompt can read and set the program's globals and redefine its functions while it runs. At the end of input it waits for `main` and exits with its status. Like `repl`, it refuses a project with `:c-sources`, whose objects can't join a JIT session. See [Running a program at the prompt](compiler.md#running-a-program-at-the-prompt). |
 | `repl` | Starts `nucleusc -i` with the project's flags, and imports and runs nothing. The REPL applies the C requirements of the entry file's import closure, as a build would, and loads their libraries. Import a header or one of the project's files at the prompt. Both `repl` and `run-repl` pass `--repl-format=` to the compiler, so `--repl-format=json` gives one JSON object per REPL error, as `nucleusc -i` does. Both run their JIT on this machine, so they refuse a target it can't run. |
 | `init` | Writes `build.edn`, recording each choice the conventions couldn't make (see [Choosing C packages](#choosing-c-packages)). Refused if a `build.edn` already exists. |
 | `init-local` | Writes `build-local.edn`, pointing each library the project needs at a sibling checkout that provides it (see [`nucleus init-local`](#nucleus-init-local)). |
-| `clean` | Removes what the tool wrote for the chosen targets: the outputs, their temporaries and depfiles, the log, then every directory under `build/` that this leaves empty, and `build/` itself once it is empty. |
+| `clean` | Removes what the tool wrote for the chosen targets, the test program's included: the outputs, their temporaries and depfiles, the log, then every directory under `build/` that this leaves empty, and `build/` itself once it is empty. |
 | `install` | Builds a library and installs it (see [Installing a library](#installing-a-library)). |
 | `uninstall` | Removes an installed library: this project's, or `NAME`'s. |
 
 `-j N` (or `-jN`) caps the steps run at once. The default is the number of
 online processors. `-O` overrides `:opt`. `--target=` and `--all-targets`
-choose targets (see [Targets](#targets)). `run`, `run-repl` and `repl` take
+choose targets (see [Targets](#targets)). `run`, `test`, `run-repl` and `repl` take
 one target, and `--all-targets` is for `build`, `clean`, `install` and
 `uninstall`.
 
@@ -141,6 +143,7 @@ One EDN map. Every key is optional.
 | `:deps` | map | Libraries by name, below |
 | `:user-registry` | `true` or `false` | `false` skips the default `library-paths.edn` |
 | `:entry` | string | The entry file, relative to the project root |
+| `:tests` | string | The test program's entry file, relative to the project root, which `nucleus test` builds and runs |
 | `:source-root` | string | The directory put on `-I`; `src` or the root by default |
 | `:out-dir` | string | Where outputs go; `build` by default |
 | `:targets` | map | Named targets and their settings (see [Targets](#targets)) |
@@ -164,7 +167,7 @@ One EDN map. Every key is optional.
 A misspelled key, or a value of the wrong kind, is an error at its line:
 
 ```
-build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target)
+build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target)
 ```
 
 ### Requirement sets
@@ -183,7 +186,7 @@ annotations included. The tool warns each time:
 nucleus: warning: build.edn:1: :unsafe/pkg-config replaces every other requirement on "fake.h"
 ```
 
-A path in `build.edn` that leaves the project (`:entry`, `:source-root`,
+A path in `build.edn` that leaves the project (`:entry`, `:tests`, `:source-root`,
 `:out-dir` or a `:c-sources` file that is absolute or climbs out with `..`)
 warns at every build, because the file is committed and the path won't exist
 in another checkout:
@@ -227,8 +230,8 @@ what shouldn't be committed. The merge:
 It may also set `:opt`, `:cflags`, `:link-args`, `:libs`, `:c-sources`,
 `:pkg-config`, `:shared` and `:deps`. These merge over the project's settings
 by the `build-local.edn` rules, so the shared ones are written once. The
-project's own keys (`:name`, `:kind`, `:version`, `:entry`, `:source-root`,
-`:out-dir`, `:provides`, `:user-registry`) are refused inside a target, and a
+project's own keys (`:name`, `:kind`, `:version`, `:entry`, `:tests`,
+`:source-root`, `:out-dir`, `:provides`, `:user-registry`) are refused inside a target, and a
 target's own keys are refused at the top.
 
 ```clojure

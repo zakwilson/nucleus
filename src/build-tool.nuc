@@ -35,6 +35,8 @@
 (unsafe/import-private "unistd.h" posix)
 
 (defvar g-tool-root:Symbol)
+; Set while `tool-project` describes the :tests program rather than the project's own.
+(defvar g-tool-tests:bool false)
 
 (defstruct ToolOpts
   cmd:StrView
@@ -134,7 +136,7 @@
     (tool-die-at at msg)))
 
 (defn tool-usage ():i32
-  (eprint "usage: nucleus build|run|run-repl|repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<name>|<triple>]... [--repl-format=text|json] [-- <args>...]\n"
+  (eprint "usage: nucleus build|run|test|run-repl|repl|clean|init [-j N] [-O0|-O1|-O2|-O3] [--target=<name>|<triple>]... [--repl-format=text|json] [-- <args>...]\n"
           "       nucleus build|clean|install|uninstall --all-targets\n"
           "       nucleus install [--prefix=<dir>|--user] [--no-source] [--target=<name>|<triple>]...\n"
           "       nucleus uninstall [<name>] [--prefix=<dir>|--user] [--target=<name>|<triple>]...\n"
@@ -182,21 +184,19 @@
 (defn tool-find-root ():StrView
   (let (start:StrView (tool-cwd)
         dir:StrView start)
-    (while true
-      (when (file-exists? (fstr dir "/build.edn")) (return dir))
     (when (> (g-tool-root-pin 'len) 0) (return (tool-real-dir (tool-join start g-tool-root-pin))))
     (match (env-var "NUCLEUS_PROJECT_ROOT")
       ((some v) (return (tool-real-dir (tool-join start v))))
       (none 0))
-      (let (up:StrView (tool-parent dir))
-        (when (= up dir) (return start))
+    (while true
+      (when (file-exists? (fstr dir "/build.edn")) (return dir))
       ; A repository's root bounds the climb (nuc-doom ISSUE-005).
       (when (tool-vcs-root? dir) (return start))
+      (let (up:StrView (tool-parent dir))
+        (when (= up dir) (return start))
         (set! dir up)))
     (return start)))
 
-; ---------------------------------------------------------------------------
-; The project: configuration, then conventions (D-CONV)
 ; `--project-root=`, else "".
 (defvar g-tool-root-pin:StrView "")
 
@@ -212,6 +212,8 @@
     ((err e) (tool-die (fstr "the project root '" dir "' is not a directory"))))
   (return dir))
 
+; ---------------------------------------------------------------------------
+; The project: configuration, then conventions (D-CONV)
 ; ---------------------------------------------------------------------------
 
 ; Does a relative path climb out of the directory it is relative to?
@@ -238,6 +240,7 @@
 ; A committed build.edn should build in any checkout (overview.md §8.6).
 (defn tool-check-committed-paths (c:&BuildConfig):void
   (when ((c 'entry) 'set) (tool-warn-leaves ":entry" ((c 'entry) 'value) ((c 'entry) 'at)))
+  (when ((c 'tests) 'set) (tool-warn-leaves ":tests" ((c 'tests) 'value) ((c 'tests) 'at)))
   (when ((c 'source-root) 'set)
     (tool-warn-leaves ":source-root" ((c 'source-root) 'value) ((c 'source-root) 'at)))
   (when ((c 'out-dir) 'set)
@@ -538,7 +541,18 @@
           (set! (p 'source-root) sr))
         (let (src:StrView (tool-join root "src"))
           (set! (p 'source-root) (if (dir-exists? src) src root))))
-      (cond (p 'is-lib) (tool-lib-files &p)
+      (cond g-tool-tests
+              (let (tc:StrSetting (c 'tests)
+                    en:StrView (tool-join root (tc 'value)))
+                (when (not (tc 'set))
+                  (tool-die "nucleus test needs :tests in build.edn: the file whose main runs the tests"))
+                (when (not (file-exists? en))
+                  (tool-die-at (tc 'at) (fstr ":tests '" (tc 'value) "' does not exist")))
+                ; A library's tests are a program over its sources.
+                (set! (p 'is-lib) false)
+                (set! (p 'name) (fstr (p 'name) "-tests"))
+                (set! (p 'entry) en))
+            (p 'is-lib) (tool-lib-files &p)
             ((c 'entry) 'set)
         (let (en:StrView (tool-join root ((c 'entry) 'value)))
           (when (not (file-exists? en))
@@ -1672,12 +1686,21 @@
             ((err e) (tool-die "cannot wait for the program"))))))
     (return 1)))
 
+(defn tool-check-runnable (p:&Project o:&ToolOpts):void
+  (when (and (not (tool-host? p)) (= (count (ref (ref p 'config) 'runner)) 0))
+    (tool-die (fstr (tool-target-label p) " is for " (p 'triple) ", which this machine can't run"
+                    "\n  note: give the target a :runner, such as an emulator, and " (o 'cmd)
+                    " runs the program through it"))))
+
+; Built, not JIT-run, so the tests exercise the binary `build` makes.
+(defn tool-test (p:&Project o:&ToolOpts argc:i32 argv:ptr):i32
+  (tool-check-runnable p o)
+  (return (tool-run-built p o argc argv)))
+
 (defn tool-run (p:&Project o:&ToolOpts argc:i32 argv:ptr):i32
   (let (c:&BuildConfig (ref p 'config)
         args:(Vector StrView) (make (Vector StrView)))
-    (when (and (not (tool-host? p)) (= (count (ref c 'runner)) 0))
-      (tool-die (fstr (tool-target-label p) " is for " (p 'triple) ", which this machine can't run"
-                      "\n  note: give the target a :runner, such as an emulator, and run runs the program through it")))
+    (tool-check-runnable p o)
     ; A C object cannot join a JIT session, so a program with C sources runs built.
     (when (or (> (count (ref c 'c-sources)) 0) (> (count (ref c 'runner)) 0))
       (return (tool-run-built p o argc argv)))
@@ -1749,6 +1772,14 @@
   (tool-remove (p 'out-dir))
   (tool-remove (p 'base-out))
   (return 0))
+
+; The test program's outputs share the out-dir, so clean removes them first.
+(defn tool-clean-tests (p:&Project sel:StrView o:&ToolOpts):void
+  (when (file-exists? (tool-join (p 'root) (((p 'config) 'tests) 'value)))
+    (set! g-tool-tests true)
+    (let (t:Project (tool-project sel))
+      (set! g-tool-tests false)
+      (tool-clean &t o))))
 
 ; ---------------------------------------------------------------------------
 ; install and uninstall: overview.md §8.4's layout, listed in the manifest
@@ -2170,7 +2201,7 @@
                              (tool-jobs-default) -1 (make (Vector StrView)) argc "" false false ""
                              (make (Vector StrView)) false "" "" false)
         i:i32 2)
-    (when (not (or (= (o 'cmd) "build") (= (o 'cmd) "run") (= (o 'cmd) "run-repl")
+    (when (not (or (= (o 'cmd) "build") (= (o 'cmd) "run") (= (o 'cmd) "run-repl") (= (o 'cmd) "test")
                    (= (o 'cmd) "repl") (= (o 'cmd) "clean") (= (o 'cmd) "init") (= (o 'cmd) "init-local")
                    (= (o 'cmd) "install") (= (o 'cmd) "uninstall")))
       (eprint "nucleus: unknown command '" (o 'cmd) "'\n")
@@ -2207,6 +2238,8 @@
                 (conj (ref o 'lib-paths) (tool-join (tool-cwd) (strview-drop-bytes a 16)))
               (= a "--no-user-registry")
                 (set! (o 'no-registry) true)
+              (and (strview-has-prefix a "--project-root=") (> (a 'len) 15))
+                (set! g-tool-root-pin (strview-drop-bytes a 15))
               (or (= a "--diagnostics=text") (= a "--diagnostics=edn"))
                 (do (set! (o 'diag) a)
                     (set! g-diag-edn (if (= a "--diagnostics=edn") 1 0)))
@@ -2216,12 +2249,13 @@
               true
                 (do (eprint "nucleus: unknown option '" a "'\n") (return (tool-usage)))))
       (inc! i))
-    (when (and (< (o 'args-from) argc) (not (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl"))))
-      (eprint "nucleus: only run and run-repl pass arguments after --\n")
+    (when (and (< (o 'args-from) argc) (not (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl") (= (o 'cmd) "test"))))
+      (eprint "nucleus: only run, run-repl and test pass arguments after --\n")
       (return 2))
     (when (and (> ((o 'prefix) 'len) 0) (o 'user))
       (eprint "nucleus: --prefix and --user name two prefixes; give one\n")
       (return 2))
+    (set! g-tool-tests (= (o 'cmd) "test"))
     (when (= (o 'cmd) "init") (return (tool-init &o)))
     (when (= (o 'cmd) "init-local") (return (tool-init-local &o)))
     (when (and (> (count (ref o 'targets)) 0) (o 'all-targets))
@@ -2238,8 +2272,6 @@
     (let (round:i32 0)
       (while true
         (let (rc:i32 (tool-dispatch &o argc argv))
-              (and (strview-has-prefix a "--project-root=") (> (a 'len) 15))
-                (set! g-tool-root-pin (strview-drop-bytes a 15))
           (when (not (= rc TOOL-RETRY)) (return rc))
           (when (>= round 16) (tool-die "imports generated by macros kept naming new libraries"))
           (inc! round))))
@@ -2248,7 +2280,7 @@
 (defn tool-dispatch (o:&ToolOpts argc:i32 argv:ptr):i32
   (let (sels:(Vector StrView) (make (Vector StrView))
         ps:(Vector &Project) (make (Vector &Project))
-        one:bool (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl") (= (o 'cmd) "repl")))
+        one:bool (or (= (o 'cmd) "run") (= (o 'cmd) "run-repl") (= (o 'cmd) "repl") (= (o 'cmd) "test")))
     (tool-selections o &sels)
     (when (and one (> (count &sels) 1))
       (tool-die (fstr (o 'cmd) " runs one target; choose it with --target=")))
@@ -2268,9 +2300,12 @@
       (when (and one (not (= (o 'cmd) "run")) (not (tool-host? p0)))
         (return (tool-repl p0 o false argc argv)))
       (when (= (o 'cmd) "clean")
-        (dotimes (k (count &ps)) (tool-clean (invoke &ps k) o))
+        (dotimes (k (count &ps))
+          (let (p:&Project (invoke &ps k))
+            (when (((p 'config) 'tests) 'set) (tool-clean-tests p (invoke &sels k) o))
+            (tool-clean p o)))
         (return 0))
-      (dotimes (k (count &ps)) (tool-preflight (invoke &ps k) (= (o 'cmd) "run")))
+      (dotimes (k (count &ps)) (tool-preflight (invoke &ps k) (or (= (o 'cmd) "run") (= (o 'cmd) "test"))))
       ; Each target resolves its C requirements in its own pkg-config environment.
       (dotimes (k (count &ps))
         (let (p:&Project (invoke &ps k)
@@ -2282,6 +2317,7 @@
             (when again (return TOOL-RETRY)))))
       (cond (= (o 'cmd) "build") (return (tool-build-all &ps o))
             (= (o 'cmd) "run") (return (tool-run p0 o argc argv))
+            (= (o 'cmd) "test") (return (tool-test p0 o argc argv))
             (= (o 'cmd) "run-repl") (return (tool-repl p0 o true argc argv))
             (= (o 'cmd) "repl") (return (tool-repl p0 o false argc argv))
             true (return (tool-install-all &ps o)))))

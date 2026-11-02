@@ -5048,3 +5048,16 @@ the root with no search.
 Test: `doom-root-search-stops-at-vcs` in `tests/suite-build.nuc`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `:tests` and `nucleus test` (2026-11-02)
+
+From the nuc-doom port's ISSUE-004 ruling: tests are expected in most
+projects, so they get a key now, and `:programs` is deferred. `:tests` names
+the test program's entry. `nucleus test` builds it as `build/<name>-tests`,
+with the project's source root and settings, and runs the binary with the
+arguments after `--`, exiting with its status. A library's tests build as a
+program over its sources. `clean` removes the test program's outputs too.
+
+Test: `doom-nucleus-test` in `tests/suite-build.nuc`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
