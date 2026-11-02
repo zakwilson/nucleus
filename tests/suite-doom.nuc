@@ -392,3 +392,28 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
 ")))
     (try (check-file-exit dir (string-as-view &m) 142))
     (drop &m)))
+
+; ISSUE-024: a computed defconst folds at its first reference, across an import
+; cycle, through another pending constant, qualified, and forward in one file.
+(deftest doom-computed-const-across-cycle
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "doom24a.nuc" "(ns doom24a)
+(import-use doom24b)
+(defconst UNIT 16)
+(defconst RANGE (* 2 UNIT))
+(defconst REACH (+ RANGE 1))
+(defn a-sum ():i32 (+ (b-sum) (later)))
+(defn later ():i32 LATE)
+(defconst LATE (- UNIT 12))
+"))
+        b:String (try (test-write-file "doom24b.nuc" "(ns doom24b)
+(import-use doom24a)
+(defn b-sum ():i32 (+ REACH doom24a/RANGE))
+"))
+        m:String (try (test-write-file "doom24.nuc" "(import-use doom24a)
+(defn main ():i32 (return (a-sum)))
+")))
+    (try (check-file-exit dir (string-as-view &m) 69))
+    (drop &m)
+    (drop &b)
+    (drop &a)))

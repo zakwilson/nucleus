@@ -1196,6 +1196,17 @@
   total:i32
   seen:i32)
 
+; A computed `defconst` the prescan could not register: folded at its first
+; reference, in its own file's environment, if that comes before its emission.
+(defstruct PendingConst
+  form:ptr
+  ns:Symbol
+  path:Symbol
+  imports:ptr
+  private:i32
+  line:i32
+  state:i32)
+
 ; The innermost enclosing loop, for `break`/`continue`; `scope` is the one the
 ; loop body runs in, so a jump out runs the cleanups of every scope inside it.
 (defstruct LoopFrame

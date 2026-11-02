@@ -779,7 +779,12 @@ Consequences worth knowing:
   a file whose processing is already in progress. Cycles of any length work, as
   does a file that imports itself. Since signatures and value names are
   registered graph-wide before emission, every function, global, constant and
-  enum-member reference inside the cycle resolves.
+  enum-member reference inside the cycle resolves. A `defconst` whose value is
+  computed (`(* 64 FRAC-UNIT)`, or another constant's name) is folded at its
+  first reference if that comes before its own emission, in its own file's
+  namespace and imports; so is a forward reference to one in the same file.
+  Its value may use the prelude's macros, but not a macro its file defines
+  after the reference is reached.
 
   **Two things a cycle does not carry**, because they only exist once a file
   has been *emitted*, and a cycle member's body is emitted before the rest of

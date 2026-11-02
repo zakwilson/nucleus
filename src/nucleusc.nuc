@@ -985,6 +985,9 @@
 ; An imported file's bindings, kept under the REPL only: its `ns` gives the
 ; prompt the bindings of that namespace's files (repl-adopt-ns-imports).
 (defvar g-path-imports:&(HashMap Symbol &ImportVec) (new (HashMap Symbol &ImportVec) g-arena))
+; Computed defconsts awaiting a first reference, by scope key (nuc-doom ISSUE-024).
+(defvar g-pending-consts:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
+(defvar g-pending-list:&(Vector &PendingConst) (new (Vector &PendingConst) g-arena))
 ; `g-file-ns` by path, for the walk that asks it once per flattened import.
 (defvar g-path-ns:&(HashMap Symbol Symbol) (new (HashMap Symbol Symbol) g-arena))
 
@@ -5955,6 +5958,12 @@
 ; Resolve a source REFERENCE against the global scope. `sc` is the global frame
 ; (the unique null-parent Scope); `name` is the spelling as written.
 (defn globals-lookup-ref (sc:?&Scope name:Symbol):?&Sym
+  (let (hit:?&Sym (globals-lookup-ref-1 sc name))
+    (when (or (!= hit null) (= (count g-pending-list) 0)) (return hit))
+    (when (fold-pending-ref name) (return (globals-lookup-ref-1 sc name)))
+    (return null)))
+
+(defn globals-lookup-ref-1 (sc:?&Scope name:Symbol):?&Sym
   (let (n:i64 (qualifier-len name))
     (when (<= n 0)
       ; Unqualified: the current namespace's key — the pre-B2b rule, unchanged,
@@ -16896,6 +16905,7 @@
           annot:?&Type null)
       (when (symbol-none? name)
         (die-at (node-line name-node line) "defconst: name must be symbol"))
+      (when (pending-const-done? name line) (return))
       (when (defconst-annotated? name-node)
         (set! annot (extract-decl-name-and-type name-node (as &Symbol &name) (node-line name-node line))))
       ; `(as T v)` is the annotation spelled on the value.
@@ -20490,6 +20500,72 @@
         (when (!= (prescan-literal-kind? val) 0)
           (prescan-const-finish (defconst-literal-sym nm lit null) (cc 'line)))))))
 
+(defn prescan-pending-const (form:?&Node):void
+  (when (!= (node-len form) 3) (return))
+  (let (nm:Symbol (defconst-bare-name (node-at form 1)))
+    (when (or (symbol-none? nm) (!= (scope-lookup-key g-globals nm) null)) (return))
+    (let (key:Symbol (qualify-name (priv-key-use nm)))
+      (match (get g-pending-consts key) ((some j) (return)) (none 0))
+      (let (pc:&PendingConst (new PendingConst g-arena))
+        (set-fields! pc 'form (as ptr form) 'ns g-current-ns 'path g-source-path
+                     'imports (as ptr g-file-imports) 'private g-defining-private
+                     'line (node-line form 0) 'state 0)
+        (assoc g-pending-consts key (unsafe/cast i32 (count g-pending-list)))
+        (conj g-pending-list pc)))))
+
+; Emit a pending constant now, as its own file would; its own form later skips.
+(defn fold-pending-const (pc:&PendingConst):void
+  (let (save-path:Symbol g-source-path
+        save-ns:Symbol g-current-ns
+        save-imports:?&ImportVec g-file-imports
+        save-priv:i32 g-defining-private
+        save-line:i32 g-form-line)
+    (set! (pc 'state) 1)
+    (set! g-source-path (pc 'path))
+    (set! g-current-ns (pc 'ns))
+    (set! g-file-imports (as ?&ImportVec (pc 'imports)))
+    (set! g-defining-private (pc 'private))
+    (set! g-form-line (pc 'line))
+    (emit-defconst (unsafe/cast &Node (pc 'form)))
+    (set! (pc 'state) 2)
+    (set! g-source-path save-path)
+    (set! g-current-ns save-ns)
+    (set! g-file-imports save-imports)
+    (set! g-defining-private save-priv)
+    (set! g-form-line save-line)))
+
+(defn fold-pending-key (key:Symbol):bool
+  (match (get g-pending-consts key)
+    ((some i) (let (pc:&PendingConst (g-pending-list (as usize i)))
+                (when (!= (pc 'state) 0) (return false))
+                (fold-pending-const pc)
+                (return true)))
+    (none (return false))))
+
+; A reference that missed: is it a pending constant under any key it could mean?
+(defn fold-pending-ref (name:Symbol):bool
+  (when (!= (qualifier-len name) 0)
+    (let (r:&NameRef (resolve-spelling name))
+      (return (and (= (r 'status) NR-QUALIFIED) (fold-pending-key (r 'canonical))))))
+  (when (fold-pending-key (qualify-name (priv-key-use name))) (return true))
+  (dotimes (i (file-imports-count))
+    (match (file-flattened-ns-at i)
+      ((some fns) (when (fold-pending-key (ns-qualify-in fns name)) (return true)))
+      (none 0)))
+  (return (fold-pending-key name)))
+
+; True when `fold-pending-const` already emitted this form; otherwise claims it,
+; so a lookup during its own emission does not fold it a second time.
+(defn pending-const-done? (name:Symbol line:i32):bool
+  (when (= (count g-pending-list) 0) (return false))
+  (match (get g-pending-consts (qualify-name (priv-key-use name)))
+    ((some i) (let (pc:&PendingConst (g-pending-list (as usize i)))
+                (when (or (!= (pc 'path) g-source-path) (!= (pc 'line) line)) (return false))
+                (when (= (pc 'state) 2) (return true))
+                (set! (pc 'state) 1)
+                (return false)))
+    (none (return false))))
+
 (defn prescan-literal-kind? (v:?&Node):i32
   (let (k:i32 (node-kind v))
     (when (or (= k NODE-INT) (= k NODE-FLOAT) (= k NODE-STR) (= k NODE-CHAR)
@@ -20595,7 +20671,8 @@
                   (or (= h "defvar") (= h "defvar-"))
                     (prescan-defvar-name (as ptr f))
                   (or (= h "defconst") (= h "defconst-"))
-                    (prescan-defconst-name (as ptr f))
+                    (do (prescan-defconst-name (as ptr f))
+                        (prescan-pending-const (as ptr f)))
                   true
                     (prescan-defenum-names (as ptr f)))
                 (set! g-defining-private save-priv))))))

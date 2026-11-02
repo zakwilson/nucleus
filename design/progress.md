@@ -5286,3 +5286,21 @@ Test: `doom-ambiguous-value-name` and `doom-unambiguous-value-uses` in
 `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a computed `defconst` folds at its first reference (2026-11-02)
+
+From the nuc-doom port's ISSUE-024: across an import cycle,
+`(defconst EXPR (* 2 3))` was "undefined: EXPR — defined in a file this
+unit imports circularly", because the prescan registers only a literal
+`defconst` and a computed one waited for its file's emission.
+`prescan-pending-const` now records each `defconst` the prescan could not
+register, with its file's namespace, path, import table and privacy, keyed
+as a lookup would key it. `globals-lookup-ref` asks `fold-pending-ref` on a
+miss, which emits the constant then, as its own file would
+(`fold-pending-const`). The form's normal emission later sees it is done
+(`pending-const-done?`) and skips. A chain of pending constants folds
+recursively. A forward reference within one file folds the same way.
+
+Test: `doom-computed-const-across-cycle` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
