@@ -5158,3 +5158,19 @@ iterator ones.
 Test: `doom-math-scalars` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `as` converts an integer to a float that holds it exactly (2026-11-02)
+
+From the nuc-doom port's ISSUE-037: `(as f64 n:i32)` was refused as "lossy",
+though every `i32` is exact in an `f64`, so the port's resampler used
+`unsafe/cast`. `as-convert` now admits an integer to a float type whose
+mantissa holds every value of the source (`int-exact-in-float?`): 8- and
+16-bit integers to `f32`, and up to 32-bit to `f64`, plus an integer literal
+whose value is exact. `i64`, `usize` and `ui64` to `f64` can round and stay
+`unsafe/cast`, as does float to integer. The implicit coercions are
+unchanged.
+
+Test: `doom-as-exact-int-to-float` in `tests/suite-doom.nuc`; diagnostics row
+`doom-as-i64-to-f64`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

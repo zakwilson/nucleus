@@ -201,3 +201,16 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "-5 3 5 4 5 2.5 10"))
     (drop &out)))
+
+; ISSUE-037: `as` takes an integer to a float type that holds its every value.
+(deftest doom-as-exact-int-to-float
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (i:i32 -7 s:i16 300 u:ui32 4000000000 b:ui8 255)
+    (printf \"%g %g %g %g %g\\n\" (as f64 i) (as f64 (as f32 s)) (as f64 u) (as f64 (as f32 b))
+            (as f64 5000000000)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "-7 300 4e+09 255 5e+09"))
+    (drop &out)))

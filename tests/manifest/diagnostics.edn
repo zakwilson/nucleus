@@ -1449,3 +1449,7 @@
 {:name "doom-c-fn-macro" :expect :reject
  :file "tests/fixtures/doom-c-fn-macro.nuc" :line 4
  :messages ["stdint.h defines 'INT64_C', but it is a function-like macro, which is not imported"]}
+; An integer type a float cannot hold exactly is still refused by `as` (nuc-doom ISSUE-037).
+{:name "doom-as-i64-to-f64" :expect :reject
+ :file "tests/fixtures/doom-as-i64-to-f64.nuc" :line 3
+ :messages ["as: lossy conversion from i64 to f64 -- use unsafe/cast"]}

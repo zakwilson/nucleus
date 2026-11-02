@@ -1,0 +1,4 @@
+; An i64 is not exact in an f64, so `as` still refuses it (nuc-doom ISSUE-037).
+(defn f (n:i64):f64
+  (return (as f64 n)))
+(defn main ():i32 (return 0))

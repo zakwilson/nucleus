@@ -5318,10 +5318,11 @@
           (fstr "as: lossy conversion from " (type-display src) " to " (type-display dst)
                 " -- use unsafe/cast")))
       (return (unsafe/cast &Val (coerce-int-val v dst line))))
-    ; 7. float <-> int, either direction, is lossy. Unlike the float->float
-    ; case above there is no asymmetry to close here: the implicit path
-    ; refuses it too (`(let (a:f32 5) …)` is a `let: init type mismatch`),
-    ; so `as` is not stricter than the coercion it makes explicit.
+    ; 7. int -> float is safe when every value of the source is exact in the
+    ; destination (nuc-doom ISSUE-037); the rest of float <-> int is lossy.
+    (when (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)
+               (int-exact-in-float? src dst (v 'is-lit) (v 'lit-i64)))
+      (return (unsafe/cast &Val (coerce-num-val v dst line))))
     (when (or (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
               (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)))
       (die-at line
@@ -5335,6 +5336,19 @@
     (die-at line
       (fstr "as: reinterpretation from " (type-display src) " to " (type-display dst)
             " -- use unsafe/cast"))))
+
+; Every value of the integer type `src` (or the literal `lit`) has an exact `dst`.
+(defn int-exact-in-float? (src:?&Type dst:?&Type is-lit:i32 lit:i64):bool
+  (let (mant:i32 (case ((unsafe/cast &Type dst) 'kind)
+                   TY-F16 11 TY-F32 24 TY-F64 53 TY-F80 64 TY-F128 113 0)
+        w:i32 (int-width src))
+    (when (!= is-lit 0)
+      (when (>= mant 63) (return true))
+      ; The i64 minimum negates to itself, which stays negative and is refused.
+      (let (m:i64 (if (< lit 0) (- 0 lit) lit))
+        (return (and (>= m 0) (<= m (bit-shl (as i64 1) (as i64 mant)))))))
+    (when (= (is-unsigned src) 0) (set! w (- w 1)))
+    (return (<= w mant))))
 
 (defn emit-as (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
