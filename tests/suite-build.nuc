@@ -1645,6 +1645,23 @@
     (drop &p))
   (return (ok)))
 
+; nuc-doom ISSUE-001: a header on clang's own include path still gets the
+; package whose include directory holds it.
+(deftest doom-system-path-header-package
+  (let (p:String (try (bt3-project "dsys"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src/fxl sr/usr/lib/pkgconfig sr/usr/include/fx && rm -rf build build.edn"))
+    (try (write-into pv "sr/usr/lib/pkgconfig/fx.pc" "prefix=/usr\nincludedir=${prefix}/include/fx\nName: fx\nDescription: t\nVersion: 1.0\nCflags: -I${includedir}\n"))
+    (try (write-into pv "sr/usr/include/fx/fx.h" "#define FX_ANSWER 42\n"))
+    (try (write-into pv "sr/usr/include/plain.h" "#define PLAIN 1\n"))
+    (try (write-into pv "src/fxl/core.nuc" "(ns fxl.core)\n(import-use \"fx/fx.h\")\n(import-use \"plain.h\")\n(defn fxl-answer ():i32 (return (+ FX_ANSWER PLAIN)))\n"))
+    (try (mt-sh pv "printf '{:kind :library :name \"fxl\" :version \"1.0\"\\n :targets {fake {:triple \"%s\" :sysroot \"sr\"}}}\\n' $HOST > build.edn"))
+    (try (bt5-expect pv "build" "--target=fake" true "nucleus: building build/fake/lib/libfxl.a"))
+    (try (bt4-sh pv "grep -q '^(c-requires {:pkg-config \\[\"fx\"\\]})$' build/fake/include/fxl/core.nuch"))
+    (try (bt4-sh pv "test $(grep -c '^(c-requires' build/fake/include/fxl/core.nuch) -eq 1"))
+    (drop &p))
+  (return (ok)))
+
 ; MT-4: :deps per target. Two targets name one library at two paths, and each
 ; program links its own.
 (deftest mt4-target-deps

@@ -5374,3 +5374,25 @@ stamp loses the pointer kind".
 Test: `doom-stamp-keeps-pointer-kind` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: the header index answers for system-path headers, and a failed link names the header (2026-11-02)
+
+From the nuc-doom port's ISSUE-001: `(import-use "SDL2/SDL.h")` built with no
+`build.edn` and failed at the link with a raw `undefined reference to
+'SDL_Init'`. `SDL2/SDL.h` is under `/usr/include`, and the build tool
+consulted the header index only for headers clang couldn't find. Two changes:
+
+- `index-providers` (`lib/nucleus/build/index.nuc`) now looks up every
+  header the project's own `-I` directories don't provide. A header clang
+  finds belongs to the package whose directory holds the resolved file
+  (`sdl2`'s `/usr/include/SDL2` holds `SDL2/SDL.h`). A system include
+  directory claims no header.
+- `nucleusc`'s link step captures the linker's output and passes it through.
+  For each undefined symbol a C header declared, it notes that header and the
+  `:pkg-config` entry that would link its package. `LinkClaim` records the
+  declaring import (`hdr`).
+
+Test: `doom-system-path-header-package` in `tests/suite-build.nuc`,
+`doom-link-names-header` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

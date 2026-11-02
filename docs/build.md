@@ -349,12 +349,25 @@ With a `build.edn` already present, the note shows the entry to add instead.
 
 ### The header index
 
-A header is looked up only if clang's own include path (`clang -E -v`) and the
-`-I` directories in `:cflags` don't find it, so `stdio.h` never needs a
-package. The index holds each package's `--cflags-only-I` directories and its
-`Requires:`. A package that reaches the header only through another candidate
+Every imported header is looked up except one that the `-I` directories in
+`:cflags` find, which is the project's own. The index holds each package's
+`--cflags-only-I` directories and its `Requires:`. A header found on clang's
+own include path (`clang -E -v`) belongs to a package only if one of that
+package's directories holds the file found: `SDL2/SDL.h` is
+`/usr/include/SDL2/SDL.h`, which `sdl2`'s `/usr/include/SDL2` holds. A system
+include directory holds no package's headers, so `stdio.h` never needs a
+package. A package that reaches the header only through another candidate
 it requires is left out: gtk4's flags include glib's directory, but `glib.h`
 belongs to `glib-2.0`.
+
+Packages that share a directory can still leave a header with the wrong
+package or none: SDL2_mixer's flags name sdl2's `/usr/include/SDL2`. The link
+then fails, and `nucleusc` names the header behind each undefined symbol:
+
+```
+nucleusc: link step failed (clang exit 1)
+  note: undefined, from the C header "SDL2/SDL_mixer.h": 'Mix_OpenAudio' -- link its package: :pkg-config {"SDL2/SDL_mixer.h" ["<package>"]} in build.edn, or --pkg-config=<package>
+```
 
 The index is cached in `$XDG_CACHE_HOME/nucleus/pkg-index-<hash>.edn`, one
 file per pkg-config search path, so a host build and a cross build keep their

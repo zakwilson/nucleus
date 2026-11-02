@@ -7,6 +7,7 @@
 (import-use nucleus.test)
 (import-use nucleus.fmt)
 (import-use nucleus.file)
+(import-use nucleus.process)
 
 ; ISSUE-043: an `(ok)` with no want takes the function's result type.
 (deftest doom-ok-statement
@@ -558,3 +559,23 @@ missing key :sens for #user/Opt"))
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "7 1 1 1 7"))
     (drop &out)))
+
+; ISSUE-001: a link that leaves a C header's functions undefined names that
+; header and the build.edn entry that links its package.
+(deftest doom-link-names-header
+  (let (h:String (try (test-write-file "fx01.h" "int fx_init(void);\nint fx_quit(int);\n"))
+        p:String (try (test-write-file "t.nuc" "(import-use \"fx01.h\")\n(defn main ():i32 (fx_quit (fx_init)))\n"))
+        dir:StrView (try (test-scratch))
+        c:Command (command (compiler-path)))
+    (command-arg &c (bt-sv (str "--cflag=-I" dir)))
+    (command-arg &c (string-as-view &p))
+    (command-arg &c "-o")
+    (command-arg &c (bt-sv (str dir "/t")))
+    (let (r:Ran (try (ran &c)))
+      (try (check (not (r 'ok?)) "the link fails"))
+      (try (check-contains (string-as-view (ref r 'err))
+                           "note: undefined, from the C header \"fx01.h\": 'fx_init', 'fx_quit' -- link its package: :pkg-config {\"fx01.h\" [\"<package>\"]} in build.edn, or --pkg-config=<package>"))
+      (drop &r))
+    (drop &c)
+    (drop &h)
+    (drop &p)))

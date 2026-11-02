@@ -320,20 +320,44 @@
       (when hit (return true))))
   (return false))
 
+; Where `header` is under `dirs`, or empty.
+(defn ix-find-in-dirs (dirs:&(Vector StrView) header:StrView):String
+  (dotimes (i (count dirs))
+    (let (p:String (str (invoke dirs i) "/" header))
+      (when (file-exists? (string-as-view &p)) (return p))
+      (drop &p)))
+  (return (make String)))
+
+; Does package directory `d` hold the file at `found`? A system directory holds
+; every system header, so it claims none.
+(defn ix-dir-holds? (idx:&HeaderIndex d:StrView found:StrView):bool
+  (when (view-has? (ref idx 'system) d) (return false))
+  (let (pre:String (str d "/")
+        hit:bool (strview-has-prefix found (string-as-view &pre)))
+    (drop &pre)
+    (return hit)))
+
 ; The packages that provide `header`, in name order, less any that only reach
 ; it through another candidate it requires (gtk4 reaches glib.h through
-; glib-2.0). None when the system or one of `extra` already finds it.
+; glib-2.0). A header the system finds belongs to the package whose directory
+; holds it (sdl2's /usr/include/SDL2 holds SDL2/SDL.h); one of `extra` is the
+; project's own.
 (defn index-providers (idx:&HeaderIndex header:StrView extra:&(Vector StrView)
                        out:&(Vector StrView)):void
-  (when (or (ix-in-dirs? (ref idx 'system) header) (ix-in-dirs? extra header)) (return))
+  (when (ix-in-dirs? extra header) (return))
+  (let (fs:String (ix-find-in-dirs (ref idx 'system) header)
+        found:StrView (string-as-view &fs))
   (let (cands:(Vector StrView) (make (Vector StrView)))
     (dotimes (i (count (ref idx 'pkgs)))
       (let (p:PkgDirs (invoke (ref idx 'pkgs) i)
             hit:bool false)
         (dotimes (j (p 'n))
-          (let (f:String (str (invoke (ref idx 'dirs) (+ (p 'first) j)) "/" header))
-            (when (file-exists? (string-as-view &f)) (set! hit true))
-            (drop &f)))
+          (let (d:StrView (invoke (ref idx 'dirs) (+ (p 'first) j)))
+            (if (> (found 'len) 0)
+              (when (ix-dir-holds? idx d found) (set! hit true))
+              (let (f:String (str d "/" header))
+                (when (file-exists? (string-as-view &f)) (set! hit true))
+                (drop &f)))))
         (when hit (conj &cands (p 'name)))))
     (if (< (count &cands) 2)
       (dotimes (i (count &cands)) (conj out (invoke &cands i)))
@@ -346,4 +370,5 @@
             (when (and (!= i j) (view-has? &rs (invoke &cands j))) (set! through true)))
           (when (not through) (conj out c))
           (drop &rs))))
-    (drop &cands)))
+    (drop &cands)
+    (drop &fs))))

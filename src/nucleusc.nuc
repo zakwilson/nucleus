@@ -6516,10 +6516,12 @@
       (remove-at g-link-claims (- (count g-link-claims) 1)))))
 
 ; A C declaration of `irn`, which a Nucleus definition of it must match.
-(defn link-claim-c-decl (irn:Symbol name:Symbol sig:Symbol file:Symbol line:i32):void
+; `hdr` is the import that declared it, if a C header did.
+(defn link-claim-c-decl (irn:Symbol name:Symbol sig:Symbol file:Symbol line:i32 hdr:Symbol):void
   (when (= (link-claim-find irn) null)
     (link-claim-put irn name name sig true line)
-    (set! ((link-claim-last) 'file) file)))
+    (set! ((link-claim-last) 'file) file)
+    (set! ((link-claim-last) 'hdr) hdr)))
 
 (defn link-claim-last ():&LinkClaim
   (return (invoke g-link-claims (- (count g-link-claims) 1))))
@@ -17832,7 +17834,7 @@
                               (fstr "@" (ir-name-token (symbol-as-view name)))))
         (when (not from-header)
           (link-claim-c-decl (symbol-intern ir-name) name (symbol-intern (type-to-ir (as ?&Type ty)))
-                             g-source-path (cc 'line)))
+                             g-source-path (cc 'line) (symbol-none)))
         (check-ir-name-legal (cc 'line) name ir-name)
         ; Two namespaces' `(extern stderr:ptr)` are two keys and one link name.
         (when (and (!= m NUCH-REG)
@@ -23005,18 +23007,80 @@
                   (command-arg &cmd (fstr "-l" (invoke g-creq-libs j))))
                 ; An argv, not a command line: a path with a space in it used to
                 ; be the caller's quoting problem and is now nobody's.
-                (let (rc2:i32 -1)
-                  (match (spawn &cmd)
-                    ((ok p)
-                     (match (process-wait &p)
-                       ((ok st) (set! rc2 (exit-code &st)))
-                       ((err e) (set! rc2 -1))))
+                (let (rc2:i32 -1
+                      lerr:String (make String))
+                  (match (run &cmd)
+                    ((ok o)
+                     (set! rc2 (exit-code (ref o 'status)))
+                     (print (string-as-view (ref o 'out)))
+                     (eprint (string-as-view (ref o 'err)))
+                     (str-into &lerr (string-as-view (ref o 'err)))
+                     (drop &o))
                     ((err e) (set! rc2 -1)))
                   (drop &cmd)
                   (when (!= rc2 0)
                     (eprint "nucleusc: link step failed (" driver " exit " rc2 ")\n")
+                    (link-undefined-notes (string-as-view &lerr))
                     (exit 1)))))
             (unlink (symbol-as-cstr obj-path)))))))
+
+; The symbol a linker's "undefined" line names: GNU ld's "undefined reference to
+; `f'" or lld/mold's "undefined symbol: f".
+(defn link-undefined-in (line:StrView):StrView
+  (let (rest:StrView ""
+        a:StrView "undefined reference to "
+        b:StrView "undefined symbol: ")
+    (match (strview-find &line &a)
+      ((some at) (set! rest (strview-drop-bytes line (+ at (a 'len)))))
+      (none (match (strview-find &line &b)
+              ((some at) (set! rest (strview-drop-bytes line (+ at (b 'len)))))
+              (none (return "")))))
+    (let (t:StrView (strview-trim &rest)
+          n:usize 0)
+      (while (and (< n (t 'len))
+                  (let (c:ui8 (aref (t 'data) (as i64 n)))
+                    (or (= c 96) (= c 39) (= c 34))))
+        (set! n (+ n 1)))
+      (set! t (strview-drop-bytes t n))
+      (set! n 0)
+      (while (and (< n (t 'len))
+                  (let (c:ui8 (aref (t 'data) (as i64 n)))
+                    (not (or (= c 96) (= c 39) (= c 34) (= c 32) (= c 10)))))
+        (set! n (+ n 1)))
+      (return (strview-take-bytes t n)))))
+
+; nuc-doom ISSUE-001: name the C header behind each undefined symbol, since the
+; package that defines it is what the link is missing.
+(defn link-undefined-notes (text:StrView):void
+  (let (left:StrView text
+        hdrs:(Vector Symbol) (make (Vector Symbol))
+        names:(Vector StrView) (make (Vector StrView)))
+    (while (> (left 'len) 0)
+      (let (line:StrView left)
+        (match (strview-find-byte &left 10)
+          ((some at) (set! line (strview-take-bytes left at)) (set! left (strview-drop-bytes left (+ at 1))))
+          (none (set! left (strview-drop-bytes left (left 'len)))))
+        (let (nm:StrView (link-undefined-in line))
+          (when (> (nm 'len) 0)
+            (when-some (c (link-claim-find (symbol-intern (fstr "@" nm))))
+              (when (and (c 'c-decl) (not (symbol-none? (c 'hdr))))
+                (let (k:usize 0 found:bool false)
+                  (while (< k (count &hdrs))
+                    (when (= (invoke &hdrs k) (c 'hdr))
+                      (set! found true)
+                      (when (not (strview-contains (invoke &names k) (fstr "'" nm "'")))
+                        (set &names k (fstr (invoke &names k) ", '" nm "'"))))
+                    (set! k (+ k 1)))
+                  (when (not found)
+                    (conj &hdrs (c 'hdr))
+                    (conj &names (fstr "'" nm "'"))))))))))
+    (dotimes (k (count &hdrs))
+      (let (h:Symbol (invoke &hdrs k))
+        (eprint "  note: undefined, from the C header \"" h "\": " (invoke &names k)
+                " -- link its package: :pkg-config {\"" h "\" [\"<package>\"]} in build.edn, "
+                "or --pkg-config=<package>\n")))
+    (drop &hdrs)
+    (drop &names)))
 
 ; ORC's C API runs no `llvm.global_ctors`, so `--run` calls them itself: each
 ; becomes an external `__nucleus_run_ctor_N`, numbered in priority order.

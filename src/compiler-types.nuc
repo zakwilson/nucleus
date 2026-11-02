@@ -1310,7 +1310,8 @@
   sig:Symbol     ; the LLVM signature, for a C declaration
   c-decl:bool
   irn:Symbol
-  prev:i32)      ; the claim this one replaced in the index, or -1; REPL rollback restores it
+  prev:i32       ; the claim this one replaced in the index, or -1; REPL rollback restores it
+  hdr:Symbol)    ; the C header import that declared it, or none
 
 ; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3) — one
 ; entry in the FILE-scoped import environment: what a single import form bound in

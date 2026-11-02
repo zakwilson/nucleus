@@ -1122,7 +1122,7 @@
   (set! (ft 'variadic) is-variadic)
   (link-claim-c-decl (symbol-intern (fstr "@" fname)) fname
                      (fn-link-sig (as ?&Type ret-type) param-types num-params (!= is-variadic 0))
-                     g-cheader-file (cheader-line-at buf decl-start))
+                     g-cheader-file (cheader-line-at buf decl-start) g-cheader-import-header)
   ; A Nucleus method of this name becomes an overload beside the C function,
   ; which then takes the key below (design/stage24-allocation/c-name-overloads.md).
   (when (generic-adopt-c-fn fname (as ?&Type ret-type) param-types num-params is-variadic)
@@ -1285,7 +1285,7 @@
   (when (or (!= (scope-lookup-key g-globals name) null) (cconst-name-taken? name)) (return))
   (let (irn:StrView (fstr "@" (ir-name-token (symbol-as-view name))))
     (link-claim-c-decl (symbol-intern irn) name (symbol-intern (type-to-ir ty))
-                       g-cheader-file (cheader-line-at buf decl-start))
+                       g-cheader-file (cheader-line-at buf decl-start) g-cheader-import-header)
     (when (= (scope-frame-find-ir g-globals irn) null)
       (if (!= g-interactive 0)
         (when (= (repl-preamble-has-decl (symbol-intern irn)) 0)
