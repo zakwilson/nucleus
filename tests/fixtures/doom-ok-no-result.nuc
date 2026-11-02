@@ -1,0 +1,4 @@
+; An `(ok)` statement in a function that returns no result (nuc-doom ISSUE-043).
+(import-use nucleus.error)
+(defn h ():i32 (ok) 1)
+(defn main ():i32 (h))

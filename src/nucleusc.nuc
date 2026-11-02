@@ -14315,6 +14315,14 @@
 
 ; Emit the head-position meaning of one table row's hit. Split out of
 ; `emit-dispatch` so the solitary-generic fall-through above reuses it verbatim.
+      ; An `(ok …)` with no want, such as a statement, takes the function's
+      ; result type (nuc-doom ISSUE-043).
+      (when (and (= h "ok") (!= (as ptr g-fn-ret-type) null))
+        (let (rw:ptr (union-target-rewrite n g-fn-ret-type))
+          (when (!= rw (as ptr n)) (return (emit-node rw scope))))
+        (die-at (node-line head ((unsafe/cast &Node n) 'line))
+          (fstr "ok: constructs a result, but neither this position nor the function's return type ("
+                (type-display g-fn-ret-type) ") is one")))
 (defn emit-dispatch-hit (n:?&Node scope:&Scope h:Symbol
                          hit:&BindingHit head:?&Node):&Val
   (let (k:i32 (hit 'kind))

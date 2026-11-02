@@ -1,0 +1,24 @@
+; Fixes for the nuc-doom port's ISSUES.md rulings of 2026-11-02
+; (design/doom-port-fixes/overview.md). Diagnostics are rows in
+; tests/manifest/diagnostics.edn; the units here run programs.
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.file)
+
+; ISSUE-043: an `(ok)` with no want takes the function's result type.
+(deftest doom-ok-statement
+  (let (out:String (try (build-run-source "(import-use nucleus.error)
+(import-use \"stdio.h\")
+(defn f (x:i32):!void (ok) (when (> x 0) (ok)) (ok))
+(defn g (x:i32):!i32 (ok 5) (ok x))
+(defn main ():i32
+  (f 1)
+  (match (g 3) ((ok v) (printf \"%d\\n\" v)) ((err e) 0))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3"))
+    (drop &out)))

@@ -4963,3 +4963,17 @@ runs only on the error path, so nothing that compiled changes.
 Test: diagnostics row `doom-local-shadows-fn`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `(ok)` with no want takes the function's result type (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-043). An `(ok)` statement in a `!void`
+function, with nothing to target-type it, was "unknown function 'ok'". With no
+want, `emit-dispatch` now rewrites it against the function's return type, as a
+`return` position would. When that type isn't a result either, the error says
+so: "ok: constructs a result, but neither this position nor the function's
+return type (i32) is one".
+
+Test: `doom-ok-statement` in the new `tests/suite-doom.nuc`; diagnostics row
+`doom-ok-no-result`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
