@@ -243,6 +243,7 @@ An owning collection may not escape by `return` without `move`; `new` places it 
 ; Seq T
 (invoke:T       ((self (ref (Vector T))) i:usize))   ; called as (v i)
 (set:void       ((self (ref (Vector T))) i:usize elem:T)) ; (set! (v i) x)
+; also i:i32 and i:i64 for both — a negative index exits with a message
 (append:void    ((self (ref (Vector T))) elem:T))
 (contains?:i32  ((self (ref (Vector T))) elem:T))
 (insert:void    ((self (ref (Vector T))) i:usize elem:T))

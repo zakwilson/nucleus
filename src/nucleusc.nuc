@@ -196,7 +196,7 @@
      "set!" "inc!" "dec!"
      ; memory / pointers
      "array" "label" "goto" "label-addr" "goto-ptr"
-     "." ".&" "cast" "as" "addr-of" "deref"
+     "." ".&" "cast" "as" "as-checked" "addr-of" "deref"
      "ptr-set!" "ptr+" "_get" ".set!"
      "sizeof" "alignof" "alloca" "aref" "aset!"
      ; Stage 18 TF-4: the call site's own file and line, as literals.
@@ -5336,6 +5336,77 @@
     (die-at line
       (fstr "as: reinterpretation from " (type-display src) " to " (type-display dst)
             " -- use unsafe/cast"))))
+
+; `(as-checked T x)`: an integer conversion that keeps the value or stops the
+; program; anything else is `as` (nuc-doom ISSUE-046).
+(defn emit-as-checked (call:?&Node scope:&Scope):&Val
+  (let (cc:(ptr Node) call
+        line:i32 (cc 'line))
+    (when (!= (node-len cc) 3) (die-at line "as-checked expects 2 args"))
+    (let (dst:&Type (parse-type-from-node (node-at cc 1) (node-line (node-at cc 1) line))
+          v:&Val (let (save-want:ptr g-want-type)
+                   (set! g-want-type (as ptr dst))
+                   (let (vv:&Val (emit-node (node-at cc 2) scope))
+                     (set! g-want-type save-want)
+                     vv))
+          src:?&Type (v 'type))
+      (when (or (= (is-int-type src) 0) (= (is-int-type dst) 0) (!= (v 'is-lit) 0)
+                (= ((unsafe/cast &Type src) 'kind) TY-CHAR) (= (dst 'kind) TY-CHAR))
+        (return (as-convert v dst line)))
+      (let (ws:i32 (int-width src) wd:i32 (int-width dst)
+            ss:bool (= (is-unsigned src) 0) sd:bool (= (is-unsigned dst) 0)
+            sir:StrView (type-to-ir src)
+            ; The comparisons that can fail, each true for a value out of range.
+            low:bool (and ss (or (not sd) (< wd ws)))
+            high:bool (cond (and sd ss) (< wd ws) sd (<= wd ws) ss (< wd (- ws 1)) true (< wd ws))
+            ; Only a narrower or sign-changing target is checked, so wd < 64 unsigned.
+            dmax:i64 (cond (and sd (= wd 64)) 9223372036854775807
+                           sd (- (bit-shl (as i64 1) (as i64 (- wd 1))) 1)
+                           (>= wd 63) 0
+                           true (- (bit-shl (as i64 1) (as i64 wd)) 1))
+            dmin:i64 (if (and sd (< wd ws)) (- 0 (bit-shl (as i64 1) (as i64 (- wd 1)))) 0)
+            bad:StrView "")
+        (when low
+          (let (t:StrView (new-tmp))
+            (emit g-body-stream "  " t " = icmp slt " sir " " (v 'val) ", " dmin "\n")
+            (set! bad t)))
+        (when high
+          (let (t:StrView (new-tmp))
+            (emit g-body-stream "  " t " = icmp " (if ss "sgt " "ugt ") sir " " (v 'val) ", " dmax "\n")
+            (if (= (strview-byte-len bad) 0)
+              (set! bad t)
+              (let (o:StrView (new-tmp))
+                (emit g-body-stream "  " o " = or i1 " bad ", " t "\n")
+                (set! bad o)))))
+        (when (> (strview-byte-len bad) 0)
+          (when (= g-trap-declared 0)
+            (emit g-decl-stream "declare void @llvm.trap()\n")
+            (set! g-trap-declared 1))
+          (let (id:i32 (new-label-id)
+                fail-lbl:StrView (fstr "aschecked.fail" id)
+                ok-lbl:StrView (fstr "aschecked.ok" id))
+            (emit g-body-stream "  br i1 " bad ", label %" fail-lbl ", label %" ok-lbl "\n")
+            (emit g-body-stream fail-lbl ":\n")
+            (when (!= (scope-lookup g-globals (symbol-intern "printf")) null)
+              (let (msg:StrView (fstr "nucleus: " (symbol-as-view g-source-path) ":" line
+                                      ": as-checked: the value does not fit " (type-display dst) "\n")
+                    mid:i32 (intern-string msg)
+                    fp:StrView (new-tmp))
+                (emit g-body-stream "  " fp " = getelementptr inbounds ["
+                      (+ (unsafe/cast i32 (strview-byte-len msg)) 1) " x i8], ptr @.str." mid
+                      ", i64 0, i64 0\n")
+                (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " fp ")\n")
+                (when (!= (scope-lookup g-globals (symbol-intern "fflush")) null)
+                  (emit g-body-stream "  call i32 @fflush(ptr null)\n"))))
+            (emit g-body-stream "  call void @llvm.trap()\n")
+            (emit g-body-stream "  unreachable\n")
+            (emit g-body-stream ok-lbl ":\n")
+            (set! g-block-term 0)))
+        (when (= ws wd) (return (alloc-val (as ptr dst) (v 'val))))
+        (let (t:StrView (new-tmp))
+          (emit g-body-stream "  " t " = " (if (< wd ws) "trunc " (if ss "sext " "zext "))
+                sir " " (v 'val) " to " (type-to-ir dst) "\n")
+          (return (alloc-val (as ptr dst) t)))))))
 
 ; Every value of the integer type `src` (or the literal `lit`) has an exact `dst`.
 (defn int-exact-in-float? (src:?&Type dst:?&Type is-lit:i32 lit:i64):bool
@@ -15126,6 +15197,7 @@
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
+        (when (= hp 'as-checked) (return (emit-as-checked n scope)))
         ; `(ref x)` is what `&x` reads as; `addr-of` is reserved and answers with
         ; `retired-form-message` through the dispatch tail.
         (when (= hp 'ref) (return (emit-ref n scope)))

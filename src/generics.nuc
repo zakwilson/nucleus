@@ -3778,7 +3778,7 @@
     "deref" "ptr+" "_get" "sizeof" "alignof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
     "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
-    "funcall-ptr-ptr" "as" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
+    "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
     "unsafe/funcall-ptr-i32" "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
     "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some" "move" "defer"
     "err-name" "err-message" "match" "__make" "__init-then" "err!" "try"
@@ -7439,7 +7439,7 @@
         (when (= hp '_or) (return ty-bool))
         ; `unsafe/cast` types exactly as the retired bare `cast` used to.
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
-        (when (= hp 'as) (return (node-type-as n)))
+        (when (or (= hp 'as) (= hp 'as-checked)) (return (node-type-as n)))
         ; Lockstep with emit-list: `ref` is the value-world address-of head too.
         (when (= hp 'ref) (return (node-type-ref n scope)))
         (when (= hp 'funcall-void) (return ty-void))

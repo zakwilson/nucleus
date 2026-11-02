@@ -214,3 +214,38 @@ struct Row { int cells[EXT_N]; char flags[(1 && 2) + (4 > 3) + !0]; };
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "-7 300 4e+09 255 5e+09"))
     (drop &out)))
+
+; ISSUE-046: a Vector takes any integer index, and `as-checked` narrows a count.
+(deftest doom-signed-index-as-checked
+  (let (out:String (try (build-run-source "(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use \"stdio.h\")
+(defn main ():i32
+  (let (v:(Vector i32) (make (Vector i32)) i:i32 2 j:i64 1 big:i64 200 neg:i64 -1)
+    (dotimes (n 5) (conj &v (* n 10)))
+    (set! (&v i) 99)
+    (printf \"%d %d %d %d %u %d\\n\" (&v i) (&v j) (&v 3) (as-checked i32 (count &v))
+            (as-checked ui8 big) (as-checked i32 neg))
+    (drop &v))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "99 10 30 5 200 -1"))
+    (drop &out)))
+
+; ISSUE-046: a negative index exits rather than reading wild memory.
+(deftest doom-negative-index-exits
+  (try (check-source-exit "(import-use nucleus.vector)
+(import-use nucleus.create)
+(defn main ():i32
+  (let (v:(Vector i32) (make (Vector i32)) i:i32 -1)
+    (conj &v 1)
+    (return (&v i))))
+" 1)))
+
+; ISSUE-046: an `as-checked` value that does not fit stops the program.
+(deftest doom-as-checked-traps
+  (try (check-source-exit "(defn main ():i32
+  (let (big:i64 300)
+    (return (as i32 (as-checked ui8 big)))))
+" 132)))

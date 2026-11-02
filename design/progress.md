@@ -5174,3 +5174,20 @@ Test: `doom-as-exact-int-to-float` in `tests/suite-doom.nuc`; diagnostics row
 `doom-as-i64-to-f64`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: signed collection indexes and `as-checked` (2026-11-02)
+
+From the nuc-doom port's ISSUE-046: DOOM's loops count in `int`, so every
+`(v i)` on a Vector needed `(as usize i)` (refused for a signed value, so
+`unsafe/cast`), and every `(count v)` passed to a C `int` needed the reverse.
+`Vector`'s `invoke` and `set` now have `i32` and `i64` overloads that test
+for a negative index (`vector-index`, which prints and exits) before the
+usual bounds check. The new `(as-checked T x)` special form narrows an
+integer with a run-time range test, trapping with
+`nucleus: FILE:LINE: as-checked: the value does not fit T`; a literal or a
+conversion `as` accepts lowers as `as` does.
+
+Test: `doom-signed-index-as-checked`, `doom-negative-index-exits` and
+`doom-as-checked-traps` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

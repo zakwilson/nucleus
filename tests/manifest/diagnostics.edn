@@ -168,8 +168,9 @@
 ; (design/stage21-cleanup/no-match-candidates.md).
 {:name "nomatch-invoke-sign" :expect :reject
  :file "tests/fixtures/nomatch-invoke-sign.nuc" :line 8
- :messages ["no matching method for overloaded 'invoke' with argument types (&(Vector i32), i32)"]
- :notes ["(invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)"]}
+ :messages ["no matching method for overloaded 'invoke' with argument types (&(Vector i32), f64)"]
+ :notes ["(invoke self:&(Vector i32) i:usize):i32 -- argument 2: f64 does not convert to usize implicitly -- use (unsafe/cast usize ...)"
+         "(invoke self:&(Vector i32) i:i32):i32 -- argument 2: f64 does not convert to i32 implicitly -- use (unsafe/cast i32 ...)"]}
 {:name "nomatch-overloads" :expect :reject
  :file "tests/fixtures/nomatch-overloads.nuc" :line 11
  :messages ["no matching method for overloaded 'scale' with argument types (&Pt, i64)"]

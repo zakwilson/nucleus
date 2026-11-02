@@ -4,7 +4,7 @@
 
 (defvar options:(Vector i32) [500 1000 1500])
 
-(defn pick (i:i32):i32
+(defn pick (i:f64):i32
   (return (&options i)))
 
-(defn main ():i32 (return (pick 1)))
+(defn main ():i32 (return (pick 1.0)))

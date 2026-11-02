@@ -126,6 +126,24 @@
   (when (>= i (_get self 'len)) (vector-bounds "set" i (_get self 'len)))
   (set! (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i)) elem))
 
+; A signed index, such as a C port's `int`: a negative one is out of bounds, as
+; one past the end is (nuc-doom ISSUE-046).
+(defn vector-index (what:StrView i:i64 n:usize):usize
+  (when (< i 0)
+    (fprintf stderr "vector: %.*s index %lld out of bounds (len %llu)\n"
+      (unsafe/cast i32 (what 'len)) (as ptr (what 'data)) i (as ui64 n))
+    (exit 1))
+  (return (unsafe/cast usize i)))
+
+(defn invoke (self:&(Vector T) i:i32):T
+  (return (invoke self (vector-index "get" (as i64 i) (_get self 'len)))))
+(defn invoke (self:&(Vector T) i:i64):T
+  (return (invoke self (vector-index "get" i (_get self 'len)))))
+(defn set (self:&(Vector T) i:i32 elem:T):void
+  (set self (vector-index "set" (as i64 i) (_get self 'len)) elem))
+(defn set (self:&(Vector T) i:i64 elem:T):void
+  (set self (vector-index "set" i (_get self 'len)) elem))
+
 ; append: add at the back (same as conj for a vector).
 (defn append (self:&(Vector T) elem:T):void
   (conj self elem))
