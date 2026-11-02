@@ -229,28 +229,14 @@ The shape that was designed and set aside:
 * c-typedef-find
 * cdecl-site-find
 
-## A template stamp loses the pointer kind — `(Result raw:Node E)` / `(Maybe raw:T)` cannot be built
+## A template stamp loses the pointer kind — closed 2026-11-02
 
-`union-template-stamp-types-in` (`src/union-registry.nuc`) substitutes a
-template argument by its `type-spelling`, which spells every `TY-PTR` as
-`ptr:elem` regardless of `pkind` — so a template stamped over a `raw`
-(nullable) pointer payload comes back with a `ref` (non-null) payload and
-refuses `null` at construction. Found by Stage 21 R-1
-(`design/stage21-cleanup/one-reader.md` §2.1; `context/conventions.md`'s "A
-template stamp loses the pointer KIND"): `lib/read.nuc`'s own error value
-could not be `(Result raw:Node ReadError)` for exactly this reason, and is a
-hand-written structural `defunion` instead (`ReadResult`, which `try`/`match`/
-`unwrap` treat as a Result because `result-union-of` is structural rather than
-template-instance-only). **Not closed by Stage 21 item 1** (2026-09-19):
-[stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md)
-changed spellings and the pattern walkers, not the stamp — PK-4b found the
-stamp still loses `pkind` and built around it (`sigil-unwrap-type` peels a
-`TY-PTR` by *shape*, since a `(Vector &Pt)` / `(Vector ?&Pt)` /
-`(Vector raw:Pt)` are one stamp whose recorded origin argument is whichever
-kind stamped first; §6 "as built", and `context/conventions.md` "A template
-stamp loses the pointer KIND"). Still deferred: every stamped `pkind` in
-`src/` has to move together, since the memo key (`type-mangle-token`) does not
-distinguish pointer kinds and the first stamp of either kind answers for both.
+Closed by nuc-doom ISSUE-013. A struct or union stamp names its instance with
+`stamp-arg-token` and substitutes `stamp-arg-spelling` (`src/type-mangle.nuc`).
+Both keep the pointer kind, so `(Box &M)`, `(Box ?&M)` and `(Box (ptr M))` are
+three instances. `type-mangle-token`, `type-spelling` and `type-eq` still
+ignore the kind. `ReadResult` stays a hand-written union; nothing needed it to
+become `(Result ?&Node ReadError)`.
 
 ## A string-literal receiver in head position mis-parses a struct member access
 

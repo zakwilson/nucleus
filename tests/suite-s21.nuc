@@ -543,7 +543,7 @@ foo:(bar)
                          "instantiations of n-q over (Vector ?i32)"))
       (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pnuc_Vector.nuc_Maybe.Pt(") 1
                          "instantiations of n-q over (Vector ?Pt)"))
-      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pnuc_Vector.pPt(") 1
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pnuc_Vector.qPt(") 1
                          "instantiations of n-q over (Vector ?&Pt)"))
       (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_b.pnuc_Vector.nuc_Result.i32.Err(") 1
                          "instantiations of n-b over (Vector !i32)"))
@@ -682,7 +682,8 @@ foo:(bar)
 ; A pointer wrapper inside a template argument, in every spelling, collects
 ; `T` with no `:where` and binds it to the POINTEE -- `(sizeof T)` is 12 for
 ; `P3` and 2 for `i16`, one stamp each. `(Vector ref:T)` used to be collected
-; as the fake tyvar `ref:T`; the others died `unknown type: T` at the defn.
+; as the fake tyvar `ref:T`; the others died `unknown type: T` at the defn. Each
+; kind's vector is its own instance (nuc-doom ISSUE-013), so each gets its own.
 (deftest s21-targ-wrapper-tyvar
   (let (src:StrView "(import-use \"stdio.h\")
 (import-use nucleus.vector) (import-use nucleus.create)
@@ -696,10 +697,12 @@ foo:(bar)
 (defn main ():i32
   (let (p:P3 (P3 1 2 3)
         w:(Vector &P3) (make (Vector &P3))
+        r:(Vector (ptr P3)) (make (Vector (ptr P3)))
+        q:(Vector ?&P3) (make (Vector ?&P3))
         s:(Vector &i16) (make (Vector &i16)))
     (conj &w &p)
     (printf \"%d %d %d %d %d %d %d\\n\" (sz-list &w) (sz-amp &w) (sz-colon &w)
-            (sz-raw &w) (sz-ptr &w) (sz-q &w) (sz-colon &s))
+            (sz-raw &r) (sz-ptr &w) (sz-q &q) (sz-colon &s))
     (return 0)))
 "
         out:String (try (build-run-source src)))

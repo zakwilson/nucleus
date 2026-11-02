@@ -5357,3 +5357,20 @@ Test: `doom-edn-defaults` in `tests/suite-doom.nuc`; diagnostics row
 `doom-edn-default-no-field`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: a template stamp keeps its arguments' pointer kinds (2026-11-02)
+
+From the nuc-doom port's ISSUE-013: `((Box ?&M) null)` was refused, because a
+stamp spelled every pointer argument `ref:` and keyed its instance by
+`type-mangle-token`, which ignores the kind. The first stamp of `(Box &M)` or
+`(Box ?&M)` answered for both. Struct and union stamps now name the instance
+with `stamp-arg-token` (`p`/`q`/`u` for `&`/`?&`/`(ptr …)`) and substitute
+`stamp-arg-spelling`, so the three kinds are three instances. `spelling-as-key`
+keeps a leading `?`. A `null` literal argument now matches any pointer
+parameter except `&T` in overload resolution (`arg-literal-flag`), so
+`(conj &v null)` reaches a `(Vector ?&M)`. Closes the deferred item "A template
+stamp loses the pointer kind".
+
+Test: `doom-stamp-keeps-pointer-kind` in `tests/suite-doom.nuc`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

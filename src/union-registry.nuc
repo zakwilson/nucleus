@@ -1950,6 +1950,8 @@
 ; bare `Pt` would mean that file's own; `user/` makes `resolve-spelling` answer the key.
 (defn spelling-as-key (s:Symbol):Symbol
   (when (or (= g-ns-declared 0) (symbol-contains-byte s 40)) (return s))
+  (when (strview-has-prefix (symbol-as-view s) "?")
+    (return (symbol-intern (fstr "?" (spelling-as-key (symbol-intern (strview-drop-bytes (symbol-as-view s) 1)))))))
   (let (sv:StrView (symbol-as-view s)
         acc:String (make String)
         cs:ChainSeg (chain-seg-at sv 0)
@@ -1993,7 +1995,7 @@
 ; the caller already resolved it, and visibility governs spelling, not identity.
 (defn stamp-key-spelling (t:&Type):Symbol
   (when (type-names-private? t) (return (env-arg-of-type t)))
-  (return (spelling-as-key (type-spelling t))))
+  (return (spelling-as-key (stamp-arg-spelling t))))
 
 (defn type-names-private? (t:?&Type):bool
   (when (or (= t null) (= g-priv-bindings 0)) (return false))
@@ -2059,7 +2061,7 @@
     (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
     (let (iname:Symbol (utt 'name))
       (dotimes (i nargs)
-        (set! iname (symbol-intern (fstr iname "." (type-mangle-token (aref (unsafe/cast &ptr argts) i))))))
+        (set! iname (symbol-intern (fstr iname "." (stamp-arg-token (aref (unsafe/cast &ptr argts) i))))))
       (if-some (ud (uniondef-lookup iname))
         (return (union-instance-type ud))
         (let (arms:ptr (-> (unsafe/cast &Node (utt 'form)) (node-rest _) (unsafe/cast &Node _) (node-rest _))
@@ -2119,8 +2121,8 @@
           iname:Symbol (stt 'name))
       (dotimes (i nargs)
         (let (at:ptr (aref (unsafe/cast &ptr argts) i))
-          (set! (aref (unsafe/cast &Symbol spellings) i) (type-spelling at))
-          (set! iname (symbol-intern (fstr iname "." (type-mangle-token at))))))
+          (set! (aref (unsafe/cast &Symbol spellings) i) (stamp-arg-spelling at))
+          (set! iname (symbol-intern (fstr iname "." (stamp-arg-token at))))))
       ; Memoized hit: the instance was already stamped (or is mid-stamp for a
       ; recursive self-reference) — return its Type without re-emitting.
       (let (existing:?&StructDef (lookup-struct iname))

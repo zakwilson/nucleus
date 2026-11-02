@@ -1187,9 +1187,11 @@
 ; never narrows a typed value; an untyped int literal adapts to any integer (and
 ; to a float) since its value is known, and since Stage 15 W2d an untyped float
 ; literal likewise adapts to a narrower float parameter.
+; `is-lit` is 2 for a `null` literal (`arg-literal-flag`).
 (defn arg-adapts (at:ptr:Type pt:ptr:Type is-lit:i32 is-flit:i32):i32
   (when (= at null) (return 0))
   (when (!= (type-eq at pt) 0) (return 1))
+  (when (and (= is-lit 2) (= (pt 'kind) TY-PTR) (!= (ptr-pkind pt) PTR-REF)) (return 1))
   ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView (notably a string
   ; literal, which borrows to a char* for free) adapts to a **CStr** parameter in
   ; multimethod dispatch — and to CStr *only*, NOT to a bare `ptr`. This exactly
@@ -1398,8 +1400,13 @@
       (return (fstr "takes " p ", not a " a " value -- " (address-hint arg))))
     (return (fstr a " is not " p))))
 
+; 1 for an integer literal, 2 for `null`, which adapts to any pointer but `&T`.
+(defn arg-literal-flag (n:?&Node):i32
+  (when (= n 'null) (return 2))
+  (return (node-is-int-literal n)))
+
 (defn arg-adapts-at (at:ptr:Type pt:ptr:Type arg:?&Node):i32
-  (let (is-lit:i32 (node-is-int-literal arg)
+  (let (is-lit:i32 (arg-literal-flag arg)
         is-flit:i32 (if (= is-lit 0) (node-is-float-literal arg) 0))
     (return (arg-adapts at pt is-lit is-flit))))
 
@@ -1743,7 +1750,7 @@
                 (let (is-lit:i32 0
                       is-flit:i32 0)
                   (when (!= arg-nodes null)
-                    (set! is-lit (node-is-int-literal (aref (unsafe/cast &ptr arg-nodes) a)))
+                    (set! is-lit (arg-literal-flag (aref (unsafe/cast &ptr arg-nodes) a)))
                     ; W2d: mutually exclusive, and node-is-float-literal
                     ; macroexpands a cell operand — skip the second walk when the
                     ; first already answered.
@@ -3072,7 +3079,7 @@
           (let (is-lit:i32 0
                 tvidx:i32 -1)
             (when (!= arg-nodes null)
-              (set! is-lit (node-is-int-literal (aref (unsafe/cast &ptr arg-nodes) i))))
+              (set! is-lit (arg-literal-flag (aref (unsafe/cast &ptr arg-nodes) i))))
             (when (= ((unsafe/cast &Node ptn) 'kind) NODE-SYM)
               (when (not (symbol-contains-byte ((unsafe/cast &Node ptn) 's) 58))
                 (set! tvidx (tyvar-index-of ((unsafe/cast &Node ptn) 's) (mm 'tyvars) ntv))))
@@ -3324,7 +3331,7 @@
                 is-flit:i32 0)
             (when (= pt null) (return 0))
             (when (!= arg-nodes null)
-              (set! is-lit (node-is-int-literal (aref (unsafe/cast &ptr arg-nodes) i)))
+              (set! is-lit (arg-literal-flag (aref (unsafe/cast &ptr arg-nodes) i)))
               (when (= is-lit 0)
                 (set! is-flit (node-is-float-literal (aref (unsafe/cast &ptr arg-nodes) i)))))
             (when (= (arg-adapts at pt is-lit is-flit) 0) (return 0)))))
@@ -3359,7 +3366,7 @@
               (let (is-lit:i32 0
                     is-flit:i32 0)
                 (when (!= arg-nodes null)
-                  (set! is-lit (node-is-int-literal (aref (unsafe/cast &ptr arg-nodes) a)))
+                  (set! is-lit (arg-literal-flag (aref (unsafe/cast &ptr arg-nodes) a)))
                   (when (= is-lit 0)
                     (set! is-flit (node-is-float-literal (aref (unsafe/cast &ptr arg-nodes) a)))))
                 (when (= (arg-adapts (aref (unsafe/cast &ptr argtypes) a)
@@ -4191,7 +4198,7 @@
                 (let (is-lit:i32 0
                       is-flit:i32 0)
                   (when (!= arg-nodes null)
-                    (set! is-lit (node-is-int-literal (aref (unsafe/cast &ptr arg-nodes) a)))
+                    (set! is-lit (arg-literal-flag (aref (unsafe/cast &ptr arg-nodes) a)))
                     ; W2d: mutually exclusive, and node-is-float-literal
                     ; macroexpands a cell operand — skip the second walk when the
                     ; first already answered.
@@ -6256,7 +6263,7 @@
 (defn origin-arg-spellings (args:ptr n:i32):ptr
   (let (out:ptr (arena-alloc (* (as i64 (if (> n 0) n 1)) (ptr-bytes))))
     (dotimes (k n)
-      (set! (aref (unsafe/cast &Symbol out) k) (type-spelling (aref (unsafe/cast &ptr args) k))))
+      (set! (aref (unsafe/cast &Symbol out) k) (stamp-arg-spelling (aref (unsafe/cast &ptr args) k))))
     (return out)))
 
 ; A niche instance is a bare pointer, so its dispatch key is the pointer's own:
@@ -6293,7 +6300,7 @@
           (when (> na 0)
             (set! spell (arena-alloc (* na (ptr-bytes))))
             (dotimes (k na)
-              (set! (aref (unsafe/cast &Symbol spell) k) (type-spelling (aref (unsafe/cast &ptr (sd 'origin-args)) k)))))
+              (set! (aref (unsafe/cast &Symbol spell) k) (stamp-arg-spelling (aref (unsafe/cast &ptr (sd 'origin-args)) k)))))
           (tmpl-conformance-check-one c st (sd 'name) spell na line))))))
 
 ; (extend Subject Protocol): post-prescan conformance check (§9.2/§10.3). When

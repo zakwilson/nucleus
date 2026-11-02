@@ -2343,39 +2343,28 @@ Return something flatter until this is fixed. Stage 19's `process-try-wait`
 returns `!bool` with the status parked on the receiver
 (`design/stage19-process/overview.md` §8.1).
 
-## A template stamp loses the pointer KIND — `(Result (raw T) E)` is `(Result (ref T) E)`
+## A template stamp keeps the pointer KIND; `type-mangle-token` does not
 
-`union-template-stamp-types-in` / `struct-template-stamp-types-in`
-(`src/union-registry.nuc`) substitute each argument by its `type-spelling`, and
-`type-spelling` (`src/type-mangle.nuc`) spells every `TY-PTR` as `ptr:elem`
-regardless of `pkind`. So `(Result (raw Node) ReadError)`, `(Result (raw Node)
-i32)` and `(Maybe (raw Node))` all stamp a `ref` payload and refuse `null` at
-construction (*"raw pointer where non-null (ref ...) is required"*). `!raw:Node`
-works only because the two-arm `Err` shape takes the ERRPTR niche, whose
-constructor is lenient. Found by Stage 21 R-1: the memo key is
-`type-mangle-token` (`pNode` for both kinds), so the first stamp of either kind
-answers for both — do not "fix" `type-spelling` locally; every stamped `pkind`
-in `src/` moves with it (it belongs with the pointer-kind item).
+A struct or union stamp names its instance with `stamp-arg-token` (`p`/`q`/`u`
+for `&`/`?&`/`(ptr …)`) and substitutes `stamp-arg-spelling`
+(`src/type-mangle.nuc`). So `(Vector &Pt)` and `(Vector ?&Pt)` are different
+types, and code may not pass one for the other. `type-mangle-token`,
+`type-spelling` and `type-eq` still ignore `pkind`. That means a generic
+*function* instantiated over `&T` and `?&T` is still one instance, and so is a
+conformance key.
 
 **When synthesizing a form, carry the source type node, not `(type-spelling t)`.**
-The lambda lift (`emit-fn`, `fn-make-invoke-method`) re-spelled its return that
-way, so every `raw`/`?` lambda return refused `null` until 2026-09-23.
+`type-spelling` drops the kind. The lambda lift (`emit-fn`,
+`fn-make-invoke-method`) re-spelled its return that way, so every `?` lambda
+return refused `null` until 2026-09-23.
 
-The same fact reaches the generic-pattern unifier: `Vector.pPt`'s recorded
-`origin-args[0]` is the pointer type of whichever `(Vector &Pt)` /
-`(Vector ?&Pt)` / `(Vector raw:Pt)` stamped first, so a pattern rule that
-inspects a stamp argument's `pkind` is declaration-order-dependent. PK-4b's
-`sigil-unwrap-type` (`src/generics.nuc`) therefore peels `?`/`!` off any
-`TY-PTR` by shape (as `type-eq` ignores the kind); a stamped `Maybe`/`Result`
-*instance* is recognised through `UnionDef.origin-template`/`origin-args`,
-which every union stamp now records as `StructDef` does.
+`sigil-unwrap-type` (`src/generics.nuc`) peels `?`/`!` off any `TY-PTR` by
+shape, as `type-eq` ignores the kind. A stamped `Maybe`/`Result` *instance* is
+recognised through `UnionDef.origin-template`/`origin-args`. `ReadResult`
+(`lib/nucleus/read.nuc`) is a named union that `try`/`unwrap`/`match` treat
+as a `Result`, because `result-union-of` is structural.
 
-Until then, a raw payload in a sum with a non-`Err` error arm is a **named**
-union with the same arms — `(defunion ReadResult (ok v:raw:Node) (err
-e:ReadError))` in `lib/nucleus/read.nuc` — which `try`/`unwrap`/`match` treat exactly
-like a `Result` because `result-union-of` is structural.
-
-Two smaller traps from the same work: a two-element **call** in a positional
+Two traps found by Stage 21 R-1: a two-element **call** in a positional
 struct-literal slot, `(S a (f x))`, is read by `emit-struct-lit` as a designated
 `(field value)` initializer (*"struct literal: no field 'f'"*) — construct through a
 plain function instead; and a `defcast` whose `From` is a struct used to emit the

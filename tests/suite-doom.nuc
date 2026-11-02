@@ -532,3 +532,29 @@ ok
 doom1.wad 8
 missing key :sens for #user/Opt"))
     (drop &out)))
+
+; ISSUE-013: a template stamped over a nullable or unchecked pointer keeps that
+; kind, separately from a stamp over a non-null one.
+(deftest doom-stamp-keeps-pointer-kind
+  (let (out:String (try (build-run-source "(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use \"stdio.h\")
+(defstruct M v:i32)
+(defstruct (Box T) x:T)
+(defvar g-m:M)
+(defn main ():i32
+  (let (a:(Box &M) ((Box &M) (ref g-m))
+        b:(Box ?&M) ((Box ?&M) null)
+        c:(Box (ptr M)) ((Box (ptr M)) null)
+        v:(Vector ?&M) (make (Vector ?&M)))
+    (set! (g-m 'v) 7)
+    (conj &v null)
+    (conj &v (ref g-m))
+    (printf \"%d %d %d %d %d\\n\" ((a 'x) 'v) (if (null? (b 'x)) 1 0) (if (= (c 'x) null) 1 0)
+            (if (null? (&v 0)) 1 0) (if-some (p (&v 1)) (p 'v) -1))
+    (drop &v))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 1 1 1 7"))
+    (drop &out)))

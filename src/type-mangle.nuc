@@ -104,6 +104,24 @@
 (defn fnty-resolve (name:Symbol):?&Type
   (get g-fnty name))
 
+; A template instance keeps its arguments' pointer kinds, which type-mangle-token
+; and type-spelling drop: `(Box ?&M)` is not `(Box &M)` (nuc-doom ISSUE-013).
+(defn stamp-arg-token (t:?&Type):StrView
+  (let (tt:ptr:Type t)
+    (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))
+      (let (pk:i32 (tt 'pkind))
+        (return (fstr (cond (= pk PTR-MAYBE) "q" (= pk PTR-RAW) "u" true "p")
+                      (stamp-arg-token (tt 'elem))))))
+    (return (type-mangle-token t))))
+
+(defn stamp-arg-spelling (t:?&Type):Symbol
+  (let (tt:ptr:Type t)
+    (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))
+      (let (pk:i32 (tt 'pkind))
+        (return (symbol-intern (fstr (cond (= pk PTR-MAYBE) "?ref:" (= pk PTR-RAW) "ptr:" true "ref:")
+                                     (stamp-arg-spelling (tt 'elem)))))))
+    (return (type-spelling t))))
+
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the
 ; subject spelling of `extend`), and the replacement text when substituting a

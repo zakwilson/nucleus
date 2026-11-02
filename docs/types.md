@@ -291,9 +291,13 @@ pointer) or bare `ptr`, nesting as written (`&&T`, `&(ptr T)`) — so `argument 
 has type (ptr Pt), which does not match parameter type &Pt`. The REPL's
 `type-of` prints the same spelling. A stamped template instance is printed as
 its source application, `&(Vector i32)`, from the arguments its stamp recorded;
-the prelude's `(Maybe T)` and `(Result T Err)` print as `?T` and `!T`. A stamp
-keeps the pointer kind of whichever spelling stamped it first, so `(Vector &Pt)`
-and `(Vector (ptr Pt))` print as the one that came first.
+the prelude's `(Maybe T)` and `(Result T Err)` print as `?T` and `!T`.
+
+**A template argument keeps its pointer kind.** `(Box &M)`, `(Box ?&M)` and
+`(Box (ptr M))` are three instances, so `((Box ?&M) null)` holds null and
+`(Vector ?&M)` takes `(conj &v null)`. They are also three types: a
+`(Vector ?&M)` is not passed where a `(Vector &M)` is expected. A `null`
+literal argument matches any pointer parameter except a non-null `&T`.
 
 **`&T` is sugar for `ref:T`.** The reader expands a `&` that begins a type
 chain segment into `ref:`, so `&T` and `ref:T` are the same spelling — same
