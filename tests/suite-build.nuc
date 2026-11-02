@@ -1704,3 +1704,30 @@
                       "target uno and target mega both install into lib/avr"))
     (drop &p))
   (return (ok)))
+
+; nuc-doom ISSUE-005: a repository's root bounds the search for build.edn, so
+; a checkout inside another project is its own project; --project-root= and
+; NUCLEUS_PROJECT_ROOT name the root outright.
+(deftest doom-root-search-stops-at-vcs
+  (let (p:String (try (bt3-project "vcs"))
+        pv:StrView (string-as-view &p))
+    (try (test-scratch-sub "vcs/inner"))
+    (try (test-scratch-sub "vcs/inner/.git"))
+    (try (test-scratch-sub "vcs/inner/src"))
+    (try (test-scratch-sub "vcs/src"))
+    (try (write-into pv "build.edn" "{:name \"outer\"}\n"))
+    (try (write-into pv "src/main.nuc" "(defn main ():i32 (return 7))\n"))
+    (try (write-into pv "inner/src/main.nuc" "(defn main ():i32 (return 5))\n"))
+    (let (in:String (str pv "/inner")
+          iv:StrView (string-as-view &in))
+      (try (bt5-expect iv "build" "" true "nucleus: building build/inner"))
+      (try (check-eq-int (as i64 (try (bt5-exit iv "inner"))) 5 "inner program"))
+      (try (bt5-expect iv "build" "--project-root=.." true "nucleus: building build/outer"))
+      (try (check-eq-int (as i64 (try (bt5-exit pv "outer"))) 7 "outer program"))
+      (let (tool:String (bt-abs "build/nucleus"))
+        (try (bt4-sh iv (bt-sv (str "export XDG_CONFIG_HOME=$PWD/../xdg XDG_CACHE_HOME=$PWD/../cache HOME=$PWD/../home; NUCLEUS_PROJECT_ROOT=.. "
+                                    (string-as-view &tool) " build 2>&1 | grep -q 'outer'"))))
+        (drop &tool))
+      (drop &in))
+    (drop &p))
+  (return (ok)))

@@ -5036,3 +5036,15 @@ cycle checks then see one name. The memo is node-cell lists, not a
 Test: `doom-import-one-spelling` in `tests/suite-doom.nuc`.
 
 Gate: 1637 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: the project-root search stops at a repository root (2026-11-02)
+
+Found by the nuc-doom port (its ISSUE-005). A checkout inside a directory with
+a `build.edn` took the outer project's configuration. `tool-find-root`
+(`src/build-tool.nuc`) now stops climbing at a directory with `.git`, `.hg`,
+`.jj` or `.svn`. `--project-root=<dir>`, or else `NUCLEUS_PROJECT_ROOT`, names
+the root with no search.
+
+Test: `doom-root-search-stops-at-vcs` in `tests/suite-build.nuc`.
+
+Gate: 1637 pass, the same 5 fail. Bootstrap PASS.

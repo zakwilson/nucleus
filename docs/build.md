@@ -55,8 +55,12 @@ one target, and `--all-targets` is for `build`, `clean`, `install` and
 `uninstall`.
 
 The project root is the nearest directory at or above the current one that has
-a `build.edn`. Without one anywhere, the current directory is the project, with
-no configuration.
+a `build.edn`. The search stops at the root of a repository (a directory with a
+`.git`, `.hg`, `.jj` or `.svn`), so a checkout inside another project doesn't
+take that project's configuration. Without a `build.edn` in that range, the
+current directory is the project, with no configuration. `--project-root=<dir>`,
+or else the `NUCLEUS_PROJECT_ROOT` environment variable, names the root
+directly, relative to the current directory, with no search.
 
 ## Conventions
 
