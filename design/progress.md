@@ -5245,3 +5245,26 @@ Test: `doom-array-field-literal` in `tests/suite-doom.nuc`; diagnostics row
 `doom-array-field-too-long`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `break`, `continue` and `while-some` (2026-11-02)
+
+From the nuc-doom port's ISSUE-026: 23 loops carried a stop flag in their
+test, pushed the counter past its bound, or walked a list with
+`(while (not (null? cur)) (when-some ...))`. `(break)` and `(continue)` are
+special forms over a per-function loop stack (`g-loop-stack`, a
+`LoopFrame` per `while`, saved across a nested emission like
+`g-loop-depth`). A jump runs the cleanups of every scope between it and the
+loop body's scope, then branches. `while` takes an optional `:step` clause,
+`(while test :step e body...)`, which runs after each pass and on
+`continue`. `dotimes` and `for` put their step there, so `continue` still
+advances the index. `while-some` is a macro:
+`(while true (if-some (x expr) (do body...) (break)))`. A `break` in a
+closure body is refused, since the closure is its own function.
+
+Needs a boot that knows `:step` (the "Boot for ISSUE-009/018/026" commit),
+since the prelude's `dotimes` expands to it.
+
+Test: `doom-break-continue` in `tests/suite-doom.nuc`; diagnostics row
+`doom-break-outside-loop`.
+
+Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.

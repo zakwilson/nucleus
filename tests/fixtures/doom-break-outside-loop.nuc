@@ -1,0 +1,4 @@
+; `break` in a closure body does not reach the loop around the closure (nuc-doom ISSUE-026).
+(defn main ():i32
+  (dotimes (i 3) (let (f (fn ():void (break))) (f)))
+  0)

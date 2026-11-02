@@ -188,7 +188,7 @@
 ; `unsafe-qualified-op`.
 (defconst- SPECIAL-FORM-NAMES
   #{ ; control flow / binding
-     "let" "with" "do" "cond" "return" "while"
+     "let" "with" "do" "cond" "return" "while" "break" "continue"
      ; Stage 16: lexically scoped macros (a reservation — nothing may shadow
      ; it, and macrolet-bind refuses to shadow anything else in this set).
      "macrolet"
@@ -303,6 +303,7 @@
 ; arguments left unbound (TC-1); node-type mirrors it via the resolver param.
 (defvar g-want-type:ptr)
 (defvar g-loop-depth:i32 0)
+(defvar g-loop-stack:&(Vector &LoopFrame) (new (Vector &LoopFrame) g-arena))
 (defvar g-nundo:&(Vector &NarrowUndo) (new (Vector &NarrowUndo) g-arena))
 ; The function being emitted; never reused, so a restored outer function cannot
 ; match a narrow left behind by an earlier one.
@@ -12136,6 +12137,24 @@
     (return (node-at cc 3)))
   (return null))
 
+; `(break)` / `(continue)`: leave or restart the innermost `while`, first running
+; the cleanups of every scope opened inside it.
+(defn emit-loop-jump (call:?&Node scope:&Scope is-break:bool):&Val
+  (let (cc:&Node (unsafe/cast &Node call)
+        what:StrView (if is-break "break" "continue"))
+    (when (!= (node-len cc) 1) (die-at (cc 'line) (fstr what " takes no arguments")))
+    (when (= (count g-loop-stack) 0)
+      (die-at (cc 'line) (fstr what ": not inside a while loop (or a loop macro over one)")))
+    (let (fr:&LoopFrame (g-loop-stack (- (count g-loop-stack) 1))
+          cur:?&Scope (some scope))
+      (while (and (!= cur null) (!= (as ptr cur) (fr 'scope)))
+        (emit-scope-cleanups cur)
+        (set! cur (cur 'parent)))
+      (when (= g-block-term 0)
+        (emit g-body-stream "  br label %" (if is-break (fr 'break-lbl) (fr 'cont-lbl)) "\n"))
+      (set! g-block-term 1)
+      (return (alloc-val ty-void "")))))
+
 (defn emit-while (call:?&Node scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (< (node-len cc) 2) (die-at (cc 'line) "while: missing condition"))
@@ -12143,10 +12162,10 @@
           cond-lbl:StrView (fstr "while.cond" id)
           body-lbl:StrView (fstr "while.body" id)
           end-lbl:StrView (fstr "while.end" id)
-          ; `(while test :step e body...)`: `e` runs after each pass.
+          ; `(while test :step e body...)`: `e` runs after each pass and on `continue`.
           step:?&Node (while-step-form cc)
           body-from:i32 (if (= (while-step-form cc) null) 2 4)
-          step-lbl:StrView (fstr "while.step" id))
+          step-lbl:StrView (if (= (while-step-form cc) null) cond-lbl (fstr "while.step" id)))
       ; Stage 10 narrowing: the loop re-executes, so any binding the loop
       ; assigns loses a narrowing established outside it — kill those before
       ; anything inside the loop is emitted (the emit-set backstop catches
@@ -12170,10 +12189,14 @@
             wfacts:&(Vector Symbol) (new (Vector Symbol) g-arena))
         (test-true-nonnull (node-at cc 1) wfacts)
         (narrow-names scope wfacts)
+        (let (fr:&LoopFrame (new LoopFrame g-arena))
+          (set-fields! fr 'break-lbl end-lbl 'cont-lbl step-lbl 'scope (as ptr scope))
+          (conj g-loop-stack fr))
         (let (i:i32 body-from)
           (while (< i (node-len cc))
             (emit-node (node-at cc i) scope)
             (inc! i)))
+        (truncate! g-loop-stack (- (count g-loop-stack) 1))
         (when (!= step null)
           (when (= g-block-term 0)
             (emit g-body-stream "  br label %" step-lbl "\n"))
@@ -15119,6 +15142,8 @@
         (when (or (= hp 'unquote) (= hp 'unquote-splice))
           (die-at (nn 'line) (fstr (symbol-as-view h) " outside quasiquote")))
         (when (= hp 'while) (return (emit-while n scope)))
+        (when (= hp 'break) (return (emit-loop-jump n scope true)))
+        (when (= hp 'continue) (return (emit-loop-jump n scope false)))
         (when (= hp 'set!) (return (emit-set n scope)))
         (when (= hp 'label) (return (emit-label n scope)))
         (when (= hp 'goto) (return (emit-goto n scope)))

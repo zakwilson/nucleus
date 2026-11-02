@@ -272,6 +272,7 @@
   (set! g-fn-ret-type null)
   (set! g-init-fn-active 0)
   (set! g-loop-depth 0)
+  (set! g-loop-stack (new (Vector &LoopFrame) g-arena))
   (set! g-nundo (new (Vector &NarrowUndo) g-arena))
   (inc! g-narrow-gen-next)
   (set! g-narrow-gen g-narrow-gen-next)
@@ -302,6 +303,7 @@
                  'fn-sret-name g-fn-sret-name
                  'fn-ret-type  g-fn-ret-type
                  'loop-depth   g-loop-depth
+                 'loop-stack   g-loop-stack
                  'nundo        g-nundo
                  'narrow-gen   g-narrow-gen
                  ; A MOVE, not a copy: the nested emission calls `reset-function-state`,
@@ -332,6 +334,7 @@
   (set! g-fn-sret-name (s 'fn-sret-name))
   (set! g-fn-ret-type (s 'fn-ret-type))
   (set! g-loop-depth (s 'loop-depth))
+  (set! g-loop-stack (s 'loop-stack))
   (set! g-nundo (s 'nundo))
   (set! g-narrow-gen (s 'narrow-gen))
   (drop &g-entry-stream)

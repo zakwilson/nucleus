@@ -3770,7 +3770,7 @@
 
 ; The heads gcheck handles structurally, never as calls (emit-list's special forms).
 (defconst- GCHECK-SPECIAL-FORMS
-  #{"let" "with" "do" "cond" "return" "while" "set!" "inc!" "quote" "quasiquote"
+  #{"let" "with" "do" "cond" "return" "while" "break" "continue" "set!" "quote" "quasiquote"
     "ast-first" "ast-rest" "ast-at" "ast-len" "not" "_and" "_or" "cast" "ref"
     "deref" "ptr+" "_get" "sizeof" "alignof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
@@ -7412,7 +7412,7 @@
         ; lockstep: emit-ast-read, nucleusc.nuc.
         (when (or (= hp 'ast-first) (= hp 'ast-rest) (= hp 'ast-at)) (return (ty-ptr-node)))
         (when (= hp 'ast-len) (return ty-i32))
-        (when (= hp 'while) (return ty-void))
+        (when (or (= hp 'while) (= hp 'break) (= hp 'continue)) (return ty-void))
         (when (= hp 'set!)
           (let (tgt:&Node (unsafe/cast &Node (node-at n 1))
                 nm:Symbol (symbol-none)  ti:Symbol (symbol-none))

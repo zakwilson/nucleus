@@ -1462,3 +1462,7 @@
 {:name "doom-array-field-too-long" :expect :reject
  :file "tests/fixtures/doom-array-field-too-long.nuc" :line 3
  :messages ["array: too many initializers for a 2-element array field"]}
+; `break` with no loop of its own function around it (nuc-doom ISSUE-026).
+{:name "doom-break-outside-loop" :expect :reject
+ :file "tests/fixtures/doom-break-outside-loop.nuc" :line 3
+ :messages ["break: not inside a while loop (or a loop macro over one)"]}

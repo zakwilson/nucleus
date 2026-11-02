@@ -818,8 +818,9 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
 | `inc!` / `dec!` | `(inc! place)`, `(inc! place n)` | `(set! place (+ place n))`, `n` defaulting to 1; any `set!` place, with a computed index evaluated once. See [Standard macros](macros.md). |
-| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
-| `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
+| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test :step step body))` |
+| `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) :step (inc! var) body))` |
+| `while-some` | `(while-some (x expr) body...)` | `(while true (if-some (x expr) (do body...) (break)))` |
 | `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `into` | `(into coll-sym iter-ref)` | Drain an iterator into a collection: calls `(next iter-ref)` each step and `(conj coll-sym elem)` for each element; stops on `none`. Requires `coll-sym` to be a `(ref CollType)` with a `conj` method. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`, and so does any other bare step: `(-> v 0)` is `(0 v)`, not indexing — write `(-> v (_ 0))`. `_` is only special inside `->`. |
@@ -913,7 +914,9 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Multi-way equality dispatch, a macro over `cond`: `(case form v1 r1 v2 r2 ... default)`, with `(:or v ...)` matching any listed value and a required final default. See [Standard Macros](#standard-macros-libnucleusmacrosnuc) for the full rules. | `switch` / `default:` |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
-| `while` | Loop; yields `void` | `while` |
+| `while` | Loop; yields `void`. `(while test :step e body...)` runs `e` after each pass and on `continue` | `while` |
+| `break` | `(break)` leaves the innermost `while` (or a loop macro over one: `dotimes`, `for`, `while-some`, `doseq`) of the current function, first running the cleanups of every `with`/`defer` scope opened inside the loop. A closure body is its own function, so a `break` there does not reach a loop around the closure. | `break` |
+| `continue` | `(continue)` starts the innermost loop's next pass: it runs the loop's `:step`, then its test, after the same cleanups `break` runs. | `continue` |
 | `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
 | `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
 | `goto` | Unconditional jump to a label declared anywhere in the current function. | `goto label` |

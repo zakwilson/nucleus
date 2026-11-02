@@ -126,9 +126,12 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
-| `bit-not` | `(bit-not x)` | `(bit-xor x -1)` — unary bitwise complement, correct at any width in two's complement |
-| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
-| `dotimes` | `(dotimes (var n) body...)` | `(let (var (* n 0)) (while (< var n) body... (inc! var)))` — the index takes the count's type unless `var` is annotated (`i:i32`) |
+| `bit-and` / `bit-or` / `bit-xor` | `(bit-or a b c ...)` | Nested `_bit-or` cells; no arguments gives the identity (`-1` for `bit-and`, `0` for the others), one gives that argument |
+| `bit-not` | `(bit-not x)` | `(_bit-xor x -1)` — unary bitwise complement, correct at any width in two's complement |
+| `inc!` / `dec!` | `(inc! place)`, `(inc! place n)` | `(set! place (+ place n))`, `n` defaulting to 1 (`dec!` subtracts). `place` is anything `set!` takes — a name, `(p 'f)`, `(aref a i)`, `(v i)`, `(deref p)` — and a computed index in it is bound to a temporary first, so `(inc! (aref counts (next-id)))` calls `next-id` once. On a name it yields the new value, elsewhere `void`, as `set!` does. |
+| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test :step step body))` — `continue` runs the step |
+| `while-some` | `(while-some (x expr) body...)` | `(while true (if-some (x expr) (do body...) (break)))` — evaluates `expr` each pass and runs the body with `x` bound while it has a value: a non-null pointer, or a `(Maybe T)`'s `some` |
+| `dotimes` | `(dotimes (var n) body...)` | `(let (var (* n 0)) (while (< var n) :step (inc! var) body...))` — `continue` still advances the index; the index takes the count's type unless `var` is annotated (`i:i32`) |
 | `doseq` | `(doseq (var coll-expr IterType) body...)` | Iterate a **collection** conforming to `(Coll E It)`: calls `(iter coll-expr)` to get a fresh `IterType` by value, binds it to a typed local, and drives `(next &it)` each step, binding each element to `var`. `IterType` must be named explicitly because `let` bindings have no type inference and `&` requires a named local (not an rvalue). `IterType` examples: `(VecIter i32)`, `(HashSetIter i32)`, `(HashMapEntryIter CStr i32)`. See [Iterators](iterators.md). |
 | `doseq-iter` | `(doseq-iter (var iter-ref) body...)` | Iterate a **bare iterator reference**: calls `(next iter-ref)` each step, binding each element to `var`. Use for types that conform to `(Iterator E)` but are not a `Coll` — e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`. `iter-ref` must be a `(ref IterType)` already materialised by the caller. |
 | `into` | `(into dest-coll src-coll IterType)` | Drain a **collection** `src-coll` into `dest-coll`: calls `(iter src-coll)` to get a fresh `IterType` by value, then `(conj dest-coll elem)` for each element. `IterType` is the associated iterator type of `src-coll`. |

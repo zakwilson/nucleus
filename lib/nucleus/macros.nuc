@@ -250,15 +250,13 @@
               `(let (~g ~(ast-at (ast-at levels hk) hj)) (__step! ~op ~new ~n))))))
 
 ; (for (var:type init) test step body) — counted loop.
-; Expands to (let (var:type init) (while test body step)).
-; var:type appears as the let binding name (type annotation required).
-; The step expression is placed after body so break-via-return is natural.
+; Expands to (let (var:type init) (while test :step step body)), so `continue`
+; runs the step. var:type appears as the let binding name (type annotation required).
 ; Example: (for (i:i32 0) (< i:i32 n) (inc! i:i32) (foo i:i32))
 (defmacro for (init test step body)
   `(let ~init
-     (while ~test
-       ~body
-       ~step)))
+     (while ~test :step ~step
+       ~body)))
 
 ; (dotimes (var:type n) body) — loop from 0 to n-1.
 ; var:type is the loop variable with type annotation; n is the upper bound.
@@ -275,9 +273,14 @@
               (= var-node null) (!= (var-node 'kind) NODE-SYM))
       (macro-error spec "dotimes: the first argument must be (var count)"))
     `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
-       (while (< ~var-node ~n-node)
-         (do ~@body)
-         (inc! ~var-node)))))
+       (while (< ~var-node ~n-node) :step (inc! ~var-node)
+         (do ~@body)))))
+
+; (while-some (x expr) body...) — evaluate expr each pass and run body with x
+; bound to its value while it has one (a non-null pointer or a `some`).
+(defmacro while-some (binding :rest body)
+  `(while true
+     (if-some ~binding (do ~@body) (break))))
 
 ; (doseq (var coll-expr IterType) body...) — iterate any Coll, binding var to
 ; each element.

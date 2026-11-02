@@ -1196,6 +1196,13 @@
   total:i32
   seen:i32)
 
+; The innermost enclosing loop, for `break`/`continue`; `scope` is the one the
+; loop body runs in, so a jump out runs the cleanups of every scope inside it.
+(defstruct LoopFrame
+  break-lbl:StrView
+  cont-lbl:StrView
+  scope:ptr)
+
 ; Stage 16 (design/stage16-ergonomics/macrolet.md §5.2): a snapshot of every
 ; global `reset-function-state` writes, plus the ambient argument-register
 ; budget and the want channel — the state a *nested* function emission would
@@ -1214,6 +1221,7 @@
   fn-sret-name:StrView
   fn-ret-type:ptr
   loop-depth:i32
+  loop-stack:&(Vector &LoopFrame)
   nundo:&(Vector &NarrowUndo)
   narrow-gen:i32
   ; Pointers, not `String` values: this file is imported before `lib/nucleus/string.nuc`,
