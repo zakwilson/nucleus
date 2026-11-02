@@ -7418,10 +7418,6 @@
 ; is the first dispatch argument; the rest are emitted here. Dispatch is ordinary
 ; multimethod resolution over the `invoke` generic — a type "becomes callable" by
 ; defining `invoke` methods (indexing, function objects). No built-in default.
-(defn emit-invoke-with-callee (n:(ptr Node) scope:&Scope callee-val:&Val arg-start:i32 nargs:i32):&Val
-  (let (cv:&Val callee-val
-        line:i32 (n 'line)
-        total:i32 (+ nargs 1)
 ; A head that is a local and also names a function: the local wins, so say so
 ; rather than report a type with no `invoke` (nuc-doom ISSUE-019).
 (defn die-if-local-shadows-fn (head:?&Node scope:&Scope cv:&Val line:i32):void
@@ -7447,6 +7443,10 @@
                            ", which shadows the function '" name
                            "'; rename the local to call the function"))))))
 
+(defn emit-invoke-with-callee (n:(ptr Node) scope:&Scope callee-val:&Val arg-start:i32 nargs:i32):&Val
+  (let (cv:&Val callee-val
+        line:i32 (n 'line)
+        total:i32 (+ nargs 1)
         args:ptr (arena-alloc (* (as i64 (+ total 1)) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (as i64 (+ total 1)) (ptr-bytes)))
         arg-nodes:ptr (arena-alloc (* (as i64 (+ total 1)) (ptr-bytes))))
@@ -7494,12 +7494,12 @@
           (when (or (= g null) (= (generic-has-receiver-method g (cv 'type)) 0))
             (die-at line hint)))
         (none 0))
+      (when (or (= g null) (= (generic-has-receiver-method g (cv 'type)) 0))
+        (die-if-local-shadows-fn (node-at n (- arg-start 1)) scope cv line))
       (when (= g null)
         (die-at line "value is not callable: no `invoke` method is defined for this type"))
       (let (m:&Method (generic-resolve g argtypes arg-nodes total line null scope))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
-      (when (or (= g null) (= (generic-has-receiver-method g (cv 'type)) 0))
-        (die-if-local-shadows-fn (node-at n (- arg-start 1)) scope cv line))
 
 ; Is `a` a `(ref …)` cell that is a VALUE address — `&x`, `&(expr)`, or the
 ; 2-argument field form — rather than the `(ref T)` type a fused `q:(ref T)`
@@ -14311,10 +14311,6 @@
           (return (emit-union-lit n scope ut 1))
           0))
       (when-some (dv (emit-dyn-call-unbound n scope h)) (return dv))
-      (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h)))))
-
-; Emit the head-position meaning of one table row's hit. Split out of
-; `emit-dispatch` so the solitary-generic fall-through above reuses it verbatim.
       ; An `(ok …)` with no want, such as a statement, takes the function's
       ; result type (nuc-doom ISSUE-043).
       (when (and (= h "ok") (!= (as ptr g-fn-ret-type) null))
@@ -14323,6 +14319,10 @@
         (die-at (node-line head ((unsafe/cast &Node n) 'line))
           (fstr "ok: constructs a result, but neither this position nor the function's return type ("
                 (type-display g-fn-ret-type) ") is one")))
+      (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h)))))
+
+; Emit the head-position meaning of one table row's hit. Split out of
+; `emit-dispatch` so the solitary-generic fall-through above reuses it verbatim.
 (defn emit-dispatch-hit (n:?&Node scope:&Scope h:Symbol
                          hit:&BindingHit head:?&Node):&Val
   (let (k:i32 (hit 'kind))
