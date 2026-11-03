@@ -31,7 +31,7 @@
     (bump &(aref arr 1))
     (bump &(deref q))
     (bump &(_get s 'n))
-    (bump &(get (s 'p) 'y))
+    (bump &(field (s 'p) 'y))
     (bump-p &(s 'p))
     (bump-p &(sp 'p))
     (printf "%d %d %d\n" (s 'n) ((s 'p) 'x) ((s 'p) 'y))

@@ -671,7 +671,6 @@ Three things lower to calls on that runtime, so a program using any of them need
 |---|---|
 | `'sym`, `'(a b)`, `` `(…) `` in ordinary code | `@nuc_intern-symbol` / `@nuc_node-list-new` + `@nuc_node-push` / `@nuc_alloc-node` |
 | a call to a `:rest` function | `@nuc_node-list-new`, then `@nuc_node-push` per trailing argument |
-| a literal selector reaching a user `get` method | `@intern-symbol` |
 
 Each is refused by name — `quote needs the node runtime — add (import-use nucleus.node)`
 — rather than left to fail at link with no location. A **macro body** needs no

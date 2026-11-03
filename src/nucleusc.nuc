@@ -197,7 +197,7 @@
      ; memory / pointers
      "array" "label" "goto" "label-addr" "goto-ptr"
      "." ".&" "cast" "as" "as-checked" "addr-of" "deref"
-     "ptr-set!" "ptr+" "_get" ".set!"
+     "ptr-set!" "ptr+" "_get" "field" ".set!"
      "sizeof" "alignof" "alloca" "aref" "aset!"
      ; Stage 18 TF-4: the call site's own file and line, as literals.
      "source-file" "source-line"
@@ -3816,7 +3816,7 @@
 ; user — the shape Stage 14 gave retired `cast` / `ptr+`.
 (defn retired-form-message (name:Symbol):?StrView
   (when (= name ".")
-    (return (some "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)")))
+    (return (some "'.' was retired in Stage 16: use 'field' -- (field p 'f), or head position (p 'f)")))
   (when (= name ".&")
     (return (some "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)")))
   (when (= name "addr-of")
@@ -7101,7 +7101,7 @@
 
 ; Emit `getelementptr + load` of field `idx` from the pointer-to-struct value
 ; `p`. This is the zero-overhead member-access core shared by the `.` special
-; form (emit-field-get) and the `get` blanket intrinsic (emit-get-intrinsic);
+; form (emit-field-get) and the `field` intrinsic (emit-field-intrinsic);
 ; a literal-symbol `(s 'field)` const-folds straight to this, byte-identical.
 (defn emit-field-load (p:?&Val fr:&FieldRef):&Val
   (let (pv:(ptr Val) p
@@ -7112,7 +7112,7 @@
     ; Stage 15 W8 G-2: an `(array T N)` field decays — the GEP already holds
     ; the address of element 0 (the field's address and its first element's
     ; address coincide), so the read is the GEP with no load. Shared rule
-    ; (array-decay); node-type-field / callable-get-type call the same one.
+    ; (array-decay); node-type-field / field-access-type call the same one.
     ; This is the chokepoint BOTH `_get` and head-position `(s field)` reach.
     (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
       (return (alloc-val (array-decay ftype) gep)))
@@ -7197,7 +7197,7 @@
     (when (and (= hd 'deref) (= len 2)) (return true))
     (when (and (= hd 'aref) (= len 3))
       (return (or (storage-place? (node-at n 1) scope) (pointer-typed? (node-at n 1) scope))))
-    (when (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+    (when (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
       (return (or (pointer-typed? (node-at n 1) scope) (storage-place? (node-at n 1) scope))))
     (when (and (= len 2) (quoted-selector-node? (node-at n 1)))
       (return (or (pointer-typed? hd scope) (storage-place? hd scope))))
@@ -7216,7 +7216,7 @@
           (return (bt 'elem))))
       (return null))
     (cond (and (= len 2) (quoted-selector-node? (node-at n 1))) (do (set! base hd) (set! sel (node-at n 1)))
-          (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+          (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
             (do (set! base (node-at n 1)) (set! sel (node-at n 2)))
           true 0)
     (when (= sel null) (return (node-type n scope)))
@@ -7229,13 +7229,13 @@
             (when (>= fi 0) (return ((field-at (sd 'fields) fi) 'type)))))))
     (return null)))
 
-; `(B 'f)`, `(get B 'f)` or `(_get B 'f)` as the list `(B 'f)`, else null.
+; `(B 'f)`, `(field B 'f)` or `(_get B 'f)` as the list `(B 'f)`, else null.
 (defn field-place-parts (n:?&Node):?&Node
   (when (!= (node-kind n) NODE-LIST) (return null))
   (let (len:i32 (node-len n)
         hd:?&Node (node-at n 0))
     (when (and (= len 2) (quoted-selector-node? (node-at n 1))) (return n))
-    (when (and (or (= hd 'get) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+    (when (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
       (return (node-list2 (node-at n 1) (node-at n 2) (node-line n 0))))
     (return null)))
 
@@ -7393,23 +7393,23 @@
                 rname:StrView "the receiver")
             (when (and (!= recv null) (= (recv 'kind) NODE-SYM)) (set! rname (symbol-as-view (recv 's))))
             (die-at line
-              (fstr "get: '" (sel-node 's)
+              (fstr "field: '" (sel-node 's)
                     "' is undefined here, and a bare symbol in selector position is an ordinary variable -- write ("
                     rname " '" (sel-node 's) ")"))))))
-    (when (= nf 0) (die-at line "get: cannot index an empty struct with a computed selector"))
+    (when (= nf 0) (die-at line "field: cannot index an empty struct with a computed selector"))
     (let (ftype:ptr ((field-at (sdd 'fields) 0) 'type))
       ; Homogeneity gate — a heterogeneous struct has no single result type.
       (dotimes (fi nf)
         (when (= (type-eq ((field-at (sdd 'fields) fi) 'type) ftype) 0)
           (die-at line
             (if (str-empty? &hint)
-              (fstr "get: computed field access requires a homogeneous struct, but '" (sdef-display sdd)
+              (fstr "field: computed field access requires a homogeneous struct, but '" (sdef-display sdd)
                     "' has fields of differing types")
               hint))))
       (let (cv:(ptr Val) callee-val
             sel:&Val (emit-node sel-node scope))
         (when (!= ((sel 'type) 'kind) TY-PTR)
-          (die-at line (if (str-empty? &hint) "get: computed selector must evaluate to a symbol (ptr)" hint)))
+          (die-at line (if (str-empty? &hint) "field: computed selector must evaluate to a symbol (ptr)" hint)))
         ; Build the field index by a chain of select instructions, innermost
         ; default 0: idx = (sel==f0)?0 : (sel==f1)?1 : … : 0.
         (let (idx:StrView "0"
@@ -7439,9 +7439,9 @@
 ; The `get` blanket intrinsic: member access on a pointer-to-struct callee. A
 ; literal selector const-folds to a static GEP+load (byte-identical to `.`); a
 ; computed selector takes the homogeneous runtime branch above.
-(defn emit-get-intrinsic (n:?&Node scope:&Scope callee-val:&Val sel-node:?&Node line:i32):&Val
-  ; SV-1: reached only after every user `get`/`invoke` method has failed to
-  ; match, so a by-value struct here really is a field access on a value.
+(defn emit-field-intrinsic (n:?&Node scope:&Scope callee-val:&Val sel-node:?&Node line:i32):&Val
+  ; SV-1: reached only when no `invoke` method takes the receiver, so a by-value
+  ; struct here really is a field access on a value.
   (let (cv:(ptr Val) (as ptr:Val (field-read-receiver (node-at n 0)
                                    (unsafe/cast &Val callee-val) scope line))
         ct:(ptr Type) (cv 'type)
@@ -7449,7 +7449,7 @@
                  ((ct 'elem) 'kind)
                  TY-VOID))
     (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-      (die-at line "callable value: not callable — no matching get/invoke method, and not a struct or a pointer to one"))
+      (die-at line "callable value: not callable — no `invoke` method takes it, and it is not a struct or a pointer to one"))
     (require-derefable ct line "field access")
     (let (sd:(ptr StructDef) ((ct 'elem) 'sdef)
           lit:?&Node (selector-literal-sym sel-node))
@@ -7457,10 +7457,10 @@
       ; `_get` path above, which this mirrors.
       (reject-opaque-type (ct 'elem) line "field access")
       (reject-cycle-pending-sdef sd line "field access")
-      (union-field-guard sd line "get")
+      (union-field-guard sd line "field")
       (when (= lit null)
         (when (= ek TY-UNION)
-          (die-at line "get: computed member access on a union is not supported"))
+          (die-at line "field: computed member access on a union is not supported"))
         (return (emit-computed-field n scope cv sd sel-node line
                                      (invoke-address-hint n sel-node (callee-val 'type)))))
       (let (idx:i32 (struct-field-index sd (lit 's)))
@@ -7469,12 +7469,12 @@
           ; AN-2: an anonymous member's own field, same rule as `_get`.
           (let (afr:?&FieldRef (struct-field-ref sd (lit 's)))
             (when (!= afr null)
-              (reject-anon-ambiguous (lit 's) sd line "get")
+              (reject-anon-ambiguous (lit 's) sd line "field")
               (return (emit-field-load cv afr))))
           ; The selector was explicitly quoted, so this is a plain miss: since
           ; step 3 a bare symbol would have been the by-value reading instead.
           (die-at line
-            (fstr "get: no field '" (lit 's) "' on struct '" (sdef-display sd) "'")))
+            (fstr "field: no field '" (lit 's) "' on struct '" (sdef-display sd) "'")))
         ; Union member: typed load at offset 0 (mirrors emit-field-get).
         (when (= ek TY-UNION)
           (let (ftype:ptr ((field-at (sd 'fields) idx) 'type)
@@ -7584,69 +7584,6 @@
       (return (fstr "'" (type-display ct) "' is indexed through invoke, which takes "
                     (type-display rt) ", not a value -- " fix)))))
 
-; Resolve `(get callee selector)` for an already-emitted callee value, splitting
-; on the selector kind (callable-values.md §3.2/§3.3).
-;
-; Branch A — literal-symbol selector (`'field` or bare `field`): member access.
-; A user `get` method for (callee-type, symbol-ptr) sits at tier 0 and out-ranks
-; the intrinsic (concrete beats blanket); otherwise the Struct intrinsic does the
-; GEP+load. The selector's value type is always ty-ptr here (an interned symbol).
-;
-; Branch B — computed/value selector (an i32/CStr/any non-symbol key): value-keyed
-; lookup. Emit the selector to a real value, then resolve the `get` generic on the
-; selector's *actual* type — including parametric (METHOD-GENERIC) overrides such
-; as a `(Bag K V)` key getter — via the non-dying resolver. On a hit, call the
-; resolved method with the already-emitted selector value (do not re-emit). On a
-; miss, fall through to the struct intrinsic's computed-field branch.
-(defn emit-get-with-callee (n:(ptr Node) scope:&Scope callee-val:&Val sel-node:(ptr Node)):&Val
-  (let (cv:?&Val callee-val
-        ct:?&Type (cv 'type)
-        line:i32 (n 'line)
-        g:?&Generic (generic-lookup (symbol-intern "get"))
-        sym:?&Node (selector-literal-sym sel-node))
-    (if (!= sym null)
-      ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
-      (when (!= g null)
-        (let (argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
-          (set! (aref (unsafe/cast &ptr argtypes) 0) ct)
-          (set! (aref (unsafe/cast &ptr argtypes) 1) ty-ptr)
-          (let (m:?&Method (generic-find-method-exact g argtypes 2))
-            (when (!= m null)
-              (let (sel-val:&Val (emit-selector-value sel-node scope)
-                    args:ptr (arena-alloc (* 2 (sizeof Val))))
-                (memcpy (unsafe/ptr+ (unsafe/cast &Val args) 0) cv (sizeof Val))
-                (memcpy (unsafe/ptr+ (unsafe/cast &Val args) 1) sel-val (sizeof Val))
-                (return (emit-resolved-call n scope (symbol-intern "get") m args 2 line)))))))
-      ; --- Branch B: computed/value selector (value-keyed generic dispatch) ---
-      (when (!= g null)
-        (let (sel-val:&Val (emit-node sel-node scope)
-              kt:?&Type (sel-val 'type)
-              argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
-          (set! (aref (unsafe/cast &ptr argtypes) 0) ct)
-          (set! (aref (unsafe/cast &ptr argtypes) 1) kt)
-          (let (m:?&Method (generic-resolve-nullable g argtypes 2 line))
-            ; Stage 14 NS-3 (design/stage14/native-strings.md): a string-literal key
-            ; is an unmaterialized StrView. `generic-resolve-nullable` matches keys
-            ; exactly (no borrow), so a StrView key does not match a CStr-keyed `get`
-            ; method — the overwhelmingly common case (`(get cstr-map "k")`). If the
-            ; StrView-keyed resolution fails, retry with the free CStr borrow:
-            ; collapse the literal to CStr (a no-IR retype — `val` is the bare GEP)
-            ; and re-resolve. StrView-keyed maps (should any exist) still bind on the
-            ; first attempt, so their behavior is unchanged. Dead for the compiler
-            ; (no value-keyed `get` on a string literal in src/).
-            (when (and (= m null)
-                       (!= (sel-val 'is-lit) 0)
-                       (!= (type-is-strview kt) 0))
-              (set! (sel-val 'type) ty-cstr)
-              (set! (aref (unsafe/cast &ptr argtypes) 1) ty-cstr)
-              (set! m (generic-resolve-nullable g argtypes 2 line)))
-            (when (!= m null)
-              (let (args:ptr (arena-alloc (* 2 (sizeof Val))))
-                (memcpy (unsafe/ptr+ (unsafe/cast &Val args) 0) cv (sizeof Val))
-                (memcpy (unsafe/ptr+ (unsafe/cast &Val args) 1) (as ptr sel-val) (sizeof Val))
-                (return (emit-resolved-call n scope (symbol-intern "get") m args 2 line))))))))
-    (return (emit-get-intrinsic n scope callee-val sel-node line))))
-
 ; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): a bare integer
 ; literal (or a bound `_`) in call/head position is never a valid call — the
 ; overwhelmingly common cause is `docs/special-forms.md`'s now-fixed but still
@@ -7721,26 +7658,6 @@
         (set! (aref (unsafe/cast &ptr argtypes) (+ i 1)) (v 'type))
         (set! (aref (unsafe/cast &ptr arg-nodes) (+ i 1)) anode)))
     (let (g:?&Generic (generic-lookup (symbol-intern "invoke")))
-      ; Stage 15 W7: no `invoke` method accepts this receiver, but the callee may
-      ; still answer through `get` — a `HashMap` exposes its lookup as `get` and
-      ; has no `invoke` at all, so `(invoke m k)` used to die with "no `invoke`
-      ; method is defined for this type" while a perfectly good `get` sat right
-      ; there. With the fallback, `invoke` becomes the unambiguous **always-a-value**
-      ; spelling (`'sym` being the always-a-name one), which is the escape hatch
-      ; for the two cases the bare-symbol demotion above deliberately does not
-      ; cover: a selector that collides with a real field name, and a *global*
-      ; used as a key.
-      ;
-      ; generic-has-receiver-method is the side-effect-free probe (it writes only a
-      ; throwaway bound array) and tolerates a null generic. Gating on it leaves the
-      ; ordinary invoke path below completely untouched — in particular its tier-2
-      ; untyped-literal widening, which generic-resolve-nullable does not implement.
-      (when (and (= total 2) (= (generic-has-receiver-method g (cv 'type)) 0))
-        (let (gg:?&Generic (generic-lookup (symbol-intern "get")))
-          (when (!= gg null)
-            (let (gm:?&Method (generic-resolve-nullable gg argtypes total line))
-              (when (!= gm null)
-                (return (emit-resolved-call n scope (symbol-intern "get") gm args total line)))))))
       ; Any program importing a collection has `invoke` methods, so the hint must
       ; ask whether one takes this head, not whether the generic exists.
       (match (case-clause-hint (node-at n (- arg-start 1)))
@@ -7773,12 +7690,8 @@
       (return 1))))
 
 ; The desugar entry point: an already-emitted non-function head value `callee-val`
-; in `(callee arg…)`. Routing is `invoke → get → _get`: if the callee type
-; participates in the `invoke` generic it indexes/applies (the arg is a *value*, so
-; `(v idx)` evaluates `idx`); else if it has a *custom* `get` method that runs;
-; else a single literal-symbol arg is the raw `_get` field intrinsic. A plain
-; struct (no invoke, no custom get) therefore lands on the field intrinsic with the
-; same IR as before this change.
+; in `(callee arg…)`. A struct receiver is field access unless an `invoke` method
+; takes it; `get` is never reached from here (nuc-doom ISSUE-053).
 ; Does this selector name a field of the callee's struct? Side-effect-free, and
 ; asked before any argument is emitted, like `generic-has-receiver-method`.
 (defn callee-selects-field (ct:?&Type sel-node:?&Node):i32
@@ -7826,32 +7739,34 @@
     ; indexes while `(n 'kind)` must still read the field
     ; (design/stage21-cleanup/ast-as-collection.md §8.4).
     (when (and (= nargs 1) (!= (callee-selects-field ct (node-at n 1)) 0))
-      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
+      (return (emit-field-intrinsic n scope callee-val (node-at n 1) (node-line n 0))))
     ; invoke takes precedence: any callee whose type has an `invoke` method treats
     ; the arg(s) as values (so `(v idx)` indexes, not a field-named-`idx` get).
     (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) ct) 0)
       (return (emit-invoke-with-callee n scope callee-val 1 nargs)))
-    ; A custom `get` method (the intrinsic is not registered) handles its own
-    ; literal-vs-computed selector split inside emit-get-with-callee.
-    (when (and (= nargs 1)
-               (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) ct) 0))
-      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
-    ; Fall back: one argument applied to a struct receiver is the `get` intrinsic,
-    ; which splits literal from computed itself — routing on the RECEIVER, not on
-    ; the argument's shape, is what makes `(p sel)` reach the computed path now
-    ; that a bare symbol is a variable (dot-forms.md §5 step 3). Anything else has
-    ; no callable meaning (emit-invoke-with-callee reports it).
+    ; Route on the RECEIVER, not the argument's shape, so `(p sel)` reaches the
+    ; computed path (dot-forms.md §5 step 3).
     (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
-      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
+      (return (emit-field-intrinsic n scope callee-val (node-at n 1) (node-line n 0))))
     (return (emit-invoke-with-callee n scope callee-val 1 nargs))))
 
-; Explicit `(get value selector)` and `(invoke value arg…)` surface forms. They
-; share the resolution above so `(get s 'f)` ≡ `(s f)` and `(invoke v 3)` ≡ `(v 3)`.
-(defn emit-get (call:?&Node scope:&Scope):&Val
+; `get` read fields until nuc-doom ISSUE-053; on a struct no `get` method takes,
+; name the form that replaced it.
+(defn die-if-get-reads-field (n:?&Node scope:&Scope):void
+  (let (rt:?&Type (node-type (node-at n 1) scope))
+    (when (or (= rt null) (= (is-member-access-receiver rt) 0)) (return))
+    (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) rt) 0) (return))
+    (die-at (node-line n 0)
+      (fstr "get: no `get` method takes " (type-display rt)
+            " -- `get` looks up a key; read a field with (field x 'f) or (x 'f)"))))
+
+; `(field s sel)` is `(s sel)` without the `invoke` route; `(invoke v 3)` is `(v 3)`.
+(defn emit-field (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
-    (when (!= (node-len cc) 3) (die-at (cc 'line) "get expects (get value selector)"))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "field expects (field value selector)"))
     (let (callee-val:&Val (emit-node (node-at cc 1) scope))
-      (return (emit-get-with-callee call scope callee-val (node-at cc 2))))))
+      (return (emit-field-intrinsic (node-list2 (node-at cc 1) (node-at cc 2) (cc 'line))
+                                    scope callee-val (node-at cc 2) (cc 'line))))))
 
 (defn emit-invoke (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
@@ -8133,13 +8048,13 @@
     (when (and (= h '_get) (= n 3))
       (return (emit-member-address (emit-place-receiver (node-at (as ptr x) 1) scope line null)
                                    (node-at (as ptr x) 2) line)))
-    (when (and (= h 'get) (= n 3))
+    (when (and (= h 'field) (= n 3))
       (return (emit-callable-place x (node-at (as ptr x) 1) 2 scope line)))
     (when (!= (as ptr (callable-value-head-sym h scope)) null)
       (return (emit-callable-place x h 1 scope line)))
     (return null)))
 
-; `&(recv sel)` / `&(get recv sel)`: route on the receiver's type before emitting
+; `&(recv sel)` / `&(field recv sel)`: route on the receiver's type before emitting
 ; anything, as emit-callable-value does. A receiver node-type cannot type is
 ; emitted first and routed on its Val, which then finishes as an ordinary call.
 (defn emit-callable-place (x:&Node recv:ptr sel-at:i32 scope:&Scope line:i32):?&Val
@@ -8154,14 +8069,15 @@
     (let (route:i32 (callable-place-route (as ?&Type ct) nargs sel))
       (when (= route PLACE-FIELD)
         (return (emit-member-address (emit-place-receiver recv scope line pre) sel line)))
-      (when (or (= route PLACE-INVOKE) (= route PLACE-GET))
+      (when (= route PLACE-INVOKE)
         (die-at line
-          (fstr "ref: this form calls `" (if (= route PLACE-INVOKE) "invoke" "get")
-                "`, which returns a copy, so it is a value and not a place\n  note: bind the element to a name first, then take that name's address")))
+          "ref: this form calls `invoke`, which returns a copy, so it is a value and not a place\n  note: bind the element to a name first, then take that name's address"))
+      (when (= route PLACE-COMPUTED)
+        (die-at line "ref: a computed field selector has no address -- quote the field name"))
       (when-some (pv pre)
         (let (v:&Val (if (= sel-at 1)
                        (emit-callable-value (as ptr x) scope pv)
-                       (emit-get-with-callee (as ptr x) scope pv (as ptr sel))))
+                       (emit-field-intrinsic (node-list2 recv sel line) scope pv sel line)))
           (return (emit-ref-temporary v scope line))))
       (return null))))
 
@@ -12381,16 +12297,12 @@
         (let (h:Symbol ((unsafe/cast &Node hd) 's))
           (when (and (= h "deref") (= plen 2)) (return null))
           (when (and (= h "aref") (= plen 3)) (return null))
-          (when (and (= h "_get") (= plen 3)) (return null))
-          (when (and (= h "get") (= plen 3))
-            (set! recv (node-at place 1))
-            (set! key (node-at place 2)))))
+          (when (and (or (= h "_get") (= h "field")) (= plen 3)) (return null))))
       (when (and (= recv null) (= plen 2))
         (set! recv (node-at place 0))
         (set! key (node-at place 1)))
       (when (= recv null) (return null))
-      ; emit-get-with-callee's split, with `set` in place of `get`: a LITERAL
-      ; selector is the field, and only a computed key is value-keyed dispatch.
+      ; A LITERAL selector is the field, and only a computed key is `set` dispatch.
       ; Without this a collection that defines `set` could no longer write its own
       ; fields — `(set! (self 'data) null)` would dispatch back into that method,
       ; the write-side of the `_get` recursion trap.
@@ -12445,7 +12357,7 @@
                             (node-at place 2) v line))
               (when (!= g-resolve 0) (resolve-map-picks c place 1 place 2 call 2))
               (return (emit-aset c scope))))
-          (when (and (or (= h "_get") (= h "get")) (= plen 3))
+          (when (and (or (= h "_get") (= h "field")) (= plen 3))
             (return (emit-member-place (node-at place 1) (node-at place 2) v line scope)))))
       ; Head position `(recv 'f)` is the idiomatic member READ, so it is the
       ; idiomatic member write. Anything else two-long lands here too and is
@@ -12462,8 +12374,7 @@
   (when (= (selector-literal-sym key) null)
     (let (rt:?&Type (node-type recv scope))
       (when (!= rt null)
-        (when (or (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) rt) 0)
-                  (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) rt) 0))
+        (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) rt) 0)
           (die-at line
             (fstr "set!: " (type-display rt)
                   " has no `set` method -- a computed key writes through the `set` generic"))))))
@@ -12491,7 +12402,7 @@
           hd:?&Node (node-at n 0))
       (when (= (node-kind hd) NODE-SYM)
         (let (h:Symbol ((as ptr:Node hd) 's))
-          (when (and (= len 3) (or (= h "_get") (= h "get") (= h "aref")))
+          (when (and (= len 3) (or (= h "_get") (= h "field") (= h "aref")))
             (return (place-readonly-root (node-at n 1) scope)))))
       (when (and (= len 2) (!= (selector-literal-sym (node-at n 1)) null))
         (return (place-readonly-root hd scope)))
@@ -15314,7 +15225,8 @@
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
-        (when (= hp 'get) (return (emit-get n scope)))
+        (when (= hp 'field) (return (emit-field n scope)))
+        (when (and (= hp 'get) (= (node-len n) 3)) (die-if-get-reads-field n scope))
         (when (= hp 'invoke) (return (emit-invoke n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
         (when (= hp 'alignof) (return (emit-alignof n scope)))

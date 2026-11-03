@@ -2812,7 +2812,7 @@ map=2
 (deftest s16-dot-forms-retired
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (return (. p 'x)))
-" 2 "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
+" 2 "'.' was retired in Stage 16: use 'field' -- (field p 'f), or head position (p 'f)"))
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):&i32 (return (.& p 'x)))
 " 2 "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)"))
@@ -2851,7 +2851,7 @@ map=2
         n:i32 0)
     (set! n 7)
     (set! (p 'x) 1)
-    (set! (get p 'y) 2)
+    (set! (field p 'y) 2)
     (set! (_get p 'y) 3)
     (set! ((ref p 'in) 'a) 4)
     (set! (deref (ref p 'x)) 5)
@@ -2865,7 +2865,7 @@ map=2
     (try (check-eq (string-as-view &out) "7 5 3 4 6 9\n"))
     (drop &out))
   (let (a:String (try (place-ir "(set! (p 'y) 2)"))
-        b:String (try (place-ir "(set! (get p 'y) 2)"))
+        b:String (try (place-ir "(set! (field p 'y) 2)"))
         c:String (try (place-ir "(set! (_get p 'y) 2)"))
         d:String (try (place-ir "(set! (deref (ref p 'y)) 2)")))
     (try (check-golden (string-as-view &b) (string-as-view &a)))
@@ -2914,7 +2914,7 @@ map=2
 ; A member place whose key is COMPUTED dispatches to a user `set` method on
 ; (recv, key, value), reusing the multimethod machinery rather than a second
 ; extension protocol — so `Vector` and `HashMap` are writable through the place
-; form, in both spellings.
+; form. `get` is a lookup, not a place.
 (deftest s16-set-generic-collections
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use nucleus.vector)
@@ -2929,7 +2929,7 @@ map=2
     (init m)
     (let (k:CStr \"a\")
       (set! (m k) 1)
-      (set! (get m k) 7)
+      (set! (m k) 7)
       (match (get m k) ((some x) (printf \"%d %lld\\n\" x (count m)))
                        (none (printf \"none\\n\")))))
   (return 0))
@@ -3155,7 +3155,7 @@ map=2
     (set! (p 'x) 1)
     (set! (deref (ref p 'y)) 2)
     (let (sel:ptr (quote y))
-      (printf \"%d %d %d %d\\n\" (_get p 'x) (get p 'y) (p 'x) (p sel))))
+      (printf \"%d %d %d %d\\n\" (_get p 'x) (field p 'y) (p 'x) (p sel))))
   (return 0))
 "))
         out:String (try (build-run-file "" "" (string-as-view &p))))
@@ -3176,7 +3176,7 @@ map=2
 (deftest s16-selector-bare-is-a-variable
   (try (check-place-refused "(defstruct Pt x:i32 y:i32)
 (defn f (p:&Pt):i32 (return (p x)))
-" 2 "get: 'x' is undefined here, and a bare symbol in selector position is an ordinary variable -- write (p 'x)"))
+" 2 "field: 'x' is undefined here, and a bare symbol in selector position is an ordinary variable -- write (p 'x)"))
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (set! (p x) 1) (return 0))
 " 2 ".set!: field name must be a quoted selector -- write 'x"))
@@ -3447,13 +3447,13 @@ map=2
   (let (out:String (try (build-run-source "(declare printf (fmt:CStr):i32)
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n (* n 2))))
-(defn sum (p:Pt):i64 (return (+ (get p 'x) (+ (p 'y) (_get p 'x)))))
-(defn direct ():i64 (return (get (mk 5) 'y)))
+(defn sum (p:Pt):i64 (return (+ (field p 'x) (+ (p 'y) (_get p 'x)))))
+(defn direct ():i64 (return (field (mk 5) 'y)))
 (defn main ():i32
   (let (v:Pt (mk 3))
-    (printf \"%lld %lld %lld %lld\\n\" (sum v) (direct) (get v 'x) (v 'y))
+    (printf \"%lld %lld %lld %lld\\n\" (sum v) (direct) (field v 'x) (v 'y))
     (set! (v 'x) 40)
-    (printf \"%lld %lld\\n\" (get v 'x) @(ref v 'y))
+    (printf \"%lld %lld\\n\" (field v 'x) @(ref v 'y))
     (return 0)))
 ")))
     (try (check-eq (string-as-view &out) "12 10 3 6

@@ -928,7 +928,7 @@
 ; message stays the plain unadorned one.
 {:name "w7-plain-typo" :expect :reject
  :file "tests/fixtures/w7-plain-typo.nuc" :line 7
- :messages ["get: no field 'zz' on struct 'Point'"]}
+ :messages ["field: no field 'zz' on struct 'Point'"]}
 
 ; --- Stage 15 W9 defects 11 + 12 -----------------------------------------------
 ; design/stage15-stress-test/progress.md, W9 rows 11 and 12 — a matched pair.
@@ -1446,6 +1446,10 @@
 {:name "doom-ok-no-result" :expect :reject
  :file "tests/fixtures/doom-ok-no-result.nuc" :line 3
  :messages ["ok: constructs a result, but neither this position nor the function's return type (i32) is one"]}
+; `get` on a struct no `get` method takes names `field` (nuc-doom ISSUE-053).
+{:name "doom-get-on-struct" :expect :reject
+ :file "tests/fixtures/doom-get-on-struct.nuc" :line 3
+ :messages ["get: no `get` method takes Pt -- `get` looks up a key; read a field with (field x 'f) or (x 'f)"]}
 ; `set!` on a Slice element whose `set` the file reaches only by prefix (nuc-doom ISSUE-049).
 {:name "doom-set-place-unimported" :expect :reject
  :file "tests/fixtures/doom-set-place-unimported.nuc" :line 4

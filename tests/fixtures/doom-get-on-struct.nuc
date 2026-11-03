@@ -1,0 +1,3 @@
+; `get` on a struct with no `get` method: it no longer reads fields (nuc-doom ISSUE-053).
+(defstruct Pt x:i32 y:i32)
+(defn main ():i32 (let (p:Pt (Pt 1 2)) (get p 'x)))

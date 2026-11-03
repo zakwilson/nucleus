@@ -1,15 +1,12 @@
 ; Stage 9 — callable values (callable-values.md).
 ;
-; A non-function value `s` in head position, `(s arg)`, routes
-; `invoke → get → _get`:
-;   - if the value's type has an `invoke` method → that `invoke` runs, with the
-;     argument(s) taken as values (indexing, function objects). `(v idx)` indexes
-;     even when `idx` is a local symbol holding an index.
-;   - else if the type has a custom `get` method → that `get` runs.
-;   - else a single literal-symbol argument is the raw `_get` field intrinsic
-;     (GEP+load, byte-identical to `.`).
-; Because invoke takes precedence, a type that defines `invoke` can no longer use
-; the callable form for field access — read its fields with `_get`/`.field`.
+; A non-function value `s` in head position, `(s arg)`:
+;   - a quoted selector naming one of its fields reads that field;
+;   - else, if the value's type has an `invoke` method, that `invoke` runs, with
+;     the argument(s) taken as values (indexing, function objects). `(v idx)`
+;     indexes even when `idx` is a local symbol holding an index;
+;   - else a struct reads the field the selector names (GEP+load).
+; `(field s sel)` is the field read alone, whatever `invoke` the type defines.
 ; Function-object protocols: (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
 ; lib/nucleus/iterator.nuc provide parametric, element-generic alternatives to the
 ; former fixed-type Call/BinaryCall protocols.
@@ -17,15 +14,15 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use nucleus.iterator)
-(import-use nucleus.node)   ; a user `get` interns its selector at run time
+(import-use nucleus.node)   ; Temp's `invoke` takes a symbol it compares at run time
 
 (defstruct Point x:i32 y:i32)
 
-; ---- invoke: an i32 vector, indexable by call. Vec defines `invoke`, so its
-;      own fields are read with `_get` (the callable form indexes, not gets). ----
+; ---- invoke: an i32 vector, indexable by call. Its fields still read by
+;      quoted name: `(v 'len)` names a field, so it is not an index. ----
 (defstruct Vec data:&i32 len:i32)
 (defn invoke (self:&Vec i:i32):i32
-  (return (aref (_get self 'data) i)))
+  (return (aref (self 'data) i)))
 
 ; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
 (defstruct Adder delta:i32)
@@ -39,25 +36,21 @@
 (defn fold (self:&Multiplier (acc i32) (x i32)) i32
   (return (* acc x)))
 
-; ---- A user `get` override: it owns all member access on its type (tier 0
-;      beats the Struct intrinsic). Here a synthetic 'f selector is computed,
-;      while any other selector delegates to the real field. The body reads the
-;      field with the `_get` primitive (not head position `(self c)`, which would
-;      dispatch back into this same method and recurse).
+; ---- An `invoke` taking a symbol: `(t 'c)` names the field, so it reads it;
+;      `(t 'f)` names none, so `invoke` computes it. ----
 (defstruct Temp c:i32)
-(defn get (self:&Temp sel:ptr):i32
-  (if (= sel 'f) (return (+ (* (_get self 'c) 2) 30))
-                 (return (_get self 'c))))
+(defn invoke (self:&Temp sel:&Node):i32
+  (if (= sel 'f) (return (+ (* (self 'c) 2) 30))
+                 (return (self 'c))))
 
 (defn main ():i32
-  ; Member access by call — the Struct default. (p x) == (_get p x).
+  ; Member access by call — the Struct default. (p 'x) == (field p 'x).
   (let (p:&Point (unsafe/cast &Point (malloc (as i64 (sizeof Point)))))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
     (printf "point: x=%d y=%d\n" (p 'x) (p 'y)))
 
-  ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
-  ; the field `len` is read with `_get` since Vec has an `invoke` method.
+  ; (v i) indexes (literal OR a local index symbol); (v 'len) reads the field.
   (let (v:&Vec (unsafe/cast &Vec (malloc (as i64 (sizeof Vec))))
         arr:&i32 (unsafe/cast &i32 (malloc 12)))
     (set! (aref arr 0) 10)
@@ -68,7 +61,7 @@
     ; idx is a local symbol holding an index — (v idx) routes to invoke (indexes),
     ; it is NOT a field named "idx". This is the behaviour Step C fixes.
     (let (idx:i32 1)
-      (printf "seq: v0=%d vidx=%d v2=%d len=%d\n" (v 0) (v idx) (v 2) (_get v 'len))))
+      (printf "seq: v0=%d vidx=%d v2=%d len=%d\n" (v 0) (v idx) (v 2) (v 'len))))
 
   ; UnaryFn: a function object invoked with an i32 argument via apply.
   (let (add5:&Adder (alloca Adder))
@@ -80,7 +73,7 @@
     (set! (mul 'dummy) 0)
     (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
-  ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
+  ; 'c is the field; 'f is computed by invoke.
   (let (t:&Temp (unsafe/cast &Temp (malloc (as i64 (sizeof Temp)))))
     (set! (t 'c) 20)
     (printf "temp: c=%d f=%d\n" (t 'c) (t 'f)))

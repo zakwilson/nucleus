@@ -16,7 +16,7 @@
   (let (r:&Reg (alloca Reg))
     (set! (r 'flags) 7)
     (set! (r 'status) 42)
-    (printf "flags=%d status=%d\n" (get r 'flags) (get r 'status)))
+    (printf "flags=%d status=%d\n" (field r 'flags) (field r 'status)))
 
   (let (slot:i32 0)
     (bump-counter &slot)

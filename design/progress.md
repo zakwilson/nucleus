@@ -5482,3 +5482,33 @@ pointer or a `(Maybe T)`. `contains?` is in `lib/nucleus/hashmap.nuc`, and
 Test: `doom-maybe-tests-and-clear` in `tests/suite-doom.nuc`.
 
 Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `field` reads fields, and `get` is only a lookup (2026-11-03)
+
+From the nuc-doom port's ISSUE-053: `(get &m 1)` on a `(HashMap i64 i32)` was
+"computed field access requires a homogeneous struct". `get` both read fields
+and looked keys up; a key that matched no `get` method exactly fell to the
+field intrinsic, and every associative type is also a struct. The ruling: use
+`field` for field access, and a struct in head position is field access
+unless `invoke` is defined to do something else.
+
+- `field` is a reserved special form (`emit-field`, `emit-field-intrinsic`,
+  `field-access-type`): `(field s 'f)`, or a computed selector on a
+  homogeneous struct. It is a place for `set!` and `&`.
+- `get` is an ordinary generic call, so a literal key widens.
+  `die-if-get-reads-field` names `field` when `get` meets a struct no `get`
+  method takes.
+- Head position: a literal field name, then `invoke`, then the field. The
+  custom-`get` step and `invoke`'s fallback to `get` are gone; `HashMap` and
+  `ConstMap` define `invoke` as `get`. `callable-value-type` gained the
+  literal-field step, matching the emitter.
+- `scripts/doom-port/get-field-sweep.nuc` moved 122 `(get X 'f)` sites in tests
+  and examples onto `field`. Field-intrinsic messages say `field:`.
+
+Design: `design/doom-port-fixes/field-and-get.md`.
+
+Test: `doom-get-is-lookup-field-reads` in `tests/suite-doom.nuc`,
+`doom-get-on-struct` in `tests/manifest/diagnostics.edn`.
+
+Gate: 1676 pass, the same 5 fail. Bootstrap PASS; the compiler's own IR is
+unchanged, so the boot needs no refresh.

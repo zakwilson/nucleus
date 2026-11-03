@@ -96,7 +96,7 @@ line, on stderr — the same stream and the same order as the text form, so a
 caller's `2>&1 >/dev/null` is unchanged:
 
 ```clojure
-{:severity :error :file "src/x.nuc" :line 12 :message "get: no field 'z' on struct 'Pt'" :notes []}
+{:severity :error :file "src/x.nuc" :line 12 :message "field: no field 'z' on struct 'Pt'" :notes []}
 ```
 
 | Key | |

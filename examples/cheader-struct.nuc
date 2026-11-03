@@ -6,14 +6,14 @@
   (let (p:&CHPoint (alloca CHPoint))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
-    (return (+ (get p 'x) (get p 'y)))))
+    (return (+ (field p 'x) (field p 'y)))))
 
 ; Use the typedef'd struct CHStatus.
 (defn use-chstatus ():i32
   (let (s:&CHStatus (alloca CHStatus))
     (set! (s 'code) 10)
     (set! (s 'detail) 20)
-    (return (+ (get s 'code) (get s 'detail)))))
+    (return (+ (field s 'code) (field s 'detail)))))
 
 ; Use a struct with a nested-by-value field. CHBoxed.p is a (value)
 ; struct CHPoint; write through it with the .& field-address operator.
@@ -22,7 +22,7 @@
     (set! (b 'tag) 99)
     (set! ((ref b 'p) 'x) 7)
     (set! ((ref b 'p) 'y) 8)
-    (return (+ (get b 'tag) (+ (get (ref b 'p) 'x) (get (ref b 'p) 'y))))))
+    (return (+ (field b 'tag) (+ (field (ref b 'p) 'x) (field (ref b 'p) 'y))))))
 
 ; CHWithAnon's `point` field is an anonymous inline struct `{ int a; int b; }`
 ; — the c-header parser registers it as an anonymous (content-hashed)
@@ -32,7 +32,7 @@
     (set! (w 'kind) 5)
     (set! ((ref w 'point) 'a) 100)
     (set! ((ref w 'point) 'b) 200)
-    (return (+ (get w 'kind) (+ (get (ref w 'point) 'a) (get (ref w 'point) 'b))))))
+    (return (+ (field w 'kind) (+ (field (ref w 'point) 'a) (field (ref w 'point) 'b))))))
 
 (defn main ():int
   (printf "chpoint=%d\n" (use-chpoint))

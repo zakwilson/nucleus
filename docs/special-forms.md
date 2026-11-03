@@ -48,18 +48,19 @@ failure.
 | `as` | **Statically-safe** conversion — `(as TYPE expr)`, same shape as `unsafe/cast`. Accepts the *non-lossy* part of what the implicit-coercion machinery accepts in an assignment position (identity, int widening, same-width sign reinterpret, `f32`→`f64`, user `defcast` rules, `CStr`↔pointer, the elem-less-`ptr` `void*` hatch) **plus** pure pointer-contract weakening (`&T`→`(ptr T)`/`?&T`; a typed pointer → elem-less bare `ptr`) **plus** a narrowing whose operand is a *literal* the target can hold exactly — an integer that fits (`(as i8 5)`, `(as ui8 200)`, and the same through a `defconst` name) or a float that round-trips (`(as f32 1.5)`, `(as f32 -0.25)`) — which is lossless and so lowers to exactly what the implicit spelling `(let (a:i8 5) …)` / `(let (a:f32 1.5) …)` emits **plus** an integer to a float type that holds every value of it exactly — 8- and 16-bit integers to `f32`, and those and 32-bit integers to `f64`, as `sitofp`/`uitofp` (an integer literal goes wherever its value is exact, `(as f64 5000000000)`). `i64`, `usize` and `ui64` to `f64` can round, so they stay `unsafe/cast`. Refuses everything lossy or contract-manufacturing — narrowing/truncation of a **value** (integer *and* `f64`→`f32`), a literal that does *not* fit (`(as i8 300)`, `(as ui8 -1)`) or does *not* round-trip (`(as f32 3.14)`), `float`→`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping `ptr`↔`ptr` (each routed to `unsafe/cast`) — note that an implicit coercion at a typed slot narrows a *value* silently (integers and floats alike) and rounds a float *literal* silently, so `as` stays deliberately stricter than assignment there — and, unlike `unsafe/cast`, **honors the nullability flow check**: an unchecked or nullable pointer into a non-null `&T` slot is rejected (routed to `as-ref` for a runtime-checked launder, or `unsafe/cast` for an unchecked assertion). Use `as` for conversions you can prove correct; reach for `unsafe/cast` only when the compiler refuses. **`as` also names a type for inference**: its target type is supplied as the expected type of its operand, exactly as a `let`/`with` binding annotation, a `set!` place or a `return` does — so a generic whose type variable appears only in its return type resolves against it (`(as (ref (Vector i32)) (vec-in a))` for a `vec-in` returning `&(Vector T)`). | `static_cast`-ish |
 | `as-checked` | **Range-checked** integer narrowing — `(as-checked TYPE expr)`. Converts an integer value to any integer type, testing at run time that the value fits: one that does not prints `nucleus: FILE:LINE: as-checked: the value does not fit TYPE` and traps. A literal operand, a non-integer pair or a conversion `as` already accepts lowers exactly as `as` does, with no test. Use it where a value is known in range but not provably so — `(as-checked i32 (count v))` for a C API taking an `int`. | checked `static_cast` |
 | `unsafe/cast` | **Unchecked** type reinterpretation — `(unsafe/cast TYPE expr)`. Today's (pre-Stage-14) `cast`, verbatim: same-kind reinterpret, `ptr`↔`ptr` (any/all element retyping, including unchecked→`&T` laundering with **no** nullability check), `CStr`↔`ptr`, `fn`↔`ptr`, int narrowing/widening, same-width sign reinterpret, `float`↔`float` (`fpext`/`fptrunc`), `int`↔`float` (`sitofp`/`uitofp`/`fptosi`/`fptoui`). Its only "check" is that the kind pair appears in the conversion ladder — no range check, no null check — with one refusal: a capturing closure (`vfn`/`mfn`/`cfn`) never converts to a function-pointer type, since its code takes the closure's environment as a hidden first argument and no caller would supply it (`as` refuses the same pair with the same message). Pass a non-capturing `fn` and route the state through the callback's user-data argument instead. A strict superset of `as`'s accepted set, so it never blocks a migration; reach for it only when `as` refuses. | `(type)x` |
-| `ref` | Take the address of an expression. `&x` reads as `(ref x)` when the `&` starts a token — a `&` inside one is the [`&T` type sigil](types.md#pointer-kinds-t-t-and-ptr-t) — so `ref` is one head in both worlds: `(ref T)` in a type slot is the non-null pointer type, `(ref x)` in a value slot is the address-of, and the type of `(ref x)` is `(ref (type-of x))`. The older spelling `addr-of` is **retired** (Stage 21 PK-5b; see its row below). The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (set! (deref out-a) 41)) (let (a:i32 0) (set-both &a) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. **Implicit at an argument position (Stage 17).** A struct **value** read out of a binding, passed where the parameter wants a pointer to exactly that struct, takes the binding's address automatically — `(show v)` with `v:P` and `(show p:&P)` means `(show &v)` and emits the identical call. This is **binding-only**: a call result (`(show (mk))`), a field (`(show (s 'p))`) and a `deref` (`(string-as-cstr (str x))`, since `str` ends in one) are still the ordinary argument-type error, because `(ref T)` does not distinguish a read borrow from a write one and a mutating callee would otherwise write into a temporary the caller cannot see. Write the address: `(show &(s 'p))`, `(string-as-cstr &(str x))`. An exact overload always wins over the adjustment. **Any operand.** The operand of 1-argument `ref` is classified after macro expansion. A **place** gives its own address: a binding, `(deref p)` (that is, `p` as `&T`), a literal-selector field `(s 'f)` / `(_get s 'f)` / `(get s 'f)` — nested, `&((a 'b) 'c)`, and on a temporary receiver — and `(aref p i)`. A write through it is visible afterwards. Any other operand is a **value** — a call, a literal, a `let`/`do`/`if`, or a macro expanding to one, such as `(str x)` — stored in a fresh frame slot, whose address is returned; it is escape-tracked like `&local` (returning it is refused, and a `with`-owned value keeps its resource taint) and never dropped, like a `let` value binding. So `ref` works as a `->` step: `(-> n (str "a" _ "b") ref string-as-cstr)`. A callable value whose call routes to `invoke` or a custom `get` — `&(v 0)` on a `Vector` — looks like a place but returns a copy, so it is refused with a note to bind the element first. See [address-of-expressions.md](../design/address-of-expressions.md). See [borrow-conventions.md](../design/stage17-native-strings/borrow-conventions.md). **Two arities.** `(ref x)` / `&x` is an operand's address, above; `(ref s 'field)` is a field's — the spelling that replaced `.&` in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3), equivalent to `&(s 'field)`. The field form takes a receiver plus a **quoted** selector; a bare symbol in that second slot is refused, not read as a variable. An `(array T N)` field's address **decays** to `ptr:T` — a pointer-to-array is only usable where an array type is refused. A bit-field has no address (C's own rule). A temporary struct receiver (`(ref (mk) 'f)`) is given a frame slot, as a value operand is. | `&x` / `&s.field` |
+| `ref` | Take the address of an expression. `&x` reads as `(ref x)` when the `&` starts a token — a `&` inside one is the [`&T` type sigil](types.md#pointer-kinds-t-t-and-ptr-t) — so `ref` is one head in both worlds: `(ref T)` in a type slot is the non-null pointer type, `(ref x)` in a value slot is the address-of, and the type of `(ref x)` is `(ref (type-of x))`. The older spelling `addr-of` is **retired** (Stage 21 PK-5b; see its row below). The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (set! (deref out-a) 41)) (let (a:i32 0) (set-both &a) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. **Implicit at an argument position (Stage 17).** A struct **value** read out of a binding, passed where the parameter wants a pointer to exactly that struct, takes the binding's address automatically — `(show v)` with `v:P` and `(show p:&P)` means `(show &v)` and emits the identical call. This is **binding-only**: a call result (`(show (mk))`), a field (`(show (s 'p))`) and a `deref` (`(string-as-cstr (str x))`, since `str` ends in one) are still the ordinary argument-type error, because `(ref T)` does not distinguish a read borrow from a write one and a mutating callee would otherwise write into a temporary the caller cannot see. Write the address: `(show &(s 'p))`, `(string-as-cstr &(str x))`. An exact overload always wins over the adjustment. **Any operand.** The operand of 1-argument `ref` is classified after macro expansion. A **place** gives its own address: a binding, `(deref p)` (that is, `p` as `&T`), a literal-selector field `(s 'f)` / `(_get s 'f)` / `(field s 'f)` — nested, `&((a 'b) 'c)`, and on a temporary receiver — and `(aref p i)`. A write through it is visible afterwards. Any other operand is a **value** — a call, a literal, a `let`/`do`/`if`, or a macro expanding to one, such as `(str x)` — stored in a fresh frame slot, whose address is returned; it is escape-tracked like `&local` (returning it is refused, and a `with`-owned value keeps its resource taint) and never dropped, like a `let` value binding. So `ref` works as a `->` step: `(-> n (str "a" _ "b") ref string-as-cstr)`. A callable value whose call routes to `invoke` or a custom `get` — `&(v 0)` on a `Vector` — looks like a place but returns a copy, so it is refused with a note to bind the element first. See [address-of-expressions.md](../design/address-of-expressions.md). See [borrow-conventions.md](../design/stage17-native-strings/borrow-conventions.md). **Two arities.** `(ref x)` / `&x` is an operand's address, above; `(ref s 'field)` is a field's — the spelling that replaced `.&` in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3), equivalent to `&(s 'field)`. The field form takes a receiver plus a **quoted** selector; a bare symbol in that second slot is refused, not read as a variable. An `(array T N)` field's address **decays** to `ptr:T` — a pointer-to-array is only usable where an array type is refused. A bit-field has no address (C's own rule). A temporary struct receiver (`(ref (mk) 'f)`) is given a frame slot, as a value operand is. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | **Retired in Stage 16** — a targeted hard error: `'ptr-set!' was retired in Stage 16: set! takes a place`. Write `(set! (deref p) v)`. | — |
 | `ptr+` | **Retired in Stage 14** — bare `ptr+` is now a targeted hard error: `'ptr+' was split in Stage 14: use 'unsafe/ptr+'`. | — |
 | `unsafe/ptr+` | Pointer arithmetic on a **typed** pointer; manufactures a new pointer at an unchecked offset (no bounds check). | `p + n` |
-| `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'get'`. Write `(get s 'field)`, or head position `(s 'field)`. The spelling stays reserved so the message cannot be shadowed. | — |
+| `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'field'`. Write `(field s 'f)`, or head position `(s 'f)`. The spelling stays reserved so the message cannot be shadowed. | — |
 | `.&` | **Retired in Stage 16** — a targeted hard error: `'.&' was retired in Stage 16: use the 2-argument 'ref'`. Write `(ref s 'field)`. | — |
 | `addr-of` | **Retired in Stage 21** (PK-5b) — a targeted hard error in every position, the type slot included: `'addr-of' was retired: write &x, or (ref x) / (ref p 'field)`. The spelling stays reserved so the message cannot be shadowed. | — |
-| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). The field name is **quoted** at every member form (`_get`, `ref`, `get`, head position, a member place); a bare symbol there is an ordinary variable reference, i.e. a [computed selector](#computed-selector-get-only). | `s.field` |
+| `_get` | Literal-selector field read, the same as `(field s 'f)`. The field name is **quoted** at every member form (`_get`, `field`, `ref`, head position, a member place); a bare symbol there is an ordinary variable reference, i.e. a [computed selector](#callable-values-non-function-call-position). | `s.field` |
+| `field` | Field read: `(field s 'f)` reads field `f` of a struct, a union or a pointer to one, and `(field s sel)` a field chosen at runtime (homogeneous structs). It never calls a method, so it reads a field whatever `invoke` the type defines; head position `(s 'f)` is the same read. A place for `set!` and `&`. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `.set!` | **Retired in Stage 16** — a targeted hard error: `'.set!' was retired in Stage 16: set! takes a place`. Write `(set! (s 'field) v)`. | — |
-| `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
-| `set` | **Generic**, the write side of `get`/`invoke`: a member place with a **computed** key, `(set! (m k) v)` or `(set! (get m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields — the write side of the `_get` recursion trap. `Vector` and `HashMap` both define one. | `m[k] = v` |
+| `get` | Not a special form: the key lookup of `HashMap`, `ConstMap` and other `Assoc` conformers, an ordinary generic. It does not read fields; on a struct no `get` method takes, the error names `field`. See [Callable values](#callable-values-non-function-call-position) | `m[k]` |
+| `set` | **Generic**, the write side of `invoke`: a member place with a **computed** key, `(set! (m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields. `Vector` and `HashMap` both define one. | `m[k] = v` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alignof` | Alignment of a type, from the compiler's layout model (so it agrees with `sizeof` and the platform C ABI). A pointer-sized integer, as `sizeof` is. An opaque type or a layout still in a cycle is refused. | `_Alignof(T)` |
@@ -402,37 +403,41 @@ The **standard numeric protocols** live in `lib/nucleus/numeric.nuc`: `Eq` (`= !
 ## Callable values (non-function call position)
 
 A **non-function value in head position**, `(s arg…)`, is no longer an error — it
-routes **`invoke → get → _get`** by the callee's *type*:
+routes by the callee's *type*:
 
 | precedence | condition on the callee type | desugars to | meaning |
 |---|---|---|---|
-| 1 | the argument is a **quoted symbol naming a field** of the callee's struct | `(get s 'field)` | field access |
-| 2 | has an `invoke` method | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
-| 3 | has a custom `get` method | `(get s arg)` | value-keyed or symbol member access |
-| 4 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (**quoted** symbol; any other selector is computed) |
+| 1 | the argument is a **quoted symbol naming a field** of the callee's struct | `(field s 'f)` | field read |
+| 2 | an `invoke` method takes it | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
+| 3 | otherwise (a struct, or a pointer to one) | `(field s sel)` | field read (**quoted** symbol; any other selector is computed) |
+
+A struct in head position is therefore field access unless `invoke` is defined to
+do something else. `get` is never reached from head position: it is an ordinary
+function, the key lookup of a collection, and a collection that answers `(m k)`
+defines `invoke` as well (`HashMap` and `ConstMap` do).
 
 Row 1 is what lets one type have both: `Node` conforms to `Seq`, so `(xs i)`
 indexes an AST list while `(xs 'kind)` still reads its `kind` field. It fires only
 on a **literal** quoted symbol that the receiver really has a field for; a selector
-that names no field falls through, so a type whose `invoke` takes a symbol is
-unaffected. Otherwise **`invoke` takes precedence**, and a type that defines it
-indexes/applies its argument as a *value* — `(v idx)` evaluates the local `idx` and
-indexes, rather than reading a field named `idx`. A **plain struct** (no `invoke`,
-no custom `get`) takes a quoted-symbol argument as a field selector via the raw
-`_get` intrinsic, so `(p 'x)` ≡ `(_get p 'x)` and is zero-overhead.
+that names no field falls through, so a type whose `invoke` takes a symbol sees
+every other one. Otherwise **`invoke` takes precedence**, and a type that defines
+it indexes/applies its argument as a *value* — `(v idx)` evaluates the local `idx`
+and indexes, rather than reading a field named `idx`. A **plain struct** (no
+`invoke`) takes the argument as a field selector, so `(p 'x)` ≡ `(field p 'x)` and
+is zero-overhead.
 
 **`invoke` sees the callee's type exactly.** `Vector`'s `invoke` takes `&(Vector T)`, so a by-value `(Vector i32)` binding in head position does not index: write `(&v i)`. Since it would otherwise fall through to computed field access and fail there, the error says that instead: `'(Vector i32)' is indexed through invoke, which takes &(Vector i32), not a value -- write (&v ...)`.
 
 **A field name is quoted; a bare symbol is a variable.** `(p 'x)` reads the field
 `x`; `(p x)` evaluates `x` like a symbol anywhere else and uses the result as a
-[computed selector](#computed-selector-get-only). Nothing about selector position
+[computed selector](#callable-values-non-function-call-position). Nothing about selector position
 is special any more, which is the whole point: a field name held in a variable
 needs no annotation, no `invoke`, and no escape hatch.
 
 ```lisp
 (with ((m (ref (HashMap CStr i32))) {"foo" 42}
        k:CStr "foo")
-  (m k))         ; ⇒ (get m <value of k>) → (some 42)
+  (m k))         ; ⇒ (invoke m <value of k>) → (some 42)
 
 (let (p:ptr:Point (alloca Point) sel:ptr 'y)
   (p 'x)         ; the field `x`
@@ -459,7 +464,7 @@ The same missed quote in head position is caught when the name is unbound, which
 is overwhelmingly what a missed quote looks like:
 
 ```
-(p x)           ; error: get: 'x' is undefined here, and a bare symbol in selector
+(p x)           ; error: field: 'x' is undefined here, and a bare symbol in selector
                 ;        position is an ordinary variable -- write (p 'x)
 ```
 
@@ -468,83 +473,60 @@ spelling was an accepted synonym; `(m count:CStr)` was the annotation hatch that
 forced the value reading. Both are gone —
 see [dot-forms.md](../design/stage16-ergonomics/dot-forms.md) for the migration.
 
-**`get` — member access (the `Struct` default).** Every struct conforms to the
-built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
-literal selector const-folds to a static `getelementptr`+`load`, **identical to the
-`_get` primitive and zero-overhead**. So `(c 'rad)` ≡ `(get c 'rad)` ≡ `(_get c 'rad)`.
-Head position `(c 'rad)` is the idiomatic spelling; `_get` is the escape hatch (it
-reads the field directly, skipping any user `get` override — so a user `get` method
-uses `_get` for its own fields to avoid recursing into itself).
+**`field` — the field read.** `(field s 'f)` reads field `f` of a struct, a union,
+or a pointer to one: a literal selector const-folds to a static
+`getelementptr`+`load`, zero-overhead. It never calls a method, so it reads a
+field whatever `invoke` the type defines. `(set! (field s 'f) v)` and
+`&(field s 'f)` are the same place as `(s 'f)`.
 
 ```lisp
 (defstruct Point x:i32 y:i32)
-(p 'x)         ; ≡ (get p 'x) — a plain field load
+(p 'x)         ; ≡ (field p 'x) — a plain field load
 ```
 
-The intrinsic is **overridable**: a concrete user `get` method for a type sits at
-tier 0 and out-ranks the blanket intrinsic, so it owns *all* member access on that
-type. A user `get` takes the selector as an interned symbol (`ptr`):
+**`get` — key lookup.** `(get m k)` is an ordinary call of the `get` generic.
+`HashMap`, `ConstMap` and any other `Assoc` conformer define it, and it resolves
+like any function, so a literal key adapts to the key type: `(get &m 1)` on a
+`(HashMap i64 V)` finds key `1`. `get` used to read fields as well, and every
+associative type is also a struct, so a literal key could be taken for a field
+position (nuc-doom ISSUE-053). On a struct no `get` method takes, the error names
+the replacement:
 
-```lisp
-(defn get (self:ptr:Temp sel:ptr):i32
-  (if (= sel 'f) (return …) (return (_get self 'c))))  ; (t 'f) and (t 'c) both route here
+```
+(get p 'x)      ; error: get: no `get` method takes Point -- `get` looks up a key;
+                ;        read a field with (field x 'f) or (x 'f)
 ```
 
-**Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
-A **quoted-symbol** selector takes the member-access path above (the selector
-value is always an interned symbol `ptr`). Anything else is an expression —
-including a bare symbol, which is an ordinary variable reference. A
-**computed/value selector** — an `i32`, a
-`CStr`, a `StrView` (e.g. a string literal), or any non-symbol value — instead
-resolves the `get` generic on the selector's *actual* type, so a parametric `get`
-override can index by a real key. A string-literal selector resolves against a
-`(Bag K V)` whose `K` is `StrView` directly; if resolution instead finds only a
-`CStr`-keyed method (the common case — collection literals still infer `CStr`
-element/key types), the literal retries once collapsed to `CStr`:
+A type defines its own lookup as it would any method:
 
 ```lisp
 (defstruct (Bag K V) key:K val:V has:i32)
 (defn get ((self (ref (Bag K V))) key:K) (Maybe V) …)   ; value-keyed lookup
-(get bag "hello")    ; StrView literal selector (retries as CStr) → the (Bag K V) get method, returns (Maybe V)
-(get bag 42)         ; i32  selector → the same method
-(get bag 'val)       ; symbol selector → field access, returns the raw V field
+(get bag "hello")    ; the (Bag K V) get method, returns (Maybe V)
+(get bag 42)         ; i32 key → the same method
+(field bag 'val)     ; the `val` field
 ```
 
-The value-keyed override is found even when it is a parametric (generic) method:
-the resolver binds the method's type variables and checks its `:where` constraints
-before selecting it. If no `get` method matches the selector's type, the call
-falls back to the struct intrinsic (a `ptr`-typed computed selector takes the
-homogeneous computed-field branch; any other type is an error). This is how a
-`Bag`-style type answers `(m key)` by value while plain structs keep zero-overhead
-symbol field access. (Note: this value-keyed `get` path applies only to types that
-do **not** define `invoke` — `invoke` outranks `get`. A `HashMap`, whose lookup is
-exposed through `get`, has no `invoke`; a `Vector`, whose indexing is `invoke`, is
-indexed by call and must read its fields with `_get`.)
-
-**`invoke` — indexing / general call (highest precedence).** A type "becomes
-callable" by defining `invoke` methods; there is **no** built-in default. Once a
-type has an `invoke` method, *every* `(s arg…)` on that type routes to `invoke`,
-with the argument(s) taken as values — so the callee can no longer be used for
-field access by call. Dispatch is ordinary multimethod resolution on the whole
-argument tuple:
+**`invoke` — indexing / general call.** A type "becomes callable" by defining
+`invoke` methods; there is **no** built-in default. Once a type has an `invoke`
+method, `(s arg…)` on that type routes to `invoke`, with the argument(s) taken as
+values, unless the one argument is the quoted name of one of its fields. Dispatch
+is ordinary multimethod resolution on the whole argument tuple:
 
 ```lisp
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (_get self 'data) i)))
+(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (self 'data) i)))
 (v 3)          ; ⇒ (invoke v 3) → element access (literal index)
 (let (idx:i32 1) (v idx))   ; ⇒ (invoke v idx) → indexes; NOT a field named idx
-(_get v 'len)   ; field access — `(v 'len)` would mis-route to invoke
+(v 'len)       ; the field: 'len names one
 ```
 
-**`invoke` falls back to `get`.** If no `invoke` method accepts the receiver, a
-one-argument `(invoke callee arg)` retries the resolution against the `get`
-generic. That is how a `HashMap` — which exposes its lookup as `get` and has no
-`invoke` at all — answers `(invoke m k)`. It is no longer needed to *force* the
-value reading, since a bare symbol already is one:
+An `invoke` that takes a symbol sees the selectors that name no field:
 
 ```lisp
-(m 'count)          ; the `count` FIELD — quote it to mean the name
-(m count)           ; the value under the key in `count`
+(defstruct Temp c:i32)
+(defn invoke (self:ptr:Temp sel:ptr):i32
+  (if (= sel 'f) (return …) (return (self 'c))))  ; (t 'f) routes here; (t 'c) reads c
 ```
 
 For parametric function-object conformance use `(UnaryFn Arg Ret)` and
@@ -553,11 +535,12 @@ For parametric function-object conformance use `(UnaryFn Arg Ret)` and
 See `examples/callable.nuc` for a full demonstration, and
 `examples/selector-value.nuc` for the member-access matrix.
 
-**Computed selector (`get` only).** An *explicit* `(get callee expr)` whose
-selector is anything but a quoted symbol — a bare symbol included — reads a field
-chosen at runtime: the selector is compared by pointer identity against the struct's
-interned field symbols. Restricted to **homogeneous** structs (all fields one
-type) so the result type is well-defined; a heterogeneous struct is a clear error.
+**Computed selector.** `(field callee expr)`, or `(callee expr)` on a struct with no
+`invoke`, whose selector is anything but a quoted symbol — a bare symbol included —
+reads a field chosen at runtime: the selector is compared by pointer identity
+against the struct's interned field symbols. Restricted to **homogeneous** structs
+(all fields one type) so the result type is well-defined; a heterogeneous struct is
+a clear error.
 
 **Arbitrary-expression and function-pointer heads.** The head need not be a
 symbol: `((mk-vec) 3)` and `(@p 3)` emit the head once and route the same way. A
@@ -569,5 +552,5 @@ the Special Forms table above).
 
 Everything resolves at compile time to a static GEP+load, a direct `call` to a
 resolved method, or an indirect `call` through a fn-pointer — no dispatch object,
-no vtable. `get`/`invoke` overloads export through the existing
+no vtable. `invoke` overloads export through the existing
 `defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.

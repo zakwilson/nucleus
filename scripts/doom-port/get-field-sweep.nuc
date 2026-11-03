@@ -1,0 +1,19 @@
+; Rewrite field reads spelled with `get` onto `field` (nuc-doom ISSUE-053):
+;
+;   build/nucleusc --run scripts/doom-port/get-field-sweep.nuc -- \
+;     [--apply] [--strict] [--in-strings] FILE|DIR|GLOB...
+;
+;   (get X 'f)  ->  (field X 'f)
+;
+; Every site is flagged: a map keyed by symbols, looked up with a literal key,
+; is spelled the same way, and only its type says which it is.
+
+(import-use nucleus.syntax)
+(import-use nucleus.refactor)
+
+(defrewrite get-field
+  (rule (get ~x (quote ~f)) `(field ~x (quote ~f))
+        :flag "a quoted selector: a field read unless X is a symbol-keyed map"))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (get-field))))

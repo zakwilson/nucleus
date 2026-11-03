@@ -107,7 +107,7 @@
       (return (slots-all SLOT-NAME))
     (or (= h "cond") (= h "return") (= h "while") (= h "ref") (= h "deref")
         (= h "not") (= h "_and") (= h "_or") (= h "funcall") (= h "funcall-void")
-        (= h "unsafe/ptr+") (= h "_get") (= h "get") (= h "invoke") (= h "aref")
+        (= h "unsafe/ptr+") (= h "_get") (= h "field") (= h "invoke") (= h "aref")
         (= h "some") (= h "as-ref") (= h "unwrap") (= h "unwrap-or") (= h "try")
         (= h "err!") (= h "err-name") (= h "err-message") (= h "signal")
         (= h "defer") (= h "move") (= h "label") (= h "goto") (= h "label-addr")

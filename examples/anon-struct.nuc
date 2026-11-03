@@ -5,7 +5,7 @@
   (let (p:&(struct x:i32 y:i32) (alloca (struct x:i32 y:i32)))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
-    (return (+ (get p 'x) (get p 'y)))))
+    (return (+ (field p 'x) (field p 'y)))))
 
 ; Nested anonymous struct as a value-typed defstruct field. Use .&
 ; to obtain a pointer to the nested field and .set! through it.
@@ -18,12 +18,12 @@
     (set! ((ref o 'point) 'x) 10)
     (set! ((ref o 'point) 'y) 20)
     (set! (o 'tag) 7)
-    (return (+ (get (ref o 'point) 'x) (+ (get (ref o 'point) 'y) (get o 'tag))))))
+    (return (+ (field (ref o 'point) 'x) (+ (field (ref o 'point) 'y) (field o 'tag))))))
 
 ; Anonymous struct via pointer as function parameter type. Two call
 ; sites must resolve to the same StructDef (memoization).
 (defn take-anon (p:&(struct x:i32 y:i32)):i32
-  (return (- (get p 'x) (get p 'y))))
+  (return (- (field p 'x) (field p 'y))))
 
 (defn pass-twice ():i32
   (let (a:&(struct x:i32 y:i32) (alloca (struct x:i32 y:i32))
@@ -39,7 +39,7 @@
 (defn ptr-round-trip ():i32
   (let (s:&(struct v:i32) (alloca (struct v:i32)))
     (write-via-ptr s)
-    (return (get s 'v))))
+    (return (field s 'v))))
 
 (defn main ():int
   (printf "local=%d\n" (local-anon))

@@ -3816,7 +3816,7 @@
 (defconst- GCHECK-SPECIAL-FORMS
   #{"let" "with" "do" "cond" "return" "while" "break" "continue" "set!" "quote" "quasiquote"
     "ast-first" "ast-rest" "ast-at" "ast-len" "not" "_and" "_or" "cast" "ref"
-    "deref" "ptr+" "_get" "sizeof" "alignof" "source-file" "source-line" "alloca"
+    "deref" "ptr+" "_get" "field" "sizeof" "alignof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
     "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
     "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
@@ -6976,7 +6976,7 @@
 (defconst PLACE-VALUE 0)
 (defconst PLACE-FIELD 1)
 (defconst PLACE-INVOKE 2)
-(defconst PLACE-GET 3)
+(defconst PLACE-COMPUTED 3)
 
 (defn callable-place-route (ct:?&Type nargs:i32 sel:?&Node):i32
   (when (= ct null) (return PLACE-VALUE))
@@ -6985,11 +6985,8 @@
   (when (and (= nargs 1) (!= (callee-selects-field ct sel) 0)) (return PLACE-FIELD))
   (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) ct) 0)
     (return PLACE-INVOKE))
-  (when (and (= nargs 1)
-             (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) ct) 0))
-    (return PLACE-GET))
   (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
-    (return (if (= (selector-literal-sym sel) null) PLACE-GET PLACE-FIELD)))
+    (return (if (= (selector-literal-sym sel) null) PLACE-COMPUTED PLACE-FIELD)))
   ; emit-invoke-with-callee reports it.
   (return PLACE-VALUE))
 
@@ -7066,7 +7063,7 @@
         (return (as ptr (ref-type-of pt)))))
     (when (and (= h '_get) (= (node-len (as ptr op)) 3))
       (return (node-type-field-addr (node-at op 1) (node-at op 2) scope)))
-    (when (and (= h 'get) (= (node-len (as ptr op)) 3))
+    (when (and (= h 'field) (= (node-len (as ptr op)) 3))
       (return (node-type-callable-place op (node-at op 1) 2 scope)))
     (when (!= (as ptr (callable-value-head-sym h scope)) null)
       (return (node-type-callable-place op h 1 scope)))
@@ -7102,7 +7099,7 @@
       (return (as ptr (-> tt (_ 'elem) (unsafe/cast &Type _) (_ 'sdef)))))
     (return null)))
 
-; Would emit-get-intrinsic accept this callee? Its own unwrap: a struct or union
+; Would emit-field-intrinsic accept this callee? Its own unwrap: a struct or union
 ; VALUE (SV-1 materializes it), or a pointer to one. Distinct from
 ; access-receiver-sdef because that answers with a StructDef and so cannot speak
 ; for a TY-UNION -- which is exactly the case a receiver-shaped routing gate must
@@ -7132,30 +7129,21 @@
           ; G-2 lockstep with emit-field-load: an array field decays.
           (return (array-decay (fr 'type))))))))
 
-; Result type of `(get callee selector)` for callee type `ct` — mirrors
-; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
-; codegen. A tier-0 user `get` method → its return; a literal selector → the
-; named field's type; a computed selector → null (emit keeps its own type).
-(defn callable-get-type (ct:?&Type sel-node:?&Node scope:ref:Scope):?&Type
-  (let (ctt:?&Type ct
-        g:?&Generic (generic-lookup (symbol-intern "get")))
-    (when (!= g null)
-      (let (argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
-        (set! (aref (unsafe/cast &ptr argtypes) 0) ct)
-        (set! (aref (unsafe/cast &ptr argtypes) 1) ty-ptr)
-        (let (m:?&Method (generic-find-method-exact g argtypes 2))
-          (when (!= m null) (return (m 'ret-type))))))
-    ; SV-1: same unwrap as node-type-field — a struct VALUE in head position is
-    ; a member access too.
-    (let (sd:?&StructDef (access-receiver-sdef ct))
+; Result type of a field access on callee type `ct`, mirroring
+; emit-field-intrinsic: a literal selector → the named field's type; a computed
+; selector → null (emit keeps its own type).
+(defn field-access-type (ct:?&Type sel-node:?&Node scope:ref:Scope):?&Type
+  ; SV-1: same unwrap as node-type-field — a struct VALUE in head position is
+  ; a member access too.
+  (let (sd:?&StructDef (access-receiver-sdef ct))
       (when (= sd null) (return null))
       (let (lit:ptr (selector-literal-sym sel-node))
         (when (= lit null) (return null))
         (let (fr:?&FieldRef (struct-field-ref (as ptr sd)
                                  (-> lit (unsafe/cast &Node _) (_ 's))))
           (when (= fr null) (return null))
-          ; G-2 lockstep with emit-get-intrinsic -> emit-field-load: array decay.
-          (return (array-decay (fr 'type))))))))
+          ; G-2 lockstep with emit-field-intrinsic -> emit-field-load: array decay.
+          (return (array-decay (fr 'type)))))))
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).
@@ -7175,28 +7163,25 @@
         (when (= m null) (return null))
         (return (m 'ret-type))))))
 
-; Type of a non-function head value `ct` applied in `(callee arg…)` — mirrors
-; emit-callable-value's `invoke → get → _get` routing so the type pass cannot
-; drift from codegen: a callee whose type has an `invoke` method → invoke result;
-; else a single arg with a custom/intrinsic `get` → get result.
+; Type of a non-function head value `ct` applied in `(callee arg…)`, in
+; emit-callable-value's order: a literal field, then `invoke`, then a field.
 (defn callable-value-type (ct:&Type n:?&Node scope:ref:Scope):?&Type
   (let (nargs:i32 (- (node-len n) 1))
+    (when (and (= nargs 1) (!= (callee-selects-field ct (node-at n 1)) 0))
+      (return (field-access-type ct (node-at n 1) scope)))
     (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) ct) 0)
       (return (callable-invoke-type ct n 1 nargs scope)))
-    (when (and (= nargs 1)
-               (!= (generic-has-receiver-method (generic-lookup (symbol-intern "get")) ct) 0))
-      (return (callable-get-type ct (node-at n 1) scope)))
     ; Lockstep with emit-callable-value: routes on the receiver, not the
     ; argument's shape (dot-forms.md §5 step 3).
     (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
-      (return (callable-get-type ct (node-at n 1) scope)))
+      (return (field-access-type ct (node-at n 1) scope)))
     (return (callable-invoke-type ct n 1 nargs scope))))
 
-(defn node-type-get (n:?&Node scope:ref:Scope):?&Type
+(defn node-type-field-form (n:?&Node scope:ref:Scope):?&Type
   (when (!= (node-len n) 3) (return null))
   (let (ct:ptr (node-type (node-at n 1) scope))
     (when (= ct null) (return null))
-    (return (callable-get-type ct (node-at n 2) scope))))
+    (return (field-access-type ct (node-at n 2) scope))))
 
 (defn node-type-invoke (n:?&Node scope:ref:Scope):?&Type
   (when (< (node-len n) 2) (return null))
@@ -7491,7 +7476,7 @@
         ; bare `ptr+` used to (lockstep).
         (when (= hp 'unsafe/ptr+) (return (node-type (node-at n 1) scope)))
         (when (= hp '_get) (return (node-type-field n scope)))
-        (when (= hp 'get) (return (node-type-get n scope)))
+        (when (= hp 'field) (return (node-type-field-form n scope)))
         (when (= hp 'invoke) (return (node-type-invoke n scope)))
         ; sizeof yields a pointer-sized integer (size_t) — mirror emit-sizeof,
         ; which returns (ptr-int-type). On hosted targets ptr-int-type is ty-i64

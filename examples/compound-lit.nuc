@@ -6,22 +6,22 @@
 (defn main ():int
   ; Positional struct literal.
   (let (p:&Point (Point 10 20))
-    (printf "p = %d,%d\n" (get p 'x) (get p 'y)))
+    (printf "p = %d,%d\n" (field p 'x) (field p 'y)))
 
   ; Designated struct literal — out of order, partial (z default = 0... no z here).
   (let (q:&Point (Point (y 99) (x 1)))
-    (printf "q = %d,%d\n" (get q 'x) (get q 'y)))
+    (printf "q = %d,%d\n" (field q 'x) (field q 'y)))
 
   ; Mix designated and positional; unspecified -> zero.
   (let (r:&Point (Point (y 42)))
-    (printf "r = %d,%d\n" (get r 'x) (get r 'y)))
+    (printf "r = %d,%d\n" (field r 'x) (field r 'y)))
 
   ; Nested compound literal.
   (let (rect:&Rect (Rect (tl (Point 0 0)) (br (Point 4 5)) (label "box")))
     (printf "rect %s tl=%d,%d br=%d,%d\n"
-      (get rect 'label)
-      (get (get rect 'tl) 'x) (get (get rect 'tl) 'y)
-      (get (get rect 'br) 'x) (get (get rect 'br) 'y)))
+      (field rect 'label)
+      (field (field rect 'tl) 'x) (field (field rect 'tl) 'y)
+      (field (field rect 'br) 'x) (field (field rect 'br) 'y)))
 
   ; Array literal — positional.
   (let (a:&int (array int 10 20 30 40 50))

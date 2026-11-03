@@ -1147,4 +1147,4 @@ The interning is global to the process. The reader interns at lex time, and `quo
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
-Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (get h 's) "defn") 0)`.
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (field h 's) "defn") 0)`.

@@ -50,6 +50,7 @@ Six more, filed with the port's refactor onto these fixes, were ruled
 | 050 | the link note names the packages whose directories hold the header | |
 | 051 | `for` takes `:rest body` | |
 | 052 | `some?`/`none?`, HashMap `contains?`, String `clear!` | |
+| 053 | `field` reads fields; `get` is only a lookup; head position is a field unless `invoke` is defined | [field-and-get.md](field-and-get.md) |
 
 Design notes for the issues that need one are added to this directory and
 linked from the table.

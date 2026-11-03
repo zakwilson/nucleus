@@ -66,9 +66,9 @@ In practice, `doseq` handles this automatically — see [Macros](macros.md) for 
 | Method | Description |
 |--------|-------------|
 | `assoc` | Insert or overwrite the value for `key`, mutating in place. |
-| `set` | The same write, under the name the place form dispatches on: `(set! (m k) v)` and `(set! (get m k) v)` both call it. Not an `Assoc` member — `HashMap` defines it directly, as `assoc`. |
+| `set` | The same write, under the name the place form dispatches on: `(set! (m k) v)` calls it. Not an `Assoc` member — `HashMap` defines it directly, as `assoc`. |
 | `dissoc` | Remove the entry for `key`, mutating in place. No-op if absent. |
-| `get` | Look up `key`; returns `(some v)` on a hit, `none` on a miss. |
+| `get` | Look up `key`; returns `(some v)` on a hit, `none` on a miss. An ordinary call, so a literal key adapts to `K`. `HashMap` and `ConstMap` also define `invoke` as `get`, so `(m k)` is the same lookup. |
 | `keys` | Returns a fresh key iterator by value. The return type is the associated iterator type `Ki`, which must conform to `(Iterator K)`. |
 | `vals` | Returns a fresh value iterator by value. The return type is the associated iterator type `Vi`, which must conform to `(Iterator V)`. |
 
@@ -166,7 +166,7 @@ The fold itself lives in `lib/nucleus/fnv.nuc` (`fnv1a-byte`, `fnv1a-int`, `fnv1
   (printf "%d\n" (contains? s 'alpha)))            ; 1
 ```
 
-**Look a symbol key up with `(invoke m 'k)`, never `(m 'k)`.** In head position a selector is resolved as a *field name* first, and quoting does not exempt it — `(m 'count)` reads `HashMap`'s `count` field and returns a **wrong answer rather than an error**. `invoke` is the always-a-value escape hatch. This is the general head-position rule (see [Gotchas](#gotchas-and-constraints)); symbol keys just make it easy to hit.
+**Look a symbol key up with `(get m 'k)` or `(invoke m 'k)`, never `(m 'k)`.** In head position a selector is resolved as a *field name* first, and quoting does not exempt it — `(m 'count)` reads `HashMap`'s `count` field and returns a **wrong answer rather than an error**. `get` and `invoke` always take their argument as a key. This is the general head-position rule (see [Gotchas](#gotchas-and-constraints)); symbol keys just make it easy to hit.
 
 Choose between the two key types by what the key *is*: `Keyword` for a name that is data (a config key, a tag), `(ref Node)` for a name that is program text you are already holding as AST. `Keyword`'s hash is a cached load; a symbol's is a pointer fold.
 

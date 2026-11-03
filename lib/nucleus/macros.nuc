@@ -217,7 +217,7 @@
             j:i32 1
             len:i32 (ast-len cur))
         (cond (= (h 'kind) NODE-LIST) (set! b 0)
-              (or (= h 'aref) (= h '.) (= h 'get) (= h '_get)) (do (set! b 1) (set! j 2))
+              (or (= h 'aref) (= h '.) (= h 'field) (= h '_get)) (do (set! b 1) (set! j 2))
               true 0)
         (while (and (< j len) (< hk 0))
           (let ((e (ptr Node)) (ast-at cur j))

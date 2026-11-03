@@ -1147,7 +1147,7 @@ observable through it — a two-line repro is cheaper than reasoning.
 identity for everything else, so callers apply it unconditionally. It is called
 from `emit-symbol-ref`, `emit-field-load`, the two union-member load arms,
 `emit-field-addr` and `emit-alloca-form` — and from `node-type-sym`,
-`node-type-field`, `callable-get-type` and `node-type-alloca`. That is the
+`node-type-field`, `field-access-type` and `node-type-alloca`. That is the
 `node-type`↔`emit-node` lockstep applied to a *type transformation* rather than
 a typing rule, and it is the same lesson W2a's `binop-result-type` teaches:
 mirroring the logic drifts, mirroring a call cannot. `node-type-alloca` is the
@@ -1565,8 +1565,8 @@ have different element parities, different failure modes, and different layers.
 sides are interned: selectors arrive interned (the reader / `quote` intern symbol
 spellings at lex time, so `(fn-node 's)` is the canonical string) and stored field
 names are interned at build time via `intern-str` (interns the spelling, returns the
-canonical string pointer). The three field-access paths — `.` (`emit-field-get`),
-the `get` intrinsic (`emit-get-intrinsic`), and the non-emitting type pass
+canonical string pointer). The three field-access paths — `_get` (`emit-field-get`),
+the `field` intrinsic (`emit-field-intrinsic`), and the non-emitting type pass
 (`node-type-field`) — all route through `struct-field-index`, so they cannot drift.
 
 There is exactly **one** place that populates a StructDef's `field-names`:
@@ -1585,7 +1585,7 @@ mirror `lib/nucleus/core.nuc`'s `defstruct Node` slot for slot. It did not: when
 were retyped `ptr`→`(raw Node)` the mirror kept bare `ty-ptr`, and three `NODE-*`
 ordinals were never registered at all. The bare-`ptr` symptom is worth knowing on its
 own — a macro that reads `(p car)` once works, while one that **chains** without a cast
-(`((spec cdr) car)` in `dotimes`) dies in `emit-get-intrinsic` with "callable value: not
+(`((spec cdr) car)` in `dotimes`) dies in `emit-field-intrinsic` with "callable value: not
 callable", because `(spec cdr)` returns an untyped `ptr` (elem=null) so `ek` resolves to
 `TY-VOID` and the `TY-STRUCT`/`TY-UNION` gate fails. The REPL now imports the real
 prelude instead (`repl-preload-prelude`), which is why the drift is gone rather than
@@ -1901,25 +1901,28 @@ regression — most commonly a both-`ptr` comparison that lost its strcmp (a
 (stage1==stage2) does **not** catch this (both stages share the change); the
 before/after IR diff does.
 
-## Member access is head position `(s 'field)`; `_get` is the bypass primitive
+## Member access is head position `(s 'field)` or `field`; `get` is only a lookup
 
-The `.` field-access special form was renamed **`_get`** (compiler-internal
-primitive; `emit-field-get`) and ordinary code uses **head position `(s 'field)`**
-instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
-GEP+load). The selector is **quoted** — see the next section. Stage 16 finished
-the job: `.`, `.&`, `.set!`, `ptr-set!` and `aset!` are all gone (`get`, the
-2-argument `ref`, and `set!` over a **place** replace them), but every one
-stays **reserved** so a retired-form message carrying the replacement always
-reaches the user. Two non-obvious hazards — both bit the `.`→head-position migration and are why `_get` still exists:
+Ordinary code reads a field with **head position `(s 'field)`** or the **`field`**
+special form (`emit-field`, the intrinsic `emit-field-intrinsic`: byte-identical
+GEP+load). `_get` is the older literal-only spelling (`emit-field-get`). The
+selector is **quoted** — see the next section. `.`, `.&`, `.set!`, `ptr-set!` and
+`aset!` are all gone, but every one stays **reserved** so a retired-form message
+carrying the replacement always reaches the user.
 
-- **A user `get` method must read its own fields with `_get`, not head position.**
-  `(self 'field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
-  same `get` method → infinite recursion → segfault. Use `(_get self 'field)` (direct,
-  bypasses the override). Head position respects user `get` overrides; `_get` skips them.
+**`get` read fields until nuc-doom ISSUE-053**, as a Struct-blanket intrinsic that
+user `get` methods overrode. Every associative type is also a struct, so a key
+that matched no `get` method exactly fell to the field intrinsic: `(get &m 1)` on
+a `(HashMap i64 V)` was a positional field read. `get` is now an ordinary generic
+call (it resolves with tier-2 widening like any function), head position never
+reaches it, and a collection that answers `(m k)` defines `invoke`. Head position
+is: a literal field name, then `invoke`, then the field intrinsic.
+`die-if-get-reads-field` names `field` when `get` meets a struct no method takes.
+
 - **A struct held in a variable named like a special form or macro collides.**
   `(cond 'field)` parses as the `cond` special form (special forms/macros are
   dispatched before scope lookup). Fix by renaming the variable (preferred) or using
-  `(_get cond 'field)`. **Functions don't collide** — a local shadows them in scope
+  `(field cond 'field)`. **Functions don't collide** — a local shadows them in scope
   lookup, so `(localvar 'field)` is member access even if a function shares the name.
   The one-time `.`→head-position migration special-cased reserved-named *direct*
   heads by routing them to `_get`; a reserved-named **`->` base** was not caught
@@ -1937,12 +1940,12 @@ things that fall out of it, each of which had to be built:
 - **`_get`, `.set!` and the 2-argument `ref` require a literal** and refuse a bare symbol rather
   than reading it as a variable — they name a field statically, so there is
   nothing for a computed selector to mean there (`die-nonliteral-selector`).
-- **Head position and `get` route on the RECEIVER, not on the argument's shape.**
+- **Head position and `field` route on the RECEIVER, not on the argument's shape.**
   `emit-callable-value` used to reach the member path only for a single
   literal-symbol argument; with the literal gone, `(p sel)` fell through to
   `emit-invoke-with-callee`. The gate is `is-member-access-receiver`
   (src/generics.nuc): a struct/union value or a pointer to one — the question
-  `emit-get-intrinsic` actually asks. **Do not reuse `access-receiver-sdef`
+  `emit-field-intrinsic` actually asks. **Do not reuse `access-receiver-sdef`
   here**: it answers with a `StructDef` and so cannot speak for a `TY-UNION`.
 - **An unbound bare symbol naming a real field is a missed quote**, not an
   undefined variable, and `emit-computed-field` says so with the spelling. That
@@ -1953,8 +1956,8 @@ things that fall out of it, each of which had to be built:
 `emit-symbol-ref` — the "one place a name becomes a value" that a value-position
 feature is naturally built in. That is how Stage 16's `as` sugar landed and
 `(m k:CStr)` still died with `no field 'k:CStr'` (as-sugar.md §11). Its saving
-grace is that it is *shared*: emit (`emit-get-with-callee`) and node-type
-(`callable-get-type`, generics.nuc) both call it, so the `node-type`↔`emit-node`
+grace is that it is *shared*: emit (`emit-field-intrinsic`) and node-type
+(`field-access-type`, generics.nuc) both call it, so the `node-type`↔`emit-node`
 lockstep holds by construction. `is-member-access-receiver` is the same shape and
 is called from both `emit-callable-value` and `callable-value-type` for the same
 reason.
@@ -2009,7 +2012,7 @@ the head is now the **receiver**, and the same holds for a callable value. Both
 walk index 0 now — `is-local` (walk) and membership in `caps` (rewrite) are what
 keep a call to a global from being read as a capture, so nothing else was needed.
 
-The bug this closes is invisible to a grep: `(get p 'x)` inside a closure captured
+The bug this closes is invisible to a grep: `(_get p 'x)` inside a closure captured
 `p` and `(p 'x)` did not, and `.set!` hid its half by walking its receiver
 explicitly at index 1 — which the `set!` place form no longer does, because the
 receiver moved into head position. Every member form the compiler *synthesizes*
@@ -2017,15 +2020,13 @@ has the same hazard; see the `quoted-selector` / `set-place-cell` helpers.
 
 ## A member place with a COMPUTED key is the `set` generic; a literal selector is always the field
 
-`(set! (m k) v)` and `(set! (get m k) v)` become the ordinary call `(set m k v)`
+`(set! (m k) v)` becomes the ordinary call `(set m k v)`
 when `k` is not a literal selector and the receiver's type has a `set` method
 (`set-place-call`, `src/nucleusc.nuc`). A **literal** selector never dispatches,
 and that is load-bearing, not a simplification: without it a collection that
 defines `set` can no longer write its own fields — `(set! (self 'data) null)`
-inside `Vector`'s `drop` dispatches back into the `set` method. It is the write
-side of the `_get` recursion trap two sections up, and the rule is the split
-`emit-get-with-callee` already makes (Branch A literal = member access, Branch B
-computed = value-keyed dispatch).
+inside `Vector`'s `drop` dispatches back into the `set` method. The read side is
+the same rule: a literal field name outranks `invoke` in head position.
 
 Two consequences worth knowing:
 
@@ -2038,7 +2039,7 @@ Two consequences worth knowing:
   cell emit builds. That is the lockstep this file opens with, discharged by
   having one answer rather than two that must agree.
 
-`_get` never dispatches (it is the override bypass), and neither do the storage
+`_get` and `field` never dispatch, and neither do the storage
 places `(deref p)` / `(aref a i)`.
 
 ## A type that is BOTH indexable and a struct: a literal selector naming a field outranks `invoke`
@@ -2052,7 +2053,7 @@ access — two rules that never met until `Node` conformed to `Seq` while keepin
 The fix is a precedence-1 branch in `emit-callable-value`, ahead of the invoke
 check: `callee-selects-field` asks whether the one argument is a **literal**
 quoted symbol naming a field of the callee's struct, and routes to
-`emit-get-with-callee` if so. It must be side-effect-free and asked *before any
+`emit-field-intrinsic` if so. It must be side-effect-free and asked *before any
 argument is emitted*, like `generic-has-receiver-method` — the same discipline
 as the `set` place route two sections up, for the same reason.
 
@@ -2068,7 +2069,7 @@ throughout.
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
-`(get v 'f)`, head-position `(v 'f)`, and `(_get v 'f)` all work on a by-value
+`(field v 'f)`, head-position `(v 'f)`, and `(_get v 'f)` all work on a by-value
 parameter, a `let`-bound struct local, or a call result read in place. The
 emitter copies the value into a fresh slot (`materialize-struct-value`,
 `src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the

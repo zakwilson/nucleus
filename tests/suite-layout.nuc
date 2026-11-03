@@ -222,10 +222,10 @@ struct F { int8_t c; struct A inner; int32_t i; };
 (deftest s16-pk-access-align
   (let (ir:String (try (source-ir "(defstruct :packed P c:i8 i:i32)
 (defstruct Q c:i8 i:i32)
-(defn rd (p:&P):i32 (return (get p 'i)))
+(defn rd (p:&P):i32 (return (field p 'i)))
 (defn wr (p:&P):void (set! (p 'i) 7))
-(defn lit ():i32 (let (p:&P (P 1 2)) (return (get p 'i))))
-(defn rdq (q:&Q):i32 (return (get q 'i)))
+(defn lit ():i32 (let (p:&P (P 1 2)) (return (field p 'i))))
+(defn rdq (q:&Q):i32 (return (field q 'i)))
 "))
         m:StrView (string-as-view &ir))
     (try (check-line m "%P = type <{ i8, i32 }>"))
@@ -243,9 +243,9 @@ struct F { int8_t c; struct A inner; int32_t i; };
   (let (p:&R (alloca R))
     (set! (p 'c) 1) (set! (p 'i) 305419896) (set! (p 's) -3)
     (printf \"%ld %d %d %d\\n\" (sizeof R)
-      (as i32 (get p 'c)) (get p 'i) (as i32 (get p 's))))
+      (as i32 (field p 'c)) (field p 'i) (as i32 (field p 's))))
   (let (r:&R (R 7 8 9))
-    (printf \"%d %d %d\\n\" (as i32 (get r 'c)) (get r 'i) (as i32 (get r 's))))
+    (printf \"%d %d %d\\n\" (as i32 (field r 'c)) (field r 'i) (as i32 (field r 's))))
   (return 0))
 "))
         ov:StrView (string-as-view &out))
@@ -284,7 +284,7 @@ struct __attribute__((__packed__)) PK7 { char c; long l; };
   (let (h:String (try (source-cheader
                         "(defstruct :packed WireHdr tag:i8 len:i32 flags:i16)
 (defstruct PlainHdr tag:i8 len:i32 flags:i16)
-(defn wire-len (h:&WireHdr):i32 (return (get h 'len)))
+(defn wire-len (h:&WireHdr):i32 (return (field h 'len)))
 "))
         hv:StrView (string-as-view &h))
     (try (check-line hv "} __attribute__((packed)) WireHdr;"))
@@ -361,11 +361,11 @@ struct F { struct A inner; int8_t c; };
   (let (ir:String (try (source-ir "(import-use \"stdio.h\")
 (defstruct :align 16 A x:i32)
 (defstruct B c:i8 (:align 16 i:i32))
-(defn read-i (p:&B):i32 (return (get p 'i)))
+(defn read-i (p:&B):i32 (return (field p 'i)))
 (defn main ():i32
   (let (a:&A (alloca A) b:&B (B 1 7))
     (set! (a 'x) 5)
-    (printf \"%d %d\\n\" (get a 'x) (read-i b)))
+    (printf \"%d %d\\n\" (field a 'x) (read-i b)))
   (return 0))
 "))
         m:StrView (string-as-view &ir))
@@ -390,7 +390,7 @@ struct F { struct A inner; int8_t c; };
   (let (p:&B (B 1 305419896))
     (printf \"%ld %ld %d %d\\n\" (sizeof B)
       (- (unsafe/cast i64 (ref p 'i)) (unsafe/cast i64 p))
-      (as i32 (get p 'c)) (get p 'i)))
+      (as i32 (field p 'c)) (field p 'i)))
   (return 0))
 "
     "#include <stdio.h>
@@ -444,7 +444,7 @@ int main(void){printf(\"%zu\\n\",sizeof(max_align_t));return 0;}
 (deftest s16-pk3-cheader-roundtrip
   (let (h:String (try (source-cheader "(defstruct :align 32 Cache x:i64)
 (defstruct Slot c:i8 (:align 16 v:i32))
-(defn slot-v (s:&Slot):i32 (return (get s 'v)))
+(defn slot-v (s:&Slot):i32 (return (field s 'v)))
 "))
         hv:StrView (string-as-view &h))
     (try (check-line hv "} __attribute__((aligned(32))) Cache;"))
@@ -542,12 +542,12 @@ struct __attribute__((packed)) K { uint32_t x:1; uint32_t :0; uint32_t y:1; };
 (defn main ():i32
   (let (p:&A (alloca A))
     (set! (p 'a) -3) (set! (p 'b) 21) (set! (p 'c) -100000) (set! (p 'd) 7)
-    (printf \"%ld %d %d %d %d\\n\" (sizeof A) (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
+    (printf \"%ld %d %d %d %d\\n\" (sizeof A) (field p 'a) (as i32 (field p 'b)) (field p 'c) (field p 'd)))
   (let (q:&F (alloca F))
     (set! (q 'c) 65) (set! (q 'a) 2) (set! (q 'b) 123456789)
-    (printf \"%ld %d %d %d\\n\" (sizeof F) (as i32 (get q 'c)) (get q 'a) (get q 'b)))
+    (printf \"%ld %d %d %d\\n\" (sizeof F) (as i32 (field q 'c)) (field q 'a) (field q 'b)))
   (let (r:&A (A 1 2 3 4))
-    (printf \"%d %d %d %d\\n\" (get r 'a) (as i32 (get r 'b)) (get r 'c) (get r 'd)))
+    (printf \"%d %d %d %d\\n\" (field r 'a) (as i32 (field r 'b)) (field r 'c) (field r 'd)))
   (return 0))
 "
     "#include <stdio.h>
@@ -579,7 +579,7 @@ struct __attribute__((packed)) BI5 { char c; int a:3; int b:30; };
     (set! (p 'a) -3) (set! (p 'b) 21) (set! (p 'c) -100000) (set! (p 'd) 7)
     (printf \"%ld %ld %ld %ld %ld %d %d %d %d\\n\" (sizeof BI1) (sizeof BI2)
       (sizeof BI3) (sizeof BI4) (sizeof BI5)
-      (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
+      (field p 'a) (as i32 (field p 'b)) (field p 'c) (field p 'd)))
   (return 0))
 "
     "int main(void){ struct BI1 p; p.a=-3; p.b=21; p.c=-100000; p.d=7;
@@ -605,7 +605,7 @@ int main(void){printf(\"%zu\\n\",sizeof(FILE));return 0;}
 (deftest s16-bf-cheader-roundtrip
   (let (h:String (try (source-cheader
                         "(defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
-(defn hdr-ver (h:&Hdr):ui32 (return (get h 'ver)))
+(defn hdr-ver (h:&Hdr):ui32 (return (field h 'ver)))
 "))
         hv:StrView (string-as-view &h))
     (try (check-line hv "    uint32_t ver : 4;"))
@@ -655,11 +655,11 @@ int main(void){printf(\"%zu\\n\",sizeof(FILE));return 0;}
   (let (s:&s16_sig (alloca s16_sig))
     (set! (s 'code) 7) (set! (s 'pid) 42) (set! (s 'uid) 99)
     (set! ((ref s 'named) 'a) 1) (set! ((ref s 'named) 'b) 2)
-    (printf \"%d %d %d %d %d %d\\n\" (get s 'code) (get s 'pid) (get s 'uid) (get s 'si_int)
-            (get (ref s 'named) 'a) (get (ref s 'named) 'b)))
+    (printf \"%d %d %d %d %d %d\\n\" (field s 'code) (field s 'pid) (field s 'uid) (field s 'si_int)
+            (field (ref s 'named) 'a) (field (ref s 'named) 'b)))
   (let (r:&s16_rus (alloca s16_rus))
     (set! (r 'sec) 5) (set! (r 'usec) 6) (set! (r 'maxrss) 8)
-    (printf \"%ld %ld %d %ld %ld\\n\" (get r 'sec) (get r 'usec) (get r 'maxrss)
+    (printf \"%ld %ld %d %ld %ld\\n\" (field r 'sec) (field r 'usec) (field r 'maxrss)
             (sizeof s16_sig) (sizeof s16_rus)))
   (return 0))
 "
@@ -736,7 +736,7 @@ int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
   (let (p:&Outer (alloca Outer))
     (set! (p 'tag) 1) (set! (p 'a) 2) (set! (p 'b) 3) (set! (p 'c) 4) (set! (p 'z) 5)
     (printf \"%ld %d %d %d %d %d %d\\n\" (sizeof Outer)
-            (get p 'tag) (get p 'a) (get p 'b) (get p 'c) (get p 'z) (deref (ref p 'b))))
+            (field p 'tag) (field p 'a) (field p 'b) (field p 'c) (field p 'z) (deref (ref p 'b))))
   (return 0))
 "))
         ov:StrView (string-as-view &out))
@@ -751,7 +751,7 @@ int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
   (try (check-source-rejects "(defstruct A dup:i32 x:i32)
 (defstruct B dup:i32 y:i32)
 (defstruct C (:anon A) (:anon B))
-(defn f (p:&C):i32 (return (get p 'dup)))
+(defn f (p:&C):i32 (return (field p 'dup)))
 (defn main ():i32 (return 0))
 "
          "more than one anonymous member supplies it"))

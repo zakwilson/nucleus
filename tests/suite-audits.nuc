@@ -367,8 +367,8 @@
 "))
         pv:StrView (string-as-view &p)
         edn:String (str "{:severity :error :file \"" pv "\" :line 2"
-                        " :message \"get: no field 'z' on struct 'Pt'\" :notes []}\n")
-        text:String (str pv ":2: error: get: no field 'z' on struct 'Pt'\n")
+                        " :message \"field: no field 'z' on struct 'Pt'\" :notes []}\n")
+        text:String (str pv ":2: error: field: no field 'z' on struct 'Pt'\n")
         s:Ran (try (nucleusc-raw "--diagnostics=edn" pv))
         a:Ran (try (nucleusc-raw "" pv))
         b:Ran (try (nucleusc-raw "--diagnostics=text" pv)))

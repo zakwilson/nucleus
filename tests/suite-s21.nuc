@@ -3664,7 +3664,7 @@ int main(void) {
 (defstruct Pt x:i32)
 (defn g (b:&(Box ?Pt)):i32 (return (b 'nope)))
 (defn main ():i32 (return 0))
-" 3 "get: no field 'nope' on struct '(Box ?Pt)'"))
+" 3 "field: no field 'nope' on struct '(Box ?Pt)'"))
   (try (s21-exit1-at "(defstruct (Box T) v:T)
 (defprotocol Shw (shw (x:Self):i32))
 (extend (Box i32) Shw)

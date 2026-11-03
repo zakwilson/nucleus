@@ -576,8 +576,8 @@ and typos caught):
   required. It lets a fully generic function name its variable: `(defn id (x:T
   :where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
   stamp time.
-- **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
-  `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
+- **`Struct`** holds for any struct type or pointer-to-struct. (Its fields are read
+  with `field` or head position; see [Callable values](special-forms.md#callable-values-non-function-call-position).)
   Both are **hardcoded** built-ins; a user-declarable blanket facility is parked in
   `design/stage999-future.md`.
 - **`Valid`** does not name a protocol — the required interface is *inferred* from

@@ -187,11 +187,13 @@
                 true (set! hi mid)))))
     (return len)))
 
-; `(m k)` routes here, as it does to HashMap's `get`.
 (defn get (self:(ConstMap K V) key:K):?V
   (let (i:usize (const-map-find self key))
     (when (>= i (self 'len)) (return none))
     (return (some ((aref (unsafe/cast &(Entry K V) (self 'data)) (as i64 i)) 'val)))))
+
+; `(m k)`: a map in head position looks its key up, as HashMap's does.
+(defn invoke (self:(ConstMap K V) key:K):?V (return (get self key)))
 
 (defn contains? (self:(ConstMap K V) key:K):bool
   (return (< (const-map-find self key) (self 'len))))
