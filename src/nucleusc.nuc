@@ -7547,15 +7547,28 @@
   (when (= g null) (return 0))
   (let (gg:?&Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
-      (let (m:&Method (invoke (gg 'methods) i:usize))
-        (when (> (m 'num-params) 0)
-          (if (= (m 'kind) METHOD-USER)
-            (when (!= (type-eq (aref (unsafe/cast &ptr (m 'param-types)) 0) ct) 0)
-              (return 1))
-            ; METHOD-GENERIC: the unifier only writes the scratch bound array.
-            (when (!= (template-receiver-binds m ct (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes)))) 0)
-              (return 1))))))
+      (when (method-takes-receiver? (invoke (gg 'methods) i:usize) ct) (return 1)))
     (return 0)))
+
+(defn method-takes-receiver? (m:&Method ct:?&Type):bool
+  (when (= (m 'num-params) 0) (return false))
+  (when (= (m 'kind) METHOD-USER)
+    (return (!= (type-eq (aref (unsafe/cast &ptr (m 'param-types)) 0) ct) 0)))
+  ; METHOD-GENERIC: the unifier only writes the scratch bound array.
+  (return (!= (template-receiver-binds m ct (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes)))) 0)))
+
+; The namespace of `g`'s method for receiver `ct` when none of them is reachable
+; bare from this file, else the none-Symbol.
+(defn receiver-method-hidden-ns (g:?&Generic ct:?&Type):Symbol
+  (let (hidden:Symbol (symbol-none))
+    (when (= g null) (return hidden))
+    (let (gg:?&Generic g)
+      (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:&Method (invoke (gg 'methods) i:usize))
+          (when (method-takes-receiver? m ct)
+            (when (!= (method-visible-as m (symbol-none)) 0) (return (symbol-none)))
+            (when (symbol-none? hidden) (set! hidden (m 'src-ns)))))))
+    (return hidden)))
 
 ; For `(v i)` on a by-value struct whose `invoke` takes it only by reference:
 ; the message naming `&v`, which computed field access would otherwise bury.
@@ -12404,6 +12417,14 @@
     ; read path's rule with `set` in place of `get`/`invoke`.
     (let (sc:ptr (set-place-call place v line scope))
       (when (!= sc null)
+        ; The source never names `set`, so the unknown-call note's qualified
+        ; spelling can't be written here; the import can.
+        (let (rt:?&Type (node-type (node-at sc 1) scope)
+              hns:Symbol (receiver-method-hidden-ns (generic-lookup (symbol-intern "set")) rt))
+          (when (not (symbol-none? hns))
+            (die-at line (fstr (fstr "set!: storing into a " (type-display rt) " element calls `set` from namespace '")
+                               hns "', which this file does not import"
+                               (fstr "\n  note: add (import-use " hns ")")))))
         (when (!= g-resolve 0)
           (if (= (node-len place) 3)
             (resolve-map-picks sc place 1 place 2 call 2)

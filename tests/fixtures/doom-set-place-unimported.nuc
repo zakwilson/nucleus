@@ -1,0 +1,4 @@
+; `set!` on a Slice element whose `set` this file doesn't import (nuc-doom ISSUE-049).
+(import nucleus.slice)
+(defvar links:&(slice/Slice i32) (new (slice/Slice i32) g-arena))
+(defn main ():i32 (set! (links 2) 7) 0)

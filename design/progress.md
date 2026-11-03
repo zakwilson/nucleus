@@ -5427,3 +5427,19 @@ Test: `doom-constant-tree-adapts-with-overload` in `tests/suite-doom.nuc`.
 Gate: built at its commit; the test passes. With the series through
 ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS after a boot refresh,
 since the fold reaches the compiler's own `(* 8 8)`.
+
+## DOOM-port fix: `set!` names the import its element store needs (2026-11-03)
+
+From the nuc-doom port's ISSUE-049: `(set! (links 2) 7)` on a `Slice` from a
+file that doesn't import `nucleus.slice` was "unknown: set", with a note to
+write `nucleus.slice/set`, which the source never names. The ruling defers
+the behavior and fixes the error. `emit-set-place` now asks
+`receiver-method-hidden-ns` for the namespace of the receiver's hidden `set`
+and dies with "set!: storing into a &(Slice i32) element calls `set` from
+namespace 'nucleus.slice', which this file does not import" and the note
+`add (import-use nucleus.slice)`. `method-takes-receiver?` is split out of
+`generic-has-receiver-method` for it.
+
+Test: `doom-set-place-unimported` in `tests/manifest/diagnostics.edn`.
+
+Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
