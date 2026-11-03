@@ -39,5 +39,17 @@ in [../progress.md](../progress.md).
 | 045 | `derive-edn` field defaults and an absent-keys-keep mode | [edn-defaults.md](edn-defaults.md) |
 | 046 | any integer index into a collection; a checked narrowing | [conversions.md](conversions.md) |
 
+Six more, filed with the port's refactor onto these fixes, were ruled
+2026-11-03:
+
+| Issue | Ruling | Note |
+|---|---|---|
+| 047 | in the adapt tier, rank candidates by how many arguments they adapt | |
+| 048 | fold a constant tree before operator dispatch resolves | [constants.md](constants.md) |
+| 049 | name the import a `set!` element store needs; the behavior is deferred | |
+| 050 | the link note names the packages whose directories hold the header | |
+| 051 | `for` takes `:rest body` | |
+| 052 | `some?`/`none?`, HashMap `contains?`, String `clear!` | |
+
 Design notes for the issues that need one are added to this directory and
 linked from the table.
