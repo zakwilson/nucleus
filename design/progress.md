@@ -5396,3 +5396,18 @@ Test: `doom-system-path-header-package` in `tests/suite-build.nuc`,
 `doom-link-names-header` in `tests/suite-doom.nuc`.
 
 Gate: tested with the whole series through ISSUE-001: 1667 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: the adapt tier ranks by the arguments it adapts (2026-11-03)
+
+From the nuc-doom port's ISSUE-047: `(set! (links i) null)` on a
+`(Slice ?&M)` was ambiguous. `null` adapts to the element parameter of every
+`set` row, so the i32 row, the i64 row and the usize row all bound in the
+adapt tier, and the tier took no notice that `i` matched one of them exactly.
+`generic-resolve-adapt-tier` (`src/generics.nuc`) now charges each candidate
+one per argument it adapts and keeps the cheapest; a tie is still ambiguous.
+`(links 2)` takes the i32 row, which the literal matches as written.
+`generic-method-bind-adapt-in` returns the count.
+
+Test: `doom-null-store-picks-index-row` in `tests/suite-doom.nuc`.
+
+Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.

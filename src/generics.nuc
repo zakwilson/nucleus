@@ -3247,7 +3247,7 @@
 ; argument to adapt to its now-concrete (tyvar-substituted) parameter type. A
 ; fully-exact bind is rejected here (any-remaining==0) so tier-1 keeps sole
 ; ownership of exact template matches and tier-2 never double-counts one. Fills
-; out-bound and returns 1 on an adapted match, else 0.
+; out-bound and returns 1 + the number of adapted arguments on a match, else 0.
 (defn generic-method-bind-adapt (m:?&Method argtypes:ptr arg-nodes:ptr nargs:i32
                                      out-bound:ptr line:i32 want:?&Type):i32
   (let (here:NameEnv (method-env-enter m)
@@ -3335,7 +3335,10 @@
               (when (= is-lit 0)
                 (set! is-flit (node-is-float-literal (aref (unsafe/cast &ptr arg-nodes) i)))))
             (when (= (arg-adapts at pt is-lit is-flit) 0) (return 0)))))
-      (return 1))))
+      (let (adapted:i32 0)
+        (dotimes (i nargs)
+          (when (= (aref (unsafe/cast &i32 matched) i) 0) (set! adapted (+ adapted 1))))
+        (return (+ adapted 1))))))
 
 ; The shared tier-2 adaptation pool for generic resolution (LW-1/LW-2). Concrete
 ; (METHOD-USER) methods reachable by a widen/literal adaptation and parametric
@@ -3343,7 +3346,9 @@
 ; rest compete in *one* ambiguity pool. Side-effect-free: no method is instantiated
 ; here (the emit caller monomorphizes a template winner; the node-type caller reads
 ; its bound return type), so both the dying and the null-returning caller share the
-; identical resolution. Returns 0 = no tier-2 match, 1 = a unique METHOD-USER match
+; identical resolution. A candidate that adapts fewer arguments wins: `(set! (s i)
+; null)` adapts only `null` to the i32 row but `i` as well to the i64 one (nuc-doom
+; ISSUE-047). Returns 0 = no tier-2 match, 1 = a unique METHOD-USER match
 ; (*out-method), 2 = a unique template match (*out-method + *out-bound), 3 = an
 ; ambiguous pool (the caller reports/ignores per its mode).
 (defn generic-resolve-adapt-tier (g:?&Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32
@@ -3351,7 +3356,8 @@
   (let (gg:ptr:Generic g
         wmethod:ptr null
         wbound:ptr null
-        wn:i32 0)
+        wn:i32 0
+        wcost:i32 0)
     ; METHOD-USER candidates reachable by widen/literal adaptation on every arg. A
     ; stamped template instance (origin-template ≠ null) is skipped: it is a cache
     ; of its template, which competes below, so counting both would spuriously read
@@ -3373,15 +3379,25 @@
                                      (aref (unsafe/cast &ptr (m 'param-types)) a) is-lit is-flit) 0)
                   (set! ok 0))))
             (when (!= ok 0)
-              (set! wmethod (as ptr m)) (set! wbound null) (inc! wn))))))
+              (let (c:i32 0)
+                (dotimes (a nargs)
+                  (when (= (type-eq (aref (unsafe/cast &ptr argtypes) a)
+                                    (aref (unsafe/cast &ptr (m 'param-types)) a)) 0)
+                    (set! c (+ c 1))))
+                (cond (or (= wn 0) (< c wcost))
+                        (do (set! wmethod (as ptr m)) (set! wbound null) (set! wcost c) (set! wn 1))
+                      (= c wcost) (inc! wn))))))))
     ; METHOD-GENERIC (template) candidates reachable by receiver-bind + adaptation.
     (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
       (let (m:&Method (as &Method (invoke (gg 'methods) k:usize)))
         (when (= (m 'kind) METHOD-GENERIC)
           (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes))))
-            (when (!= (generic-method-bind-adapt (as ptr m) argtypes arg-nodes nargs bound line want) 0)
-              (when (!= (generic-constraints-ok (as ptr m) bound line) 0)
-                (set! wmethod (as ptr m)) (set! wbound bound) (inc! wn)))))))
+            (let (r:i32 (generic-method-bind-adapt (as ptr m) argtypes arg-nodes nargs bound line want))
+              (when (and (!= r 0) (!= (generic-constraints-ok (as ptr m) bound line) 0))
+                (let (c:i32 (- r 1))
+                  (cond (or (= wn 0) (< c wcost))
+                          (do (set! wmethod (as ptr m)) (set! wbound bound) (set! wcost c) (set! wn 1))
+                        (= c wcost) (inc! wn)))))))))
     (when (> wn 1) (return 3))
     (when (= wn 0) (return 0))
     (set! @out-method wmethod)
