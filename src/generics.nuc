@@ -7287,7 +7287,7 @@
                   arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
                   ok:i32 1)
               (dotimes (i nargs)
-                (let (anode:ptr (node-at n (+ i 1))
+                (let (anode:ptr (fold-literal-operand (node-at n (+ i 1)) scope (node-line n 0))
                       at:ptr (node-type anode scope))
                   (when (= at null) (set! ok 0))
                   (set! (aref (unsafe/cast &ptr argtypes) i) at)

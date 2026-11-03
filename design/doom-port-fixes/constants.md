@@ -1,4 +1,4 @@
-# Constants (ISSUE-016, 017, 024)
+# Constants (ISSUE-016, 017, 024, 048)
 
 ## Aggregate `defconst` as a `defvar` initializer (016)
 
@@ -13,6 +13,11 @@ An operator tree whose leaves are all literals or literal `defconst`s
 literal would: `(* 2 FRACUNIT)` in an `i16` slot is a literal that fits, not
 an `i32` value. `node-type` uses `fold-literal-operand` too, so typing and
 emission agree (the `node-type`↔`emit-node` lockstep).
+
+The fold happens before the dispatch path is chosen (048). An operator with a
+user overload goes through `emit-operator-dispatch` and `node-type-call`'s
+overload branch, and both fold each operand before `operator-resolve`. The
+fold doesn't depend on whether some unrelated `_+` exists.
 
 ## A computed `defconst` referenced before its form (024)
 

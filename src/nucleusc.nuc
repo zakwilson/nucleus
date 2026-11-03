@@ -13651,9 +13651,11 @@
         args:ptr (arena-alloc (* (+ nargs 1) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
         arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
+    ; Folded as emit-binop folds, so a user overload elsewhere doesn't stop a
+    ; constant tree adapting as one literal (nuc-doom ISSUE-048).
     (dotimes (i nargs)
-      (let (anode:ptr (node-at nn (+ i 1))
-            v:&Val (emit-node-at n (+ i 1) scope))
+      (let (anode:ptr (fold-literal-operand (node-at nn (+ i 1)) scope (nn 'line))
+            v:&Val (emit-node-as n (+ i 1) anode scope))
         (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
         (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
         (set! (aref (unsafe/cast &ptr arg-nodes) i) anode)))

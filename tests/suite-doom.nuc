@@ -605,3 +605,21 @@ missing key :sens for #user/Opt"))
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "1 1 1 0"))
     (drop &out)))
+
+; nuc-doom ISSUE-048: a constant tree adapts to an unsigned operand even when
+; the program defines its own `_+`, in the emitted value and in node-type.
+(deftest doom-constant-tree-adapts-with-overload
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(deftype Angle ui32)
+(defstruct Fixed v:i32)
+(defn _+ (a:Fixed b:Fixed):Fixed (Fixed (+ (a 'v) (b 'v))))
+(defn k (a:Angle):Angle (+ a (* 2 3)))
+(defn main ():i32
+  (let (f:Fixed (+ (Fixed 1) (Fixed 2))
+        w:Angle (+ (k 1) (- 10 4)))
+    (printf \"%u %d %u\\n\" (k 1) (f 'v) w))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 3 13"))
+    (drop &out)))

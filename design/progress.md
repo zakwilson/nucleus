@@ -5411,3 +5411,19 @@ one per argument it adapts and keeps the cheapest; a tie is still ambiguous.
 Test: `doom-null-store-picks-index-row` in `tests/suite-doom.nuc`.
 
 Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: operator dispatch folds a constant tree first (2026-11-03)
+
+From the nuc-doom port's ISSUE-048: ISSUE-017 folds `(* 2 3)` to one literal
+before `+` adapts it to a ui32 operand, but only on the intrinsic path. Once
+the program defines any `_+`, `+` goes through `emit-operator-dispatch`, which
+emitted its operands unfolded, so `(+ a (* 2 3))` with `a:Angle` was "mixed
+signed/unsigned operands". `emit-operator-dispatch` (`src/nucleusc.nuc`) and
+`node-type-call`'s overload branch (`src/generics.nuc`) now pass each operand
+through `fold-literal-operand` before resolving.
+
+Test: `doom-constant-tree-adapts-with-overload` in `tests/suite-doom.nuc`.
+
+Gate: built at its commit; the test passes. With the series through
+ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS after a boot refresh,
+since the fold reaches the compiler's own `(* 8 8)`.
