@@ -680,6 +680,12 @@
 (defn tool-requires (name:StrView out:&(Vector StrView)):void
   (when (not (index-requires (tool-index) name out)) (pkg-config-requires name out)))
 
+; Every package whose include directory holds `header`, for a link note.
+(defn tool-header-holders (header:StrView out:&(Vector StrView)):void
+  (let (none-dirs:(Vector StrView) (make (Vector StrView)))
+    (index-holders (tool-index) header &none-dirs out)
+    (drop &none-dirs)))
+
 ; `nucleusc --list-imports` over one file's closure: one EDN map per import form.
 (defn tool-list-imports (p:&Project file:StrView):String
   (let (c:Command (command (tool-compiler)))

@@ -337,17 +337,14 @@
     (drop &pre)
     (return hit)))
 
-; The packages that provide `header`, in name order, less any that only reach
-; it through another candidate it requires (gtk4 reaches glib.h through
-; glib-2.0). A header the system finds belongs to the package whose directory
-; holds it (sdl2's /usr/include/SDL2 holds SDL2/SDL.h); one of `extra` is the
-; project's own.
-(defn index-providers (idx:&HeaderIndex header:StrView extra:&(Vector StrView)
-                       out:&(Vector StrView)):void
+; Every package whose directory holds `header`, in name order: the system's
+; copy when clang finds one, else the package's own. None when one of `extra`,
+; the project's own directories, holds it.
+(defn index-holders (idx:&HeaderIndex header:StrView extra:&(Vector StrView)
+                     out:&(Vector StrView)):void
   (when (ix-in-dirs? extra header) (return))
   (let (fs:String (ix-find-in-dirs (ref idx 'system) header)
         found:StrView (string-as-view &fs))
-  (let (cands:(Vector StrView) (make (Vector StrView)))
     (dotimes (i (count (ref idx 'pkgs)))
       (let (p:PkgDirs (invoke (ref idx 'pkgs) i)
             hit:bool false)
@@ -358,7 +355,18 @@
               (let (f:String (str d "/" header))
                 (when (file-exists? (string-as-view &f)) (set! hit true))
                 (drop &f)))))
-        (when hit (conj &cands (p 'name)))))
+        (when hit (conj out (p 'name)))))
+    (drop &fs)))
+
+; The packages that provide `header`: its holders, less any that only reach it
+; through another holder it requires (gtk4 reaches glib.h through glib-2.0). A
+; header the system finds belongs to the package whose directory holds it
+; (sdl2's /usr/include/SDL2 holds SDL2/SDL.h); one of `extra` is the project's
+; own.
+(defn index-providers (idx:&HeaderIndex header:StrView extra:&(Vector StrView)
+                       out:&(Vector StrView)):void
+  (let (cands:(Vector StrView) (make (Vector StrView)))
+    (index-holders idx header extra &cands)
     (if (< (count &cands) 2)
       (dotimes (i (count &cands)) (conj out (invoke &cands i)))
       (dotimes (i (count &cands))
@@ -370,5 +378,4 @@
             (when (and (!= i j) (view-has? &rs (invoke &cands j))) (set! through true)))
           (when (not through) (conj out c))
           (drop &rs))))
-    (drop &cands)
-    (drop &fs))))
+    (drop &cands)))

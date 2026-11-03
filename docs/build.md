@@ -362,12 +362,18 @@ belongs to `glib-2.0`.
 
 Packages that share a directory can still leave a header with the wrong
 package or none: SDL2_mixer's flags name sdl2's `/usr/include/SDL2`. The link
-then fails, and `nucleusc` names the header behind each undefined symbol:
+then fails, and `nucleusc` names the header behind each undefined symbol and
+the packages whose include directories hold it, leaving out those already
+linked. One package whose name matches the header's (`SDL_mixer.h`,
+`SDL2_mixer`) is suggested alone:
 
 ```
 nucleusc: link step failed (clang exit 1)
-  note: undefined, from the C header "SDL2/SDL_mixer.h": 'Mix_OpenAudio' -- link its package: :pkg-config {"SDL2/SDL_mixer.h" ["<package>"]} in build.edn, or --pkg-config=<package>
+  note: undefined, from the C header "SDL2/SDL_mixer.h": 'Mix_OpenAudio' -- link its package: :pkg-config {"SDL2/SDL_mixer.h" ["SDL2_mixer"]} in build.edn, or --pkg-config=SDL2_mixer
 ```
+
+With no such match the entry reads `<package>`, followed by
+`note: the include directories of A, B hold "h"`.
 
 The index is cached in `$XDG_CACHE_HOME/nucleus/pkg-index-<hash>.edn`, one
 file per pkg-config search path, so a host build and a cross build keep their

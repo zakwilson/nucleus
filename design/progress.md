@@ -5443,3 +5443,18 @@ namespace 'nucleus.slice', which this file does not import" and the note
 Test: `doom-set-place-unimported` in `tests/manifest/diagnostics.edn`.
 
 Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: the link note names the packages that hold the header (2026-11-03)
+
+From the nuc-doom port's ISSUE-050: SDL2_mixer's flags name sdl2's include
+directory, so a link failure on `Mix_OpenAudio` suggested `<package>` with no
+hint. `link-undefined-notes` now asks the header index for every package
+whose directory holds the header (`tool-header-holders`, over the new
+`index-holders` split out of `index-providers`), leaving out those already
+linked. If exactly one of them matches the header's name by letters
+(`SDL_mixer.h`, `SDL2_mixer`), the entry names it; otherwise the entry keeps
+`<package>` and a further note lists the holders.
+
+Test: `doom-shared-dir-link-note` in `tests/suite-build.nuc`.
+
+Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.

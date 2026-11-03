@@ -23098,12 +23098,54 @@
                     (conj &hdrs (c 'hdr))
                     (conj &names (fstr "'" nm "'"))))))))))
     (dotimes (k (count &hdrs))
-      (let (h:Symbol (invoke &hdrs k))
+      (let (h:Symbol (invoke &hdrs k)
+            pk:StrView (link-header-package-hint (symbol-as-view h))
+            many:bool (strview-contains pk ", ")
+            one:StrView (if (or many (= (pk 'len) 0)) "<package>" pk))
         (eprint "  note: undefined, from the C header \"" h "\": " (invoke &names k)
-                " -- link its package: :pkg-config {\"" h "\" [\"<package>\"]} in build.edn, "
-                "or --pkg-config=<package>\n")))
+                " -- link its package: :pkg-config {\"" h "\" [\"" one
+                "\"]} in build.edn, or --pkg-config=" one "\n")
+        (when many
+          (eprint "  note: the include directories of " pk " hold \"" h "\"\n"))))
     (drop &hdrs)
     (drop &names)))
+
+; nuc-doom ISSUE-050: the packages whose include directories hold `h`, less the
+; ones this link already has, comma-separated; empty when none is known. Sibling
+; packages often share one directory, so a holder named like the header's file
+; (SDL2_mixer for SDL_mixer.h) is the answer when exactly one is.
+(defn link-header-package-hint (h:StrView):StrView
+  (let (held:(Vector StrView) (make (Vector StrView))
+        out:StrView ""
+        named:StrView ""
+        n-named:i32 0
+        stem:StrView (link-name-letters (link-header-stem h)))
+    (tool-header-holders h &held)
+    (dotimes (i (count &held))
+      (let (p:StrView (invoke &held i))
+        (when (not (sym-vec-has? g-pkg-config-args (symbol-intern p)))
+          (set! out (if (= (out 'len) 0) p (fstr out ", " p)))
+          (when (= (link-name-letters p) stem)
+            (set! named p)
+            (set! n-named (+ n-named 1))))))
+    (drop &held)
+    (when (= n-named 1) (return named))
+    (return out)))
+
+; `h`'s file name without its directory or extension.
+(defn link-header-stem (h:StrView):StrView
+  (let (base:StrView h)
+    (match (strview-rfind-byte &h 47) ((some at) (set! base (strview-drop-bytes h (+ at 1)))) (none 0))
+    (match (strview-rfind-byte &base 46) ((some at) (return (strview-take-bytes base at))) (none (return base)))))
+
+; The letters of `v`, lowercased: `SDL2_mixer` and `SDL_mixer` both give sdlmixer.
+(defn link-name-letters (v:StrView):StrView
+  (let (out:StrView "")
+    (dotimes (i (v 'len))
+      (let (c:ui8 (aref (v 'data) (as i64 i)))
+        (when (and (>= c 65) (<= c 90)) (set! out (fstr out (as Char (+ (as ui32 c) 32)))))
+        (when (and (>= c 97) (<= c 122)) (set! out (fstr out (as Char (as ui32 c)))))))
+    (return out)))
 
 ; ORC's C API runs no `llvm.global_ctors`, so `--run` calls them itself: each
 ; becomes an external `__nucleus_run_ctor_N`, numbered in priority order.

@@ -1662,6 +1662,27 @@
     (drop &p))
   (return (ok)))
 
+; nuc-doom ISSUE-050: sibling packages share one include directory, and the link
+; note names the holder this link lacks whose name matches the header's.
+(deftest doom-shared-dir-link-note
+  (let (p:String (try (bt3-project "dshr"))
+        pv:StrView (string-as-view &p)
+        inc:String (str pv "/shr"))
+    (try (bt4-sh pv "mkdir -p src shr && rm -rf build build.edn"))
+    (try (write-into pv "shr/fxa.h" "int fxa_init(void);\n"))
+    (let (core:String (str "Name: fx-core\nDescription: t\nVersion: 1\nCflags: -I" (string-as-view &inc) "\n")
+          net:String (str "Name: fx-net\nDescription: t\nVersion: 1\nRequires: fx-core\nCflags: -I" (string-as-view &inc) "\n")
+          fxa:String (str "Name: fxa\nDescription: t\nVersion: 1\nRequires: fx-core\nCflags: -I" (string-as-view &inc) "\n"))
+      (try (write-into pv "pc/fx-core.pc" (string-as-view &core)))
+      (try (write-into pv "pc/fx-net.pc" (string-as-view &net)))
+      (try (write-into pv "pc/fxa.pc" (string-as-view &fxa)))
+      (drop &core) (drop &net) (drop &fxa))
+    (try (write-into pv "src/main.nuc" "(import-use \"fxa.h\")\n(defn main ():i32 (return (fxa_init)))\n"))
+    (try (bt5-expect pv "build" "" false "link its package: :pkg-config {\"fxa.h\" [\"fxa\"]} in build.edn, or --pkg-config=fxa"))
+    (drop &inc)
+    (drop &p))
+  (return (ok)))
+
 ; MT-4: :deps per target. Two targets name one library at two paths, and each
 ; program links its own.
 (deftest mt4-target-deps
