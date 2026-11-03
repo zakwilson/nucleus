@@ -597,6 +597,33 @@ missing key :sens for #user/Opt"))
     (try (check-eq (strview-trim-end &ov) "4 9"))
     (drop &out)))
 
+; ISSUE-052: `some?`/`none?` over either kind of Maybe, `contains?` on a
+; HashMap, `clear!` on a String.
+(deftest doom-maybe-tests-and-clear
+  (let (out:String (try (build-run-source "(import-use nucleus.hashmap)
+(import-use nucleus.string)
+(import-use nucleus.create)
+(import-use \"stdio.h\")
+(defstruct P v:i32)
+(defvar g-p:P (P 1))
+(defn pick (n:i32):?&P (if (> n 0) &g-p null))
+(defn main ():i32
+  (let (m:(HashMap i32 i32) (make (HashMap i32 i32))
+        s:String (string-from-cstr-unchecked \"abc\"))
+    (assoc &m 1 2)
+    (clear! &s)
+    (printf \"%d %d %d %d %d %d %d %zu\\n\"
+            (if (contains? &m 1) 1 0) (if (contains? &m 3) 1 0)
+            (if (some? (get &m 1)) 1 0) (if (none? (get &m 3)) 1 0)
+            (if (some? (pick 1)) 1 0) (if (none? (pick 0)) 1 0)
+            (if (some? (pick 0)) 1 0) ((string-as-view &s) 'len))
+    (drop &m) (drop &s))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 0 1 1 1 1 0 0"))
+    (drop &out)))
+
 ; ISSUE-047: among overloads that each take `null`, the one adapting fewest other
 ; arguments wins, so each index type reaches its own `set`.
 (deftest doom-null-store-picks-index-row

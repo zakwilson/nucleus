@@ -282,6 +282,13 @@
   `(while true
      (if-some ~binding (do ~@body) (break))))
 
+; (some? m) / (none? m): whether `m` has a value — a non-null pointer, or a
+; (Maybe T)'s `some`.
+(defmacro some? (m)
+  (let (x:ptr (gensym)) `(if-some (~x ~m) true false)))
+(defmacro none? (m)
+  (let (x:ptr (gensym)) `(if-some (~x ~m) false true)))
+
 ; (doseq (var coll-expr IterType) body...) — iterate any Coll, binding var to
 ; each element.
 ;

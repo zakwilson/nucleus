@@ -821,6 +821,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `for` | `(for (var:type init) test step body...)` | `(let (var:type init) (while test :step step body...))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) :step (inc! var) body))` |
 | `while-some` | `(while-some (x expr) body...)` | `(while true (if-some (x expr) (do body...) (break)))` |
+| `some?` / `none?` | `(some? m)`, `(none? m)` | `(if-some (x m) true false)` / `(if-some (x m) false true)` |
 | `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `into` | `(into coll-sym iter-ref)` | Drain an iterator into a collection: calls `(next iter-ref)` each step and `(conj coll-sym elem)` for each element; stops on `none`. Requires `coll-sym` to be a `(ref CollType)` with a `conj` method. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`, and so does any other bare step: `(-> v 0)` is `(0 v)`, not indexing — write `(-> v (_ 0))`. `_` is only special inside `->`. |

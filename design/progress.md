@@ -5469,3 +5469,16 @@ W4d arity diagnostic, which used `for` as its fixed-arity macro, now uses `into`
 Test: `doom-for-body` in `tests/suite-doom.nuc`.
 
 Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `some?`, `none?`, HashMap `contains?`, String `clear!` (2026-11-03)
+
+From the nuc-doom port's ISSUE-052: asking whether a value Maybe was empty
+took a `match` or a local helper, HashMap had no `contains?`, and String had
+`string-clear` but not the `clear!` Vector and HashMap have. `some?` and
+`none?` are macros over `if-some` (`lib/nucleus/macros.nuc`), so they take a
+pointer or a `(Maybe T)`. `contains?` is in `lib/nucleus/hashmap.nuc`, and
+`clear!` in `lib/nucleus/string.nuc`.
+
+Test: `doom-maybe-tests-and-clear` in `tests/suite-doom.nuc`.
+
+Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.

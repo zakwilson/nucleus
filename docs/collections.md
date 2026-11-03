@@ -350,15 +350,18 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 (conj:void    ((self (ref (HashMap K V))) elem:(Entry K V)))
 (iter:(HashMapEntryIter K V) ((self (ref (HashMap K V)))))
 
-; count / empty?
-(count:usize  ((self (ref (HashMap K V)))))
-(empty?:i32   ((self (ref (HashMap K V)))))
+; count / empty? / contains?
+(count:usize    ((self (ref (HashMap K V)))))
+(empty?:i32     ((self (ref (HashMap K V)))))
+(contains?:bool ((self (ref (HashMap K V))) key:K))
 
 ; Reuse
 (clear!:void  ((self (ref (HashMap K V)))))   ; no entries; the buckets kept
 ```
 
-`get` returns `(Maybe V)`. Match on the result to distinguish hit from miss:
+`get` returns `(Maybe V)`. `contains?` asks only whether the key is present;
+`(some? m)` and `(none? m)` ask the same of any Maybe. Match on the result to
+distinguish hit from miss:
 
 ```lisp
 (match (get m "one")

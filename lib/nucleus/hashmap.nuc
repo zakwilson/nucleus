@@ -289,6 +289,10 @@
                 (set! idx (bit-and (+ idx 1) mask))))))
         (return none)))))
 
+; contains?: whether `key` has an entry.
+(defn contains? (self:&(HashMap K V) key:K):bool
+  (match (get self key) ((some v) (return true)) (none (return false))))
+
 ; ---------------------------------------------------------------------------
 ; Coll (Entry K V) (HashMapEntryIter K V) conformance: count, empty?, conj, iter.
 ; The element type is the key/value pair (Entry K V) (C2.2c): conj inserts an

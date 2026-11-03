@@ -140,6 +140,9 @@
 (defn string-clear (self:&String):void
   (set! ((ref self 'bytes) 'len) 0))
 
+; clear! — `string-clear`, under the name Vector and HashMap use.
+(defn clear! (self:&String):void (string-clear self))
+
 ; string-truncate — truncate to byte_len bytes.
 ; Errors: str-index-out-of-bounds if byte_len > current len;
 ;         invalid-char-boundary if byte_len falls mid-codepoint.

@@ -410,6 +410,7 @@ and `string-from-cstr-unchecked` stay as functions because `String` has no
 | `string-push-str-unchecked` | `(self:(ref String) s:(ref StrView)) → void` | Append a `StrView`'s bytes with no UTF-8 check. The caller asserts validity. |
 | `string-pop-char` | `(self:(ref String)) → (Maybe Char)` | Remove and return the last codepoint, or `none` if empty. |
 | `string-clear` | `(self:(ref String)) → void` | Set `len` to 0 (retain capacity). |
+| `clear!` | `(self:(ref String)) → void` | `string-clear`, under the name `Vector` and `HashMap` use. |
 | `string-truncate` | `(self:(ref String) byte-len:usize) → !void` | Truncate to `byte-len` bytes. Errors `str-index-out-of-bounds` if `byte-len > len`; errors `invalid-char-boundary` if `byte-len` falls mid-codepoint. |
 | `string-truncate-unchecked` | `(self:(ref String) byte-len:usize) → void` | Rewind to a length the caller already knows is a codepoint boundary — typically a mark taken from `byte-len` before appending. Only ever shrinks; a `byte-len` at or past the current length does nothing. Use it for a `String` kept as a reusable scratch buffer, where the checked form's validation and `!void` are both dead weight; use `string-truncate` for a `String` being built as a value. |
 | `string-reserve` | `(self:(ref String) extra:usize) → void` | Ensure at least `extra` additional bytes of capacity beyond current length. |
