@@ -499,7 +499,7 @@
 ; enough args".
 {:name "w4d-macro-too-many-args" :expect :reject
  :file "tests/fixtures/w4d-macro-too-many-args.nuc" :line 11
- :messages ["macro 'for': expects 4 args, got 5"]}
+ :messages ["macro 'into': expects 3 args, got 4"]}
 {:name "w4d-macro-too-few-args" :expect :reject
  :file "tests/fixtures/w4d-macro-too-few-args.nuc" :line 12
  :messages ["macro 'case': expects at least 1 args, got 0"]}

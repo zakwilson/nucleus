@@ -580,6 +580,23 @@ missing key :sens for #user/Opt"))
     (drop &h)
     (drop &p)))
 
+; ISSUE-051: `for` takes any number of body forms, as `while` does.
+(deftest doom-for-body
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (a:i32 0 b:i32 0)
+    (for (i:i32 0) (< i 5) (inc! i)
+      (when (= i 1) (continue))
+      (inc! a)
+      (inc! b i))
+    (for (j:i32 0) (< j 2) (inc! j))
+    (printf \"%d %d\\n\" a b))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "4 9"))
+    (drop &out)))
+
 ; ISSUE-047: among overloads that each take `null`, the one adapting fewest other
 ; arguments wins, so each index type reaches its own `set`.
 (deftest doom-null-store-picks-index-row

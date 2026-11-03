@@ -249,14 +249,14 @@
                     (set! idx (cond (= ((as (ptr Node) (ast-at (ast-at levels m) 0)) 'kind) NODE-LIST) 0 true 1)))))
               `(let (~g ~(ast-at (ast-at levels hk) hj)) (__step! ~op ~new ~n))))))
 
-; (for (var:type init) test step body) — counted loop.
-; Expands to (let (var:type init) (while test :step step body)), so `continue`
-; runs the step. var:type appears as the let binding name (type annotation required).
-; Example: (for (i:i32 0) (< i:i32 n) (inc! i:i32) (foo i:i32))
-(defmacro for (init test step body)
+; (for (var:type init) test step body...) — counted loop.
+; Expands to (let (var:type init) (while test :step step body...)), so `continue`
+; runs the step.
+; Example: (for (i:i32 0) (< i n) (inc! i) (foo i) (bar i))
+(defmacro for (init test step :rest body)
   `(let ~init
      (while ~test :step ~step
-       ~body)))
+       ~@body)))
 
 ; (dotimes (var:type n) body) — loop from 0 to n-1.
 ; var:type is the loop variable with type annotation; n is the upper bound.

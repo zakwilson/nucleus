@@ -5458,3 +5458,14 @@ linked. If exactly one of them matches the header's name by letters
 Test: `doom-shared-dir-link-note` in `tests/suite-build.nuc`.
 
 Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.
+
+## DOOM-port fix: `for` takes a body (2026-11-03)
+
+From the nuc-doom port's ISSUE-051: `for` took one body form, so a loop of
+two statements needed a `do`, and the port fell back to `let` and
+`while :step`. `for` (`lib/nucleus/macros.nuc`) now takes `:rest body`. The
+W4d arity diagnostic, which used `for` as its fixed-arity macro, now uses `into`.
+
+Test: `doom-for-body` in `tests/suite-doom.nuc`.
+
+Gate: built at its commit; the test passes. With the series through ISSUE-052: 1674 pass, the same 5 fail. Bootstrap PASS.

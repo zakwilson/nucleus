@@ -2,11 +2,11 @@
 ; fixed-arity mismatch message. Before this fix, every fixed-arity macro
 ; called with the wrong argument count died with the bare, unlocated-by-name
 ; `macro: wrong number of args` (naming neither the macro nor the counts).
-; `for` is `(defmacro for (init test step body))` (lib/nucleus/macros.nuc), a fixed
-; 4-arg macro; this call passes 5. After: `macro 'for': expects 4 args, got
-; 5`, located at the call's own line (line 11).
+; `into` is `(defmacro into (coll-sym src-coll it-type))` (lib/nucleus/macros.nuc),
+; a fixed 3-arg macro; this call passes 4. After: `macro 'into': expects 3 args,
+; got 4`, located at the call's own line (line 11).
 (import-use "stdio.h")
 
 (defn main ():i32
-  (for (i:i32 0) (< i 3) (inc! i) (printf "x\n") 99)
+  (into a b c d)
   (return 0))

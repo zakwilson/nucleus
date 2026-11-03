@@ -818,7 +818,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
 | `inc!` / `dec!` | `(inc! place)`, `(inc! place n)` | `(set! place (+ place n))`, `n` defaulting to 1; any `set!` place, with a computed index evaluated once. See [Standard macros](macros.md). |
-| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test :step step body))` |
+| `for` | `(for (var:type init) test step body...)` | `(let (var:type init) (while test :step step body...))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) :step (inc! var) body))` |
 | `while-some` | `(while-some (x expr) body...)` | `(while true (if-some (x expr) (do body...) (break)))` |
 | `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
