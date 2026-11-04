@@ -190,7 +190,7 @@ Use `(ref obj 'field)` to obtain a pointer to a field without loading it. Result
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (mk ...))`). Reading a field needs no pointer: `(field p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(field (mk 3) 'f)`). Writing one does: a member place needs the receiver's storage, so it takes a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). The 2-argument `ref` gives a temporary receiver a frame slot instead, so `(ref (mk 3) 'f)` is the field's address in that slot. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (mk ...))`). Reading a field needs no pointer: `(field p 'f)` and `(p 'f)` both accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(field (mk 3) 'f)`). Writing one does: a member place needs the receiver's storage, so it takes a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). The 2-argument `ref` gives a temporary receiver a frame slot instead, so `(ref (mk 3) 'f)` is the field's address in that slot. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -935,7 +935,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'field'`. Write `(field s 'f)`, or head position `(s 'f)`. | — |
 | `.&` | **Retired in Stage 16** — a targeted hard error naming the 2-argument `ref`: `(ref s 'field)`. | — |
 | `addr-of` | **Retired in Stage 21** (PK-5b) — a targeted hard error naming `&x` / `(ref x)` / `(ref p 'field)`, in the type slot too; see [Special forms](special-forms.md). | — |
-| `_get` | Literal-selector field read, the same as `(field s 'f)`. | `s.field` |
+| `_get` | **Retired** — a targeted hard error: `'_get' was retired: use 'field'`. Write `(field s 'f)`, or head position `(s 'f)`. The spelling stays reserved. | — |
 | `field` | Field read: `(field s 'f)`, or `(field s sel)` for a field chosen at runtime (homogeneous structs). It never calls a method; head position `(s 'f)` is the same read. A place for `set!` and `&`. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `.set!` | **Retired in Stage 16** — a targeted hard error: `'.set!' was retired in Stage 16: set! takes a place`. Write `(set! (s 'field) v)`. | — |
 | `get` | Not a special form: the key lookup of `HashMap`, `ConstMap` and other `Assoc` conformers, an ordinary generic. It does not read fields; on a struct no `get` method takes, the error names `field`. See [Callable values](#callable-values-non-function-call-position) | `m[k]` |
@@ -1337,9 +1337,8 @@ globals as well as locals, which the old demotion could not — every function
 lives in the global scope, so a rule that consulted the scope would have
 re-interpreted `(sd name)` the moment any global named `name` existed.
 
-The two fixed-position member forms — `_get` and the 2-argument
-`ref` — instead require a **literal** selector, since they are the
-spellings that name a field statically.
+The 2-argument `ref` and a member place instead require a **literal**
+selector, since an address needs a field named statically.
 A bare symbol there is refused outright rather than read as a variable:
 
 ```

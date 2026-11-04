@@ -46,7 +46,7 @@
   (printf "add=%d\n" (add 3 4))
   (printf "add64=%ld\n" (add64 10 20))
   (banner 7)
-  (printf "boxv=%d\n" (_get (box-ptr 42) 'v))
+  (printf "boxv=%d\n" (field (box-ptr 42) 'v))
   (match (maybe-pos 5)
     ((some v) (printf "maybe=%d\n" v))
     (none (printf "maybe=none\n")))

@@ -4039,13 +4039,13 @@ int main(void) {
 (defstruct Thing hp:i32 flags:(array i32 3))
 (defn bump (t:Thing):i32
   (set! (aref (t 'flags) 1) 5)
-  (aref (_get t 'flags) 1))
+  (aref (field t 'flags) 1))
 (defn main ():i32
   (let (t:Thing (Thing))
     (set! (aref (t 'flags) 0) 1)
     (let (p &(aref (t 'flags) 2))
       (set! @p 9))
-    (set! (aref (_get t 'flags) 1) 4)
+    (set! (aref (field t 'flags) 1) 4)
     (printf \"%d %d %d %d\\n\" (aref (t 'flags) 0) (aref (t 'flags) 1) (aref (t 'flags) 2) (bump t))
     (printf \"%d\\n\" (aref (t 'flags) 1)))
   0)

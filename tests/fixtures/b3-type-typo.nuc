@@ -9,6 +9,6 @@
 ; call-arity check caught it at `make bootstrap`, and this keeps it caught.
 (defstruct Widget n:i32)
 
-(defn b3-take ((w (ref Widgat))):i32 (return (_get w n)))
+(defn b3-take ((w (ref Widgat))):i32 (return (field w n)))
 
 (defn main ():i32 (return 0))

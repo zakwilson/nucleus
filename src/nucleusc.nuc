@@ -3037,12 +3037,12 @@
 ; Undo narrows back to `mark` (a branch/region boundary). Entries whose
 ; binding was killed after the push are skipped.
 (defn narrow-restore (mark:i32):void
-  ; Read/shrink the undo stack's len via the explicit raw field intrinsic _get
+  ; Read/shrink the undo stack's len via the explicit raw field intrinsic `field`
   ; (not the callable form (g-nundo len), which a later dispatch change would
   ; route differently). The pop discards the entry; the buffer is reused.
-  (while (> (unsafe/cast i32 (_get g-nundo 'len)) mark)
+  (while (> (unsafe/cast i32 (field g-nundo 'len)) mark)
     (let (u:&NarrowUndo
-            (invoke g-nundo (- (_get g-nundo 'len) 1)))
+            (invoke g-nundo (- (field g-nundo 'len) 1)))
       (let (sym:?&Sym (scope-lookup (u 'scope) (u 'name)))
         (when (!= sym null)
           (when (= (u 'stamp) (sym 'kstamp))
@@ -3050,7 +3050,7 @@
                          'ntype  (u 'old-ntype)
                          'ndepth (u 'old-ndepth)
                          'ngen   (u 'old-ngen)))))
-      (set! (g-nundo 'len) (- (_get g-nundo 'len) 1)))))
+      (set! (g-nundo 'len) (- (field g-nundo 'len) 1)))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
 (defn narrow-kill (sym:?&Sym):void
@@ -3817,6 +3817,8 @@
 (defn retired-form-message (name:Symbol):?StrView
   (when (= name ".")
     (return (some "'.' was retired in Stage 16: use 'field' -- (field p 'f), or head position (p 'f)")))
+  (when (= name "_get")
+    (return (some "'_get' was retired: use 'field' -- (field p 'f), or head position (p 'f)")))
   (when (= name ".&")
     (return (some "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)")))
   (when (= name "addr-of")
@@ -7100,9 +7102,8 @@
     (emit g-body-stream "  store i" m " " r ", ptr " addr ", align 1\n")))
 
 ; Emit `getelementptr + load` of field `idx` from the pointer-to-struct value
-; `p`. This is the zero-overhead member-access core shared by the `.` special
-; form (emit-field-get) and the `field` intrinsic (emit-field-intrinsic);
-; a literal-symbol `(s 'field)` const-folds straight to this, byte-identical.
+; `p`. This is the zero-overhead member-access core of the `field` intrinsic
+; (emit-field-intrinsic); a literal `(s 'f)` const-folds straight to this.
 (defn emit-field-load (p:?&Val fr:&FieldRef):&Val
   (let (pv:(ptr Val) p
         ftype:ptr (fr 'type)
@@ -7113,7 +7114,7 @@
     ; the address of element 0 (the field's address and its first element's
     ; address coincide), so the read is the GEP with no load. Shared rule
     ; (array-decay); node-type-field / field-access-type call the same one.
-    ; This is the chokepoint BOTH `_get` and head-position `(s field)` reach.
+    ; This is the chokepoint BOTH `field` and head-position `(s 'f)` reach.
     (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
       (return (alloc-val (array-decay ftype) gep)))
     (let (val:StrView (new-tmp))
@@ -7197,7 +7198,7 @@
     (when (and (= hd 'deref) (= len 2)) (return true))
     (when (and (= hd 'aref) (= len 3))
       (return (or (storage-place? (node-at n 1) scope) (pointer-typed? (node-at n 1) scope))))
-    (when (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+    (when (and (= hd 'field) (= len 3) (quoted-selector-node? (node-at n 2)))
       (return (or (pointer-typed? (node-at n 1) scope) (storage-place? (node-at n 1) scope))))
     (when (and (= len 2) (quoted-selector-node? (node-at n 1)))
       (return (or (pointer-typed? hd scope) (storage-place? hd scope))))
@@ -7216,7 +7217,7 @@
           (return (bt 'elem))))
       (return null))
     (cond (and (= len 2) (quoted-selector-node? (node-at n 1))) (do (set! base hd) (set! sel (node-at n 1)))
-          (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+          (and (= hd 'field) (= len 3) (quoted-selector-node? (node-at n 2)))
             (do (set! base (node-at n 1)) (set! sel (node-at n 2)))
           true 0)
     (when (= sel null) (return (node-type n scope)))
@@ -7229,13 +7230,13 @@
             (when (>= fi 0) (return ((field-at (sd 'fields) fi) 'type)))))))
     (return null)))
 
-; `(B 'f)`, `(field B 'f)` or `(_get B 'f)` as the list `(B 'f)`, else null.
+; `(B 'f)` or `(field B 'f)` as the list `(B 'f)`, else null.
 (defn field-place-parts (n:?&Node):?&Node
   (when (!= (node-kind n) NODE-LIST) (return null))
   (let (len:i32 (node-len n)
         hd:?&Node (node-at n 0))
     (when (and (= len 2) (quoted-selector-node? (node-at n 1))) (return n))
-    (when (and (or (= hd 'field) (= hd '_get)) (= len 3) (quoted-selector-node? (node-at n 2)))
+    (when (and (= hd 'field) (= len 3) (quoted-selector-node? (node-at n 2)))
       (return (node-list2 (node-at n 1) (node-at n 2) (node-line n 0))))
     (return null)))
 
@@ -7270,71 +7271,6 @@
         (fstr what
               ": the receiver is a temporary struct value, so it has no address -- bind it to a name first")))
     (return p)))
-
-(defn emit-field-get (call:?&Node scope:&Scope):&Val
-  (let (cc:(ptr Node) call)
-    (when (!= (node-len cc) 3)
-      (die-at (cc 'line) "_get expects 2 args"))
-    (let (p:&Val (field-read-receiver (node-at cc 1) (emit-node (node-at cc 1) scope)
-                                      scope (cc 'line))
-          pt:(ptr Type) (p 'type)
-          ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
-                   ((pt 'elem) 'kind)
-                   TY-VOID))
-      (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-        (die-at (cc 'line) "_get: operand must be a struct or union, or a pointer to one"))
-      (require-derefable pt (cc 'line) "field access")
-      (let (fn-node:(ptr Node) (selector-literal-sym (node-at cc 2)))
-        (when (= fn-node null)
-          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "_get"))
-        (let (sd:(ptr StructDef) ((pt 'elem) 'sdef)
-              idx:i32 (struct-field-index sd (fn-node 's)))
-          (when (!= g-resolve 0) (resolve-note-field (node-at cc 2) (fn-node 's) (sd 'name)))
-          ; W3a: an opaque type has no fields at all, so "no field 'x'" would be
-          ; a misleading answer — the layout is simply not visible here.
-          (reject-opaque-type (pt 'elem) (node-line (as ptr fn-node) (cc 'line))
-                              "field access")
-          ; W1d: same reasoning for a layout the import cycle has not produced
-          ; yet — the field table is empty, so "no field 'x'" would blame the
-          ; field rather than the cycle.
-          (reject-cycle-pending-sdef sd (node-line (as ptr fn-node) (cc 'line))
-                                     "field access")
-          (union-field-guard sd (cc 'line) "_get")
-          (when (< idx 0)
-            ; AN-2: not a direct member — it may still be one an anonymous
-            ; member supplies, which is how C11 spells the common case.
-            (let (afr:?&FieldRef (struct-field-ref sd (fn-node 's)))
-              (when (!= afr null)
-                (reject-anon-ambiguous (fn-node 's) sd
-                                       (node-line (as ptr fn-node) (cc 'line)) "_get")
-                (return (emit-field-load p afr))))
-            (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fstr "_get: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
-          ; Union member: every member sits at offset 0, so the access is a
-          ; typed load straight through the pointer — no GEP, no checks (raw
-          ; reinterpretation, exactly cast's contract).
-          (when (= ek TY-UNION)
-            (let (ftype:ptr ((field-at (sd 'fields) idx) 'type)
-                  v:StrView (new-tmp))
-              ; G-2: an array member decays to the union's own address (every
-              ; member is at offset 0), same rule as the struct-field path.
-              (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
-                (return (alloc-val (array-decay ftype) (p 'val))))
-              (emit-load-at v (type-to-ir ftype) (p 'val) ftype
-                            (field-load-align (as ?&StructDef sd) ftype))
-              (return (alloc-val ftype v))))
-          (return (emit-field-load p (make-field-ref sd idx))))))))
-
-; ============================================================
-; Callable values (non-function call position) — callable-values.md
-;
-; A non-function value `s` in head position, `(s arg…)`, desugars by the sole
-; argument into one of two reserved generics:
-;   (s 'field) / (s field)  [a literal symbol]  → (get s 'field)   member access
-;   (s 3)      / (s a b …)  [anything else]      → (invoke s 3 …)   general call
-; `get` carries a built-in Struct intrinsic (GEP+load, zero overhead, overridable
-; by a user `get` method); `invoke` is purely user-supplied (indexing, function objects).
-; ============================================================
 
 ; A literal field selector is `(quote field)` and nothing else; anything else is
 ; a computed selector. Stage 16 (dot-forms.md §5 step 3) retired the bare-symbol
@@ -7454,7 +7390,7 @@
     (let (sd:(ptr StructDef) ((ct 'elem) 'sdef)
           lit:?&Node (selector-literal-sym sel-node))
       ; W3a: head-position `(handle field)` on an opaque type — same rule as the
-      ; `_get` path above, which this mirrors.
+      ; `ref` path, which this mirrors.
       (reject-opaque-type (ct 'elem) line "field access")
       (reject-cycle-pending-sdef sd line "field access")
       (union-field-guard sd line "field")
@@ -7466,7 +7402,7 @@
       (let (idx:i32 (struct-field-index sd (lit 's)))
         (when (!= g-resolve 0) (resolve-note-field sel-node (lit 's) (sd 'name)))
         (when (< idx 0)
-          ; AN-2: an anonymous member's own field, same rule as `_get`.
+          ; AN-2: an anonymous member's own field, reached through it.
           (let (afr:?&FieldRef (struct-field-ref sd (lit 's)))
             (when (!= afr null)
               (reject-anon-ambiguous (lit 's) sd line "field")
@@ -7475,11 +7411,11 @@
           ; step 3 a bare symbol would have been the by-value reading instead.
           (die-at line
             (fstr "field: no field '" (lit 's) "' on struct '" (sdef-display sd) "'")))
-        ; Union member: typed load at offset 0 (mirrors emit-field-get).
+        ; Union member: typed load at offset 0.
         (when (= ek TY-UNION)
           (let (ftype:ptr ((field-at (sd 'fields) idx) 'type)
                 v:StrView (new-tmp))
-            ; G-2 array decay, mirroring emit-field-get's union arm.
+            ; G-2 array decay, as emit-field-load does.
             (when (= ((unsafe/cast &Type ftype) 'kind) TY-ARRAY)
               (return (alloc-val (array-decay ftype) (cv 'val))))
             (emit-load-at v (type-to-ir ftype) (cv 'val) ftype
@@ -7536,8 +7472,8 @@
 
 ; Side-effect-free probe: does generic `g` carry a method whose *first parameter*
 ; (the receiver) accepts the callee type `ct`? Used by the callable-value router
-; to make the `invoke → get → _get` decision *before* emitting any argument, so a
-; plain struct (no `invoke`, no custom `get`) lands on the raw `_get` field
+; to make the `invoke`-or-field decision *before* emitting any argument, so a
+; plain struct (no `invoke`) lands on the raw field
 ; intrinsic with byte-identical IR. A METHOD-USER receiver must `type-eq` `ct`; a
 ; METHOD-GENERIC (parametric, e.g. `(ref (Vector T))`) is probed by unifying its
 ; first-parameter type pattern against `ct` — the same structural unifier
@@ -7730,7 +7666,7 @@
     (when (= (ct 'kind) TY-FN)
       (return (emit-funcall-value n scope callee-val 1)))
     ; Stage 13 TE-4: a BoxedFn value applies through its vtable regardless of the
-    ; argument shape (a symbol arg must not be mis-routed to `get`/`_get`). Inert
+    ; argument shape (a symbol arg must not be mis-routed to a field read). Inert
     ; otherwise — the compiler has no box value.
     (when (!= (boxedfn-canonical ct) null)
       (return (emit-invoke-with-callee n scope callee-val 1 nargs)))
@@ -7765,6 +7701,8 @@
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 3) (die-at (cc 'line) "field expects (field value selector)"))
     (let (callee-val:&Val (emit-node (node-at cc 1) scope))
+      (when (= (is-member-access-receiver (callee-val 'type)) 0)
+        (die-at (cc 'line) "field: operand must be a struct or union, or a pointer to one"))
       (return (emit-field-intrinsic (node-list2 (node-at cc 1) (node-at cc 2) (cc 'line))
                                     scope callee-val (node-at cc 2) (cc 'line))))))
 
@@ -8045,11 +7983,9 @@
             (let (rv:&Val (alloc-val (as ptr (ref-type-of (as ptr elem))) gep))
               (val-copy-taint (as ptr rv) (as ptr p))
               (return rv))))))
-    (when (and (= h '_get) (= n 3))
+    (when (and (= h 'field) (= n 3))
       (return (emit-member-address (emit-place-receiver (node-at (as ptr x) 1) scope line null)
                                    (node-at (as ptr x) 2) line)))
-    (when (and (= h 'field) (= n 3))
-      (return (emit-callable-place x (node-at (as ptr x) 1) 2 scope line)))
     (when (!= (as ptr (callable-value-head-sym h scope)) null)
       (return (emit-callable-place x h 1 scope line)))
     (return null)))
@@ -9101,8 +9037,7 @@
 ; that is only meaningful in a non-value position) is left for the real emit to
 ; diagnose. Positions that are NOT value references are skipped so a field name
 ; or quoted datum that happens to collide with an enclosing local is not
-; mis-flagged: quoted forms, and the field-name operand of `.`/`_get`/`.&`/
-; `.set!`.
+; mis-flagged: quoted forms, which is what a field name is.
 (defn fn-capture-walk (node:?&Node scope:&Scope bound:?&Node cap-box:?&ptr line:i32):void
   (when (= node null) (return))
   (let (nn:?&Node node)
@@ -9138,10 +9073,6 @@
       (let (h:Symbol (hd 's))
         ; Quoted data: the symbols inside are not variable references.
         (when (or (= h "quote") (= h "quasiquote"))
-          (return))
-        ; Field access: index-2 operand is a literal field name, not a value.
-        (when (= h "_get")
-          (fn-capture-walk (node-at node 1) scope bound cap-box line)
           (return))
         ; let / with: init expressions evaluate in the pre-binding scope (a
         ; capture there is still a capture); the body sees the extended set.
@@ -9352,11 +9283,10 @@
     (return (as ptr n))))
 
 ; Rewrite the lambda body so every reference to a captured enclosing-local
-; `name` becomes a field access `(_get self 'name)` on the closure environment.
+; `name` becomes a field access `(field self 'name)` on the closure environment.
 ; Mirrors fn-capture-walk's position discipline exactly: a name in `bound`
-; (the lambda's own params / a nested let/with/lambda binding) is left alone, a
-; field-name operand of `_get` is not a value reference, and quoted data is
-; opaque. `caps` is the collected capture-name list; a symbol is
+; (the lambda's own params / a nested let/with/lambda binding) is left alone,
+; and quoted data, a field name included, is opaque. `caps` is the collected capture-name list; a symbol is
 ; rewritten iff it is in `caps` and not shadowed by `bound`. Returns a new Node
 ; tree (structure-sharing where nothing was rewritten).
 ; A member access the compiler SYNTHESIZES spells its selector `(quote f)`: a
@@ -9379,7 +9309,7 @@
 (defn fn-rewrite-captures (node:?&Node caps:?&Node bound:?&Node self-sym:?&Node line:i32 mode:i32):ptr
   (when (= node null) (return null))
   (let (nn:?&Node node)
-    ; A bare symbol: rewrite to (_get self 'name) iff it is a (non-shadowed) capture.
+    ; A bare symbol: rewrite to (field self 'name) iff it is a (non-shadowed) capture.
     (when (= (nn 'kind) NODE-SYM)
       (let (name:Symbol (symbol-none)
             ti:Symbol (symbol-none))
@@ -9389,16 +9319,16 @@
         (when (and (symbol-none? ti) (!= (fn-bound-has caps name) 0))
           ; A capture reference rewrites to a field access on `self`. mode 2
           ; (cfn): the env field holds a POINTER into the captured local, so a
-          ; value use reads through it — (deref (_get self 'name)). mode 0/1
-          ; (vfn/mfn): the field holds the value — (_get self 'name).
+          ; value use reads through it — (deref (field self 'name)). mode 0/1
+          ; (vfn/mfn): the field holds the value — (field self 'name).
           (if (= mode 2)
             (let (field-access:ptr
-                    (node-list3 (intern-node (symbol-intern "_get"))
+                    (node-list3 (intern-node (symbol-intern "field"))
                       self-sym
                       (quoted-selector (as ptr (intern-node name)) line) line))
               (return (node-list2 (intern-node (symbol-intern "deref"))
                         field-access line)))
-            (return (node-list3 (intern-node (symbol-intern "_get"))
+            (return (node-list3 (intern-node (symbol-intern "field"))
                       self-sym
                       (quoted-selector (as ptr (intern-node name)) line) line)))))
       (return node))
@@ -9415,7 +9345,7 @@
         ; local lives as an env field. mode 0/1 (vfn/mfn): the address is
         ; `(ref self 'cap)` (the field's address); `&(cap 'f)` takes the generic
         ; rewrite and stays a place. mode 2 (cfn): the field
-        ; ALREADY holds the captured local's address, so `&cap` == `(_get self
+        ; ALREADY holds the captured local's address, so `&cap` == `(field self
         ; 'cap)` (no extra indirection). A non-capture / shadowed operand keeps
         ; the ordinary `ref`.
         (when (and (= h "ref") (= (node-len node) 2))
@@ -9428,24 +9358,17 @@
                            (= (fn-bound-has bound oname) 0)
                            (!= (fn-bound-has caps oname) 0))
                   (if (= mode 2)
-                    (return (node-list3 (intern-node (symbol-intern "_get"))
+                    (return (node-list3 (intern-node (symbol-intern "field"))
                               self-sym
                               (quoted-selector (as ptr (intern-node oname)) line) line))
                     (return (node-list3 (intern-node (symbol-intern "ref"))
                               self-sym
                               (quoted-selector (as ptr (intern-node oname)) line) line))))))))
-        ; Field access: index-2 operand is a literal field name; rewrite only the
-        ; subject (index 1) and rebuild around the verbatim field name.
-        (when (= h "_get")
-          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode))
-            (return (node-list3 hd
-                      subj
-                      (node-at node 2) line))))
         ; set! on a captured name: rewrite to a field store so that mutations
         ; of the capture persist across invoke calls (mode 0/1) or write back
         ; through the captured pointer (mode 2 cfn).
         ; (set! c v) -> mode 0/1: (set! (self 'c) (rewrite v))
-        ;           -> mode 2:   (set! (deref (_get self 'c)) (rewrite v))
+        ;           -> mode 2:   (set! (deref (field self 'c)) (rewrite v))
         ; A set! whose target is NOT a capture falls through to the generic
         ; rewrite, which leaves the target symbol verbatim (correct).
         (when (and (= h "set!") (= (node-len node) 3))
@@ -9462,7 +9385,7 @@
                   (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
                         cname-sym:ptr (as ptr (intern-node cname))
                         field-access:ptr
-                          (node-list3 (intern-node (symbol-intern "_get"))
+                          (node-list3 (intern-node (symbol-intern "field"))
                             self-sym
                             (quoted-selector cname-sym line) line))
                     (if (= mode 2)
@@ -9677,7 +9600,7 @@
 ; via the stored handle (the leading __alloc field), mirroring how a collection's
 ; drop frees its buffer through its stored Alloc (lib/nucleus/vector.nuc):
 ;   (defn drop:void ((self (ptr <Env>)))
-;     (alloc-deallocate (_get self '__alloc) (unsafe/cast (ptr ui8) self) (sizeof Env) 8))
+;     (alloc-deallocate (field self '__alloc) (unsafe/cast (ptr ui8) self) (sizeof Env) 8))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
 ; env storage), so a with-bound cfn arms the cleanup.
 (defn fn-make-drop-method (env-sd:?&StructDef line:i32 mode:i32):void
@@ -9688,8 +9611,8 @@
     (if (= mode 2)
       ; cfn: free the env block through the stored allocator handle.
       (let (alloc-sym:ptr (as ptr (intern-node (symbol-intern "__alloc")))
-            ; (_get self '__alloc) → the stored (ref Alloc).
-            handle-access:ptr (node-list3 (intern-node (symbol-intern "_get"))
+            ; (field self '__alloc) → the stored (ref Alloc).
+            handle-access:ptr (node-list3 (intern-node (symbol-intern "field"))
                                 self-sym
                                 (quoted-selector alloc-sym line) line)
             ; (unsafe/cast (ptr ui8) self) — self is (ptr Env); reinterpret as
@@ -12280,8 +12203,8 @@
             recv key v line)))
 
 ; The `(set recv key v)` call a member place becomes, or null when the place is a
-; storage place, or `_get` (the override bypass, which must stay a raw field
-; write), or its receiver has no user `set` method. `emit-set-place` and
+; storage place, or `field` (which must stay a raw field write), or its
+; receiver has no user `set` method. `emit-set-place` and
 ; `node-type`'s `set!` branch both route on this one answer, so they cannot drift
 ; — and it is asked of `node-type` rather than of an emitted Val, because a
 ; receiver emitted to decide the route would then be emitted twice.
@@ -12297,15 +12220,14 @@
         (let (h:Symbol ((unsafe/cast &Node hd) 's))
           (when (and (= h "deref") (= plen 2)) (return null))
           (when (and (= h "aref") (= plen 3)) (return null))
-          (when (and (or (= h "_get") (= h "field")) (= plen 3)) (return null))))
+          (when (and (= h "field") (= plen 3)) (return null))))
       (when (and (= recv null) (= plen 2))
         (set! recv (node-at place 0))
         (set! key (node-at place 1)))
       (when (= recv null) (return null))
       ; A LITERAL selector is the field, and only a computed key is `set` dispatch.
       ; Without this a collection that defines `set` could no longer write its own
-      ; fields — `(set! (self 'data) null)` would dispatch back into that method,
-      ; the write-side of the `_get` recursion trap.
+      ; fields — `(set! (self 'data) null)` would dispatch back into that method.
       (when (!= (selector-literal-sym key) null) (return null))
       (let (rt:?&Type (node-type recv scope))
         (when (= rt null) (return null))
@@ -12357,7 +12279,7 @@
                             (node-at place 2) v line))
               (when (!= g-resolve 0) (resolve-map-picks c place 1 place 2 call 2))
               (return (emit-aset c scope))))
-          (when (and (or (= h "_get") (= h "field")) (= plen 3))
+          (when (and (= h "field") (= plen 3))
             (return (emit-member-place (node-at place 1) (node-at place 2) v line scope)))))
       ; Head position `(recv 'f)` is the idiomatic member READ, so it is the
       ; idiomatic member write. Anything else two-long lands here too and is
@@ -12402,7 +12324,7 @@
           hd:?&Node (node-at n 0))
       (when (= (node-kind hd) NODE-SYM)
         (let (h:Symbol ((as ptr:Node hd) 's))
-          (when (and (= len 3) (or (= h "_get") (= h "field") (= h "aref")))
+          (when (and (= len 3) (or (= h "field") (= h "aref")))
             (return (place-readonly-root (node-at n 1) scope)))))
       (when (and (= len 2) (!= (selector-literal-sym (node-at n 1)) null))
         (return (place-readonly-root hd scope)))
@@ -15224,7 +15146,6 @@
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
-        (when (= hp '_get) (return (emit-field-get n scope)))
         (when (= hp 'field) (return (emit-field n scope)))
         (when (and (= hp 'get) (= (node-len n) 3)) (die-if-get-reads-field n scope))
         (when (= hp 'invoke) (return (emit-invoke n scope)))

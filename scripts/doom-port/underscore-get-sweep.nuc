@@ -1,0 +1,17 @@
+; Rewrite the retired `_get` onto `field` (nuc-doom ISSUE-053):
+;
+;   build/nucleusc --run scripts/doom-port/underscore-get-sweep.nuc -- \
+;     [--apply] [--strict] [--in-strings] FILE|DIR|GLOB...
+;
+;   (_get X 'f)  ->  (field X 'f)
+;
+; `_get` took only a literal selector, which `field` reads the same way.
+
+(import-use nucleus.syntax)
+(import-use nucleus.refactor)
+
+(defrewrite underscore-get
+  (rule (_get ~x ~f) `(field ~x ~f)))
+
+(defn main (argc:i32 argv:ptr):i32
+  (return (refactor-main argc argv (underscore-get))))

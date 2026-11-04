@@ -11,6 +11,6 @@
 ; works, and only the bogus qualifier is refused.
 (defstruct Cat n:i32)
 
-(defn b3-take ((c (ref nope/Cat))):i32 (return (_get c n)))
+(defn b3-take ((c (ref nope/Cat))):i32 (return (field c n)))
 
 (defn main ():i32 (return 0))

@@ -294,7 +294,7 @@
 (defn b3-lib-src ():StrView
   (return "(ns gt)
 (defstruct Pt x:i32 y:i32)
-(defn pt-sum ((p (ref Pt))):i32 (return (+ (_get p 'x) (_get p 'y))))
+(defn pt-sum ((p (ref Pt))):i32 (return (+ (field p 'x) (field p 'y))))
 "))
 
 (defn b3-exports (stem:StrView):!Exports

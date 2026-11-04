@@ -21,16 +21,16 @@
   (return ((Slice T) p n)))
 
 (defn count (self:&(Slice T)):usize
-  (return (_get self 'len)))
+  (return (field self 'len)))
 
 (defn invoke (self:&(Slice T) i:usize):&T
-  (when (>= i (_get self 'len)) (slice-bounds (unsafe/cast i64 i) (_get self 'len)))
-  (return (unsafe/cast &T (unsafe/ptr+ (_get self 'data) (unsafe/cast i64 i)))))
+  (when (>= i (field self 'len)) (slice-bounds (unsafe/cast i64 i) (field self 'len)))
+  (return (unsafe/cast &T (unsafe/ptr+ (field self 'data) (unsafe/cast i64 i)))))
 
 (defn invoke (self:&(Slice T) i:i64):&T
-  (when (or (< i 0) (>= (unsafe/cast usize i) (_get self 'len)))
-    (slice-bounds i (_get self 'len)))
-  (return (unsafe/cast &T (unsafe/ptr+ (_get self 'data) i))))
+  (when (or (< i 0) (>= (unsafe/cast usize i) (field self 'len)))
+    (slice-bounds i (field self 'len)))
+  (return (unsafe/cast &T (unsafe/ptr+ (field self 'data) i))))
 
 (defn invoke (self:&(Slice T) i:i32):&T
   (return (invoke self (as i64 i))))
@@ -46,5 +46,5 @@
 
 ; The index of an element of this slice, for code that subtracts the base as C does.
 (defn index-of (self:&(Slice T) p:&T):usize
-  (return (unsafe/cast usize (/ (- (unsafe/cast i64 p) (unsafe/cast i64 (_get self 'data)))
+  (return (unsafe/cast usize (/ (- (unsafe/cast i64 p) (unsafe/cast i64 (field self 'data)))
                                 (as i64 (sizeof T))))))

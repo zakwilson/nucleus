@@ -24,13 +24,13 @@
         arr:&i32 (array i32 1 2 3)
         q:&i32 &(aref arr 2))
     ; Places: a field of a by-value binding, a nested field, a field through a
-    ; pointer, an `aref` element, a `deref`, and `_get`/`get` spellings.
+    ; pointer, an `aref` element, a `deref`, and the `field` spelling.
     (bump &(s 'n))
     (bump &((s 'p) 'x))
     (bump &(sp 'n))
     (bump &(aref arr 1))
     (bump &(deref q))
-    (bump &(_get s 'n))
+    (bump &(field s 'n))
     (bump &(field (s 'p) 'y))
     (bump-p &(s 'p))
     (bump-p &(sp 'p))

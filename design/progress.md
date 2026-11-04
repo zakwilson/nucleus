@@ -5512,3 +5512,25 @@ Test: `doom-get-is-lookup-field-reads` in `tests/suite-doom.nuc`,
 
 Gate: 1676 pass, the same 5 fail. Bootstrap PASS; the compiler's own IR is
 unchanged, so the boot needs no refresh.
+
+## DOOM-port fix: `_get` retired in favour of `field` (2026-11-04)
+
+Follow-up to ISSUE-053. `_get` was `field` with a literal selector, and the
+two spellings had separate emitters that had to agree. `_get` is now a
+retired form ("'_get' was retired: use 'field'") and stays reserved.
+
+- `scripts/doom-port/underscore-get-sweep.nuc` moved 140 sites in `src/`,
+  `lib/`, tests and examples onto `field`.
+- `emit-field-get`, the `_get` capture-walk and rewrite cases, and the
+  `_get` place and type branches are gone. Synthesized closure reads use
+  `field`. `(ref (field s 'f))` takes the member address directly.
+- `field` on a non-struct operand says so ("field: operand must be a struct
+  or union, or a pointer to one") instead of the head-position message.
+
+Boot step: `src/` and `lib/` now use `field`, so refresh the boot after the
+ISSUE-053 commit before building this one.
+
+Test: `s16-dot-forms-retired` in `tests/suite-s16.nuc` covers the retired
+message and the reservation.
+
+Gate: 1676 pass, the same 5 suite-target fail. Bootstrap PASS.

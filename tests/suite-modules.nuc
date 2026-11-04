@@ -415,7 +415,7 @@
 ; a union built with `make` and taken apart with `match`.
 (defn w9lay-body ():StrView
   (return "(import-use \"stdio.h\")
-(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get &v 'a) (_get &v 'b))))
+(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (field &v 'a) (field &v 'b))))
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
         ar:&W9LayArr (alloca W9LayArr)
@@ -423,7 +423,7 @@
     (set! (aref (ar 'xs) 2) 6)
     (set! (ar 'n) 7)
     (printf \"%d %d %d %d %d\\n\"
-      (_get bx 'a) (w9lay-byval bx) (aref (ar 'xs) 2) (_get ar 'n)
+      (field bx 'a) (w9lay-byval bx) (aref (ar 'xs) 2) (field ar 'n)
       (match u ((W9LaySome x) x) (W9LayNone 0))))
   (return 0))
 "))
@@ -469,7 +469,7 @@
 ; `(defstruct S …)`. Recorded as latent-and-unfixed since W1d — the layout
 ; prescan closes it with the cross-file case, since neither is about imports.
 (deftest w9-layout-same-file-forward
-  (try (check-source-exit "(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get &v 'p) (_get &v 'q))))
+  (try (check-source-exit "(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (field &v 'p) (field &v 'q))))
 (defstruct W9LayFwd (p i32) (q i32))
 (defn main ():i32 (return (w9lay-fwd (W9LayFwd 2 3))))
 " 5)))
@@ -487,7 +487,7 @@
         use:String (try (test-write-file "hbelow.nuc" "(import-use \"stdio.h\")
 (defn main ():i32
   (let (bx (W9LayBox 8 9))
-    (printf \"%d\\n\" (+ (_get bx 'a) (_get bx 'b))))
+    (printf \"%d\\n\" (+ (field bx 'a) (field bx 'b))))
   (return 0))
 (import-use w9lay)
 "))
@@ -1170,7 +1170,7 @@
 (ns w24)
 (defprotocol Describe (describe ((self (ref Self))) i32))
 (defstruct Fox n:i32)
-(defn describe ((self (ref Fox))):i32 (return (_get self 'n)))
+(defn describe ((self (ref Fox))):i32 (return (field self 'n)))
 (extend Fox Describe)
 "))
 

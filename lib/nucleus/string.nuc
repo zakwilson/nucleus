@@ -14,9 +14,7 @@
 ;     They are fine in generic protocol method names (sanitize-for-ir strips them).
 ;   - The byte element type is `ui8`; `u8` is not a Nucleus type name.
 ;   - Vector fields: data:(ptr ui8), len:usize, cap:usize, alloc:Alloc.
-;   - Field access uses the raw `_get` intrinsic: `(_get v len)` reads field `len`
-;     from `(ref (Vector T))`. The callable form `(v idx)` indexes (invoke), so a
-;     literal field name like `(v len)` would mis-route to invoke — use `_get`.
+;   - `(v 'len)` or `(field v 'len)` reads a Vector field; `(v idx)` indexes.
 ;   - Drop protocol: `(drop:void (self:ptr:Self))` — ptr, NOT ref.
 ; ---------------------------------------------------------------------------
 
@@ -55,8 +53,8 @@
 ; ---------------------------------------------------------------------------
 (defn string-as-view (self:&String):StrView
   (let (v:&(Vector ui8) (ref self 'bytes)
-        len:usize (_get v 'len)
-        data:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data))))
+        len:usize (field v 'len)
+        data:&ui8 (unsafe/cast &ui8 (as ptr (field v 'data))))
     (let (sv:&StrView (alloca StrView))
       (set! (sv 'data) data)
       (set! (sv 'len) len)
@@ -81,12 +79,12 @@
   (let (v:&(Vector ui8) (ref self 'bytes)
         clen:usize (char-utf8-len c))
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
-    (reserve v (+ (_get v 'len) clen))
+    (reserve v (+ (field v 'len) clen))
     ; Write directly into the raw buffer at offset len.
-    (let (dst:&ui8 (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (_get v 'data))) (as i64 (_get v 'len))))
+    (let (dst:&ui8 (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (field v 'data))) (as i64 (field v 'len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
-      (set! (v 'len) (+ (_get v 'len) clen)))))
+      (set! (v 'len) (+ (field v 'len) clen)))))
 
 ; string-push-str-unchecked — append a StrView's bytes with no UTF-8 check.
 ; The caller asserts validity, exactly as `string-from-cstr-unchecked` does.
@@ -115,12 +113,12 @@
 ; string-pop-char — remove and return the last codepoint, or none if empty.
 (defn string-pop-char (self:&String):?Char
   (let (v:&(Vector ui8) (ref self 'bytes)
-        len:usize (_get v 'len))
+        len:usize (field v 'len))
     (when (= len 0) (return none))
     ; Walk backward to find the start of the last codepoint.
     ; A continuation byte has pattern 10xxxxxx: (b & 0xC0) == 0x80.
     ; The last codepoint start is the last non-continuation byte.
-    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data)))
+    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (field v 'data)))
           i:usize (- len 1))
       ; Skip continuation bytes backward.
       (while (and (> i 0)
@@ -148,13 +146,13 @@
 ;         invalid-char-boundary if byte_len falls mid-codepoint.
 (defn string-truncate (self:&String byte-len:usize):!void
   (let (v:&(Vector ui8) (ref self 'bytes)
-        cur-len:usize (_get v 'len))
+        cur-len:usize (field v 'len))
     (when (> byte-len cur-len)
       (return (err! str-index-out-of-bounds)))
     ; Check byte boundary: byte_len must not fall on a continuation byte.
     ; A continuation byte has pattern 10xxxxxx (bit-and b 0xC0) == 0x80.
     (when (and (> byte-len 0) (< byte-len cur-len))
-      (let (b:ui8 (aref (unsafe/cast &ui8 (as ptr (_get v 'data))) (as i64 byte-len)))
+      (let (b:ui8 (aref (unsafe/cast &ui8 (as ptr (field v 'data))) (as i64 byte-len)))
         (when (= (bit-and (as ui32 b) 192) 128)
           (return (err! invalid-char-boundary)))))
     (set! (v 'len) byte-len)
@@ -166,14 +164,14 @@
 ; that rewinds on every use can act on (library-gaps.md #31).
 (defn string-truncate-unchecked (self:&String byte-len:usize):void
   (let (v:&(Vector ui8) (ref self 'bytes))
-    (when (< byte-len (_get v 'len))
+    (when (< byte-len (field v 'len))
       (set! (v 'len) byte-len))))
 
 ; string-reserve — ensure at least `extra` additional bytes of capacity beyond
 ; the current length.
 (defn string-reserve (self:&String extra:usize):void
   (let (v:&(Vector ui8) (ref self 'bytes))
-    (reserve v (+ (_get v 'len) extra))))
+    (reserve v (+ (field v 'len) extra))))
 
 ; string-as-cstr — a NUL-terminated view of the bytes, for an FFI seam.
 ;
@@ -182,9 +180,9 @@
 ; pointer is invalidated by any subsequent append (library-gaps.md #9).
 (defn string-as-cstr (self:&String):CStr
   (let (v:&(Vector ui8) (ref self 'bytes)
-        len:usize (_get v 'len))
+        len:usize (field v 'len))
     (reserve v (+ len 1))
-    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data))))
+    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (field v 'data))))
       (set! (aref p (as i64 len)) 0)
       (return (as CStr (as ptr p))))))
 
@@ -192,17 +190,17 @@
 ; Reallocates the buffer to exactly len bytes (or frees if len = 0).
 (defn string-shrink-to-fit (self:&String):void
   (let (v:&(Vector ui8) (ref self 'bytes)
-        cur-len:usize (_get v 'len))
-    (when (= cur-len (_get v 'cap)) (return))  ; already at fit
+        cur-len:usize (field v 'len))
+    (when (= cur-len (field v 'cap)) (return))  ; already at fit
     (when (= cur-len 0)
       ; Free the buffer entirely.
-      (deallocate (ref v 'alloc) (_get v 'data) (_get v 'cap) 1)
+      (deallocate (ref v 'alloc) (field v 'data) (field v 'cap) 1)
       (set! (v 'data) null)
       (set! (v 'cap) 0)
       (return))
     ; Reallocate to exactly cur-len bytes.
     (let ((new-data ?&ui8)
-          (reallocate (ref v 'alloc) (_get v 'data) (_get v 'cap) cur-len 1))
+          (reallocate (ref v 'alloc) (field v 'data) (field v 'cap) cur-len 1))
       (when (= (as ptr new-data) null)
         (fprintf stderr "string: out of memory in shrink-to-fit\n")
         (exit 1))
@@ -277,8 +275,8 @@
 ; decode becomes U+FFFD. `(TryInitFrom (Vector ui8))` is the strict path.
 (defn init (self:&String a:Alloc v:StrView):void
   (init (ref self 'bytes) a)
-  (let (p:&ui8 (_get v 'data)
-        n:usize (_get v 'len)
+  (let (p:&ui8 (field v 'data)
+        n:usize (field v 'len)
         run:usize 0
         pos:usize 0)
     (while (< pos n)
@@ -297,10 +295,10 @@
 
 ; Validates before touching `self`, so the error path leaves nothing to free.
 (defn init (self:&String a:Alloc v:&(Vector ui8)):!void
-  (let (n:usize (_get v 'len)
+  (let (n:usize (field v 'len)
         pos:usize 0)
     (when (> n 0)
-      (let (p:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data))))
+      (let (p:&ui8 (unsafe/cast &ui8 (as ptr (field v 'data))))
         (while (< pos n)
           (let (dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 pos)) (- n pos)))
             (when (= (&dr 'ok) 0)

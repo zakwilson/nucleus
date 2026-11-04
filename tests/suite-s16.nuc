@@ -2743,8 +2743,8 @@ map=2
 ; What a place is (dot-forms.md §5 steps 4-6)
 ; ---------------------------------------------------------------------------
 ;
-; `.` and `.&` are gone and `set!` takes a PLACE. `.` was `_get` verbatim, so
-; its sites became `get` (or `_get`, where a user override must be bypassed);
+; `.` and `.&` are gone and `set!` takes a PLACE. `.` was field access, so its
+; sites became `field`;
 ; `.&` became an ARITY OVERLOAD on `ref` — 1-arg is a binding's address,
 ; 2-arg is a field's, and the two cannot collide because a binding address takes
 ; a bare symbol. `.set!`, `ptr-set!` and `aset!` became places under one `set!`.
@@ -2819,6 +2819,11 @@ map=2
   (try (check-place-refused "(defn . (a:i32):i32 (return a))
 " 1 "'.' already names a special form"))
   (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (return (_get p 'x)))
+" 2 "'_get' was retired: use 'field' -- (field p 'f), or head position (p 'f)"))
+  (try (check-place-refused "(defn _get (a:i32):i32 (return a))
+" 1 "'_get' already names a special form"))
+  (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):&i32 (return (ref p 'z)))
 " 2 "ref: no field 'z' on struct 'Pt'"))
   (try (check-place-refused "(defstruct Pt x:i32)
@@ -2835,7 +2840,7 @@ map=2
 ; that should agree agree byte for byte.
 (defn place-ir (write:StrView):!String
   (let (src:String (str "(defstruct Pt x:i32 y:i32)
-(defn f (p:&Pt):i32 " write " (return (_get p 'y)))
+(defn f (p:&Pt):i32 " write " (return (field p 'y)))
 ")
         ir:String (try (source-ir (string-as-view &src))))
     (drop &src)
@@ -2852,7 +2857,7 @@ map=2
     (set! n 7)
     (set! (p 'x) 1)
     (set! (field p 'y) 2)
-    (set! (_get p 'y) 3)
+    (set! (field p 'y) 3)
     (set! ((ref p 'in) 'a) 4)
     (set! (deref (ref p 'x)) 5)
     (set! (aref buf 2) 6)
@@ -2866,7 +2871,7 @@ map=2
     (drop &out))
   (let (a:String (try (place-ir "(set! (p 'y) 2)"))
         b:String (try (place-ir "(set! (field p 'y) 2)"))
-        c:String (try (place-ir "(set! (_get p 'y) 2)"))
+        c:String (try (place-ir "(set! (field p 'y) 2)"))
         d:String (try (place-ir "(set! (deref (ref p 'y)) 2)")))
     (try (check-golden (string-as-view &b) (string-as-view &a)))
     (try (check-golden (string-as-view &c) (string-as-view &a)))
@@ -2939,20 +2944,20 @@ map=2
 
 ; A LITERAL selector is always the field, even on a receiver that HAS a `set`
 ; method — otherwise a collection could no longer write its own fields, which is
-; the write side of the `_get` recursion trap. The method's return type is the
+; the write side of the field-recursion trap. The method's return type is the
 ; place's type, which is the `node-type` mirror.
 (deftest s16-set-generic-literal-is-the-field
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Box n:i32 hits:i32)
 (defn set ((self (ref Box)) (k i32) (x i32)):i32
-  (set! (self 'hits) (+ (_get self 'hits) 1))
-  (set! (self 'n) (+ (_get self 'n) x))
-  (return (_get self 'n)))
+  (set! (self 'hits) (+ (field self 'hits) 1))
+  (set! (self 'n) (+ (field self 'n) x))
+  (return (field self 'n)))
 (defn main ():i32
   (let (b:&Box (alloca Box) k:i32 0)
     (set! (b 'n) 1) (set! (b 'hits) 0)
     (let (r:i32 (set! (b k) 10))
-      (printf \"%d %d %d\\n\" r (_get b 'n) (_get b 'hits))))
+      (printf \"%d %d %d\\n\" r (field b 'n) (field b 'hits))))
   (return 0))
 ")))
     (try (check-eq (string-as-view &out) "11 11 1\n"))
@@ -2962,7 +2967,7 @@ map=2
 ; field path would answer with a missing-quote note about a non-field.
 (deftest s16-set-generic-missing-method
   (try (check-place-refused "(defstruct Ro n:i32)
-(defn invoke ((self (ref Ro)) i:i32):i32 (return (+ (_get self 'n) i)))
+(defn invoke ((self (ref Ro)) i:i32):i32 (return (+ (field self 'n) i)))
 (defn main ():i32
   (let (r:ref:Ro (alloca Ro) k:i32 0)
     (set! (r k) 5))
@@ -3144,7 +3149,7 @@ map=2
 ; ---------------------------------------------------------------------------
 
 ; A quoted selector is the field at every form, and a computed one needs no
-; annotation to be read as a value: `_get`, `get`, the callable-value form and a
+; annotation to be read as a value: `field`, the callable-value form and a
 ; computed selector all reach the same two fields.
 (deftest s16-selector-quoted-is-the-field
   (let (p:String (try (test-write-file "sel.nuc" "(import-use \"stdio.h\")
@@ -3155,7 +3160,7 @@ map=2
     (set! (p 'x) 1)
     (set! (deref (ref p 'y)) 2)
     (let (sel:ptr (quote y))
-      (printf \"%d %d %d %d\\n\" (_get p 'x) (field p 'y) (p 'x) (p sel))))
+      (printf \"%d %d %d %d\\n\" (field p 'x) (field p 'y) (p 'x) (p sel))))
   (return 0))
 "))
         out:String (try (build-run-file "" "" (string-as-view &p))))
@@ -3184,8 +3189,8 @@ map=2
 (defn f (p:&Pt):i32 (let (q:&i32 (ref p x)) 0) (return 0))
 " 2 "ref: field name must be a quoted selector -- write 'x"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):i32 (let (v:i32 (_get p x)) 0) (return 0))
-" 2 "_get: field name must be a quoted selector -- write 'x"))
+(defn f (p:&Pt):i32 (let (v:i32 (field p x)) 0) (return 0))
+" 2 "field: 'x' is undefined here, and a bare symbol in selector position is an ordinary variable -- write (p 'x)"))
   ; A selector that is neither spelling is still refused, and this one carries no
   ; "write 'x" tail because there is no symbol to suggest.
   (try (check-place-refused "(defstruct Pt x:i32)
@@ -3447,7 +3452,7 @@ map=2
   (let (out:String (try (build-run-source "(declare printf (fmt:CStr):i32)
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n (* n 2))))
-(defn sum (p:Pt):i64 (return (+ (field p 'x) (+ (p 'y) (_get p 'x)))))
+(defn sum (p:Pt):i64 (return (+ (field p 'x) (+ (p 'y) (field p 'x)))))
 (defn direct ():i64 (return (field (mk 5) 'y)))
 (defn main ():i32
   (let (v:Pt (mk 3))
@@ -3480,14 +3485,14 @@ map=2
   ; A non-struct receiver is still refused, and the message names BOTH legal
   ; receivers now that a value is one of them.
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
-(defn main ():i32 (let (k:i64 5) (return (as i32 (_get k 'x)))))
-" 2 "_get: operand must be a struct or union, or a pointer to one"))
+(defn main ():i32 (let (k:i64 5) (return (as i32 (field k 'x)))))
+" 2 "field: operand must be a struct or union, or a pointer to one"))
   ; A missing field on a VALUE receiver reports the FIELD, not the receiver —
   ; only possible if the type pass unwrapped it in lockstep.
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
-(defn f (p:Pt):i64 (return (_get p 'zzz)))
+(defn f (p:Pt):i64 (return (field p 'zzz)))
 (defn main ():i32 (return 0))
-" 2 "_get: no field 'zzz' on struct 'Pt'"))
+" 2 "field: no field 'zzz' on struct 'Pt'"))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------

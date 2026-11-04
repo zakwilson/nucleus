@@ -3816,7 +3816,7 @@
 (defconst- GCHECK-SPECIAL-FORMS
   #{"let" "with" "do" "cond" "return" "while" "break" "continue" "set!" "quote" "quasiquote"
     "ast-first" "ast-rest" "ast-at" "ast-len" "not" "_and" "_or" "cast" "ref"
-    "deref" "ptr+" "_get" "field" "sizeof" "alignof" "source-file" "source-line" "alloca"
+    "deref" "ptr+" "field" "sizeof" "alignof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
     "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
     "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
@@ -7061,10 +7061,8 @@
       (let (pt:ptr (node-type-deref-elem op scope))
         (when (= pt null) (return null))
         (return (as ptr (ref-type-of pt)))))
-    (when (and (= h '_get) (= (node-len (as ptr op)) 3))
-      (return (node-type-field-addr (node-at op 1) (node-at op 2) scope)))
     (when (and (= h 'field) (= (node-len (as ptr op)) 3))
-      (return (node-type-callable-place op (node-at op 1) 2 scope)))
+      (return (node-type-field-addr (node-at op 1) (node-at op 2) scope)))
     (when (!= (as ptr (callable-value-head-sym h scope)) null)
       (return (node-type-callable-place op h 1 scope)))
     (return (node-type-ref-value op scope))))
@@ -7475,7 +7473,6 @@
         ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` mirrors what
         ; bare `ptr+` used to (lockstep).
         (when (= hp 'unsafe/ptr+) (return (node-type (node-at n 1) scope)))
-        (when (= hp '_get) (return (node-type-field n scope)))
         (when (= hp 'field) (return (node-type-field-form n scope)))
         (when (= hp 'invoke) (return (node-type-invoke n scope)))
         ; sizeof yields a pointer-sized integer (size_t) — mirror emit-sizeof,

@@ -40,5 +40,11 @@ Messages from the field intrinsic say `field:` instead of `get:`.
 `lib/`, so the boot compiler is unaffected). `examples/callable.nuc`'s `get`
 override became an `invoke` taking a `&Node` selector.
 
-`_get`, the literal-only spelling, still exists. Retiring it in favour of
-`field` needs a boot step, since `lib/` uses it.
+## Follow-up: `_get` retired
+
+`_get`, the literal-only spelling, duplicated `field` with a literal
+selector, so a follow-up commit retires it: a targeted error naming `field`,
+the spelling kept reserved. `scripts/doom-port/underscore-get-sweep.nuc`
+rewrote 140 sites (`src/`, `lib/`, tests, examples). The compiler and `lib/`
+used `_get`, so the boot compiler must understand `field` first: refresh boot
+after the ISSUE-053 commit before building this one.

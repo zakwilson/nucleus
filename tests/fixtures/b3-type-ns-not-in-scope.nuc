@@ -15,6 +15,6 @@
 (import-use "stdio.h")
 (import-prefixed nsdescribe dpx)
 
-(defn b3-take ((f (ref Fox))):i32 (return (_get f n)))
+(defn b3-take ((f (ref Fox))):i32 (return (field f n)))
 
 (defn main ():i32 (return 0))

@@ -100,7 +100,7 @@ A qualifier that names no namespace in scope is refused rather than silently res
 
 ```lisp
 (defstruct Cat n:i32)
-(defn take ((c (ref nope/Cat))):i32 (return (_get c 'n)))
+(defn take ((c (ref nope/Cat))):i32 (return (field c 'n)))
 ```
 
 ```

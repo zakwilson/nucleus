@@ -78,15 +78,15 @@
 ; reallocating through the stored allocator. Aborts on OOM.
 ; ---------------------------------------------------------------------------
 (defn vector-grow (v:&(Vector T)):void
-  (let (new-cap:usize (if (= (_get v 'cap) 0)
+  (let (new-cap:usize (if (= (field v 'cap) 0)
                         4
-                        (* (_get v 'cap) 2))
+                        (* (field v 'cap) 2))
         elem-size:usize (as usize (sizeof T)))
-    (let (old-bytes:usize (* (_get v 'cap) elem-size)
+    (let (old-bytes:usize (* (field v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
           ah:&Alloc (ref v 'alloc))
       (let ((new-data ?&ui8)
-            (reallocate ah (_get v 'data) old-bytes new-bytes (as usize (alignof T))))
+            (reallocate ah (field v 'data) old-bytes new-bytes (as usize (alignof T))))
         (when (= (as ptr new-data) null) (vector-oom))
         (set! (v 'data) new-data)
         (set! (v 'cap) new-cap)))))
@@ -97,17 +97,17 @@
 
 ; count -> number of live elements.
 (defn count (self:&(Vector T)):usize
-  (return (_get self 'len)))
+  (return (field self 'len)))
 
 ; conj: append an element at the back, growing if needed.
 (defn conj (self:&(Vector T) elem:T):void
-  (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (set! (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
-  (set! (self 'len) (+ (_get self 'len) 1)))
+  (when (>= (field self 'len) (field self 'cap)) (vector-grow self))
+  (set! (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 (field self 'len))) elem)
+  (set! (self 'len) (+ (field self 'len) 1)))
 
 ; empty? -> true when len = 0.
 (defn empty? (self:&(Vector T)):bool
-  (return (= (_get self 'len) 0)))
+  (return (= (field self 'len) 0)))
 
 ; ---------------------------------------------------------------------------
 ; Seq T conformance: invoke (index), set (index assignment), append,
@@ -116,15 +116,15 @@
 
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
 (defn invoke (self:&(Vector T) i:usize):T
-  (when (>= i (_get self 'len)) (vector-bounds "get" i (_get self 'len)))
-  (return (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i))))
+  (when (>= i (field self 'len)) (vector-bounds "get" i (field self 'len)))
+  (return (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 i))))
 
 ; set: index assignment `(set! (v i) x)` — the write side of `invoke`
 ; (dot-forms.md §3). Panics out-of-bounds exactly as `invoke` does; growing on a
 ; write would make a typo silently extend the vector.
 (defn set (self:&(Vector T) i:usize elem:T):void
-  (when (>= i (_get self 'len)) (vector-bounds "set" i (_get self 'len)))
-  (set! (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i)) elem))
+  (when (>= i (field self 'len)) (vector-bounds "set" i (field self 'len)))
+  (set! (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 i)) elem))
 
 ; A signed index, such as a C port's `int`: a negative one is out of bounds, as
 ; one past the end is (nuc-doom ISSUE-046).
@@ -136,13 +136,13 @@
   (return (unsafe/cast usize i)))
 
 (defn invoke (self:&(Vector T) i:i32):T
-  (return (invoke self (vector-index "get" (as i64 i) (_get self 'len)))))
+  (return (invoke self (vector-index "get" (as i64 i) (field self 'len)))))
 (defn invoke (self:&(Vector T) i:i64):T
-  (return (invoke self (vector-index "get" i (_get self 'len)))))
+  (return (invoke self (vector-index "get" i (field self 'len)))))
 (defn set (self:&(Vector T) i:i32 elem:T):void
-  (set self (vector-index "set" (as i64 i) (_get self 'len)) elem))
+  (set self (vector-index "set" (as i64 i) (field self 'len)) elem))
 (defn set (self:&(Vector T) i:i64 elem:T):void
-  (set self (vector-index "set" i (_get self 'len)) elem))
+  (set self (vector-index "set" i (field self 'len)) elem))
 
 ; append: add at the back (same as conj for a vector).
 (defn append (self:&(Vector T) elem:T):void
@@ -151,8 +151,8 @@
 ; contains?: linear scan with =. (Scalar element types.)
 (defn contains? (self:&(Vector T) elem:T):bool
   (let (i:usize 0)
-    (while (< i (_get self 'len))
-      (when (= (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i)) elem)
+    (while (< i (field self 'len))
+      (when (= (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 i)) elem)
         (return true))
       (set! i (+ i 1)))
     (return false)))
@@ -160,26 +160,26 @@
 ; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
 ; i may equal len (append). i > len is out of bounds.
 (defn insert (self:&(Vector T) i:usize elem:T):void
-  (when (> i (_get self 'len)) (vector-bounds "insert" i (_get self 'len)))
-  (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (let (buf:&T (unsafe/cast &T (as ptr (_get self 'data)))
-        j:usize (_get self 'len))
+  (when (> i (field self 'len)) (vector-bounds "insert" i (field self 'len)))
+  (when (>= (field self 'len) (field self 'cap)) (vector-grow self))
+  (let (buf:&T (unsafe/cast &T (as ptr (field self 'data)))
+        j:usize (field self 'len))
     (while (> j i)
       (set! (aref buf (as i64 j)) (aref buf (as i64 (- j 1))))
       (set! j (- j 1)))
     (set! (aref buf (as i64 i)) elem))
-  (set! (self 'len) (+ (_get self 'len) 1)))
+  (set! (self 'len) (+ (field self 'len) 1)))
 
 ; remove-at: delete the element at index i, shifting (i,len) left by one.
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
 (defn remove-at (self:&(Vector T) i:usize):void
-  (when (>= i (_get self 'len)) (vector-bounds "remove-at" i (_get self 'len)))
-  (let (buf:&T (unsafe/cast &T (as ptr (_get self 'data)))
+  (when (>= i (field self 'len)) (vector-bounds "remove-at" i (field self 'len)))
+  (let (buf:&T (unsafe/cast &T (as ptr (field self 'data)))
         j:usize i)
-    (while (< (+ j 1) (_get self 'len))
+    (while (< (+ j 1) (field self 'len))
       (set! (aref buf (as i64 j)) (aref buf (as i64 (+ j 1))))
       (set! j (+ j 1))))
-  (set! (self 'len) (- (_get self 'len) 1)))
+  (set! (self 'len) (- (field self 'len) 1)))
 
 ; clear!: no elements, capacity kept. A Vector never drops its elements, so
 ; neither does this.
@@ -188,7 +188,7 @@
 
 ; truncate!: keep the first n elements; n at or past the length changes nothing.
 (defn truncate! (self:&(Vector T) n:usize):void
-  (when (< n (_get self 'len)) (set! (self 'len) n)))
+  (when (< n (field self 'len)) (set! (self 'len) n)))
 
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
@@ -197,11 +197,11 @@
 
 ; capacity -> current allocated slot count.
 (defn capacity (self:&(Vector T)):usize
-  (return (_get self 'cap)))
+  (return (field self 'cap)))
 
 ; reserve: ensure at least n total slots (grows by doubling until cap >= n).
 (defn reserve (self:&(Vector T) n:usize):void
-  (while (< (_get self 'cap) n) (vector-grow self)))
+  (while (< (field self 'cap) n) (vector-grow self)))
 
 ; ---------------------------------------------------------------------------
 ; Bulk append. `conj` in a loop costs a bounds test, a capacity test and a call
@@ -214,10 +214,10 @@
 ; this vector's own buffer — the reserve may reallocate it.
 (defn vector-extend-raw (self:&(Vector T) p:&T n:usize):void
   (when (= n 0) (return))
-  (let (len:usize (_get self 'len)
+  (let (len:usize (field self 'len)
         esz:usize (as usize (sizeof T)))
     (reserve self (+ len n))
-    (memcpy (as ptr (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (_get self 'data)))
+    (memcpy (as ptr (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (field self 'data)))
                                  (as i64 (* len esz))))
             (as ptr p)
             (as i64 (* n esz)))
@@ -226,8 +226,8 @@
 ; vector-extend: append every element of `other`, which is left unchanged.
 (defn vector-extend (self:&(Vector T) other:&(Vector T)):void
   (vector-extend-raw self
-                     (unsafe/cast &T (as ptr (_get other 'data)))
-                     (_get other 'len)))
+                     (unsafe/cast &T (as ptr (field other 'data)))
+                     (field other 'len)))
 
 ; ---------------------------------------------------------------------------
 ; Drop conformance: free the buffer through the stored allocator. Null-safe and
@@ -256,10 +256,10 @@
     (vector-extend-raw self (unsafe/cast &T (v 'data)) (v 'len))))
 
 (defn drop (self:&(Vector T)):void
-  (when (!= (as ptr (_get self 'data)) null)
+  (when (!= (as ptr (field self 'data)) null)
     (deallocate (ref self 'alloc)
-                       (_get self 'data)
-                       (* (_get self 'cap) (as usize (sizeof T)))
+                       (field self 'data)
+                       (* (field self 'cap) (as usize (sizeof T)))
                        (as usize (alignof T))))
   (set-fields! self
                'data null
@@ -301,9 +301,9 @@
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init (it:&(VecIter T) v:&(Vector T)):void
   (set-fields! it
-               'data (as ptr (_get v 'data))
+               'data (as ptr (field v 'data))
                'pos  0
-               'len  (_get v 'len)))
+               'len  (field v 'len)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE

@@ -1565,9 +1565,8 @@ have different element parities, different failure modes, and different layers.
 sides are interned: selectors arrive interned (the reader / `quote` intern symbol
 spellings at lex time, so `(fn-node 's)` is the canonical string) and stored field
 names are interned at build time via `intern-str` (interns the spelling, returns the
-canonical string pointer). The three field-access paths — `_get` (`emit-field-get`),
-the `field` intrinsic (`emit-field-intrinsic`), and the non-emitting type pass
-(`node-type-field`) — all route through `struct-field-index`, so they cannot drift.
+canonical string pointer). The field-access paths — the `field` intrinsic (`emit-field-intrinsic`) and
+the non-emitting type pass (`node-type-field`) — both route through `struct-field-index`, so they cannot drift.
 
 There is exactly **one** place that populates a StructDef's `field-names`:
 `emit-defstruct` (the normal path, incl. `.nuch` imports). It **must intern each name**
@@ -1905,8 +1904,8 @@ before/after IR diff does.
 
 Ordinary code reads a field with **head position `(s 'field)`** or the **`field`**
 special form (`emit-field`, the intrinsic `emit-field-intrinsic`: byte-identical
-GEP+load). `_get` is the older literal-only spelling (`emit-field-get`). The
-selector is **quoted** — see the next section. `.`, `.&`, `.set!`, `ptr-set!` and
+GEP+load). `_get` is retired (reserved, with a message naming `field`). The
+selector is **quoted** — see the next section. `.`, `.&`, `_get`, `.set!`, `ptr-set!` and
 `aset!` are all gone, but every one stays **reserved** so a retired-form message
 carrying the replacement always reaches the user.
 
@@ -1925,7 +1924,7 @@ is: a literal field name, then `invoke`, then the field intrinsic.
   `(field cond 'field)`. **Functions don't collide** — a local shadows them in scope
   lookup, so `(localvar 'field)` is member access even if a function shares the name.
   The one-time `.`→head-position migration special-cased reserved-named *direct*
-  heads by routing them to `_get`; a reserved-named **`->` base** was not caught
+  heads by routing them to the literal-only field read; a reserved-named **`->` base** was not caught
   and had to be renamed.
 
 **A field name is QUOTED; a bare symbol in selector position is a variable.**
@@ -1937,7 +1936,7 @@ W7 demotion (`callee-has-field` + `selector-shadowed-by-local`) and Stage 16's
 (`design/stage16-ergonomics/dot-forms.md` §5 step 3) deleted all three. Three
 things that fall out of it, each of which had to be built:
 
-- **`_get`, `.set!` and the 2-argument `ref` require a literal** and refuse a bare symbol rather
+- **A member place and the 2-argument `ref` require a literal** and refuse a bare symbol rather
   than reading it as a variable — they name a field statically, so there is
   nothing for a computed selector to mean there (`die-nonliteral-selector`).
 - **Head position and `field` route on the RECEIVER, not on the argument's shape.**
@@ -2012,7 +2011,7 @@ the head is now the **receiver**, and the same holds for a callable value. Both
 walk index 0 now — `is-local` (walk) and membership in `caps` (rewrite) are what
 keep a call to a global from being read as a capture, so nothing else was needed.
 
-The bug this closes is invisible to a grep: `(_get p 'x)` inside a closure captured
+The bug this closes is invisible to a grep: `(field p 'x)` inside a closure captured
 `p` and `(p 'x)` did not, and `.set!` hid its half by walking its receiver
 explicitly at index 1 — which the `set!` place form no longer does, because the
 receiver moved into head position. Every member form the compiler *synthesizes*
@@ -2039,7 +2038,7 @@ Two consequences worth knowing:
   cell emit builds. That is the lockstep this file opens with, discharged by
   having one answer rather than two that must agree.
 
-`_get` and `field` never dispatch, and neither do the storage
+`field` never dispatches, and neither do the storage
 places `(deref p)` / `(aref a i)`.
 
 ## A type that is BOTH indexable and a struct: a literal selector naming a field outranks `invoke`
@@ -2069,7 +2068,7 @@ throughout.
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
-`(field v 'f)`, head-position `(v 'f)`, and `(_get v 'f)` all work on a by-value
+`(field v 'f)` and head-position `(v 'f)` both work on a by-value
 parameter, a `let`-bound struct local, or a call result read in place. The
 emitter copies the value into a fresh slot (`materialize-struct-value`,
 `src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the
@@ -6115,10 +6114,10 @@ answerable with a `strncmp` and no extra state:
 
 That last line is the trap. A site that resolves a member with
 `struct-field-index` alone silently answers "no such field" for every name an
-anonymous member supplies. The four access sites (`_get`, head-position `get`,
-`.set!`, `.&`) each fall through their `idx < 0` branch into `struct-field-ref`
+anonymous member supplies. The access sites (`field`, head position, a member
+place, 2-arg `ref`) each fall through their `idx < 0` branch into `struct-field-ref`
 for exactly this reason; a fifth would need the same fall-through. The type side
-(`node-type-field`, `callable-get-type`) already goes through `struct-field-ref`,
+(`node-type-field`, `field-access-type`) already goes through `struct-field-ref`,
 so it needs nothing — but that is also why a site that skips it breaks the
 `node-type`↔`emit-node` lockstep in the direction that is hardest to see.
 
@@ -6449,7 +6448,7 @@ are easy to get wrong, and both were measured on Stage 16's
 `--strict-selectors` (`design/stage16-ergonomics/dot-forms.md` §2):
 
 - **A generic body is emitted once per instantiation**, so a site inside one is
-  reported once per instantiation: `lib/nucleus/vector.nuc`'s 29 `(_get …)` sites
+  reported once per instantiation: `lib/nucleus/vector.nuc`'s 29 `(field …)` sites
   produced 629 reports. Dedup on `file:line:name` before believing a total —
   raw 7555 vs. real 6106.
 - **A generic this unit never instantiates is never visited at all.** 27 files
@@ -6474,9 +6473,8 @@ touching any source: the flag reports what is *emitted*, so it found these,
 and a spelling change that had only rewritten source would have broken every
 closure in the language the moment the rule flipped. They now go through
 `quoted-selector` (`src/nucleusc.nuc`). The same twelve sites bit again when
-`.`/`.&` were retired — they synthesize `_get` and `ref` now, `_get` rather
-than `get` because a synthesized read of a compiler-generated env struct means
-*raw field load*, which is what the bypass primitive is for.
+`.`/`.&` were retired — they synthesize `field` and `ref` now, because a synthesized read of a
+compiler-generated env struct means *raw field load*, which never dispatches.
 
 The general rule: before changing what a **spelling** means, ask the compiler
 which of its own emissions use that spelling. A macro's quasiquote template is

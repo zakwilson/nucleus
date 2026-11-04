@@ -321,10 +321,10 @@
         ; A pointer store, so it is safe in this window — unlike `setenv`, which
         ; would allocate. `execvp` reads `environ` for the child it starts.
         (when has-env
-          (set! environ (unsafe/cast &ptr (as ptr (_get envp 'data)))))
+          (set! environ (unsafe/cast &ptr (as ptr (field envp 'data)))))
         (if search
-          (execvp (as CStr prog) (as ptr (_get argv 'data)))
-          (execv (as CStr prog) (as ptr (_get argv 'data))))
+          (execvp (as CStr prog) (as ptr (field argv 'data)))
+          (execv (as CStr prog) (as ptr (field argv 'data))))
         (_exit EXEC-FAILED-STATUS))
       ; Parent. Closing the write ends is what makes the reader see EOF.
       (when cap (close (aref op 1)) (close (aref ep 1)))
