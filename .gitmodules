@@ -1,0 +1,4 @@
+[submodule "boot"]
+	path = boot
+	url = ../nucleus-boot.git
+	shallow = true

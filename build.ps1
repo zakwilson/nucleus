@@ -149,7 +149,7 @@ if (Test-Path $BootExe) {
     try { & $BootExe --help *> $null; if ($LASTEXITCODE -eq 0) { $needBoot = $false } } catch { }
 }
 if ($needBoot) {
-    if (-not (Test-Path $BootIR)) { throw "missing boot IR: $BootIR" }
+    if (-not (Test-Path $BootIR)) { throw "missing boot IR: $BootIR (run: git submodule update --init boot)" }
     Write-Host "bootstrapping $BootExe from $BootIR ..." -ForegroundColor Cyan
     Link-Compiler -InputIR $BootIR -OutputExe $BootExe
 }

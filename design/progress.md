@@ -5537,10 +5537,11 @@ Gate: 1676 pass, the same 5 suite-target fail. Bootstrap PASS.
 
 ## Boot recovered from the pinned tag (2026-11-05)
 
-`BOOTSTRAP_REV` still named `boot-2026-10-13`, while the boot steps after it
-(the build tool, 8dc5644, 1b3e18f) were refreshed only in a local `boot/`. A
-fresh checkout could not build: the tag fails on HEAD at `unknown type: Loc`,
-and the prelude fails at `'bit-and' already names a function`.
+`BOOTSTRAP_REV` still named `boot-2026-10-13`. Newer boots were on
+nucleus-boot's `main` but untagged, so the fetch script never saw them, and the
+newest (faae316) stopped one step short of `cac7bac`. A fresh checkout could
+not build: the tag fails on HEAD at `unknown type: Loc`, and the prelude fails
+at `'bit-and' already names a function`.
 
 No source changed. Replaying history reached HEAD in four hops:
 tag → b7ab41e → 32f49f1 → cac7bac → cb17330. HEAD then self-compiled to a fixed
@@ -5548,6 +5549,19 @@ point (the IR was identical on the first rebuild), and `boot/` was regenerated
 from it, Windows IRs included.
 
 Gate, run in a scratch copy with LLVM 23.1.6: `make bootstrap` PASS; 1677 pass,
-the same 5 suite-target fail. Still open: publish the new IR as a tag in
-nucleus-boot and bump `BOOTSTRAP_REV`. Until then a fresh checkout has this
-problem again.
+the same 5 suite-target fail. The pin itself was replaced the same day; see
+below.
+
+## `boot/` is a submodule (2026-11-05)
+
+`boot/` was gitignored, so a boot refresh left `git status` clean and nothing
+showed that the pin had fallen behind. It is now a submodule of nucleus-boot.
+
+- `BOOTSTRAP_REV` and `scripts/get-bootstap.sh` are gone. The submodule pointer
+  is the pin. `.gitmodules` sets a relative URL and `shallow = true`.
+- nucleus-boot's IR moved to the repository root, so paths stay `boot/*.ll`.
+- `make` initializes the submodule when `boot/nucleusc.ll` is missing, and
+  `make update-bootstrap` ends with the commit, push and `git add boot` steps.
+- The boot is rebuilt from 02e4429, whose union lowering changed the compiler's
+  own IR. It differs from an Arch build only in glibc's spelling of types, plus
+  one extra `declare`; sizes match.

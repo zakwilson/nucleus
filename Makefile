@@ -53,7 +53,7 @@ $(info LLVM: config=$(LLVM_CONFIG) ldflags=$(LLVM_LDFLAGS) libs=$(LLVM_LIBS) sys
 BUILD        := build
 BIN          := $(BUILD)/nucleusc
 
-# Bootstrap binary: use the committed pre-built binary.
+# Bootstrap binary: linked locally from boot/nucleusc.ll, in the boot submodule.
 # Auto-rebuilt from boot/nucleusc.ll if it can't execute (e.g. LLVM version mismatch).
 BOOT         := bin/nucleusc
 
@@ -93,6 +93,10 @@ FORCE:
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
 
+# A clone without --recurse-submodules leaves boot/ empty.
+boot/nucleusc.ll:
+	git submodule update --init boot
+
 # bin/nucleusc is gitignored, so `make clean` keeps it; a boot refresh or merge must relink it.
 $(BOOT): boot/nucleusc.ll
 	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
@@ -106,8 +110,8 @@ ensure-boot: $(BOOT) | $(BUILD)
 		clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BOOT); \
 	fi
 
-# Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
-boot-binary: | $(BUILD)
+# Force-rebuild the bootstrap binary from the pinned IR (boot/nucleusc.ll).
+boot-binary: boot/nucleusc.ll | $(BUILD)
 	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
 # Stage 18 TF-7: the trust anchor, then the suite. `$(NUCTESTS)` is NOT a
@@ -227,7 +231,7 @@ windows-boot: $(BIN)
 	$(BIN) --target=x86_64-pc-windows-msvc --emit-llvm src/nucleusc.nuc > boot/nucleusc-x86_64-windows-msvc.ll
 	@echo "DONE: Windows boot IRs updated"
 
-# Update committed bootstrap artifacts from the current self-hosted compiler.
+# Update the boot submodule's files from the current self-hosted compiler.
 # Only run this at a stable milestone (all tests passing, bootstrap verified).
 update-bootstrap: $(BIN)
 	@echo "=== Updating bootstrap artifacts ==="
@@ -240,6 +244,10 @@ update-bootstrap: $(BIN)
 	@# that is really this staleness. Drop the two derived artifacts instead.
 	@rm -f $(BUILD)/nucleusc.ll $(BIN)
 	@echo "DONE: boot/nucleusc.ll, bin/nucleusc, and Windows boot IRs updated"
+	@echo "NEXT: a fresh clone gets none of this until you publish and pin it:"
+	@echo "  git -C boot commit -am 'Boot for <feature>'"
+	@echo "  git -C boot push origin HEAD:main"
+	@echo "  git add boot   # then commit"
 
 # ---- Library compilation ----
 

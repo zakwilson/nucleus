@@ -15,11 +15,7 @@ While it already has most of the capabilities required for serious use like host
 building
 ========
 
-You'll need LLVM, clang, and a checkout of the compiler bootstrap IR. Run
-
-    scripts/get-bootstrap.sh
-    
-then
+You'll need LLVM and clang. The compiler bootstrap IR is the `boot` submodule, which `make` fetches if you cloned without `--recurse-submodules`. Run
 
     make
     
