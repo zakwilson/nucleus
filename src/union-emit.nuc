@@ -1583,7 +1583,13 @@
   (let (bv:&Val (alloc-val ty-void "")
         bcur:ptr body)
     (while (> (node-len bcur) 0)
-      (set! bv (emit-node (node-first (unsafe/cast &Node bcur)) inner))
+      (let (form:ptr (node-first (unsafe/cast &Node bcur)))
+        ; TC-5 part 2, as emit-match-clauses does: target-type the tail form
+        ; against the armed want (nuc-iron-doom ISSUE-024).
+        (when (= (node-rest (unsafe/cast &Node bcur)) null)
+          (set! g-want-type want)
+          (set! form (union-target-rewrite form want)))
+        (set! bv (emit-node form inner)))
       (set! bcur (node-rest (unsafe/cast &Node bcur))))
     (emit-scope-cleanups inner)
     (when (= g-block-term 0)

@@ -691,3 +691,102 @@ missing key :sens for #user/Opt"))
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "2 2 1 3 12 4 5"))
     (drop &out)))
+
+; nuc-iron-doom ISSUE-006: the layout pre-scan runs before any macro expands.
+(deftest doom-macro-struct-as-field-type
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defmacro defpoint (nm) `(defstruct ~nm x:i32 y:i32))
+(defpoint Inner)
+(defstruct Outer (p Inner) (n i64))
+(defn mk (a:i32):Outer (return (Outer (Inner a 2) 40)))
+(defn main ():i32
+  (let (o (mk 7))
+    (printf \"%d %lld\\n\" ((ref o 'p) 'x) (+ (o 'n) ((ref o 'p) 'y))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 42"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-009: a deref or aref place target-types (some v) and none.
+(deftest doom-place-target-types-maybe
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (m:?i32 none p:&?i32 &m a:&?i32 (alloca ?i32 2))
+    (set! @p (some 4))
+    (set! (aref a 0) none)
+    (set! (aref a 1) (some 5))
+    (printf \"%d %d\" (unwrap-or m 0) (unwrap-or (aref a 1) 0))
+    (set! @p none)
+    (set! (aref a 1) none)
+    (printf \" %d %d\\n\" (unwrap-or m 0) (unwrap-or (aref a 1) 0)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "4 5 0 0"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-013: float `!=` is unordered, as in C, so NaN != NaN.
+(deftest doom-float-ne-unordered
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (z:f32 0.0 n (/ z z) d:f64 0.0 m (/ d d))
+    (printf \"%d %d %d %d %d\\n\" (!= n n) (= n n) (!= m m) (!= z z) (!= z 1.0)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 0 1 0 1"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-016: a union copied as an aggregate keeps every byte, even
+; where its largest-aligned member has padding.
+(deftest doom-union-copy-keeps-padding-bytes
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct V x:f32 y:f32)
+(defstruct E code:i32 n:i64)
+(defn f (v:V):(Result V E) (return (ok v)))
+(defn main ():i32
+  (match (f (V 1.0 -2.0))
+    ((ok w) (printf \"%g %g\\n\" (unsafe/cast f64 (w 'x)) (unsafe/cast f64 (w 'y))))
+    ((err e) (printf \"err\\n\")))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 -2"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-023: past 128 unions or 128 enums, a program still
+; compiles, and the last enum's members are still match patterns.
+(deftest doom-many-unions-and-enums
+  (let (h:String (str "(import-use \"stdio.h\")\n") i:i64 0)
+    (while (< i 300)
+      (str-into &h "(defunion U" i " (a) (b x:i32))\n(defenum E" i " E" i "-A E" i "-B)\n")
+      (set! i (+ i 1)))
+    (str-into &h "(defn f (e:i32):i32 (match e (E299-A (return 1)) (E299-B (return 2))))
+(defn g (u:U299):i32 (match u ((a) (return 0)) ((b x) (return x))))
+(defn main ():i32
+  (printf \"%d %d\\n\" (f E299-B) (g (U299-b 3)))
+  0)
+")
+    (let (out:String (try (build-run-source (string-as-view &h)))
+          ov:StrView (string-as-view &out))
+      (try (check-eq (strview-trim-end &ov) "2 3"))
+      (drop &out))
+    (drop &h)))
+
+; nuc-iron-doom ISSUE-024: a typed let's want reaches the arms of a match over
+; a pointer Maybe, so a bare `none` arm is typed.
+(deftest doom-niche-match-arm-target-typed
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct M player:?usize)
+(defn f (src:?&M):i32
+  (let (sp:?usize (match src ((some s) (s 'player)) ((none) none)))
+    (match sp ((some i) (return (unsafe/cast i32 i))) ((none) (return -1)))))
+(defn main ():i32
+  (let (m (M (some (as usize 3))))
+    (printf \"%d %d\\n\" (f (some &m)) (f none)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3 -1"))
+    (drop &out)))

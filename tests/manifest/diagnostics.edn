@@ -1450,6 +1450,10 @@
 {:name "doom-get-on-struct" :expect :reject
  :file "tests/fixtures/doom-get-on-struct.nuc" :line 3
  :messages ["get: no `get` method takes Pt -- `get` looks up a key; read a field with (field x 'f) or (x 'f)"]}
+; A field type the layout pre-scan deferred is still checked at emission (nuc-iron-doom ISSUE-006).
+{:name "doom-deferred-field-typo" :expect :reject
+ :file "tests/fixtures/doom-deferred-field-typo.nuc" :line 3
+ :messages ["unknown type: Innr (did you mean 'Inner'?)"]}
 ; `set!` on a Slice element whose `set` the file reaches only by prefix (nuc-doom ISSUE-049).
 {:name "doom-set-place-unimported" :expect :reject
  :file "tests/fixtures/doom-set-place-unimported.nuc" :line 4

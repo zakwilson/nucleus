@@ -378,7 +378,7 @@ are the same niche); for a
 **value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
 union from the prelude template. One spelling, two layouts. The value `(Maybe T)` is
 built with a union literal (`((Maybe i64) some 5)`, `(?i64 some 5)`) / target typing (bare `none` / `(some v)` resolve against a
-`(Maybe T)` return, typed binding, union-literal field or parameter) and eliminated with `match`
+`(Maybe T)` return, typed binding, union-literal field, parameter, or `set!` place) and eliminated with `match`
 (`((some v) …)` / `(none …)`), or with `if-some`/`when-some`/`unwrap-or`, which
 abbreviate that `match`. The pointer relabels (`some`/`none`/`as-ref` where no
 value `(Maybe T)` is wanted, and `unwrap`) stay pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
@@ -507,7 +507,7 @@ A `c"…"` literal — a `c` glued directly onto the opening quote, with no whit
 
 **`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `as` (or `unsafe/cast`) between `Char` and `ui32`/`i32` is a no-op reinterpret (`(as ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (as ui32 65))` is a compile error (`operand type mismatch`) — convert one side explicitly with `as`. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
 
-Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`, and C's hex form `0x1.921fb54442d18p+1`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
+Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`, and C's hex form `0x1.921fb54442d18p+1`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`). As in C, `!=` is the unordered comparison (`fcmp une`), so it is true when either operand is NaN, and `(!= x x)` tests for NaN; the other five are ordered and false on NaN.
 
 Integer literals are decimal or C hex: `255` and `0xFF` are the same value, and `0x` accepts either case in the prefix and the digits. There is no octal form — a leading zero is not significant, so `0644` is six hundred and forty-four.
 

@@ -118,9 +118,10 @@
 
 ; ============================================================
 ; Stage 10: untagged unions (design/stage10/unions.md §2). Anonymous and
-; memoized like (struct ...). LLVM has no union type, so a union lowers the
-; way clang does: a struct wrapping the largest-aligned member plus padding
-; to the full size. The IR type definition needs member sizes, and members
+; memoized like (struct ...). LLVM has no union type, so a union lowers to a
+; struct of integers as wide as its largest-aligned member's alignment,
+; covering its full size: unlike clang's member-plus-padding wrapper, it has
+; no padding for an aggregate copy to drop. The IR type definition needs member sizes, and members
 ; may name structs whose fields are registered later in the unit — so the
 ; definition text is deferred to drain-pending-union-irs, called at every
 ; module-assembly point (named types are order-independent in a module).
@@ -149,8 +150,8 @@
         (queue-type-line sd2)))
     (return (unsafe/cast &StructDef sd))))
 
-; The member a union's IR wrapper struct holds: the first member with maximal
-; alignment (clang's rule); remaining bytes become an i8 padding array.
+; The first member with maximal alignment (clang's rule), whose alignment
+; sets the width of the integers in the union's IR wrapper.
 (defn union-repr-member (sd:?&StructDef):i32
   (let (sdd:ptr:StructDef sd
         n:i32 (sdd 'num-fields)
@@ -190,10 +191,19 @@
           ; it cannot share emit-struct-type-line — only the brackets.
           op:StrView (if (!= (sdd 'packed) 0) "<{" "{")
           cl:StrView (if (!= (sdd 'packed) 0) "}>" "}"))
-      (if (> pad 0)
-        (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) ", [" pad
-              " x i8] " cl "\n\n")
-        (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) " " cl "\n\n")))))
+      ; A union is copied as a first-class aggregate, and LLVM keeps no padding
+      ; bytes across one, so a member stored in the repr member's padding was
+      ; lost (nuc-iron-doom ISSUE-016). Integers as wide as the repr member's
+      ; alignment have no padding and keep that alignment.
+      (let (ra:i32 (abi-alignof rt)
+            ew:i32 (if (and (= (sdd 'packed) 0) (> ra 0) (<= ra 16) (= (% total ra) 0)) ra 1))
+        (if (> total 0)
+          (emit g-type-stream "%" (sdd 'ir-name) " = type " op " [" (/ total ew) " x i" (* ew 8) "] "
+                cl "\n\n")
+          (if (> pad 0)
+            (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) ", [" pad
+                  " x i8] " cl "\n\n")
+            (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) " " cl "\n\n")))))))
 
 ; Is every by-value named-type field dependency of `sd` present in the module
 ; currently being assembled? A field lowers to a `%Name` reference only when its
@@ -528,6 +538,11 @@
   ; Stage 15 W1c: `unknown-type-message` (src/nucleusc.nuc) says plainly that
   ; the name is defined nowhere in the unit, and — for §2.7's reachability
   ; constraint, which W1 keeps — names the on-path file that does define it.
+  ; The layout prescan asks again at emission instead (`g-layout-probe`); the
+  ; placeholder is never laid out, because the deferred struct is abandoned.
+  (when (!= g-layout-probe 0)
+    (set! g-layout-defer 1)
+    (return ty-i32))
   (die-at line (unknown-type-message name))))
 
 ; The registered Type for a StructDef — TY-UNION when the def is an untagged

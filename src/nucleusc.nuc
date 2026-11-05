@@ -516,6 +516,10 @@
 ; frames down, inside `parse-type-from-node`, whose return type is a non-null
 ; `ref:Type`.
 (defvar g-layout-defer:i32 0)
+; Set while the layout prescan resolves a field's type. A type name a macro will
+; define is unknown until that macro's call is emitted (nuc-iron-doom ISSUE-006),
+; so the prescan defers the struct, through `g-layout-defer`, instead of dying.
+(defvar g-layout-probe:i32 0)
 ; Stage 15 W8 G-3: "this initializer may turn out not to be constant". Armed
 ; (save/set/restore) only around `defvar-const-init-ir`'s single classifying
 ; call into `defvar-init-ir`, where it turns that function's terminal
@@ -1838,7 +1842,9 @@
 ; by `defstruct-fill-layout` alone.
 (defn extract-decl-name-and-type-layout (node:?&Node out-name:&Symbol line:i32):?&Type
   (set! g-array-ok 3)
+  (set! g-layout-probe 1)
   (let (t:?&Type (extract-name-and-type node out-name line))
+    (set! g-layout-probe 0)
     (set! g-array-ok 0)
     (return t)))
 
@@ -4964,7 +4970,7 @@
                     "_/" "fdiv"
                     "%" "frem"
                     "=" "fcmp oeq"
-                    "!=" "fcmp one"
+                    "!=" "fcmp une"
                     "<" "fcmp olt"
                     "<=" "fcmp ole"
                     ">" "fcmp ogt"
@@ -7838,7 +7844,7 @@
           (die-at (cc 'line) "set!: (aref a i) place: index must be integer"))
         (let (idxp:StrView (gep-index-ir idx))
           (let (elem:?&Type ((p 'type) 'elem)
-                v:&Val (maybe-box-into-slot (emit-node-at cc 3 scope) elem scope (cc 'line))
+                v:&Val (maybe-box-into-slot (emit-place-value cc 3 elem scope) elem scope (cc 'line))
                 coerced:ptr (coerce-int-val v elem (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line) "set!: (aref a i) place: value type mismatch"))
@@ -8317,6 +8323,16 @@
         (emit-load tmp (type-to-ir elem) (p 'val) elem)
         (return (alloc-val elem tmp))))))
 
+; The value stored by `set!` into a place of type `ty`, emitted as the field and
+; binding places emit theirs: the want channel armed with `ty`, and a bare
+; `(some v)`/`none`/`(ok v)`/`(err e)` built against it (nuc-iron-doom ISSUE-009).
+(defn emit-place-value (call:&Node i:i32 ty:?&Type scope:&Scope):&Val
+  (let (save-want:ptr g-want-type)
+    (set! g-want-type ty)
+    (let (vv:&Val (emit-node-as call i (union-target-rewrite (node-at call i) ty) scope))
+      (set! g-want-type save-want)
+      (return vv))))
+
 (defn emit-ptr-set (call:&Node scope:&Scope):&Val
   (let (cc:&Node call)
     (when (!= (node-len cc) 3) (die-at (cc 'line) "set!: (deref p) place expects a value"))
@@ -8326,7 +8342,7 @@
         (die-at (cc 'line) "set!: (deref p) place: operand must be typed pointer"))
       (require-derefable (p 'type) (cc 'line) "set!")
       (let (elem:?&Type ((p 'type) 'elem)
-            v:&Val (maybe-box-into-slot (emit-node-at cc 2 scope) elem scope (cc 'line))
+            v:&Val (maybe-box-into-slot (emit-place-value cc 2 elem scope) elem scope (cc 'line))
             coerced:ptr (coerce-int-val v elem (cc 'line)))
         (when (= coerced null)
           (die-at (cc 'line) "set!: (deref p) place: value type mismatch"))
@@ -11700,6 +11716,9 @@
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds 'line) "let: binding list must be even"))
       (let (inner:&Scope (scope-new scope)
+            ; The want on entry, for the body tail: an untyped binding's init
+            ; inherits it and may consume it (nuc-iron-doom ISSUE-027).
+            entry-want:ptr g-want-type
             i:i32 0)
         (while (< i (node-len binds))
           (let (bname:ptr (node-at binds i)
@@ -11781,7 +11800,7 @@
         (let (last:&Val (alloc-val ty-void "")
               ; TC-5 part 2: re-arm the outer want for the body tail (a binding
               ; init or prior body form may have consumed it).
-              my-want:ptr g-want-type
+              my-want:ptr entry-want
               j:i32 2)
           (while (< j (node-len cc))
             (let (cur:ptr (node-at cc j))
@@ -11810,6 +11829,8 @@
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds 'line) "with: binding list must be even"))
       (let (inner:&Scope (scope-new scope)
+            ; As emit-let: the want on entry, for the body tail (ISSUE-027).
+            entry-want:ptr g-want-type
             i:i32 0)
         (while (< i (node-len binds))
           (let (bname:ptr (node-at binds i)
@@ -11931,7 +11952,7 @@
         ; of the binding list before the body emits it as an undefined name.
         (check-stray-typed-body (as ptr cc) inner "with")
         (let (last:&Val (alloc-val ty-void "")
-              my-want:ptr g-want-type
+              my-want:ptr entry-want
               j:i32 2)
           (while (< j (node-len cc))
             (let (cur:ptr (node-at cc j))

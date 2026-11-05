@@ -5534,3 +5534,20 @@ Test: `s16-dot-forms-retired` in `tests/suite-s16.nuc` covers the retired
 message and the reservation.
 
 Gate: 1676 pass, the same 5 suite-target fail. Bootstrap PASS.
+
+## Boot recovered from the pinned tag (2026-11-05)
+
+`BOOTSTRAP_REV` still named `boot-2026-10-13`, while the boot steps after it
+(the build tool, 8dc5644, 1b3e18f) were refreshed only in a local `boot/`. A
+fresh checkout could not build: the tag fails on HEAD at `unknown type: Loc`,
+and the prelude fails at `'bit-and' already names a function`.
+
+No source changed. Replaying history reached HEAD in four hops:
+tag → b7ab41e → 32f49f1 → cac7bac → cb17330. HEAD then self-compiled to a fixed
+point (the IR was identical on the first rebuild), and `boot/` was regenerated
+from it, Windows IRs included.
+
+Gate, run in a scratch copy with LLVM 23.1.6: `make bootstrap` PASS; 1677 pass,
+the same 5 suite-target fail. Still open: publish the new IR as a tag in
+nucleus-boot and bump `BOOTSTRAP_REV`. Until then a fresh checkout has this
+problem again.

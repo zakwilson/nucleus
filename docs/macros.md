@@ -735,6 +735,10 @@ after the pre-scans have already walked the file:
   `defn` produced by an expansion on line 90 cannot be called from a `defn`
   written on line 10. Ordinary definition order applies to it, not the
   file-wide visibility the pre-scans give hand-written ones.
+- A struct a macro produces **may be a by-value field** of a written `defstruct`
+  that is emitted after the expansion: below the call, or in a file importing
+  this one. The layout pre-scan leaves that `defstruct` to its own emission
+  instead of refusing the field type.
 
 Otherwise a macro-produced definition is registered exactly like a written one.
 The expansion's protocols, struct names, `defn` signatures and values are

@@ -9,21 +9,25 @@
 ; `gtk/gtk.h` alone brings in thousands — 1024 was "too many structs" for it.
 (import-use nucleus.vector)
 (import-use nucleus.string)
-(defconst MAX-STRUCTS 16384)
-(defconst MAX-CAST-RULES 256)
-; Stage 10 unions (design/stage10/unions.md)
-(defconst MAX-UNIONS 128)
-(defconst MAX-UNION-TEMPLATES 64)
+(defconst MAX-STRUCTS 32768)
+(defconst MAX-CAST-RULES 1024)
+; Stage 10 unions (design/stage10/unions.md). A guard on a Vector count, like
+; MAX-STRUCTS: every Maybe/Result instantiation takes a slot, and a game port
+; passed 128 (nuc-iron-doom ISSUE-023).
+(defconst MAX-UNIONS 32768)
+(defconst MAX-UNION-TEMPLATES 1024)
 ; Stage 11 parametric structs (design/stage11/parametric-structs.md §1)
-(defconst MAX-STRUCT-TEMPLATES 64)
+(defconst MAX-STRUCT-TEMPLATES 1024)
 ; Stage 16 type aliases (design/stage16-ergonomics/container-type-sugar.md §3)
-(defconst MAX-TYPE-ALIASES 128)
+(defconst MAX-TYPE-ALIASES 1024)
 ; §3.6: an alias body is expanded recursively, so a cycle would not terminate.
 ; A depth cap rather than a visited set — expansion is a plain recursive descent
 ; with nowhere natural to hang set state, and no honest chain is deep.
 (defconst MAX-TYPE-ALIAS-DEPTH 32)
-(defconst MAX-ENUMS 128)
-(defconst MAX-UNION-ARMS 64)
+; Also a guard on a Vector count; past it an enum's members stop being match
+; patterns (nuc-iron-doom ISSUE-023).
+(defconst MAX-ENUMS 32768)
+(defconst MAX-UNION-ARMS 256)
 ; Stage 10 errors (design/stage10/errors.md §8): global error-id cap. Ids are
 ; dense from 1 (0 reserved), so the descriptor table has MAX-DEFERRORS+1 slots.
 ; The cap keeps every id inside the top-page range A2's future ERR_PTR niche

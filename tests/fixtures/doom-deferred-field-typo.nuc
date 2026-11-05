@@ -1,0 +1,4 @@
+(defmacro defpoint (nm) `(defstruct ~nm x:i32 y:i32))
+(defpoint Inner)
+(defstruct Outer (p Innr))
+(defn main ():i32 0)
