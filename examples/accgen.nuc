@@ -1,0 +1,21 @@
+; Paul Graham's accumulator generator (https://paulgraham.com/accgen.html):
+; (defun foo (n) (lambda (i) (incf n i)))
+(import-use "stdio.h")
+(import-use nucleus.allocator)
+(import-only nucleus.numeric Num)
+
+; Generic, not (dyn Num): Num's methods take two Selfs, which erasure cannot pair.
+; vfn captures n by value, so the closure outlives accgen and set! updates its copy.
+(defn accgen (n:T :where (Num T)):(BoxedFn (T) T)
+  (return (vfn (i:T):T
+            (inc! n i)
+            (return n))))
+
+(defn main ():i32
+  (with (acc:(BoxedFn (i32) i32) (accgen 1)
+         facc:(BoxedFn (f64) f64) (accgen 1.5))
+    (acc 10)
+    (printf "%d\n" (acc 10))
+    (facc 2.25)
+    (printf "%g\n" (facc 2.25)))
+  (return 0))
