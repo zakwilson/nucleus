@@ -26,7 +26,7 @@ In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `al
 
 In a binding list the two readings alternate, as above: the name slot declares, the initializer slot casts.
 
-The conversion is exactly `as` (see [Implicit Type Coercion](#implicit-type-coercion) and the `as` form): widening is free, a narrowing or a reinterpretation is refused and routed to `unsafe/cast`, the pointer-kind flow rule applies (`p:ref:T` on an unchecked `ptr` is a laundering error, not a silent promotion), and a `defcast` rule extends the set. There is deliberately **no** sugar for `unsafe/cast`: the short spelling is the safe one.
+The conversion is exactly `as` (see [Implicit Type Coercion](#implicit-type-coercion) and the `as` form): widening is free, an integer narrowing is refused and routed to `as-checked` or `unsafe/cast`, a reinterpretation to `unsafe/cast`, the pointer-kind flow rule applies (`p:ref:T` on an unchecked `ptr` is a laundering error, not a silent promotion), and a `defcast` rule extends the set. There is deliberately **no** sugar for `unsafe/cast`: the short spelling is the safe one.
 
 Three limits follow from the spelling rather than the rule:
 
@@ -171,6 +171,7 @@ it and an alias may name another alias:
 ```lisp
 (deftype IntVec ref:(Vector i32))    ; colon-paren sugar in the body
 (deftype Tally  Count)               ; alias of an alias
+(deftype Op     (fn i32)(i32 i32))   ; a fn type's two groups, adjacent or spaced
 ```
 
 Everything else composes without special cases — the `?`/`!` sigils (`?PtRef`),

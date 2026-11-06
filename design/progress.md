@@ -5535,6 +5535,21 @@ message and the reservation.
 
 Gate: 1676 pass, the same 5 suite-target fail. Bootstrap PASS.
 
+## DOOM-port fix: `set!` through `deref` and `aref` target-types its value (2026-11-05)
+
+nuc-iron-doom ISSUE-009. `(set! @p (some 4))` with `p:&?i32` died with
+`some: value must be non-null`, and `(set! @p none)` with a type mismatch,
+though a field place and a named local build the arm against the place's
+type. The two `set!` paths over `deref` and `aref` emitted the value bare.
+
+- `emit-place-value` arms the want channel and applies
+  `union-target-rewrite` against the place's element type, as the field and
+  binding paths do; `emit-ptr-set` and the `aref` place both call it.
+
+Test: `doom-place-target-types-maybe` in `tests/suite-doom.nuc`.
+
+Gate: 1675 pass, the same 4 suite-build AVR failures. Bootstrap PASS.
+
 ## Boot recovered from the pinned tag (2026-11-05)
 
 `BOOTSTRAP_REV` still named `boot-2026-10-13`. Newer boots were on
@@ -5565,3 +5580,106 @@ showed that the pin had fallen behind. It is now a submodule of nucleus-boot.
 - The boot is rebuilt from 02e4429, whose union lowering changed the compiler's
   own IR. It differs from an Arch build only in glibc's spelling of types, plus
   one extra `declare`; sizes match.
+
+## Iron Doom rulings: 14 issues (2026-11-05)
+
+nuc-iron-doom's `ISSUES.md` rulings of 2026-11-05 that ask for a change. Everything
+here builds with the pinned boot, so no refresh is needed.
+
+- **ISSUE-001.** `(set! (m k… v))` over two or more keys is `(set m k… v)`
+  (`set-call-cell`).
+- **ISSUE-004, in part.** Delaying inference needs emission rollback, so it isn't
+  built. A `dotimes` index over a literal count that the body doesn't assign adapts
+  in an operator to an unsigned type holding count-1 (`Sym.index-bound`,
+  `index-adapts?`). A multimethod argument still sees `i32`.
+- **ISSUE-005, 010.** `as-slice`; `Slice` gets `empty?`, `SliceIter` and `iter`.
+  `Coll` loses `conj` to the new `(Growable E)`, so `Slice`, `ConstVec`, `ConstSet`
+  and `ConstMap` conform. `ns-conforms-own-type?` also reads template conformances.
+  The `qq-generic-ns` refusal lists deduplicated full names.
+- **ISSUE-007.** A struct-literal error on a designated reading says so
+  (`designated-note`).
+- **ISSUE-008.** A `defconst` value is macro-expanded, inside `(as T v)` too.
+- **ISSUE-012.** `ir-name-escape` maps `> < + * = % & | ^ ~` beside `?` and `!`;
+  `refactor.nuc`'s mirror follows.
+- **ISSUE-014.** `Vector` gets `push`, and `pop` returning `?T`.
+- **ISSUE-015.** `arg-literal-node`: a `defconst` for a literal adapts at dispatch.
+  An arithmetic operator refuses a struct with methods of its own when none match,
+  naming them (`operator-overloaded-struct?`).
+- **ISSUE-017.** `to-str` for every integer width, through `macmap`.
+- **ISSUE-018.** `deftype` takes a fn type's two groups, adjacent or spaced.
+- **ISSUE-019.** A struct literal that first binds a bare type variable binds the
+  value (`T = S`). `generic-instantiate-in` checks the stamped parameter types
+  again, since the memo keyed on the literal's `&S` misses that instance.
+- **ISSUE-020.** `(S v)` with `v` an `S` value copies, so `new` and `make` do.
+- **ISSUE-021.** `let` refuses a value in an `&T` slot; `with` keeps materializing.
+
+**A template `extend` is read as the file that wrote it.** `TmplConformance` records
+the extending file's `NameEnv`, used when an instance's stamp parses the protocol
+arguments. Without it, `(extend (ConstVec T) (Coll T (ConstIter T)))` failed in any
+file that hadn't imported `nucleus.const`.
+
+**ISSUE-011 is examined, not built:**
+[doom-port-fixes/toplevel-macro-parity.md](doom-port-fixes/toplevel-macro-parity.md).
+ISSUE-002 is deferred and ISSUE-003 is wontfix, as ruled.
+
+Tests: 11 `doom-*` in `tests/suite-doom.nuc`, 5 fixtures with manifest rows.
+`sm5-illegal-char` moved from `%`, now mapped, to `@`.
+
+Gate: stage2 and stage3 identical. 1700 pass, the same 5 suite-target fail. `make
+bootstrap` diffs boot-emitted IR against stage2, and gensym numbering now differs
+between them, so it won't pass until the next boot refresh. All of the ruled probes
+pass except ISSUE-011's.
+
+## Iron Doom rulings, second batch: 7 issues (2026-11-05)
+
+- **ISSUE-022.** `sum-arg-want` types a sum constructor from the one method the other
+  arguments leave, so `(conj &v none)` works on a `(Vector ?&P)`. `arg-literal-flag`
+  reads `none` as it reads `null`, for a niche `none` the rewrite leaves bare.
+- **ISSUE-025.** `derive-drop`, with `:except (f …)`, and `delete` in `nucleus.create`.
+- **ISSUE-026.** `arg-target-rewrite` descends the tails of
+  `if`/`cond`/`case`/`do`/`let`/`match`, on a copy (`node-with-at`).
+- **ISSUE-029, 030.** A method's identity includes nullability at every pointer level
+  (`params-key-eq`, `generic-find-method-key`), and so does its symbol
+  (`param-mangle-token`, `?&Q` is `qQ`). A call tries the key, then the old loose
+  match. A stamp only ever matches strictly, so `&Q` and `?&Q` are two instances.
+- **ISSUE-031.** `case` binds a form that isn't a name or literal once.
+- **ISSUE-032.** An integer narrowing's refusal names `as-checked` as well. The
+  constant-folded refusal keeps `unsafe/cast`, because its value is known not to fit.
+
+ISSUE-028 is deferred, as ruled. Tests: 6 `doom-*` in `tests/suite-doom.nuc`, one fixture.
+The ISSUE-032 probe was stale: `(as usize x)` from `i32` is accepted, since only a
+narrowing is refused. It now tests `(as i32 x)` from `usize`.
+
+Gate: stage2 and stage3 identical. 1707 pass, the same 5 suite-target fail. All of the ruled probes pass except ISSUE-011's.
+
+## ISSUE-011: top-level macro parity (2026-11-06)
+
+Ruled option D of [doom-port-fixes/toplevel-macro-parity.md](doom-port-fixes/toplevel-macro-parity.md),
+with no spelling rule, and option A deferred. Built MP-2 to MP-5.
+
+- **MP-2.** `late-prescan` runs the import and extend prescans too.
+- **MP-3.** `prescan-guarded` parks a form whose signature or value type is unknown,
+  with its `NameEnv`. `pending-retry` runs after each expansion and import, and
+  `pending-settle` reruns what's left, unprobed, once the file has nothing still to come.
+  `g-layout-probe` became `g-type-probe`, ISSUE-006's path now serving every prescan.
+- **MP-4.** In the dispatch loop, a form above the last macro call or import waits unless
+  `MacroReach` says a macro can reach it, and returns after that call. Unfinishable
+  `defvar`s, `defstruct`s, `defunion`s and concrete `extend`s wait too. Every program's
+  emission order changes here, and the fixpoint and suite hold.
+- **No spelling rule.** A template's undeclared variable that an expansion defines as a
+  type sends the template back through the prescan (`implicit-templates-recheck`).
+- **A probe no longer stamps what it can't finish** (`template-body-known?`). This also
+  closes a silent wrong layout the ISSUE-006 probe could have produced.
+- **MP-5.** `tests/suite-macro-parity.nuc`: 12 tests, most rows compiled written and
+  through a macro. Two tests changed meaning: `w9-layout-macro-reaches-a-body-above-its-import`
+  now compiles, and `s24-conforms-late` asks from a top-level macro, since `main`'s body
+  now runs after the extend.
+
+`rl1-run-repl-runs-main` and `bt11-charge-shaped-build-run-repl` flaked because the prompt
+can share a line with `main returned N`, and an exact-line grep refused that. Both greps
+are loosened.
+
+A protocol's method is now refused as a qualified binder, as a `defn`'s name is. Spelled
+bare in a template, a name its file defines used to surface as "does not conform".
+
+Gate: stage2 and stage3 identical. 1720 pass, the same 5 suite-target fail. Every ruled probe passes. Of the 44 forms in §1's matrix that compile as written, 42 compile through a macro as written; the other two need `~'val` for a protocol method, and now say so. `make bootstrap` still waits for a boot refresh.

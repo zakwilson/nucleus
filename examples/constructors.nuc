@@ -26,7 +26,8 @@
       (printf "alloc-vector count=%d\n" (unsafe/cast i32 (count v2)))))
 
   ; 3. HashMap.
-  (let (m:&(HashMap CStr i32) (make (HashMap CStr i32)))
+  (let (held (make (HashMap CStr i32))
+        m:&(HashMap CStr i32) &held)
     (assoc m "alpha" 1)
     (assoc m "beta" 2)
     (printf "hashmap count=%d\n" (unsafe/cast i32 (count m))))

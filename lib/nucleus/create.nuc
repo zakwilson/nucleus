@@ -4,6 +4,8 @@
 ;   (new T a args…)   ; → &T, the object's own bytes from allocator a
 ;   (make T a args…)  ; → T by value; storage it owns comes from a
 ;   (make T)          ; (make T heap)
+;   (delete p a)      ; drops *p if its type is Drop, then gives its bytes back to a
+;   (derive-drop T)   ; a field-wise Drop for struct T
 ;
 ; A type that conforms to `Init` (or to `InitFrom`/`TryInitFrom`, which extend
 ; it) is initialized with `(init p (handle a) args…)`; any other type is built
@@ -79,3 +81,44 @@
         true
           `(let ((~h Alloc) (handle ~a) ~@slot)
              (__init-then (nucleus.allocator/init ~p ~h ~v) (deref ~p)))))))
+
+(defmacro __drop-if (t p)
+  (if (conforms? t Drop) `(drop ~p) `0))
+
+(defn delete-in (h:Alloc p:&T :where (Any T)):void
+  (__drop-if T p)
+  (deallocate &h (unsafe/cast ?&ui8 p) (as usize (sizeof T)) (as usize (alignof T))))
+
+; `new`'s other half. `a` is the allocator the object came from.
+(defmacro delete (p a)
+  `(delete-in (handle ~a) ~p))
+
+; A `drop` that drops each field whose type is Drop, in declaration order. A shallow
+; copy shares its buffers, so `:except (f …)` names the fields this struct doesn't own.
+(defmacro derive-drop (t :rest opts)
+  (let (fields (struct-fields t)
+        nopts:i32 (ast-len opts)
+        except (ast-at opts 1)
+        self (gensym)
+        (body ?&Node) null)
+    (when (or (= nopts 1) (> nopts 2)
+              (and (= nopts 2) (!= (as ptr (((ast-at opts 0) 's) 'p)) (as ptr (('except 's) 'p)))))
+      (macro-error t "derive-drop: expected (derive-drop T) or (derive-drop T :except (field ...))"))
+    (dotimes (e (ast-len except))
+      (let (name (ast-at except e)
+            known:bool false)
+        (dotimes (i (ast-len fields))
+          (when (= (ast-at (ast-at fields i) 0) name) (set! known true)))
+        (when (not known) (macro-error name "derive-drop: :except names no field of this struct"))))
+    (dotimes (i (ast-len fields))
+      (let (f (ast-at fields i)
+            name (ast-at f 0)
+            ftype (ast-at f 1)
+            skip:bool false)
+        (dotimes (e (ast-len except))
+          (when (= (ast-at except e) name) (set! skip true)))
+        (when (and (not skip) (conforms? ftype Drop))
+          (set! body `(~@body (drop (ref ~self '~name)))))))
+    `(do
+       (defn ~'drop ((~self (ref ~t))) :void ~@body)
+       (extend ~t Drop))))

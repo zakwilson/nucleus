@@ -1,0 +1,6 @@
+; A template's protocol method is a binder, and `val` is a name this file defines.
+(defmacro gen () `(defprotocol Pr (val (s:&Self):i32)))
+(defstruct Q (x i32))
+(defn val (s:&Q):i32 (return (s 'x)))
+(gen)
+(defn main ():i32 (return 0))

@@ -1,0 +1,5 @@
+(defstruct P x:i32)
+(defn get-p ():P (return (P 1)))
+(defn main ():i32
+  (let (p:&P (get-p))
+    (return (p 'x))))

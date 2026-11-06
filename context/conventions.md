@@ -1389,12 +1389,13 @@ Three things to keep in mind if you touch this:
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols — in EVERY name position, not just the exported ones
 
 A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)
-— `ir-name-token` (`src/format.nuc`) maps each `?`→`_QMARK` and each `!`→`_BANG`
-in the emitted LLVM symbol (`@full_QMARK`, `%Full_QMARK`), applied at the
+— `ir-name-token` (`src/format.nuc`) maps each through `ir-name-escape`, so
+`?`→`_QMARK` and `!`→`_BANG` (`>`, `<`, `+` and the rest likewise; keep
+`rg-ir-escape` in `lib/nucleus/refactor.nuc` in step) in the emitted LLVM symbol (`@full_QMARK`, `%Full_QMARK`), applied at the
 base-token layer shared by every ir-name derivation site (solitary/overloaded
 `defn`, `defvar`/`extern` globals, `.nuch` import, REPL, struct/union type
-names — see the `StructDef.name`/`.ir-name` note below); every other
-character, hyphens included, is untouched. A residual illegal character
+names — see the `StructDef.name`/`.ir-name` note below); hyphens and everything
+else are untouched. A residual illegal character
 (anything outside `[A-Za-z0-9$._-]`) is caught at define/declare emission with
 a clean source-level diagnostic (`check-ir-name-legal`, `src/abi.nuc`) instead
 of a raw LLVM parse error.
@@ -2026,6 +2027,8 @@ and that is load-bearing, not a simplification: without it a collection that
 defines `set` can no longer write its own fields — `(set! (self 'data) null)`
 inside `Vector`'s `drop` dispatches back into the `set` method. The read side is
 the same rule: a literal field name outranks `invoke` in head position.
+A place with two or more keys, `(set! (grid x y) v)`, has no field reading, so it
+becomes `(set grid x y v)` with literal keys too.
 
 Two consequences worth knowing:
 
@@ -2525,6 +2528,9 @@ Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in
 
 - **Nothing else moved.** Because expansion is attempted only where the old code died, every built-in form still wins its own name, and a program that never wrote a top-level macro call emits the same bytes. This is the property that made the change safe to land inside a phase; do not "simplify" it by expanding before the `case`.
 - **The file prescans never see the result, so `late-prescan` replays them on the splice.** `toplevel-expand-macro` (and a top-level `macrolet` body) runs `prescan-protocols` → `prescan-struct-names` → `prescan-defn-signatures` → `prescan-value-names` over the spliced forms before dispatching them (Stage 22 ED-4.1, `design/stage22-edn/macro-definitions.md`). Without it, a macro-produced `defn` is no method at all: it took `emit-defn`'s fallback `@name` binding, shadowing a written overload, and a macro-produced template returned early and vanished. A macro-produced definition is still not forward-referenceable. Expanding ahead of the prescans would fix that, but it needs `defmacro` bodies JIT-compiled before the helpers they call are emitted (deferred, stage18-tooling §T9.7).
+- **`late-prescan` also runs the import and extend prescans, then settles what waits.** A form a prescan can't resolve parks on `g-pending` through `prescan-guarded`, with its `NameEnv`, and `pending-retry` runs after each expansion and import. `pending-settle` reruns the file's parked forms with the probe off once nothing is left to come, which is where they die. A per-form prescan must not register anything once `g-layout-defer` is set: the placeholder type is `i32`.
+- **The dispatch loop defers forms, so emission isn't in file order.** Forms above the last macro call or import go to `waiting` unless `MacroReach` says a macro can reach them, and come back at `toplevel-reinsert`. A `.nuch` writer rewalks the same list, so `g-waited-slot` holds the place and the reinsert closes it. Any new per-position state in that loop has to survive a defn dispatched later. `TOPLEVEL-HEADS` must list every head the loop dispatches itself: a head missing from it reads as a macro call and only costs precision, but a new top-level form with an implicit callee needs adding to `REACH-IMPLICIT`.
+- **Nothing is stamped under the probe unless it can finish.** An instance is memoized, so a placeholder field would outlive the probe. `template-body-known?` asks first.
 - **A late registration must never rename an emitted symbol.** `generic-add-method` clears `finalized`, so `finalize-generics` re-derives every method's `ir-name` — safe in the prescan, wrong once a call to the old name is already in the IR. Under `g-late-prescan`, `late-renamable?` keeps any method that already has an `ir-name`, and `generic-unbind-solitary` hides the solitary binding when the name becomes registry-dispatched. A method's symbol can therefore depend on source order; headers stay right only because they ask the registry (`defn-form-mangled-name`), never re-derive.
 - **After a leading `(ns …)` the loop walks a different list header.** `apply-leading-ns` returns a `node-rest` view, and `node-splice-at` gives that view a fresh array, so a `(do …)` splice never reaches the caller's list. The header writers read `g-root-forms` (the walked list) for that reason; anything else that reads the unit's forms after compilation must do the same.
 
@@ -7593,7 +7599,7 @@ stateful `lib/` global the compiler links is shared automatically; a lib
 
 `user` is flattened into every file, so a user `defn init` joins a lib file's
 view of `init`, and hygiene's search for one namespace reaching every method
-fails ("names 'init', whose methods here come from namespaces 'user', …"). Write
+fails ("names 'init', and no one namespace reaches all its methods here"). Write
 the protocol's namespace in the template — `nucleus.allocator/init` (fmt's
 `str`, create's `create-form`) — which reaches every conformer and nothing else.
 Lib modules do not import `nucleus.create` (the bare-name claim above); they
@@ -7764,3 +7770,56 @@ new argv read fails `make test`. `argv-view` in `src/nucleusc.nuc` is the one se
 `fstr` and `emit` are compiler internals (`g-emit-buf`, the arena); a library file
 that calls one compiles inside the compiler but fails standalone, e.g. in the
 suite's `--emit-cheader` step. Build text in `lib/` with `String` and `str`, then `drop`.
+
+## `Coll` no longer has `conj`; a template `extend` is read as the file that wrote it
+
+`Coll` is `count`/`empty?`/`iter`, so `Slice` and the `Const` collections conform;
+`conj` moved to `(Growable E)`. A bounded generic that calls `conj` needs both bounds.
+
+A template conformance's protocol arguments are parsed at each instance's stamp,
+in whichever file requested the instance. `TmplConformance` therefore records the
+extending file's `NameEnv`, and `tmpl-conformance-check-one-in` parses under it with
+the instance's spellings passed through `spelling-as-key`. Without that, a `ConstIter`
+the `extend` names unqualified is `unknown type` in a file that never imported it.
+
+## Reading a `defconst` as a literal: int and float constants live in different fields
+
+An integer `defconst` has `const-lit`/`const-lit-i64` and a null `const-node`; only a
+non-integer one has `const-node`. `arg-literal-node` mints a NODE-INT for the former,
+so a check of `const-node`'s kind alone sees floats and misses every integer.
+
+## A `let` typed `&T` refuses a `T` value; `with` still materializes it
+
+`tc3-emit-binding-init` takes `refuse`: `let` passes 1, `with` passes 0, because
+`with`'s binding owns the temporary it drops. Only a struct literal fills a `let`'s
+`&S` slot. A call result needs a value binding and `&name`.
+
+## `__index-init` marks a `dotimes` index
+
+`dotimes` writes `(let (i (__index-init n)) …)`. The boot sees an ordinary macro
+expanding to `(* n 0)`, so the prelude needs no refresh; `emit-let` recognizes the
+name and records `Sym.index-bound`. Renaming it means changing both sides at once.
+
+## A method's identity includes nullability; dispatch falls back without it
+
+`type-eq` ignores pointer kind, and most of the compiler wants that. A method's key
+doesn't: `params-key-eq` adds nullability at every pointer level, so `f(?&Q)` and
+`f(&Q)` are two methods and `(ptr &Q)`/`(ptr ?&Q)` two instances, and
+`param-mangle-token` writes `q` for each `?`. Definition-side lookups use
+`generic-find-method-key`. A call tries the key, then loose `params-type-eq`, then the
+implicit address-of (`params-accept-args`).
+
+**A stamp matches strictly in every pass.** Its parameters are its template's answer
+for exactly its own arguments, so a loose pass that takes a stamp hands `(Slice &Q)`
+to a `(ptr ?&Q)` call. A written method keeps the loose match: `emit-all`'s
+`(?&String, &String)` takes `(&String, String)` that way, through both the fallback
+and the address-of.
+
+## `arg-target-rewrite` copies; it never writes into a form
+
+Sum constructors in an argument's tails are rewritten on a copy (`node-with-at`),
+because a stamped body and a `node-type` probe re-read the same nodes. `sum-arg-want`
+asks `literal-arg-candidate` for the one method the other arguments leave. A niche
+`none` stays a bare `none`, so `arg-literal-flag` treats it as `null`: that's what lets
+tier 2 take `(conj &v none)` when the rewrite has nothing to do.
+

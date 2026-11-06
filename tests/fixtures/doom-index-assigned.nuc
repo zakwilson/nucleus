@@ -1,0 +1,6 @@
+(defn main ():i32
+  (let (base:usize 1)
+    (dotimes (i 8)
+      (set! i 9)
+      (set! base (+ base i)))
+    (return 0)))

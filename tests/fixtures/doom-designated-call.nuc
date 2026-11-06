@@ -1,0 +1,6 @@
+(defstruct Inner a:i32)
+(defstruct Outer n:i32 inner:Inner)
+(defn inner (x:i32):Inner (return (Inner x)))
+(defn main ():i32
+  (let (o:Outer (Outer 1 (inner 2)))
+    (return 0)))

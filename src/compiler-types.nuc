@@ -9,6 +9,7 @@
 ; `gtk/gtk.h` alone brings in thousands — 1024 was "too many structs" for it.
 (import-use nucleus.vector)
 (import-use nucleus.string)
+(import-use nucleus.hashmap)
 (defconst MAX-STRUCTS 32768)
 (defconst MAX-CAST-RULES 1024)
 ; Stage 10 unions (design/stage10/unions.md). A guard on a Vector count, like
@@ -584,6 +585,9 @@
   (const-node ?&Node)
   ; An annotated `defconst` has its annotation's type and never adapts.
   const-annot:i32
+  ; A `dotimes` index over a literal count, this count: it stays in 0..count, so
+  ; it can meet an unsigned operand (index-adapts?).
+  index-bound:i64
   tracker:ptr
   ; --- Stage 8 / REPL introspection additions ---
   src-file:Symbol     ; source file where defined (null if unknown)
@@ -1057,6 +1061,31 @@
   tkey:Symbol
   pkey:Symbol)
 
+; A top-level form a prescan could not settle yet: a later macro call or import may
+; define what it names (design/doom-port-fixes/toplevel-macro-parity.md).
+(defstruct PendingForm
+  form:&Node
+  pass:i32
+  ns:Symbol
+  path:Symbol
+  (imports ?&ImportVec)
+  line:i32)
+
+; A template with a type variable no `:where` declared. Such a name is a variable
+; only until something defines it as a type, and `first` is where those names start.
+(defstruct ImplicitTemplate
+  g:&Generic
+  m:&Method
+  first:i32
+  live:bool)
+
+; What a file's macros can reach: its defn and defvar forms by name, the names
+; reached so far, and the forms still to walk.
+(defstruct MacroReach
+  defs:&(HashMap Symbol &Node)
+  hit:&(HashMap Symbol i32)
+  work:&(Vector &Node))
+
 ; A written `extend` to a shape protocol, read before any signature, so `(Const C)`
 ; resolves above it (design/stage25-const-literals/overview.md §4.2).
 (defstruct ShapeExtend
@@ -1105,6 +1134,10 @@
   ; mirroring Method; null for a :where-free extend (num-constraints = 0).
   constraints:?&ConstraintVec
   num-constraints:i32   ; 0 for a :where-free extend
+  ; The extend's text is read as the file that wrote it, at any instance's stamp.
+  src-ns:Symbol
+  src-file:Symbol
+  src-imports:?&ImportVec
   ptr-depth:i32)        ; pointers over the template in the subject (`&(Vector T)`)
 
 ; An instance's template conformance that waits on a `:where` constraint: a later

@@ -1,0 +1,4 @@
+(defn main ():i32
+  (let (b:ui8 1)
+    (dotimes (i 300) (set! b (+ b i)))
+    (return 0)))

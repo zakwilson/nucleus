@@ -55,6 +55,7 @@
 (import-use suite-refactor)
 (import-use suite-build)
 (import-use suite-doom)
+(import-use suite-macro-parity)
 (import-use nucleus.intern)
 (import-use nucleus.coll) (import-use nucleus.create)
 

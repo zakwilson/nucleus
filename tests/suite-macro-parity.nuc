@@ -1,0 +1,241 @@
+; Anything possible at the top level is possible in a top-level expansion
+; (design/doom-port-fixes/toplevel-macro-parity.md). Each row is compiled twice,
+; with the form written and from a macro call in the same place.
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.file)
+
+(defn parity-check (above:StrView form:StrView below:StrView):!void
+  (let (direct:String (str above "\n" form "\n" below "\n")
+        through:String (str above "\n(defmacro gen () (quote " form "))\n(gen)\n" below "\n"))
+    (try (check-source-exit (string-as-view &direct) 0))
+    (try (check-source-exit (string-as-view &through) 0))
+    (drop &through)
+    (drop &direct))
+  (return (ok)))
+
+(defconst P-FOO "(defstruct Foo (x i32))")
+(defconst P-FN "(defn f (p:&Foo):i32 (return (p 'x)))
+(defn main ():i32 (let (a (Foo 0)) (return (f &a))))")
+
+(deftest parity-type-above-its-uses
+  (try (parity-check "" P-FOO P-FN))
+  (try (parity-check "" P-FOO "(defn f ():Foo (return (Foo 0)))
+(defn main ():i32 (let (a (f)) (return (a 'x))))"))
+  (try (parity-check "" P-FOO "(defn f ():!Foo (return (ok (Foo 0))))
+(defn main ():i32 (match (f) ((ok a) (return (a 'x))) ((err e) (return 1))))"))
+  (try (parity-check "(import-use nucleus.vector)" P-FOO
+                     "(defvar v:(ptr (Vector Foo)) null)
+(defn f (p:&(Vector Foo)):usize (return (count p)))
+(defn main ():i32 (when-some (q (as ?&(Vector Foo) v)) (return (unsafe/cast i32 (f q)))) (return 0))"))
+  (try (parity-check "" "(defstruct (Bx T) (v T))"
+                     "(defn f (b:(Bx i32)):i32 (return (b 'v)))
+(defn main ():i32 (return (f ((Bx i32) 0))))"))
+  (try (parity-check "" "(defunion Sh (Ci r:i32) Dot)"
+                     "(defn f (s:Sh):i32 (match s ((Ci r) (return r)) (Dot (return 1))))
+(defn main ():i32 (return (f (Sh-Ci 0))))"))
+  (try (parity-check "" "(defunion (Mb T) (Jst v:T) Nthg)"
+                     "(defn f (m:(Mb i32)):i32 (match m ((Jst v) (return v)) (Nthg (return 1))))
+(defn main ():i32 (return (f ((Mb i32) Jst 0))))"))
+  (try (parity-check "" "(deftype Fx i32)"
+                     "(defn f (x:Fx):Fx (return x))
+(defn main ():i32 (return (f 0)))"))
+  (try (parity-check "" "(deftype Op (fn i32)(i32))"
+                     "(defn id (x:i32):i32 (return x))
+(defn f (o:Op):i32 (return (o 0)))
+(defn main ():i32 (return (f id)))"))
+  (try (parity-check "" P-FOO "(defvar g:Foo (Foo 0))
+(defn main ():i32 (return (g 'x)))"))
+  (return (ok)))
+
+(deftest parity-type-below-its-uses
+  (try (parity-check P-FN P-FOO ""))
+  (try (parity-check "(defvar g:Foo (Foo 0))
+(defn main ():i32 (return (g 'x)))" P-FOO ""))
+  (try (parity-check "(defstruct A (b B))
+(defn main ():i32 (let (a (A (B 0))) (return ((a 'b) 'x))))" "(defstruct B (x i32))" ""))
+  (try (parity-check "(defstruct A (b B))
+(defstruct B (c C))
+(defn main ():i32 (let (a (A (B (C 0)))) (return (((a 'b) 'c) 'x))))" "(defstruct C (x i32))" ""))
+  (try (parity-check "(defunion U (Hv f:Foo) Nv)
+(defn main ():i32 (return 0))" P-FOO ""))
+  (try (parity-check "(import-use nucleus.vector)
+(defn f (p:&(Vector Foo)):usize (return (count p)))
+(defn main ():i32 (return 0))" P-FOO ""))
+  (return (ok)))
+
+; An instance prescanned before its field's type exists is stamped once that type does.
+(deftest parity-template-field-below
+  (try (parity-check "(defstruct (Bx T) (v T) (f Foo))
+(defn f (b:&(Bx i32)):i64 (return ((b 'f) 'z)))
+(defn main ():i32
+  (let (b ((Bx i32) 1 (Foo 2 3 42)))
+    (when (!= (sizeof (Bx i32)) 32) (return 1))
+    (return (unsafe/cast i32 (- (f &b) 42)))))" "(defstruct Foo (x i64) (y i64) (z i64))" ""))
+  (try (parity-check "(defunion (Mb T) (Jst v:T w:Foo) Nthg)
+(defn f (m:&(Mb i32)):i64 (match @m ((Jst v w) (return (w 'z))) (Nthg (return 0))))
+(defn main ():i32 (return 0))" "(defstruct Foo (x i64) (y i64) (z i64))" ""))
+  (return (ok)))
+
+(deftest parity-names-used-above-the-call
+  (try (parity-check "(defn main ():i32 (return (z)))" "(defn z ():i32 (return 0))" ""))
+  (try (parity-check "(defn main ():i32 (return (idt 0)))"
+                     "(defn idt (x:T :where (Any T)):T (return x))" ""))
+  (try (parity-check "(defn main ():i32 (return gg))" "(defvar gg:i32 0)" ""))
+  (try (parity-check "(defn main ():i32 (return N))" "(defconst N 0)" ""))
+  (try (parity-check "(defn main ():i32 (return (as i32 Red)))" "(defenum Color Red Blue)" ""))
+  (return (ok)))
+
+(deftest parity-imports
+  (try (parity-check "" "(import-use nucleus.vector)"
+                     "(defn f (v:&(Vector i32)):usize (return (count v)))
+(defn main ():i32 (return 0))"))
+  (try (parity-check "" "(import-prefixed nucleus.vector v)"
+                     "(defn f (x:&(v/Vector i32)):usize (return (v/count x)))
+(defn main ():i32 (return 0))"))
+  (return (ok)))
+
+(defconst P-WHERE "(defn g (t:&T :where (Pr T)):i32 (return (val t)))
+(defn main ():i32 (let (q (Q 0)) (return (g &q))))")
+
+(deftest parity-protocols
+  (let (below:String (str "(defstruct Q (x i32))
+(defn val (s:&Q):i32 (return (s 'x)))
+(extend Q Pr)
+" P-WHERE)
+        above:String (str "(defprotocol Pr (val (s:&Self):i32))
+(defstruct Q (x i32))
+(defn val (s:&Q):i32 (return (s 'x)))
+" P-WHERE))
+    (try (parity-check "" "(defprotocol Pr (val (s:&Self):i32))" (string-as-view &below)))
+    (try (parity-check (string-as-view &above) "(extend Q Pr)" ""))
+    (try (parity-check "(defprotocol Pr (val (s:&Self):i32))
+(defstruct Q (x i32))
+(extend Q Pr)
+(defn main ():i32 (return 0))" "(defn val (s:&Q):i32 (return (s 'x)))" ""))
+    (drop &above)
+    (drop &below))
+  (return (ok)))
+
+; One expansion's body calls what the next expansion defines.
+(deftest parity-expansions-see-each-other
+  (try (check-source-exit "(defmacro g1 () `(defn ~'a ():i32 (return (~'b))))
+(defmacro g2 () `(defn ~'b ():i32 (return 0)))
+(g1)
+(g2)
+(defn main ():i32 (return (a)))
+" 0))
+  (return (ok)))
+
+; ISSUE-011: a name read as a type variable becomes the type a macro defines, and a
+; name nothing defines stays a variable.
+(deftest parity-implicit-variable-settles
+  (try (check-source-exit "(defmacro defpoint (nm) `(defstruct ~nm x:i32 y:i32))
+(defpoint Point)
+(defn origin ():!Point (return (ok (Point 0 0))))
+(defn main ():i32
+  (match (origin) ((ok p) (return (p 'x))) ((err e) (return 1))))
+" 0))
+  (try (check-source-exit "(import-use nucleus.vector)
+(defn size (v:&(Vector Item)):usize (return (count v)))
+(defvar v:(Vector i32) [1 2])
+(defn main ():i32 (return (unsafe/cast i32 (size &v))))
+" 2))
+  (return (ok)))
+
+; What a macro runs is emitted where it stands, through helpers, an operator and a
+; macro an expansion defines.
+(deftest parity-macros-keep-their-callees
+  ; Two forms wait, an expansion releases one, and the other still comes back.
+  (try (check-source-exit "(import-use nucleus.node)
+(defn a ():i32 (return (later)))
+(defn h ():&Node (return (unsafe/cast &Node `0)))
+(defn b ():i32 (return (later)))
+(defmacro gen () `(defmacro ~'m2 () (h)))
+(gen)
+(defmacro gen3 () `(defn ~'later ():i32 (return 0)))
+(gen3)
+(defn main ():i32 (return (+ (a) (+ (b) (m2)))))
+" 0))
+  (try (check-source-exit "(defn h ():i32 (return 7))
+(defn j ():i32 (return (h)))
+(defmacro m () (if (= (j) 7) `0 `1))
+(defmacro gen () `(defn ~'k ():i32 (return (m))))
+(gen)
+(defn main ():i32 (return (k)))
+" 0))
+  (try (check-source-exit "(defstruct Q (x i32))
+(defn _+ (a:Q b:Q):Q (return (Q (+ (a 'x) (b 'x)))))
+(defmacro m () (let (q:Q (+ (Q 1) (Q 2))) (if (= (q 'x) 3) `0 `1)))
+(defmacro gen () `(defn ~'k ():i32 (return (m))))
+(gen)
+(defn main ():i32 (return (k)))
+" 0))
+  (try (check-source-exit "(import-use nucleus.node)
+(defn h ():&Node (return (unsafe/cast &Node `0)))
+(defmacro gen () `(defmacro ~'m2 () (h)))
+(gen)
+(defn main ():i32 (return (m2)))
+(defmacro gen3 () `(defconst ~'Z 1))
+(gen3)
+" 0))
+  (return (ok)))
+
+; A compile-time block names what it runs, so that stays where it stands too.
+(deftest parity-compile-time-keeps-its-callees
+  (try (check-source-exit "(import-use \"stdio.h\")
+(defn h ():i32 (return 0))
+(compile-time (h))
+(defmacro gen3 () `(defconst ~'Z 1))
+(gen3)
+(defn main ():i32 (return (h)))
+" 0))
+  (return (ok)))
+
+; Across files: a macro's definitions reach a signature in the importer, a body above
+; the import, and a form in the same file that was only prescanned.
+(deftest parity-across-files
+  (let (dir:String (try (test-scratch-sub "lib"))
+        lib:String (try (test-write-file "lib/pgen.nuc" "(defmacro gen () (quote (do (defstruct Foo (x i32))
+  (defn mk ():Foo (return (Foo 0))))))
+(defn zero (a:Foo):i32 (return (a 'x)))
+(defn checked ():!Foo (return (ok (mk))))
+(gen)
+"))
+        a:String (try (test-write-file "a.nuc" "(import-use pgen)
+(defn f (p:&Foo):i32 (return (p 'x)))
+(defn main ():i32
+  (let (a (mk))
+    (match (checked) ((ok c) (return (+ (f &a) (zero c)))) ((err e) (return 1)))))
+"))
+        b:String (try (test-write-file "b.nuc" "(defn main ():i32 (let (a (mk)) (return (zero a))))
+(import-use pgen)
+")))
+    (try (check-file-exit (string-as-view &dir) (string-as-view &a) 0))
+    (try (check-file-exit (string-as-view &dir) (string-as-view &b) 0))
+    (drop &b)
+    (drop &a)
+    (drop &lib)
+    (drop &dir))
+  (return (ok)))
+
+; Waiting changes when a mistake is seen, not what it says.
+(deftest parity-unknown-names-still-die
+  (try (check-source-rejects "(defn main ():i32 (return (later 1)))
+(defn unused (x:Nope):i32 (return 0))
+(defmacro gen () `(defn ~'later (x:i32):i32 (return x)))
+(gen)
+" "unknown type: Nope"))
+  (try (check-source-rejects "(defvar g:Nope)
+(defmacro gen () `(defconst ~'Z 1))
+(gen)
+(defn main ():i32 (return 0))
+" "unknown type: Nope"))
+  (try (check-source-rejects "(defn main ():i32 (return (never)))
+(defmacro gen () `(defconst ~'Z 1))
+(gen)
+" "unknown: never"))
+  (return (ok)))

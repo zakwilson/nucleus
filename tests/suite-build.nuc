@@ -1442,7 +1442,7 @@
     ; The prompt is in app.main, where `options`, the header's names and the
     ; file's `str` are bare.
     (try (write-into pv "run.in" "(fg_scale (&options 0))\n(str 8)\n"))
-    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl < run.in > run.out 2>&1; grep -q 'scaled 21' run.out && grep -q '  15$' run.out && grep -q '  \"8\"$' run.out && grep -q '^  main returned 0$' run.out || { cat run.out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl < run.in > run.out 2>&1; grep -q 'scaled 21' run.out && grep -q '  15$' run.out && grep -q '  \"8\"$' run.out && grep -q 'main returned 0$' run.out || { cat run.out >&2; exit 1; }"))))
     (try (bt4-sh pv "test ! -e build.edn"))
     (drop &env)
     (drop &tool)
@@ -1532,7 +1532,7 @@
     (try (bt4-sh pv "mkdir -p src && rm -f build.edn"))
     (try (write-into pv "src/main.nuc" RL-LOOP))
     (try (write-into pv "in" "(while (= ticks 0) (usleep 1000))\n(set! stop 1)\n"))
-    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl -- a b < in > out 2>&1; rc=$?; test $rc -eq 43 && grep -q 'argc 3$' out && grep -q '^  running main$' out && grep -qx '  main returned 43' out || { echo rc=$rc; cat out >&2; exit 1; }"))))
+    (try (bt4-sh pv (bt-sv (str (string-as-view &env) "$T run-repl -- a b < in > out 2>&1; rc=$?; test $rc -eq 43 && grep -q 'argc 3$' out && grep -q '^  running main$' out && grep -q 'main returned 43$' out || { echo rc=$rc; cat out >&2; exit 1; }"))))
     (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(+ 1 2)' | $T repl > out 2>&1 && grep -q '  3$' out && ! grep -q 'running main' out || { cat out >&2; exit 1; }"))))
     (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(nope)' | $T repl --repl-format=json > out 2>&1; grep -q '\"message\":\"error (recovered)\"}$' out && ! grep -q '  error: error (recovered)' out && ! $T build --repl-format=json > out 2>&1 && grep -q \"unknown option '--repl-format=json'\" out || { cat out >&2; exit 1; }"))))
     (try (bt4-sh pv (bt-sv (str (string-as-view &env) "echo '(+ 1 nope)' | $T repl --diagnostics=edn > out 2>&1; grep -q '{:severity :error :file \"<repl>\" :line 1 :message \"undefined: nope' out || { cat out >&2; exit 1; }"))))

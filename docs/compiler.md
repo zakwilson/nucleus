@@ -640,9 +640,9 @@ nsgfacade.nuch:4: error: export: symbol not found: 'geom/area'
 
 ```
 $ nucleusc --emit-cheader body.nuc
-body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
+body.nuc:2: error: as: lossy conversion from i64 to i32 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits
 $ nucleusc --emit-llvm body.nuc
-body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
+body.nuc:2: error: as: lossy conversion from i64 to i32 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits
 ```
 
 A header describes only a unit that builds, and it names each symbol exactly as the object defines it. Some consequences:

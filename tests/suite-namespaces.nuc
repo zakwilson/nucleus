@@ -1411,7 +1411,7 @@
 ")))
     (try (an4-refused-in (string-as-view &l) "an4-d2.nuc" "(import-use an4-d2lib)
 (defn main ():i32 (return (pick-it 1)))
-" 4 "macro 'pick-it' names 'pick', whose methods here come from namespaces 'an4a', 'an4b', and a full name reaches one"))
+" 4 "macro 'pick-it' names 'pick', and no one namespace reaches all its methods here"))
     (drop &l))
   (return (ok)))
 

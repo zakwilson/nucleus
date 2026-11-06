@@ -331,7 +331,8 @@ Both do the same steps:
    ([Literal sugar](collections.md#literal-sugar---)). A user collection takes
    a literal by defining `(init self:&C a:Alloc v:(ConstSet E))` beside its `Init`.
 3. Otherwise, build `T` like a struct literal, `(new Pt a 1 2)`, or zero-fill it
-   when there are no args. A union works the same way, `(make Shape heap rect 1.0 2.0)`.
+   when there are no args. A single argument that is already a `T` is copied, as
+   in `(new Pt a p)`. A union works the same way, `(make Shape heap rect 1.0 2.0)`.
 
 **The result is `!` exactly when the selected `init` returns `!void`.** That is
 `!&T` for `new` and `!T` for `make`. On the error path `new` gives its bytes
@@ -358,6 +359,11 @@ points back at the allocator, so the allocator must outlive the object. That is
 the reason `with` drops in reverse order. A call result such as
 `(new T (frame-buffer 64))` is refused, because a handle cannot point into a
 temporary.
+
+`(delete p a)` is `new`'s other half: it drops `*p` if its type conforms to `Drop`,
+then gives `T`'s bytes back to `a`, the allocator `new` took them from. `p` is `&T`.
+[`derive-drop`](collections.md#drop--lifecycle-protocol-for-owning-collections) gives a
+struct of owning fields its `Drop`.
 
 What `new` and `make` refuse:
 

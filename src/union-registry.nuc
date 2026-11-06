@@ -538,9 +538,9 @@
   ; Stage 15 W1c: `unknown-type-message` (src/nucleusc.nuc) says plainly that
   ; the name is defined nowhere in the unit, and — for §2.7's reachability
   ; constraint, which W1 keeps — names the on-path file that does define it.
-  ; The layout prescan asks again at emission instead (`g-layout-probe`); the
-  ; placeholder is never laid out, because the deferred struct is abandoned.
-  (when (!= g-layout-probe 0)
+  ; A prescan asks again later instead (`g-type-probe`); the placeholder is never
+  ; laid out or registered, because the form that met it waits.
+  (when (!= g-type-probe 0)
     (set! g-layout-defer 1)
     (return ty-i32))
   (die-at line (unknown-type-message name))))
@@ -2058,6 +2058,34 @@
       (set! g-type-key-ok saved)
       (return t))))
 
+; A probe must not stamp what it can't finish: an instance is memoized, and a field
+; nothing has defined yet would keep the placeholder as its type.
+(defn template-body-known? (form:?&Node tyvars:ptr ntv:i32 ns:Symbol path:Symbol
+                            imports:?&ImportVec arms:bool):bool
+  (let (saved-defer:i32 g-layout-defer
+        saved-array:i32 g-array-ok
+        here:NameEnv (name-env-enter ns path imports)
+        dry:DryParse (dry-parse-enter tyvars ntv)
+        cur:ptr (node-rest (unsafe/cast &Node (node-rest (unsafe/cast &Node form))))
+        fname:Symbol (symbol-none))
+    (set! g-layout-defer 0)
+    (set! g-array-ok 2)
+    (while (> (node-len cur) 0)
+      (let (it:ptr (node-first (unsafe/cast &Node cur)))
+        (if arms
+          (when (= (node-kind it) NODE-LIST)
+            (dotimes (fi (- (node-len it) 1))
+              (extract-name-and-type (node-at it (+ fi 1)) (as &Symbol &fname)
+                                     (node-line it 0))))
+          (extract-name-and-type it (as &Symbol &fname) (node-line it 0))))
+      (set! cur (node-rest (unsafe/cast &Node cur))))
+    (let (known:bool (= g-layout-defer 0))
+      (set! g-layout-defer saved-defer)
+      (set! g-array-ok saved-array)
+      (dry-parse-leave dry)
+      (name-env-set here)
+      (return known))))
+
 ; An instance is shared by every namespace, even when first asked for inside a
 ; `defn-`: a private one is missed by the next lookup and stamped again under
 ; the same IR name (nuc-doom ISSUE-032).
@@ -2074,9 +2102,15 @@
       (die-at line
         (fstr (utt 'name) ": wrong number of type arguments for defunion template")))
     (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
+    (when (and (!= g-type-probe 0) (!= g-layout-defer 0)) (return ty-i32))
     (let (iname:Symbol (utt 'name))
       (dotimes (i nargs)
         (set! iname (symbol-intern (fstr iname "." (stamp-arg-token (aref (unsafe/cast &ptr argts) i))))))
+      (when (and (!= g-type-probe 0) (= (uniondef-lookup iname) null)
+                 (not (template-body-known? (utt 'form) (utt 'tyvars) (utt 'ntv) (utt 'src-ns)
+                                            (utt 'src-file) (utt 'src-imports) true)))
+        (set! g-layout-defer 1)
+        (return ty-i32))
       (if-some (ud (uniondef-lookup iname))
         (return (union-instance-type ud))
         (let (arms:ptr (-> (unsafe/cast &Node (utt 'form)) (node-rest _) (unsafe/cast &Node _) (node-rest _))
@@ -2132,6 +2166,7 @@
       (die-at line
         (fstr (stt 'name) ": wrong number of type arguments for defstruct template")))
     (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
+    (when (and (!= g-type-probe 0) (!= g-layout-defer 0)) (return ty-i32))
     (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:Symbol (stt 'name))
       (dotimes (i nargs)
@@ -2143,6 +2178,11 @@
       (let (existing:?&StructDef (lookup-struct iname))
         (when (!= existing null)
           (return (type-for-sdef existing))))
+      (when (and (!= g-type-probe 0)
+                 (not (template-body-known? (stt 'form) (stt 'tyvars) (stt 'ntv) (stt 'src-ns)
+                                            (stt 'src-file) (stt 'src-imports) false)))
+        (set! g-layout-defer 1)
+        (return ty-i32))
       ; Miss: reserve the name before filling fields so a pointer self-reference
       ; (Tree T → (ptr (Tree i32))) resolves to this in-progress StructDef.
       (let (sd:&StructDef (register-struct iname)
@@ -2884,6 +2924,9 @@
             ; A retired value-form head in a type slot (`(addr-of T)`, once a legal
             ; spelling of `(ref T)`) gets the same answer the value path gives.
             (match (retired-form-message hs) (none 0) ((some retired) (die-at line retired)))
+            (when (!= g-type-probe 0)
+              (set! g-layout-defer 1)
+              (return ty-i32))
             (die-at line (unknown-type-message hs))))
         (die-at line "unable to parse type expression")))
     (die-at line "unable to parse type expression"))))

@@ -138,6 +138,12 @@
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (some v))))
 
+; The by-value methods read a literal in place; `Coll`'s receiver is a reference.
+(extend (ConstVec T) (Coll T (ConstIter T)))
+(defn count (self:&(ConstVec T)):usize (return (self 'len)))
+(defn empty? (self:&(ConstVec T)):bool (return (= (self 'len) 0)))
+(defn iter (self:&(ConstVec T)) (ConstIter T) (return (iter @self)))
+
 (defn iter (self:(ConstVec T)) (ConstIter T)
   (let (it:&(ConstIter T) (alloca (ConstIter T)))
     (set-fields! it
@@ -154,6 +160,11 @@
 
 (defn contains? (self:(ConstSet T) e:T):bool
   (return (< (const-find (unsafe/cast &T (self 'data)) (self 'len) e) (self 'len))))
+
+(extend (ConstSet T) (Coll T (ConstIter T)))
+(defn count (self:&(ConstSet T)):usize (return (self 'len)))
+(defn empty? (self:&(ConstSet T)):bool (return (= (self 'len) 0)))
+(defn iter (self:&(ConstSet T)) (ConstIter T) (return (iter @self)))
 
 (defn iter (self:(ConstSet T)) (ConstIter T)
   (let (it:&(ConstIter T) (alloca (ConstIter T)))
@@ -197,6 +208,11 @@
 
 (defn contains? (self:(ConstMap K V) key:K):bool
   (return (< (const-map-find self key) (self 'len))))
+
+(extend (ConstMap K V) (Coll (Entry K V) (ConstIter (Entry K V))))
+(defn count (self:&(ConstMap K V)):usize (return (self 'len)))
+(defn empty? (self:&(ConstMap K V)):bool (return (= (self 'len) 0)))
+(defn iter (self:&(ConstMap K V)) (ConstIter (Entry K V)) (return (iter @self)))
 
 (defn iter (self:(ConstMap K V)) (ConstIter (Entry K V))
   (let (it:&(ConstIter (Entry K V)) (alloca (ConstIter (Entry K V))))

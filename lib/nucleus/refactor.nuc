@@ -2499,11 +2499,29 @@
     (when (and (> (name 'len) 0) (>= (aref (name 'data) 0) 48) (<= (aref (name 'data) 0) 57))
       (str-into &out "_"))
     (dotimes (k (as i64 (name 'len)))
-      (let (c:i32 (as i32 (aref (name 'data) k)))
-        (cond (= c 63) (str-into &out "_QMARK")
-              (= c 33) (str-into &out "_BANG")
-              true (str-into &out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1)))))
+      (let (c:i32 (as i32 (aref (name 'data) k))
+            esc:StrView (rg-ir-escape c))
+        (if (> (esc 'len) 0)
+          (str-into &out esc)
+          (str-into &out (strview-take-bytes (strview-drop-bytes name (as usize k)) 1)))))
     (return (rp-arena-text out))))
+
+; `ir-name-escape` (src/format.nuc).
+(defn rg-ir-escape (c:i32):StrView
+  (case c
+    63  (return "_QMARK")
+    33  (return "_BANG")
+    62  (return "_GT")
+    60  (return "_LT")
+    43  (return "_PLUS")
+    42  (return "_STAR")
+    61  (return "_EQ")
+    37  (return "_PCT")
+    38  (return "_AMP")
+    124 (return "_BAR")
+    94  (return "_CARET")
+    126 (return "_TILDE")
+    (return "")))
 
 ; `sanitize-for-ir`'s spelling (src/format.nuc): what IR does not allow becomes `_`.
 (defn rg-ir-sanitize (name:StrView):StrView

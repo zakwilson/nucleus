@@ -327,7 +327,8 @@
     (conj v a)
     (conj v b)
     (dotimes (i (unsafe/cast i32 (count v)))
-      (let (it:&(dyn (Iterator i32)) (invoke v i:usize)
+      (let (held:(dyn (Iterator i32)) (invoke v i:usize)
+            it:&(dyn (Iterator i32)) &held
             go:bool true)
         (while go
           (match (next it)

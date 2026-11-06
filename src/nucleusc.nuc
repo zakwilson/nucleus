@@ -242,6 +242,24 @@
      ; defn/defvar/etc. cannot shadow it).
      "fn-attr" })
 
+; The heads the top-level dispatch handles itself. Any other head is a macro call
+; or an import, either of which can define names.
+(defconst- TOPLEVEL-HEADS
+  #{ "ns" "set-ir-prefix" "exclude-prelude" "fn-attr" "export" "defconst" "defconst-"
+     "defenum" "defenum-" "deferror" "defvar" "defvar-" "defstruct" "defstruct-"
+     "defunion" "defunion-" "deftype" "deftype-" "defcast" "extern" "defn" "defn-"
+     "defprotocol" "defprotocol-" "extend" "compile-time" "defmacro" "defmacro-"
+     "def-rmacro" "declare" "__macrolet-end" })
+
+(defconst- TYPE-DEFINERS
+  #{ "defstruct" "defstruct-" "defunion" "defunion-" "deftype" "deftype-"
+     "defenum" "defenum-" })
+
+; Methods a macro body can call without spelling them: through an operator, a head
+; position, `with` or `doseq`.
+(defconst- REACH-IMPLICIT
+  #{ "invoke" "get" "set" "field" "drop" "clone" "iter" "next" })
+
 ; The names `primitive-type-named` answers for.
 (defconst- PRIMITIVE-TYPE-NAMES
   #{ ; integer types (plus bool, which is not one)
@@ -516,10 +534,17 @@
 ; frames down, inside `parse-type-from-node`, whose return type is a non-null
 ; `ref:Type`.
 (defvar g-layout-defer:i32 0)
-; Set while the layout prescan resolves a field's type. A type name a macro will
-; define is unknown until that macro's call is emitted (nuc-iron-doom ISSUE-006),
-; so the prescan defers the struct, through `g-layout-defer`, instead of dying.
-(defvar g-layout-probe:i32 0)
+; Set while a prescan resolves a type. A name a macro or import has yet to define
+; arms `g-layout-defer` instead of dying, and the form waits for it
+; (design/doom-port-fixes/toplevel-macro-parity.md).
+(defvar g-type-probe:i32 0)
+; Forms a prescan parked, and whether the current retry is the last one they get.
+(defvar g-pending:&(Vector &PendingForm) (new (Vector &PendingForm) g-arena))
+(defvar g-pending-final:bool false)
+; What a waiting form leaves in its list slot, until the form returns.
+(defvar g-waited-slot:&Node (node-list1 (as ?&Node (intern-node (symbol-intern "__waited"))) 0))
+; Every template whose type variables include one no `:where` declared.
+(defvar g-implicit-templates:&(Vector &ImplicitTemplate) (new (Vector &ImplicitTemplate) g-arena))
 ; Stage 15 W8 G-3: "this initializer may turn out not to be constant". Armed
 ; (save/set/restore) only around `defvar-const-init-ir`'s single classifying
 ; call into `defvar-init-ir`, where it turns that function's terminal
@@ -1842,11 +1867,12 @@
 ; by `defstruct-fill-layout` alone.
 (defn extract-decl-name-and-type-layout (node:?&Node out-name:&Symbol line:i32):?&Type
   (set! g-array-ok 3)
-  (set! g-layout-probe 1)
-  (let (t:?&Type (extract-name-and-type node out-name line))
-    (set! g-layout-probe 0)
-    (set! g-array-ok 0)
-    (return t)))
+  (let (saved:i32 g-type-probe)
+    (set! g-type-probe 1)
+    (let (t:?&Type (extract-name-and-type node out-name line))
+      (set! g-type-probe saved)
+      (set! g-array-ok 0)
+      (return t))))
 
 ; The located diagnostic for a NULL declaration node — an empty list `()` where a
 ; name:type belongs. `extract-name-and-type` below is where the real pipeline
@@ -4427,16 +4453,76 @@
         0)
       (return 0))))
 
+; What dispatch reads for argument `n`: the literal a `defconst` name stands for, so
+; the name adapts wherever the literal does; `(* K)` is `(* v K)`'s second operand.
+(defn arg-literal-node (n:?&Node scope:&Scope):?&Node
+  (let (nn:?&Node n)
+    (when (and (= (node-kind nn) NODE-LIST) (= (node-len nn) 2))
+      (set! nn (macroexpand-form n -1)))
+    (when (!= (node-kind nn) NODE-SYM) (return n))
+    (let (name:Symbol (symbol-none)
+          ignored-type:Symbol (symbol-none))
+      (split-typed ((as ptr:Node nn) 's) (as &Symbol &name) (as &Symbol &ignored-type))
+      (if-some (sym (scope-lookup scope name))
+        (when (= (sym 'const-annot) 0)
+          (when (= (node-kind (sym 'const-node)) NODE-FLOAT) (return (sym 'const-node)))
+          ; An integer constant keeps its value, not a node.
+          (when (!= (sym 'const-lit) 0)
+            (let (lit:&Node (alloc-node))
+              (set-fields! lit
+                           'kind NODE-INT
+                           'line (node-line n 0)
+                           'i    (sym 'const-lit-i64))
+              (return lit))))
+        0)
+      (return n))))
+
 ; Stage 15 W2b: THE test for "this binop operand is an untyped integer literal
 ; and may adopt the other operand's type" — a bare literal (W2a) or a name bound
 ; to one (W2b). Used only by `binop-result-type`, so emit and node-type ask the
-; same question of the same operand. NOT wired into the multimethod-dispatch
-; `is-lit` flags in src/generics.nuc (arg-adapts): those decide *overload
-; selection*, and widening the literal set there would silently re-route
-; existing dispatch. Extending them is a separate, deliberate change.
+; same question of the same operand. Dispatch asks through `arg-literal-node`.
 (defn operand-is-int-literal (n:?&Node scope:&Scope):i32
   (when (!= (node-is-int-literal n) 0) (return 1))
   (return (node-is-const-int-literal n scope)))
+
+; Is `n` a `dotimes` index whose every value `t` holds? Its range is known, so it
+; adapts as the literal count would (nuc-iron-doom ISSUE-004).
+(defn index-adapts? (n:?&Node scope:&Scope t:?&Type):bool
+  (let (nn:?&Node n)
+    (when (and (= (node-kind nn) NODE-LIST) (= (node-len nn) 2))
+      (set! nn (macroexpand-form n -1)))
+    (when (!= (node-kind nn) NODE-SYM) (return false))
+    (let (name:Symbol (symbol-none)
+          ignored-type:Symbol (symbol-none))
+      (split-typed ((as ptr:Node nn) 's) (as &Symbol &name) (as &Symbol &ignored-type))
+      (if-some (sym (scope-lookup scope name))
+        (return (and (> (sym 'index-bound) 0)
+                     (!= (int-literal-fits (- (sym 'index-bound) 1) t) 0)))
+        (return false)))))
+
+; The count of `(let (i (__index-init LIT)) (while … (do body…)))` when the body
+; leaves `i` alone; else 0, and `i` is an ordinary i32.
+(defn index-bound-of (init:?&Node body-while:?&Node name:Symbol scope:&Scope line:i32):i64
+  (when (or (!= (node-kind init) NODE-LIST) (not (node-sym-is? (node-at init 0) "__index-init"))
+            (not (literal-operator-tree? (node-at init 1) scope)))
+    (return 0))
+  (when (or (!= (node-kind body-while) NODE-LIST) (= (node-len body-while) 0)
+            (node-assigns? (node-at body-while (- (node-len body-while) 1)) name))
+    (return 0))
+  (let (v:i64 0)
+    (when (= (const-fold-int (node-at init 1) (as &i64 &v) line) 0) (return 0))
+    (return v)))
+
+; Does `n` write `name` or take its address, as written?
+(defn node-assigns? (n:?&Node name:Symbol):bool
+  (when (!= (node-kind n) NODE-LIST) (return false))
+  (when (and (or (node-sym-is? (node-at n 0) "set!") (node-sym-is? (node-at n 0) "inc!")
+                 (node-sym-is? (node-at n 0) "dec!") (node-sym-is? (node-at n 0) "ref"))
+             (node-sym-is? (node-at n 1) (symbol-as-view name)))
+    (return true))
+  (dotimes (i (node-len n))
+    (when (node-assigns? (node-at n i) name) (return true)))
+  (return false))
 
 (defn float-width (t:(ptr Type)):i32
   (let (k:i32 (t 'kind))
@@ -4714,7 +4800,10 @@
     ; Two typed ints of differing signedness are a real error — never
     ; sign-reinterpret one into the other. Report null so emit-binop-vals'
     ; "mixed signed/unsigned operands" diagnostic fires.
-    (when (!= (is-unsigned at) (is-unsigned bt)) (return null))
+    (when (!= (is-unsigned at) (is-unsigned bt))
+      (when (index-adapts? a-node scope bt) (return bt))
+      (when (index-adapts? b-node scope at) (return at))
+      (return null))
     (when (>= (int-width at) (int-width bt)) (return at))
     (return bt)))
 
@@ -5309,7 +5398,7 @@
       (when (!= (as-int-narrowing src dst (v 'is-lit) (v 'lit-i64)) 0)
         (die-at line
           (fstr "as: lossy conversion from " (type-display src) " to " (type-display dst)
-                " -- use unsafe/cast")))
+                " -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits")))
       (return (unsafe/cast &Val (coerce-int-val v dst line))))
     ; 6. float -> float: a widening (fpext) is safe, and so is a narrowing
     ; whose operand is a LITERAL that round-trips exactly (Stage 15 W9 item
@@ -7444,12 +7533,16 @@
   (let (gg:(ptr Generic) g
         found:?&Method null)
     ; tier 0: exact concrete (METHOD-USER) match.
-    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
-      (let (m:&Method (invoke (gg 'methods) i:usize))
-        (when (and (= (m 'kind) METHOD-USER)
-                   (= (m 'num-params) nargs)
-                   (!= (params-type-eq (m 'param-types) argtypes nargs) 0))
-          (set! found m))))
+    (dotimes (pass 2)
+      (when (= found null)
+        (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+          (let (m:&Method (invoke (gg 'methods) i:usize))
+            (when (and (= (m 'kind) METHOD-USER)
+                       (= (m 'num-params) nargs)
+                       (!= (cond (= pass 0) (params-key-eq (m 'param-types) argtypes nargs)
+                                 (= (m 'origin-template) null) (params-type-eq (m 'param-types) argtypes nargs)
+                                 true 0) 0))
+              (set! found m))))))
     (when (!= found null) (return found))
     ; tier 1: bounded-generic templates — bind the tyvars then check :where.
     (let (cand:ptr null
@@ -7598,7 +7691,7 @@
                       v:&Val (emit-node anode scope))
         (memcpy (unsafe/ptr+ (unsafe/cast &Val args) (+ i 1)) v (sizeof Val))
         (set! (aref (unsafe/cast &ptr argtypes) (+ i 1)) (v 'type))
-        (set! (aref (unsafe/cast &ptr arg-nodes) (+ i 1)) anode)))
+        (set! (aref (unsafe/cast &ptr arg-nodes) (+ i 1)) (arg-literal-node anode scope))))
     (let (g:?&Generic (generic-lookup (symbol-intern "invoke")))
       ; Any program importing a collection has `invoke` methods, so the hint must
       ; ask whether one takes this head, not whether the generic exists.
@@ -11640,11 +11733,11 @@
 ; Elem `i` of `l` as a binding init, placed under `--resolve`.
 (defn tc3-emit-binding-init-as (l:?&Node i:i32 n:?&Node scope:&Scope ty:?&Type line:i32):&Val
   (let (d:usize (resolve-push-elem l i SLOT-VALUE)
-        v:&Val (tc3-emit-binding-init n scope ty line))
+        v:&Val (tc3-emit-binding-init n scope ty line 1))
     (resolve-pop-to d)
     (return v)))
 
-(defn tc3-emit-binding-init (bval-node:?&Node scope:&Scope ty:?&Type line:i32):&Val
+(defn tc3-emit-binding-init (bval-node:?&Node scope:&Scope ty:?&Type line:i32 refuse:i32):&Val
   ; TC-5: target-type the init form against the declared slot type — rewrites
   ; `(arm args…)`/none/ok/err into (make Type arm …) when ty is a defunion/niche.
   ; union-target-rewrite is a no-op for a null/non-union target, so non-union
@@ -11700,6 +11793,12 @@
             (when (and (!= vt null)
                        (= (-> vt (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT)
                        (!= (type-eq vt pointee) 0))
+              ; A `let` names the copy, and a write through it would look like a write
+              ; to the value it came from; `with` owns the temporary it binds.
+              (when (!= refuse 0)
+                (die-at line (fstr "let: a " (type-display ty) " binding can't hold a "
+                                   (type-display vt) " value: it would point at a copy"
+                                   "\n  note: bind the value to a name first and take its address, or take a view")))
               (return (tc3-materialize vv ty pointee scope line))))
           (return vv))))))
 
@@ -11788,6 +11887,7 @@
                       ; tainted value aliases the same resource (§2.2). Stage 13
                       ; L1: also inherit the frame-region flag.
                       (sym-adopt-taint sym (box-taint-source v bv ty) ty)
+                      (set! (sym 'index-bound) (index-bound-of bval-node (node-at cc 2) name inner (cc 'line)))
                       ; Narrowing: a ?T binding initialized with a known
                       ; non-null value starts narrowed (parity with set!).
                       (when (and (= (ptr-pkind ty) PTR-MAYBE)
@@ -11863,7 +11963,7 @@
                                   ; TC-3: emit the init with target-typed
                                   ; materialization (mirror of emit-let).
                                 (tc3-emit-binding-init bval-node inner ty
-                                                       (node-line bval-node (cc 'line)))
+                                                       (node-line bval-node (cc 'line)) 0)
                                 (unsafe/cast &Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
@@ -12219,9 +12319,13 @@
 
 ; `(set recv key v)` — an ordinary call, so a writable collection extends `set!`
 ; through the multimethod machinery rather than a second protocol (dot-forms.md §3).
-(defn set-call-cell (recv:?&Node key:?&Node v:?&Node line:i32):ptr
-  (return (node-list4 (intern-node (symbol-intern "set"))
-            recv key v line)))
+(defn set-call-cell (place:?&Node v:?&Node line:i32):ptr
+  (let (n:i32 (node-len place)
+        call:&Node (node-list-new line))
+    (node-push call (intern-node (symbol-intern "set")))
+    (dotimes (i n) (node-push call (node-at place i)))
+    (node-push call v)
+    (return (as ptr call))))
 
 ; The `(set recv key v)` call a member place becomes, or null when the place is a
 ; storage place, or `field` (which must stay a raw field write), or its
@@ -12234,27 +12338,22 @@
   (let (pc:&Node (unsafe/cast &Node place))
     (when (!= (pc 'kind) NODE-LIST) (return null))
     (let (plen:i32 (node-len place)
-          hd:?&Node (node-at place 0)
-          recv:ptr null
-          key:ptr null)
+          hd:?&Node (node-at place 0))
       (when (and (!= hd null) (= ((unsafe/cast &Node hd) 'kind) NODE-SYM))
         (let (h:Symbol ((unsafe/cast &Node hd) 's))
           (when (and (= h "deref") (= plen 2)) (return null))
           (when (and (= h "aref") (= plen 3)) (return null))
           (when (and (= h "field") (= plen 3)) (return null))))
-      (when (and (= recv null) (= plen 2))
-        (set! recv (node-at place 0))
-        (set! key (node-at place 1)))
-      (when (= recv null) (return null))
+      (when (< plen 2) (return null))
       ; A LITERAL selector is the field, and only a computed key is `set` dispatch.
       ; Without this a collection that defines `set` could no longer write its own
       ; fields — `(set! (self 'data) null)` would dispatch back into that method.
-      (when (!= (selector-literal-sym key) null) (return null))
-      (let (rt:?&Type (node-type recv scope))
+      (when (and (= plen 2) (!= (selector-literal-sym (node-at place 1)) null)) (return null))
+      (let (rt:?&Type (node-type hd scope))
         (when (= rt null) (return null))
         (when (= (generic-has-receiver-method (generic-lookup (symbol-intern "set")) rt) 0)
           (return null))
-        (return (set-call-cell recv key v line))))))
+        (return (set-call-cell place v line))))))
 
 ; `set!`'s first operand is a PLACE, not only a name (dot-forms.md §3). Each
 ; place rebuilds the call the writer it replaces would have been given — same
@@ -12281,8 +12380,7 @@
                                hns "', which this file does not import"
                                (fstr "\n  note: add (import-use " hns ")")))))
         (when (!= g-resolve 0)
-          (if (= (node-len place) 3)
-            (resolve-map-picks sc place 1 place 2 call 2)
+          (when (= (node-len place) 2)
             (resolve-map-picks sc place 0 place 1 call 2)))
         (return (emit-node sc scope))))
     (let (plen:i32 (node-len place)
@@ -12914,6 +13012,33 @@
       (return 1)
       (return 0))))
 
+; The note for `(name v)` that the field `name` claimed though `name` is also a
+; function or a value, so the source reads as a call or a member read.
+(defn designated-note (name:Symbol scope:&Scope):StrView
+  (when (= (as ptr (binding-find name scope 0 BINDING-KIND-COUNT 0 NK-NONE)) null) (return ""))
+  (return (fstr "\n  note: (" name " ...) is read as a designated initializer for field '" name
+                "'; bind the call first to pass it positionally")))
+
+; `(S v)` with `v` an S value is a copy of it, as `(new S a v)` means; no field of S
+; can be an S by value, so the positional reading could only have failed.
+(defn struct-lit-copy (call:?&Node scope:&Scope sd:?&StructDef):?&Val
+  (when (!= (node-len call) 2) (return null))
+  (let (arg:?&Node (node-at call 1))
+    (when (!= (struct-lit-designated sd arg scope) 0) (return null))
+    (let (t:?&Type (node-type arg scope))
+      (when (or (= t null) (!= (t 'kind) TY-STRUCT) (!= (t 'sdef) (as ptr sd))) (return null))
+      (let (v:&Val (emit-node-as call 1 arg scope)
+            slot:StrView (new-tmp)
+            pt:&Type (make-ptr-type PTR-REF))
+        (emit g-entry-stream "  " slot " = alloca " (type-to-ir t)
+              (struct-align-suffix (unsafe/cast &StructDef sd)) "\n")
+        (emit g-body-stream "  store " (type-to-ir t) " " (v 'val) ", ptr " slot "\n")
+        (set! (pt 'elem) (as ptr t))
+        (let (rv:&Val (alloc-val (as ptr pt) slot))
+          (val-taint-frame rv scope)
+          (set! (rv 'fresh) true)
+          (return rv))))))
+
 ; (S e0 e1 ... | (field v) ...) -> &S compound literal (struct-name head).
 (defn emit-struct-lit (call:?&Node scope:&Scope sd:?&StructDef):&Val
   (let (cc:&Node (unsafe/cast &Node call)
@@ -12923,6 +13048,7 @@
     ; W1d: a cycle-pending layout has nfields == 0, so every initializer would
     ; look like one too many. Say what actually went wrong.
     (reject-cycle-pending-sdef sd (cc 'line) "struct literal")
+    (when-some (copied (struct-lit-copy call scope sd)) (return copied))
     (when (> nargs nfields)
       (die-at (cc 'line) (fstr "struct literal: too many initializers for struct '" (sdef-display sdef)
                                "'")))
@@ -12947,7 +13073,8 @@
                   (fstr "struct literal: no field '" (fname-node 's) "'")))
               (when (!= (aref (unsafe/cast &i32 seen) fidx) 0)
                 (die-at (node-line (as ptr fname-node) (cc 'line))
-                  (fstr "struct literal: field '" (fname-node 's) "' specified twice")))
+                  (fstr "struct literal: field '" (fname-node 's) "' specified twice"
+                        (designated-note (fname-node 's) scope))))
               (set! (aref (unsafe/cast &i32 seen) fidx) 1)
               (let (ftype:ptr ((field-at (sdef 'fields) fidx) 'type)
                     av:?&Val (struct-lit-array-field vexpr (unsafe/cast &Type ftype) scope (cc 'line))
@@ -12957,7 +13084,8 @@
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line)
-                    (fstr "struct literal: type mismatch for field '" (fname-node 's) "'")))
+                    (fstr "struct literal: type mismatch for field '" (fname-node 's) "'"
+                          (designated-note (fname-node 's) scope))))
                 (set! (aref (unsafe/cast &ptr vals) fidx) coerced)))
             (do
               (while (and (< pos-idx nfields)
@@ -13444,6 +13572,27 @@
               (set! found pt))))))
     (return (if (= hits 1) found null))))
 
+; A sum constructor's type from the other arguments: `(conj &v none)` on a
+; `(Vector ?&P)`. The one candidate that takes them, or null.
+(defn sum-arg-want (g:&Generic nn:&Node nargs:i32 i:i32 scope:&Scope):?&Type
+  (resolve-quiet-enter)
+  (let (ats:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        found:?&Type null
+        hits:i32 0)
+    (dotimes (j nargs)
+      (set! (aref (unsafe/cast &ptr ats) j)
+            (if (= j i) null (node-type (node-at nn (+ j 1)) scope))))
+    (dotimes (k (unsafe/cast i32 (count (g 'methods))))
+      (let (m:&Method (invoke (g 'methods) k:usize))
+        (when (and (= (m 'num-params) nargs) (= (m 'has-rest) 0) (= (m 'variadic) 0)
+                   (= (as ptr (m 'origin-template)) null))
+          (let (pt:?&Type (literal-arg-candidate m ats nn nargs i))
+            (when (!= pt null)
+              (inc! hits)
+              (set! found pt))))))
+    (resolve-quiet-leave)
+    (return (if (= hits 1) found null))))
+
 ; A solitary callee's parameter as a literal argument's want: a `Const` of the
 ; literal's shape is one; a mutable collection is refused, since a call never allocates.
 (defn literal-param-want (pt:?&Type what:StrView line:i32):?&Type
@@ -13487,8 +13636,9 @@
       (set! g-want-type null)
       (dotimes (i nargs)
         (let (anode:ptr (node-at nn (+ i 1)))
-          (when (!= (arg-sum-ctor anode) 0)
-            (set! anode (arg-target-rewrite anode (generic-arg-target g nargs i))))
+          (when (arg-sum-tail? anode)
+            (let (t:?&Type (generic-arg-target g nargs i))
+              (set! anode (arg-target-rewrite anode (if (= t null) (sum-arg-want g nn nargs i scope) t)))))
           (let (lw:StrView (lit-form-what anode)
                 rsd:usize (resolve-push-elem n (+ i 1) SLOT-VALUE)
                 v:&Val (if (= lw "")
@@ -13497,7 +13647,7 @@
             (resolve-pop-to rsd)
             (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
             (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
-            (set! (aref (unsafe/cast &ptr arg-nodes) i) anode))))
+            (set! (aref (unsafe/cast &ptr arg-nodes) i) (arg-literal-node anode scope)))))
       ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
       ; `(dyn P)` box and this generic names one of P's methods, the box has no
       ; concrete receiver method to resolve — forward through the vtable slot instead
@@ -13514,6 +13664,15 @@
         (when (!= g-resolve 0) (resolve-note-method n (g 'name) m))
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line)))))))
+
+; Is `t` a struct with a method of its own on this arithmetic operator? A comparison
+; stays out: the built-in also compares a view with a C string.
+(defn operator-overloaded-struct? (g:&Generic op:(ptr BinOp) t:?&Type):bool
+  (when (or (= t null) (!= (op 'is-cmp) 0) (operator-intrinsic-takes op t)) (return false))
+  (let (u:?&Type (if (= (t 'kind) TY-PTR) (t 'elem) t))
+    (return (and (!= u null) (= (u 'kind) TY-STRUCT)
+                 (or (!= (generic-has-receiver-method g t) 0)
+                     (!= (generic-has-receiver-method g u) 0))))))
 
 ; Emit an operator that carries user overloads (§10.3). Emit the operands, then
 ; resolve a user method on the operator's argument types; if one matches, emit a
@@ -13533,7 +13692,7 @@
             v:&Val (emit-node-as n (+ i 1) anode scope))
         (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val))
         (set! (aref (unsafe/cast &ptr argtypes) i) (v 'type))
-        (set! (aref (unsafe/cast &ptr arg-nodes) i) anode)))
+        (set! (aref (unsafe/cast &ptr arg-nodes) i) (arg-literal-node anode scope))))
     (let (vt:ptr null
           m:?&Method (operator-resolve g argtypes arg-nodes nargs scope &vt))
       (when (!= g-resolve 0)
@@ -13553,6 +13712,12 @@
         (when (not (str-empty? &missed))
           (die-at (nn 'line) (operator-refusal binop (aref (unsafe/cast &ptr argtypes) 0)
                                                (aref (unsafe/cast &ptr argtypes) 1) false))))
+      ; The built-in's own message would describe the fallback, not the overloads missed.
+      (when (or (operator-overloaded-struct? g binop (aref (unsafe/cast &ptr argtypes) 0))
+                (operator-overloaded-struct? g binop (aref (unsafe/cast &ptr argtypes) 1)))
+        (die-at (nn 'line) (fstr (operator-refusal binop (aref (unsafe/cast &ptr argtypes) 0)
+                                                   (aref (unsafe/cast &ptr argtypes) 1) false)
+                                 (candidate-notes g argtypes arg-nodes 2 (nn 'line)))))
       (return (emit-binop-vals (unsafe/ptr+ (unsafe/cast &Val args) 0) (unsafe/ptr+ (unsafe/cast &Val args) 1)
                                (aref (unsafe/cast &ptr arg-nodes) 0) (aref (unsafe/cast &ptr arg-nodes) 1)
                                binop scope (nn 'line))))))
@@ -13920,9 +14085,11 @@
     (dotimes (i n)
       (let (ns:Symbol ((as &Method (invoke (view 'methods) i:usize)) 'src-ns))
         (when (qq-ns-covers? (unsafe/cast &Generic full) view ns) (return ns))
-        (set! seen (if (str-empty? &seen) (fstr "'" ns "'") (fstr seen ", '" ns "'")))))
-    (die-at line (fstr (ct-body-who) " names '" bare "', whose methods here come from namespaces "
-                       seen ", and a full name reaches one"))))
+        (let (one:StrView (fstr "'" ns "/" bare "'"))
+          (when (not (strview-contains seen one))
+            (set! seen (if (str-empty? &seen) one (fstr seen ", " one)))))))
+    (die-at line (fstr (ct-body-who) " names '" bare "', and no one namespace reaches all its methods here"
+                       "\n  note: write one of these full names in the template: " seen))))
 
 (defn qq-ns-covers? (full:&Generic view:&Generic ns:Symbol):bool
   (let (f:?&Generic (generic-filter-by-ns full ns))
@@ -16875,11 +17042,14 @@
       (when (pending-const-done? name line) (return))
       (when (defconst-annotated? name-node)
         (set! annot (extract-decl-name-and-type name-node (as &Symbol &name) (node-line name-node line))))
+      ; The form is rewritten too: a generated header prints it.
+      (set! val (macroexpand-form val -1))
+      (node-set-at cc 2 val)
       ; `(as T v)` is the annotation spelled on the value.
       (when (and (= annot null) (= (node-kind val) NODE-LIST) (= (node-len val) 3)
                  (= (node-at val 0) 'as))
         (set! annot (parse-type-from-node (node-at val 1) (node-line val line)))
-        (set! val (node-at val 2)))
+        (set! val (macroexpand-form (node-at val 2) -1)))
       ; A constant naming a typed constant keeps its type.
       (when (and (= annot null) (= (node-kind val) NODE-SYM))
         (if-some (vs (scope-lookup g-globals ((as ptr:Node val) 's)))
@@ -19758,10 +19928,27 @@
         (return forms))
       (return (as ptr (node-cons new-car new-cdr (n 'line)))))))
 
+; `(deftype Op (fn ret)(params))`: a fn type is two groups, and the reader fuses
+; them only after a `name:`.
+(defn deftype-fn-groups? (form:?&Node):bool
+  (when (or (!= (node-len form) 4) (!= (node-kind (node-at form 2)) NODE-LIST)
+            (!= (node-kind (node-at form 3)) NODE-LIST))
+    (return false))
+  (return (and (or (node-sym-is? (node-at form 0) "deftype") (node-sym-is? (node-at form 0) "deftype-"))
+               (node-sym-is? (node-at (node-at form 2) 0) "fn"))))
+
+(defn node-sym-is? (n:?&Node name:StrView):bool
+  (when (or (= n null) (!= (n 'kind) NODE-SYM)) (return false))
+  (return (= (n 's) name)))
+
 ; A top-level form with its binder slots split, for the forms whose emitters
 ; expect them split; lib/nucleus/slots.nuc says which forms and which elems.
 (defn desugar-form (form:?&Node):ptr
   (when (>= (import-annot-start form) 0) (return (import-annot-strip form)))
+  (when (deftype-fn-groups? form)
+    (return (node-list3 (node-at form 0) (node-at form 1)
+                        (node-list2 (node-at form 2) (node-at form 3) (node-line form 0))
+                        (node-line form 0))))
   (when (or (= (node-len form) 0) (not (slots-desugared? form))) (return form))
   (let (f:&Node (unsafe/cast &Node form)
         out:&Node (node-list-new (f 'line))
@@ -20222,7 +20409,7 @@
               (let (nn:&Node (unsafe/cast &Node (node-at (as ptr f) 1)))
                 (when (and (= (node-kind (as ptr nn)) NODE-SYM)
                            (= (uniondef-lookup (qualify-name (nn 's))) null)
-                           (= (defunion-layout-deferred f (f 'line)) 0))
+                           (= (defunion-layout-probed f (f 'line)) 0))
                   ; W5e: privacy must be armed around the registration, exactly as
                   ; the top-level dispatch loop arms it around the emitter — the
                   ; emitter's own `defunion-register` finds this entry and returns,
@@ -20233,6 +20420,18 @@
                       (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _)) (f 'line))
                     (set! g-defining-private save-priv))))))))
       (set! fc (node-rest (unsafe/cast &Node fc))))))
+
+; As `defunion-layout-deferred`, and a name nothing has defined yet defers too.
+(defn defunion-layout-probed (form:&Node line:i32):i32
+  (let (saved-probe:i32 g-type-probe
+        saved-defer:i32 g-layout-defer)
+    (set! g-type-probe (if (and (> g-toplevel-depth 0) (not g-pending-final)) 1 0))
+    (set! g-layout-defer 0)
+    (let (deferred:i32 (defunion-layout-deferred form line)
+          unknown:i32 g-layout-defer)
+      (set! g-type-probe saved-probe)
+      (set! g-layout-defer saved-defer)
+      (return (if (!= unknown 0) 1 deferred)))))
 
 ; Register the constructor signatures of a (monomorphic) defunion form:
 ; per arm, `Name-arm : Name (field types...)`. Runs in the signature prescan,
@@ -20246,6 +20445,10 @@
     ; Skip when already registered (re-import of the same unit).
     ; Stage 15 B3′: both probes are definition-side, so both hold the KEY.
     (when (!= (uniondef-lookup (qualify-name (name-node 's))) null) (return))
+    ; Every arm's fields, before any arm registers, so a parked form retries clean.
+    (when (!= g-type-probe 0)
+      (defunion-layout-deferred ff (ff 'line))
+      (when (!= g-layout-defer 0) (return)))
     (let (sd:ptr (lookup-struct (qualify-name (name-node 's))))
       (when (= sd null) (return))
       ; Strip :repr (a layout marker, not an arm) so it does not become a bogus
@@ -20294,70 +20497,144 @@
 (defn prescan-defn-signatures (forms:?&Node):void
   (let (fc:ptr forms)
     (while (> (node-len fc) 0)
-      (let (f:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
-        ; defunion/defunion-: pre-register the arm constructors' signatures so
-        ; defns earlier in the unit can call them (mirrors the defn prescan below).
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
-                   (>= (node-len (as ptr f)) 3)
-                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (ph2:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
-            (when (or (= ph2 "defunion") (= ph2 "defunion-"))
-              (prescan-union-ctors (as ptr f)))
-            (when (or (= ph2 "defprotocol") (= ph2 "defprotocol-"))
-              (proto-sigs-check-form f))
-            (when (or (= ph2 "deftype") (= ph2 "deftype-"))
-              (alias-body-check f))))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
-                   (>= (node-len (as ptr f)) 4)
-                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (ph3:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
-            (when (or (= ph3 "defn") (= ph3 "defn-"))
-          ; Stage 15 W5e: signature registration happens HERE, before any form is
-          ; emitted (W1a), so the private flag the top-level dispatch loop sets
-          ; around `emit-defn` is not yet on. Arm it for the registration so the
-          ; name is keyed under this file's implicit private namespace, and
-          ; recorded as private for the duplicate-definition diagnostic. Restored
-          ; immediately: a prescan walks a whole file's forms in one call, and
-          ; the very next `defn` must register publicly.
-          (let (save-priv:i32 g-defining-private)
-            (set! g-defining-private (if (= ph3 "defn-") 1 0))
-          (let (name-node:ptr (node-at (as ptr f) 1)
-                params-node:ptr (node-at (as ptr f) 2))
-            (when (node-is-list params-node)
-              ; A `:where` clause OR a receiver over a parametric struct marks a
-              ; bounded-generic template: retain it for on-demand monomorphization
-              ; rather than parsing its (free-tyvar) parameter/return types now.
-              (if (!= (defn-is-generic-template (as ptr f)) 0)
-                (register-generic-defn (as ptr f) 0)
-                (let (fname:Symbol (symbol-none)
-                      ps-ret-node:ptr null
-                      ps-params:ptr null
-                      ps-bstart:i32 3
-                      ps-style:i32 (defn-parse-sig (as ptr f) (as &Symbol &fname)
-                                     (as &ptr &ps-ret-node)
-                                     (as &ptr &ps-params)
-                                     (as &i32 &ps-bstart))
-                      ; W3a: `name-node` is the defn's NAME — an interned
-                      ; NODE-SYM whose own line is always 0 — so resolving the
-                      ; signature's types against it reported every failure
-                      ; (`unknown type: T`) at `:0:`. Borrow the return operand's
-                      ; own line, falling back to the defn form's.
-                      ret:ptr (if (!= ps-style 0)
-                                (fn-parse-ret-type ps-ret-node
-                                  (node-line ps-ret-node (f 'line)))
-                                (extract-name-and-type name-node (as &Symbol &fname)
-                                                        (f 'line))))
-                  (when (!= ret null)
-                    (let (nparams:i32 (defn-params-count params-node)
-                          ptypes:ptr (defn-params-to-types params-node)
-                          has-rest:i32 (defn-params-has-rest params-node)
-                          pm:ptr (generic-register-method fname ret ptypes nparams
-                                   has-rest 0 (as ptr f)))
-                      (defn-params-set-opt (as ?&Node params-node)
-                        (unsafe/cast &Type ((unsafe/cast &Method pm) 'fn-type)))))))))
-            (set! g-defining-private save-priv))))))
+      (prescan-guarded PEND-SIG (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
       (set! fc (node-rest (unsafe/cast &Node fc))))
     (finalize-generics)))
+
+(defn prescan-sig-form (f:&Node):void
+  ; defunion/defunion-: pre-register the arm constructors' signatures so
+  ; defns earlier in the unit can call them (mirrors the defn prescan below).
+  (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
+             (>= (node-len (as ptr f)) 3)
+             (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+    (let (ph2:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
+      (when (or (= ph2 "defunion") (= ph2 "defunion-"))
+        (prescan-union-ctors (as ptr f)))
+      (when (or (= ph2 "defprotocol") (= ph2 "defprotocol-"))
+        (proto-sigs-check-form f))
+      (when (or (= ph2 "deftype") (= ph2 "deftype-"))
+        (alias-body-check f))))
+  (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
+             (>= (node-len (as ptr f)) 4)
+             (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+    (let (ph3:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
+      (when (or (= ph3 "defn") (= ph3 "defn-"))
+    ; Stage 15 W5e: signature registration happens HERE, before any form is
+    ; emitted (W1a), so the private flag the top-level dispatch loop sets
+    ; around `emit-defn` is not yet on. Arm it for the registration so the
+    ; name is keyed under this file's implicit private namespace, and
+    ; recorded as private for the duplicate-definition diagnostic. Restored
+    ; immediately: a prescan walks a whole file's forms in one call, and
+    ; the very next `defn` must register publicly.
+    (let (save-priv:i32 g-defining-private)
+      (set! g-defining-private (if (= ph3 "defn-") 1 0))
+    (let (name-node:ptr (node-at (as ptr f) 1)
+          params-node:ptr (node-at (as ptr f) 2))
+      (when (node-is-list params-node)
+        ; A `:where` clause OR a receiver over a parametric struct marks a
+        ; bounded-generic template: retain it for on-demand monomorphization
+        ; rather than parsing its (free-tyvar) parameter/return types now.
+        (if (!= (defn-is-generic-template (as ptr f)) 0)
+          (register-generic-defn (as ptr f) 0)
+          (let (fname:Symbol (symbol-none)
+                ps-ret-node:ptr null
+                ps-params:ptr null
+                ps-bstart:i32 3
+                ps-style:i32 (defn-parse-sig (as ptr f) (as &Symbol &fname)
+                               (as &ptr &ps-ret-node)
+                               (as &ptr &ps-params)
+                               (as &i32 &ps-bstart))
+                ; W3a: `name-node` is the defn's NAME — an interned
+                ; NODE-SYM whose own line is always 0 — so resolving the
+                ; signature's types against it reported every failure
+                ; (`unknown type: T`) at `:0:`. Borrow the return operand's
+                ; own line, falling back to the defn form's.
+                ret:ptr (if (!= ps-style 0)
+                          (fn-parse-ret-type ps-ret-node
+                            (node-line ps-ret-node (f 'line)))
+                          (extract-name-and-type name-node (as &Symbol &fname)
+                                                  (f 'line))))
+            (when (!= ret null)
+              (let (nparams:i32 (defn-params-count params-node)
+                    ptypes:ptr (defn-params-to-types params-node)
+                    has-rest:i32 (defn-params-has-rest params-node))
+                (when (= g-layout-defer 0)
+                  (let (pm:ptr (generic-register-method fname ret ptypes nparams
+                                 has-rest 0 (as ptr f)))
+                    (defn-params-set-opt (as ?&Node params-node)
+                      (unsafe/cast &Type ((unsafe/cast &Method pm) 'fn-type)))))))))))
+      (set! g-defining-private save-priv))))))
+
+; A prescan pass a form can wait in.
+(defconst PEND-SIG 0)
+(defconst PEND-VALUE 1)
+
+; A form runs its pass with the probe armed, unless nothing can still define what
+; it names; a name still unknown parks the form (toplevel-macro-parity.md §4).
+(defn prescan-guarded (pass:i32 f:&Node):void
+  (let (saved-probe:i32 g-type-probe
+        saved-defer:i32 g-layout-defer)
+    (set! g-type-probe (if (and (> g-toplevel-depth 0) (not g-pending-final)) 1 0))
+    (set! g-layout-defer 0)
+    (if (= pass PEND-SIG) (prescan-sig-form f) (prescan-value-form f))
+    (when (!= g-layout-defer 0)
+      (pending-park pass f))
+    (set! g-type-probe saved-probe)
+    (set! g-layout-defer saved-defer)))
+
+(defn pending-park (pass:i32 f:&Node):void
+  (let (p:&PendingForm (new PendingForm g-arena))
+    (set-fields! p
+                 'form    f
+                 'pass    pass
+                 'ns      g-current-ns
+                 'path    g-source-path
+                 'imports g-file-imports
+                 'line    (f 'line))
+    (conj g-pending p)))
+
+; Re-run one parked form in the file that wrote it. The file being emitted may have
+; bound more than its prescan saw, through an import an expansion spliced in.
+(defn pending-run (p:&PendingForm):void
+  (let (here:NameEnv (name-env-enter (p 'ns) (p 'path)
+                       (if (= (p 'path) g-source-path) g-file-imports (p 'imports)))
+        saved-line:i32 g-form-line
+        saved-late:i32 g-late-prescan)
+    (set! g-form-line (p 'line))
+    (set! g-late-prescan 1)
+    (if (= (p 'pass) PEND-SIG)
+      (prescan-defn-signatures (node-list1 (p 'form) (p 'line)))
+      (prescan-value-names (node-list1 (p 'form) (p 'line))))
+    (set! g-late-prescan saved-late)
+    (set! g-form-line saved-line)
+    (name-env-set here)))
+
+; One form settling can settle another, so a pass that shrinks the list runs again.
+(defn pending-retry ():void
+  (let (more:bool (> (count g-pending) (as usize 0))
+        uf:RUnframe (resolve-unframe-enter))
+    (while more
+      (let (batch:&(Vector &PendingForm) (new (Vector &PendingForm) g-arena)
+            n:usize (count g-pending))
+        (doseq (p g-pending (VecIter &PendingForm)) (conj batch p))
+        (clear! g-pending)
+        (doseq (p batch (VecIter &PendingForm)) (pending-run p))
+        (set! more (and (> (count g-pending) (as usize 0)) (< (count g-pending) n)))))
+    (resolve-unframe-leave uf)))
+
+; Nothing can still define what `path`'s forms wait on (every file's, when `path`
+; is none), so each runs unprobed and dies with the message it always had.
+(defn pending-settle (path:Symbol):void
+  (when (= (count g-pending) (as usize 0)) (return))
+  (let (batch:&(Vector &PendingForm) (new (Vector &PendingForm) g-arena)
+        keep:&(Vector &PendingForm) (new (Vector &PendingForm) g-arena))
+    (doseq (p g-pending (VecIter &PendingForm))
+      (if (or (symbol-none? path) (= (p 'path) path)) (conj batch p) (conj keep p)))
+    (clear! g-pending)
+    (doseq (p keep (VecIter &PendingForm)) (conj g-pending p))
+    (set! g-pending-final true)
+    (doseq (p batch (VecIter &PendingForm)) (pending-run p))
+    (set! g-pending-final false)))
 
 ; ============================================================
 ; Stage 15 W8 G-0 (design/global-init.md §5) — the VALUE half of W1a's
@@ -20427,7 +20704,7 @@
             ; provisional variant.
             ty:ptr (extract-decl-name-and-type-provisional name-node (as &Symbol &name) name-line))
         ; No type annotation: `(defvar x 0)` is an error emit-defvar reports.
-        (when (or (= ty null) (symbol-none? name)) (return))
+        (when (or (= ty null) (symbol-none? name) (!= g-layout-defer 0)) (return))
         (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0) (return))
         (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
           (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
@@ -20620,30 +20897,32 @@
 (defn prescan-value-names (forms:?&Node):void
   (let (fc:ptr forms)
     (while (> (node-len fc) 0)
-      (let (f:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
-                   (>= (node-len (as ptr f)) 2)
-                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
-                priv:i32 (if (or (= h "defvar-") (= h "defconst-") (= h "defenum-")) 1 0))
-            (when (or (= h "defvar") (= h "defvar-")
-                      (= h "defconst") (= h "defconst-")
-                      (= h "defenum") (= h "defenum-"))
-              ; W5e: the top-level dispatch loop arms this around the emitter, so
-              ; the prescan must arm it too or a private name registers under the
-              ; public key. Restored immediately — the very next form may be public.
-              (let (save-priv:i32 g-defining-private)
-                (set! g-defining-private priv)
-                (cond
-                  (or (= h "defvar") (= h "defvar-"))
-                    (prescan-defvar-name (as ptr f))
-                  (or (= h "defconst") (= h "defconst-"))
-                    (do (prescan-defconst-name (as ptr f))
-                        (prescan-pending-const (as ptr f)))
-                  true
-                    (prescan-defenum-names (as ptr f)))
-                (set! g-defining-private save-priv))))))
+      (prescan-guarded PEND-VALUE (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
       (set! fc (node-rest (unsafe/cast &Node fc))))))
+
+(defn prescan-value-form (f:&Node):void
+  (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
+             (>= (node-len (as ptr f)) 2)
+             (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+    (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
+          priv:i32 (if (or (= h "defvar-") (= h "defconst-") (= h "defenum-")) 1 0))
+      (when (or (= h "defvar") (= h "defvar-")
+                (= h "defconst") (= h "defconst-")
+                (= h "defenum") (= h "defenum-"))
+        ; W5e: the top-level dispatch loop arms this around the emitter, so
+        ; the prescan must arm it too or a private name registers under the
+        ; public key. Restored immediately — the very next form may be public.
+        (let (save-priv:i32 g-defining-private)
+          (set! g-defining-private priv)
+          (cond
+            (or (= h "defvar") (= h "defvar-"))
+              (prescan-defvar-name (as ptr f))
+            (or (= h "defconst") (= h "defconst-"))
+              (do (prescan-defconst-name (as ptr f))
+                  (prescan-pending-const (as ptr f)))
+            true
+              (prescan-defenum-names (as ptr f)))
+          (set! g-defining-private save-priv))))))
 
 ; Stage 15 W1a/W1b (design/stage15-stress-test/resolution.md) — the second
 ; whole-graph prescan pass. `prescan-imported-types` (pass 1, above) has already
@@ -21209,15 +21488,282 @@
 ; (design/stage22-edn/macro-definitions.md).
 ; `line` is the expanding call's: a prescan's own refusals have no form line to blame.
 (defn late-prescan (forms:?&Node line:i32):void
-  (let (saved-line:i32 g-form-line)
+  (let (saved-line:i32 g-form-line
+        names:&(Vector Symbol) (new (Vector Symbol) g-arena)
+        imports:bool (late-defined-types forms names))
     (set! g-form-line line)
     (set! g-late-prescan 1)
+    (prescan-file-imports forms)
+    (prescan-imported-types forms)
     (prescan-protocols forms)
     (prescan-struct-names forms)
+    (prescan-shape-extends forms)
     (prescan-defn-signatures forms)
     (prescan-value-names forms)
+    (prescan-extends forms)
+    (prescan-imported-signatures forms)
+    (when (or imports (> (count names) (as usize 0)))
+      (implicit-templates-recheck (if imports null names)))
+    (pending-retry)
     (set! g-late-prescan 0)
     (set! g-form-line saved-line)))
+
+; The type names `forms` define. Answers true when they import, since then any
+; name may arrive.
+(defn late-defined-types (forms:?&Node names:&(Vector Symbol)):bool
+  (let (imports:bool false)
+    (dotimes (i (node-len forms))
+      (let (f:?&Node (as ?&Node (node-at forms i)))
+        (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 2))
+          (let (h:Symbol (qq-head (unsafe/cast &Node f)))
+            (when (import-head? h) (set! imports true))
+            (when (contains? TYPE-DEFINERS (symbol-as-view h))
+              (let (k:i32 1)
+                (while (and (< k (node-len f)) (= (node-kind (node-at f k)) NODE-KEYWORD))
+                  (inc! k))
+                (let (n:?&Node (as ?&Node (node-at f k)))
+                  (when (= (node-kind n) NODE-LIST) (set! n (as ?&Node (node-at n 0))))
+                  (when (= (node-kind n) NODE-SYM)
+                    (conj names (defn-name-only n))))))))))
+    (return imports)))
+
+; ============================================================
+; Bodies wait for the macros (design/doom-port-fixes/toplevel-macro-parity.md §4)
+; ============================================================
+; A form above the file's last macro call or import may name what that call
+; defines, and emission can't be retried. So it waits behind the call, unless a
+; macro can reach it. `MacroReach` answers that one from the file's text.
+
+; Every name a form can be reached through, whatever a macro spells it as.
+(defn reach-name (r:&MacroReach s:Symbol):void
+  (when (contains? (r 'hit) s) (return))
+  (assoc (r 'hit) s 1)
+  (match (get (r 'defs) s)
+    (none 0)
+    ((some fs) (conj (r 'work) fs))))
+
+(defn reach-walk (r:&MacroReach n:?&Node):void
+  (when (= n null) (return))
+  (case (node-kind n)
+    NODE-SYM
+      (let (s:Symbol ((unsafe/cast &Node n) 's)
+            sv:StrView (symbol-as-view s))
+        (reach-name r s)
+        ; Hygiene and a qualifier both prefix the name a defn was written under.
+        (match (strview-rfind-byte &sv 47)
+          (none 0)
+          ((some i) (reach-name r (symbol-intern (strview-drop-bytes sv (+ i (as usize 1))))))))
+    NODE-LIST
+      (cond
+        (= (node-at n 0) 'quote) 0
+        (= (node-at n 0) 'quasiquote) (reach-walk-template r (as ?&Node (node-at n 1)))
+        true (dotimes (i (node-len n))
+               (reach-walk r (as ?&Node (node-at n i)))))
+    0))
+
+; A template runs nowhere until it's expanded, and the expansion is walked then.
+; Only what it unquotes runs inside the macro.
+(defn reach-walk-template (r:&MacroReach n:?&Node):void
+  (when (= (node-kind n) NODE-LIST)
+    (if (or (= (node-at n 0) 'unquote) (= (node-at n 0) 'unquote-splice))
+      (reach-walk r (as ?&Node (node-at n 1)))
+      (dotimes (i (node-len n))
+        (reach-walk-template r (as ?&Node (node-at n i)))))))
+
+(defn reach-drain (r:&MacroReach):void
+  (while (> (count (r 'work)) (as usize 0))
+    (let (fs:&Node (invoke (r 'work) (- (count (r 'work)) (as usize 1))))
+      (remove-at (r 'work) (- (count (r 'work)) (as usize 1)))
+      (reach-walk r fs))))
+
+; Record what a macro could call under `name`; a name already reached is walked now.
+(defn reach-define (r:&MacroReach name:Symbol f:&Node):void
+  (match (get (r 'defs) name)
+    (none (assoc (r 'defs) name (node-list1 f (f 'line))))
+    ((some fs) (node-push fs f)))
+  (when (contains? (r 'hit) name) (conj (r 'work) (node-list1 f (f 'line))))
+  ; The compiler and the library's macros call these under no written name.
+  (when (or (contains? REACH-IMPLICIT (symbol-as-view name))
+            (strview-has-prefix (symbol-as-view name) "_"))
+    (reach-name r name)))
+
+(defn reach-note-form (r:&MacroReach f:?&Node):void
+  (when (and (= (node-kind f) NODE-LIST) (> (node-len f) 0)
+             (= (node-kind (node-at f 0)) NODE-SYM))
+    (let (ff:&Node (unsafe/cast &Node f)
+          h:Symbol (qq-head ff))
+      (cond
+        (and (or (= h "defn") (= h "defn-")) (> (node-len f) 1))
+          (reach-define r (defn-name-only (as ?&Node (node-at f 1))) ff)
+        ; A global's initializer runs wherever the global is copied to.
+        (and (or (= h "defvar") (= h "defvar-")) (> (node-len f) 1))
+          (let (k:i32 1)
+            (while (and (< k (node-len f)) (= (node-kind (node-at f k)) NODE-KEYWORD))
+              (inc! k))
+            (when (= (node-kind (node-at f k)) NODE-SYM)
+              (reach-define r (defn-name-only (as ?&Node (node-at f k))) ff)))
+        (or (= h "defmacro") (= h "defmacro-") (= h "compile-time") (= h "def-rmacro")
+            (not (contains? TOPLEVEL-HEADS (symbol-as-view h))))
+          (reach-walk r f)
+        true 0))))
+
+(defn macro-reach-new (forms:?&Node):&MacroReach
+  (let (r:&MacroReach (new MacroReach g-arena))
+    (set-fields! r
+                 'defs (new (HashMap Symbol &Node) g-arena)
+                 'hit  (new (HashMap Symbol i32) g-arena)
+                 'work (new (Vector &Node) g-arena))
+    (macro-reach-add r forms 0 (node-len forms))
+    (return r)))
+
+(defn macro-reach-add (r:&MacroReach forms:?&Node from:i32 to:i32):void
+  (let (i:i32 from)
+    (while (< i to)
+      (reach-note-form r (as ?&Node (node-at forms i)))
+      (inc! i)))
+  (reach-drain r))
+
+; The index of the last form that can define something, from `from` on: a macro
+; call or an import. -1 when there is none.
+(defn toplevel-last-wait (forms:?&Node from:i32):i32
+  (let (i:i32 (- (node-len forms) 1))
+    (while (>= i from)
+      (let (f:?&Node (as ?&Node (node-at forms i)))
+        (when (and (= (node-kind f) NODE-LIST) (> (node-len f) 0)
+                   (= (node-kind (node-at f 0)) NODE-SYM)
+                   (not (contains? TOPLEVEL-HEADS (symbol-as-view (qq-head (unsafe/cast &Node f))))))
+          (return i)))
+      (set! i (- i 1)))
+    (return -1)))
+
+; The last form that changes what a later form's names mean. Nothing waits past it.
+(defn toplevel-last-rename (forms:?&Node):i32
+  (let (i:i32 (- (node-len forms) 1))
+    (while (>= i 0)
+      (let (f:?&Node (as ?&Node (node-at forms i)))
+        (when (and (= (node-kind f) NODE-LIST) (> (node-len f) 0)
+                   (= (node-kind (node-at f 0)) NODE-SYM)
+                   (or (= (qq-head (unsafe/cast &Node f)) "ns")
+                       (= (qq-head (unsafe/cast &Node f)) "set-ir-prefix")))
+          (return i)))
+      (set! i (- i 1)))
+    (return -1)))
+
+; Does a type in this `defvar`'s declaration, or an array length, have to wait?
+(defn defvar-unsettled? (f:&Node):bool
+  (let (flags:i32 0
+        decl:ptr (parse-decl-attrs (as ptr (node-rest f)) (as &i32 &flags) (f 'line)))
+    (when (= decl null) (return false))
+    (let (nm:Symbol (symbol-none)
+          saved:i32 g-layout-defer)
+      (set! g-layout-defer 0)
+      (extract-decl-name-and-type-layout (node-first (unsafe/cast &Node decl)) (as &Symbol &nm)
+                                         (f 'line))
+      (let (unsettled:bool (!= g-layout-defer 0))
+        (set! g-layout-defer saved)
+        (return unsettled)))))
+
+(defn defstruct-unsettled? (f:&Node):bool
+  (let (nn:?&Node (as ?&Node (node-at f 1)))
+    (when (!= (node-kind nn) NODE-SYM) (return false))
+    (if-some (sd (lookup-struct (qualify-name ((unsafe/cast &Node nn) 's))))
+      (when (and (= (sd 'laid-out) 0) (= (sd 'opaque) 0))
+        (return (= (defstruct-fill-layout sd f 0) null)))
+      0)
+    (return false)))
+
+(defn defunion-unsettled? (f:&Node):bool
+  (let (nn:?&Node (as ?&Node (node-at f 1)))
+    (when (!= (node-kind nn) NODE-SYM) (return false))
+    (when (!= (uniondef-lookup (qualify-name ((unsafe/cast &Node nn) 's))) null) (return false))
+    (let (saved-probe:i32 g-type-probe
+          saved-defer:i32 g-layout-defer)
+      (set! g-type-probe 1)
+      (set! g-layout-defer 0)
+      (defunion-layout-deferred f (f 'line))
+      (let (unsettled:bool (!= g-layout-defer 0))
+        (set! g-type-probe saved-probe)
+        (set! g-layout-defer saved-defer)
+        (return unsettled)))))
+
+; A concrete `extend` is checked where it stands, against methods a macro may yet
+; define; a `conforms?` meanwhile is answered by the promise it left.
+(defn extend-unsettled? (f:&Node):bool
+  (when (< (node-len f) 3) (return false))
+  (let (sn:?&Node (as ?&Node (node-at f 1))
+        pn:?&Node (as ?&Node (node-at f 2)))
+    (when (or (!= (node-kind sn) NODE-SYM) (!= (node-kind pn) NODE-SYM)) (return false))
+    (let (subject:Symbol ((unsafe/cast &Node sn) 's)
+          proto:?&Protocol (protocol-lookup ((unsafe/cast &Node pn) 's)))
+      (when (symbol-contains-byte subject 58) (return false))
+      (when (= proto null)
+        (return (= (blanket-lookup ((unsafe/cast &Node pn) 's)) 0)))
+      (when (!= (protocol-lookup subject) null) (return false))
+      (when (= (tyname-resolvable subject) 0) (return true))
+      (when (> (-> proto (as &Protocol _) (_ 'num-params)) 0) (return false))
+      (let (notes:StrView "")
+        (return (= (proto-sigs-resolve proto (type-canon-name subject) null (f 'line)
+                                       (as &StrView &notes)) 0))))))
+
+; Must this form wait behind the file's last macro call or import?
+(defn toplevel-waits? (r:?&MacroReach f:&Node h:Symbol):bool
+  (when (= r null) (return false))
+  (when (> (count g-macrolet-stack) (as usize 0)) (return false))
+  (cond
+    (or (= h "defn") (= h "defn-"))
+      (do
+        (when (or (< (node-len f) 3) (not (node-is-list (node-at f 2)))) (return false))
+        ; A template emits nothing, and one that turns out concrete must emit late.
+        (when (!= (defn-is-generic-template f) 0) (return true))
+        (return (not (contains? ((unsafe/cast &MacroReach r) 'hit)
+                                (defn-name-only (as ?&Node (node-at f 1)))))))
+    (or (= h "defvar") (= h "defvar-")) (return (defvar-unsettled? f))
+    (or (= h "defstruct") (= h "defstruct-")) (return (defstruct-unsettled? f))
+    (or (= h "defunion") (= h "defunion-")) (return (defunion-unsettled? f))
+    (= h "extend") (return (extend-unsettled? f))
+    true 0)
+  (return false))
+
+; Put the waiting forms back at `at`, closing the slots they left. Answers where
+; `at` is now. A header writer walks the list again once it's dispatched.
+(defn toplevel-reinsert (forms:?&Node at:i32 items:&Node):i32
+  (let (lst:&Node (unsafe/cast &Node forms)
+        b:&Node (node-list-new (lst 'line))
+        moved:i32 0)
+    (dotimes (k at)
+      (when (!= (as ptr (aref (lst 'elems) k)) (as ptr g-waited-slot))
+        (node-push b (aref (lst 'elems) k))))
+    (set! moved (node-len b))
+    (node-extend b items)
+    (let (k:i32 at)
+      (while (< k (lst 'len))
+        (node-push b (aref (lst 'elems) k))
+        (inc! k)))
+    (set-fields! lst
+                 'elems (b 'elems)
+                 'len   (b 'len)
+                 'cap   (b 'cap))
+    (return moved)))
+
+; The waiting forms a macro has just come to reach. A template stays behind.
+(defn waiting-released (r:&MacroReach waiting:&Node):&Node
+  (let (out:&Node (node-list-new 0)
+        keep:&Node (node-list-new 0))
+    (dotimes (i (node-len waiting))
+      (let (f:&Node (unsafe/cast &Node (node-at waiting i))
+            h:Symbol (qq-head f))
+        (if (and (or (= h "defn") (= h "defn-"))
+                 (contains? (r 'hit) (defn-name-only (as ?&Node (node-at f 1))))
+                 (= (defn-is-generic-template f) 0))
+          (node-push out f)
+          (node-push keep f))))
+    (set-fields! waiting 'elems (keep 'elems) 'len (keep 'len) 'cap (keep 'cap))
+    (return out)))
+
+; A by-value field needs its struct laid out, in whatever order they waited.
+(defn waiting-layouts (waiting:&Node):void
+  (dotimes (i (node-len waiting))
+    (prescan-struct-layouts waiting)))
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
@@ -21346,7 +21892,12 @@
   (when (= g-toplevel-depth 1) (set! g-promises-open true))
   (let (fi:i32 0
         nforms:i32 (node-len forms)
-        redo:i32 0)
+        redo:i32 0
+        last-wait:i32 (toplevel-last-wait forms 0)
+        last-rename:i32 (toplevel-last-rename forms)
+        waiting:&Node (node-list-new 0)
+        reach:?&MacroReach (if (> last-wait 0) (macro-reach-new forms) null))
+    (when (< last-wait 0) (pending-settle g-source-path))
     (while (< fi nforms)
       (set! redo 0)
       (let (f:&Node (unsafe/cast &Node (node-at forms fi)))
@@ -21357,9 +21908,13 @@
               (die-at (node-line (as ptr f) ((unsafe/cast &Node forms) 'line))
                       "top-level form must be a list starting with a symbol"))
         (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
-              hp:ptr (-> f (node-at _ 0))
-              rsd:usize (if (= g-resolve 0) 0 (resolve-push-frame (as ?&Node f) -1 SLOT-TOP 0)))
+              waits:bool (and (<= fi last-wait) (> fi last-rename) (toplevel-waits? reach f h))
+              hp:ptr (if waits '__waiting (-> f (node-at _ 0)))
+              rsd:usize (if (or waits (= g-resolve 0)) 0 (resolve-push-frame (as ?&Node f) -1 SLOT-TOP 0)))
           (case hp
+            '__waiting
+              (do (node-push waiting f)
+                  (node-set-at (unsafe/cast &Node forms) fi g-waited-slot))
             'ns
               ; A leading `ns` is consumed by apply-leading-ns before the loop;
               ; reaching it here means a non-leading (e.g. second) `ns`, which
@@ -21520,11 +22075,29 @@
                              (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1)))))
             (set! redo (toplevel-expand-macro forms fi f h)))
           (resolve-pop-to rsd)
-          (when (!= g-resolve 0) (resolve-note-def (as ptr f) h))))
+          (when (import-head? h) (pending-retry))
+          (when (and (!= g-resolve 0) (not waits)) (resolve-note-def (as ptr f) h))))
       ; `redo` means a top-level macro expansion rewrote this position: dispatch
       ; it again instead of advancing past it. The list grew, so re-measure.
       (if (!= redo 0)
-        (set! nforms (node-len forms))
+        (let (grown:i32 (- (node-len forms) nforms))
+          (set! nforms (node-len forms))
+          ; The expansion's own forms stay ahead of what waits behind the call.
+          (set! last-wait (let (w:i32 (toplevel-last-wait forms fi))
+                            (if (> w (+ fi grown)) w (+ fi grown))))
+          (set! last-rename (toplevel-last-rename forms))
+          (when (= reach null) (set! reach (macro-reach-new forms)))
+          (let (r:&MacroReach (unsafe/cast &MacroReach reach)
+                before:usize (count (r 'hit)))
+            (macro-reach-add r forms fi (+ fi (+ grown 1)))
+            (when (> (count (r 'hit)) before)
+              (let (out:&Node (waiting-released r waiting))
+                (when (> (node-len out) 0)
+                  (set! fi (toplevel-reinsert forms fi out))
+                  ; Closing the slots moved the list as well as filling it.
+                  (set! last-wait (+ last-wait (- (node-len forms) nforms)))
+                  (set! last-rename (toplevel-last-rename forms))
+                  (set! nforms (node-len forms)))))))
         (do
           (inc! fi)
           ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
@@ -21537,7 +22110,17 @@
             (set! g-root-hoist-ok 0)
             (when (and (not (symbol-none? g-unit-entry-path))
                        (!= (import-list-has g-imported g-unit-entry-path) 0))
-              (set! fi nforms)))))))
+              (set! fi nforms)))
+          ; Nothing below can define a name, so what waited has what it will get.
+          (when (and (> fi last-wait) (>= last-wait 0))
+            (set! last-wait -1)
+            (pending-settle g-source-path)
+            (when (> (node-len waiting) 0)
+              (waiting-layouts waiting)
+              (set! fi (toplevel-reinsert forms fi waiting))
+              (set! nforms (node-len forms))
+              (set! waiting (node-list-new 0))))))))
+  (when (= g-toplevel-depth 1) (pending-settle (symbol-none)))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
   ; names/protocols/conformances and g-source-path is back to this unit — and

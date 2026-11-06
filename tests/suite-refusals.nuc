@@ -215,7 +215,7 @@
 ; A body error is refused too: the header describes only a program that compiles.
 (deftest w9-header-validation-body-error-refused
   (try (check-probe-refused "(defn w38-body (x:i64):i32 (return (as i32 x)))"
-         "as: lossy conversion from i64 to i32 -- use unsafe/cast"))
+         "as: lossy conversion from i64 to i32 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits"))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------

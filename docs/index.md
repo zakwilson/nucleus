@@ -128,14 +128,14 @@ Additional libraries available via `import-use`:
 - `(import-use nucleus.macros)` — standard macros (already in prelude)
 - `(import-use nucleus.numeric)` — `Eq`, `Ord`, `Num` protocols for operators
 - `(import-use nucleus.math)` — `(min a b)`, `(max a b)`, `(clamp x lo hi)` over any `Ord` type and `(abs a)` over the built-in numbers: generics bounded by `nucleus.numeric`'s protocols. They sit beside `nucleus.combinators`' one-argument iterator `min`/`max`. The most negative integer's `abs` is itself, as in C
-- `(import-use nucleus.slice)` — `(Slice T)`, a bounds-checked pointer and length over elements another owner keeps in place: `(slice-of p n)`, `count`, `(s i)` returning `&T` (any integer index), `set`, `index-of`
+- `(import-use nucleus.slice)` — `(Slice T)`, a bounds-checked pointer and length over elements another owner keeps in place: `(slice-of p n)`, `(as-slice &v)` over a `Vector`'s live elements (valid until its next growth), `count`, `empty?`, `iter`, `(s i)` returning `&T` (any integer index), `set`, `index-of`
 - `(import-use nucleus.error)` — `try`, `with-handler`, `signal`, `err-find-handler`
 - `(import-use nucleus.node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
 - `(import-use nucleus.arena)` — the process arena `g-arena` and `arena-alloc`
 - `(import-use nucleus.create)` — the `new` and `make` macros: an object in one call, from any allocator
 - `(import-use nucleus.allocator)` — `Allocator` protocol, `Alloc`, `Heap`/`heap`, `Arena`, `FixedBuffer`, `Tracking`
 - `(import-use nucleus.iterator)` — `Iterator` protocol and concrete iterators
-- `(import-use nucleus.coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
+- `(import-use nucleus.coll)` — core collection protocols (`Coll`, `Growable`, `Seq`, `Assoc`, `Set`, `Drop`)
 - `(import-use nucleus.strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
 - `(import-use nucleus.strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
 - `(import-use nucleus.keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys

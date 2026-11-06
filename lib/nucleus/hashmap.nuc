@@ -498,6 +498,7 @@
 ; must be declared before it can name the associated iterator type.)
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Coll (Entry K V) (HashMapEntryIter K V)))
+(extend (HashMap K V) (Growable (Entry K V)))
 
 (defn iter (self:&(HashMap K V)) (HashMapEntryIter K V)
   (let (it:&(HashMapEntryIter K V) (alloca (HashMapEntryIter K V)))

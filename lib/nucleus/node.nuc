@@ -327,6 +327,7 @@
     (return (as-ref e))))
 
 (extend Node (Coll &Node NodeIter))
+(extend Node (Growable &Node))
 
 (defn count (self:&Node):usize
   (return (unsafe/cast usize (node-len self))))

@@ -812,7 +812,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`. A value may be `(:or v ...)`, matching any one of the listed values. |
+| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`, bound through a `let` first unless `form` is a name or a literal. A value may be `(:or v ...)`, matching any one of the listed values. |
 | `when` | `(when condition body...)` | `(cond condition (do body...))` |
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
@@ -826,7 +826,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `into` | `(into coll-sym iter-ref)` | Drain an iterator into a collection: calls `(next iter-ref)` each step and `(conj coll-sym elem)` for each element; stops on `none`. Requires `coll-sym` to be a `(ref CollType)` with a `conj` method. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`, and so does any other bare step: `(-> v 0)` is `(0 v)`, not indexing — write `(-> v (_ 0))`. `_` is only special inside `->`. |
 
-`case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
+`case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). A `form` that isn't a name or a literal is bound once first, so it runs once.
 
 `(import-use nucleus.create)` provides `(new T a args…)` — allocate one `T` from allocator `a` (`g-arena`, `heap`, …), typed `(ref T)`, and initialize it — and `(make T a args…)`, its by-value twin. Both are library macros; see [allocators.md](allocators.md#creating-an-object-in-one-call-new-and-make).
 
@@ -939,7 +939,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `field` | Field read: `(field s 'f)`, or `(field s sel)` for a field chosen at runtime (homogeneous structs). It never calls a method; head position `(s 'f)` is the same read. A place for `set!` and `&`. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `.set!` | **Retired in Stage 16** — a targeted hard error: `'.set!' was retired in Stage 16: set! takes a place`. Write `(set! (s 'field) v)`. | — |
 | `get` | Not a special form: the key lookup of `HashMap`, `ConstMap` and other `Assoc` conformers, an ordinary generic. It does not read fields; on a struct no `get` method takes, the error names `field`. See [Callable values](#callable-values-non-function-call-position) | `m[k]` |
-| `set` | **Generic**, the write side of `invoke`: a member place with a **computed** key, `(set! (m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields. `Vector` and `HashMap` both define one. | `m[k] = v` |
+| `set` | **Generic**, the write side of `invoke`: a member place with a **computed** key, `(set! (m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields. `Vector` and `HashMap` both define one. A place with more keys is the same call, `(set! (grid x y) v)` is `(set grid x y v)`, for a receiver with an `invoke` of that many keys; there no key is read as a field selector. | `m[k] = v` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |

@@ -527,19 +527,15 @@
     (drop &below)
     (drop &ldir)))
 
-; The residue, pinned so it is a decision rather than an oversight: a `defmacro`
-; is a COMPILED function, not a registration — `emit-defmacro` runs codegen and
-; materializes a JIT module — so it stays where the emitter is and still needs
-; the import above the use.
-(deftest w9-layout-macro-still-needs-import-above
+; A `defmacro` is a compiled function, not a registration, so nothing prescans it.
+; A body above the import still sees it, because the body waits for the import.
+(deftest w9-layout-macro-reaches-a-body-above-its-import
   (let (ldir:String (try (test-scratch-sub "l"))
         lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
         m:String (try (test-write-file "mac.nuc" "(defn main ():i32 (return (w9lay-mac 1)))
 (import-use w9lay)
 ")))
-    (try (check-file-rejects (string-as-view &ldir)
-                             (string-as-view &m)
-                             "unknown: w9lay-mac"))
+    (try (check-file-exit (string-as-view &ldir) (string-as-view &m) 101))
     (drop &m)
     (drop &lib)
     (drop &ldir)))

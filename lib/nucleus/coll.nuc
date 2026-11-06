@@ -36,10 +36,9 @@
 ; ---------------------------------------------------------------------------
 
 ; ---------------------------------------------------------------------------
-; Coll E It — the minimum every collection implements.
+; Coll E It — the minimum every collection implements, a fixed-length view or a
+; constant included; `conj`, which those can't do, is `Growable`'s.
 ;   count  -> number of live elements (usize)
-;   conj   -> add an element in the collection's natural/efficient way,
-;             MUTATING in place (append for a vector)
 ;   empty? -> true when count = 0
 ;   iter   -> a fresh iterator over the collection's elements
 ;
@@ -55,9 +54,16 @@
 
 (defprotocol (Coll E It)
   (count  (self:&Self):usize)
-  (conj    (self:&Self elem:E):void)
   (empty?   (self:&Self):bool)
   (iter      (self:&Self):It))
+
+; ---------------------------------------------------------------------------
+; Growable E — a collection that takes more elements.
+;   conj -> add an element in the collection's natural/efficient way,
+;           MUTATING in place (append for a vector)
+; ---------------------------------------------------------------------------
+(defprotocol (Growable E)
+  (conj (self:&Self elem:E):void))
 
 ; ---------------------------------------------------------------------------
 ; Seq E — ordered, index-addressable sequences (a practical subset of the

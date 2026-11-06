@@ -114,6 +114,16 @@
                       (stamp-arg-token (tt 'elem))))))
     (return (type-mangle-token t))))
 
+; A method's token keeps nullability at every level: it is part of the method's
+; identity (`params-key-eq`), so `f(?&Q)` and `f(&Q)` need two symbols.
+(defn param-mangle-token (t:?&Type):StrView
+  (let (tt:ptr:Type t)
+    (when (= (tt 'kind) TY-PTR)
+      (let (maybe:bool (= (tt 'pkind) PTR-MAYBE))
+        (when (= (tt 'elem) null) (return (if maybe "qptr" "ptr")))
+        (return (fstr (if maybe "q" "p") (param-mangle-token (tt 'elem))))))
+    (return (type-mangle-token t))))
+
 (defn stamp-arg-spelling (t:?&Type):Symbol
   (let (tt:ptr:Type t)
     (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))

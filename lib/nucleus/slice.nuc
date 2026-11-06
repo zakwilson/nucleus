@@ -7,6 +7,8 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
 
 (extern stderr:ptr)
 
@@ -20,8 +22,35 @@
 (defn slice-of (p:(ptr T) n:usize):(Slice T)
   (return ((Slice T) p n)))
 
+; The live elements of `v`, valid until its next growth moves them.
+(defn as-slice (v:&(Vector T)):(Slice T)
+  (return ((Slice T) (unsafe/cast (ptr T) (as ptr (field v 'data))) (field v 'len))))
+
 (defn count (self:&(Slice T)):usize
   (return (field self 'len)))
+
+(defn empty? (self:&(Slice T)):bool
+  (return (= (field self 'len) 0)))
+
+; Yields the elements by value, as VecIter does; `(s i)` is the way to a reference.
+(defstruct (SliceIter T) data:(ptr T) pos:usize len:usize)
+(extend (SliceIter T) (Iterator T))
+
+(defn next (self:&(SliceIter T)):?T
+  (when (>= (field self 'pos) (field self 'len)) (return none))
+  (let (v:T (aref (field self 'data) (as i64 (field self 'pos))))
+    (set! (self 'pos) (+ (field self 'pos) 1))
+    (return (some v))))
+
+(extend (Slice T) (Coll T (SliceIter T)))
+
+(defn iter (self:&(Slice T)) (SliceIter T)
+  (let (it:&(SliceIter T) (alloca (SliceIter T)))
+    (set-fields! it
+                 'data (field self 'data)
+                 'pos  0
+                 'len  (field self 'len))
+    (return @it)))
 
 (defn invoke (self:&(Slice T) i:usize):&T
   (when (>= i (field self 'len)) (slice-bounds (unsafe/cast i64 i) (field self 'len)))

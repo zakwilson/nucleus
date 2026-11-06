@@ -87,7 +87,7 @@ template naming a function whose methods reach the macro's file from two
 namespaces, through no shared protocol, is refused rather than narrowed.
 
 **A binding name may not be qualified.** No binder (`let`, a parameter, a
-`defn` or `defstruct` name, …) may be spelled `ns/name`, whether the source or
+`defn` or `defstruct` name, a protocol's method, …) may be spelled `ns/name`, whether the source or
 an expansion wrote it. A template that binds a name its file defines therefore
 fails, with a note saying why:
 
@@ -121,7 +121,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`. A value may be `(:or v ...)`, matching any one of the listed values: `(case x (:or a b) r d)` → `(cond (or (= x a) (= x b)) r true d)`. |
+| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`, bound through a `let` first unless `form` is a name or a literal. A value may be `(:or v ...)`, matching any one of the listed values: `(case x (:or a b) r d)` → `(cond (or (= x a) (= x b)) r true d)`. |
 | `when` | `(when condition body...)` | `(cond condition (do body...))` |
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
@@ -132,7 +132,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/nucleus/core.nuc` (which 
 | `for` | `(for (var:type init) test step body...)` | `(let (var:type init) (while test :step step body...))` — `continue` runs the step |
 | `while-some` | `(while-some (x expr) body...)` | `(while true (if-some (x expr) (do body...) (break)))` — evaluates `expr` each pass and runs the body with `x` bound while it has a value: a non-null pointer, or a `(Maybe T)`'s `some` |
 | `some?` / `none?` | `(some? m)`, `(none? m)` | `(if-some (x m) true false)` / `(if-some (x m) false true)` — whether `m` has a value: a non-null pointer, or a `(Maybe T)`'s `some` |
-| `dotimes` | `(dotimes (var n) body...)` | `(let (var (* n 0)) (while (< var n) :step (inc! var) body...))` — `continue` still advances the index; the index takes the count's type unless `var` is annotated (`i:i32`) |
+| `dotimes` | `(dotimes (var n) body...)` | `(let (var (* n 0)) (while (< var n) :step (inc! var) body...))` — `continue` still advances the index; the index takes the count's type unless `var` is annotated (`i:i32`). Over a literal count the index is an `i32`, but an operator pairing it with an unsigned operand converts it, as it would the literal, when the operand's type holds every index and the body doesn't assign `var`. A multimethod argument doesn't adapt this way: annotate the index, `(i:usize 8)`. |
 | `doseq` | `(doseq (var coll-expr IterType) body...)` | Iterate a **collection** conforming to `(Coll E It)`: calls `(iter coll-expr)` to get a fresh `IterType` by value, binds it to a typed local, and drives `(next &it)` each step, binding each element to `var`. `IterType` must be named explicitly because `let` bindings have no type inference and `&` requires a named local (not an rvalue). `IterType` examples: `(VecIter i32)`, `(HashSetIter i32)`, `(HashMapEntryIter CStr i32)`. See [Iterators](iterators.md). |
 | `doseq-iter` | `(doseq-iter (var iter-ref) body...)` | Iterate a **bare iterator reference**: calls `(next iter-ref)` each step, binding each element to `var`. Use for types that conform to `(Iterator E)` but are not a `Coll` — e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`. `iter-ref` must be a `(ref IterType)` already materialised by the caller. |
 | `into` | `(into dest-coll src-coll IterType)` | Drain a **collection** `src-coll` into `dest-coll`: calls `(iter src-coll)` to get a fresh `IterType` by value, then `(conj dest-coll elem)` for each element. `IterType` is the associated iterator type of `src-coll`. |
@@ -160,7 +160,7 @@ converts (or is refused, if the conversion is unsafe). And `->` finds its hole b
 matching the bare symbol `_`, so an annotated hole (`_:ptr:Node`) is not
 recognised as one — cast the threaded value in a form of its own instead.
 
-`case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
+`case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). A `form` that isn't a name or a literal is bound once first, so it runs once.
 
 A value may be written `(:or v ...)`, which matches any one of the listed values and so lets arms that share a result collapse into one:
 
@@ -296,8 +296,7 @@ destructures** the row, which must then be a list of that many elements:
 * **The table may be computed** rather than written out, by marking it `~`. See
   [`~e` — a computed macro argument](#e--a-computed-macro-argument).
 * **Top-level position works**, so a `macmap` may generate a family of
-  definitions: overloads, templates, and `extend`s with their methods. Like any
-  macro-produced definition, they are not forward-referenceable. See
+  definitions: overloads, templates, and `extend`s with their methods. See
   [Macros in top-level position](#macros-in-top-level-position).
 * **A `macmap` inside a `defmacro` or `macrolet` body is a nested quasiquote**,
   and is compiled as one — the inner `~param` belongs to the inner template. See
@@ -725,20 +724,47 @@ functions that must not drift apart:
 See [`examples/macmap.nuc`](../examples/macmap.nuc), and `src/repl.nuc`, where
 this shape holds the 54-row REPL session roster.
 
-Two limits follow from *when* the expansion happens — during the dispatch loop,
-after the pre-scans have already walked the file:
+Anything you can write at the top level works from a top-level macro call. That
+includes names used *above* the call: a `defn` on line 10 may call one an expansion
+produces on line 90, name a type it defines in a signature, a global or a field, or
+use a constant or enum member it defines. An expansion may also import, and may
+define a protocol your written `extend` conforms to. Across files, a signature in
+an importer may name a type its import's macro defines. Expansion stays in file
+order, so a macro still sees what's above it, and `struct-fields` still works.
 
-- The macro must be **defined before the call**, in file order. There is no
-  pre-scan for macro definitions, so `(import-use …)` for a library's macros
-  belongs at the top of the file, where it already is.
-- A definition that only a macro produces is **not forward-referenceable**: a
-  `defn` produced by an expansion on line 90 cannot be called from a `defn`
-  written on line 10. Ordinary definition order applies to it, not the
-  file-wide visibility the pre-scans give hand-written ones.
-- A struct a macro produces **may be a by-value field** of a written `defstruct`
-  that is emitted after the expansion: below the call, or in a file importing
-  this one. The layout pre-scan leaves that `defstruct` to its own emission
-  instead of refusing the field type.
+Two things make that possible:
+
+- A form whose signature or type names something unknown **waits**, and is tried
+  again after each expansion and each import. Once nothing is left to come, it
+  fails with the message it would have given anyway.
+- A `defn` above the file's last macro call or import has its **body compiled after
+  that call**, unless a macro can reach it. So do a global, struct, union or concrete
+  `extend` that names what's still to come.
+
+A macro can reach a function if a macro body, a `compile-time` block or a top-level
+macro call's arguments name it, directly or through another function. Those stay
+where they are, because the macro has to be able to run them. Names inside a
+quasiquote don't count until the template expands.
+
+What this leaves:
+
+- The macro must be **defined before a top-level call**, in file order. There is no
+  pre-scan for macro definitions, so `(import-use …)` for a library's macros belongs
+  at the top of the file, where it already is.
+- **A function a macro can reach sees only what's defined so far.** Its signature and
+  body can't name something only a later macro defines. Keep compile-time helpers
+  above the macros that define things, or away from them.
+- **Naming a function in a macro call's arguments counts as reaching it**, even if the
+  macro only copies it into its expansion.
+- A body that waits sees everything above the file's last macro call, so it can use a
+  macro or `defcast` written below it, which a body in file order couldn't.
+- **A file waits only for its own macro calls and imports.** If it uses a type defined
+  by a macro in a file it doesn't import, that type must be defined before the file's
+  own forms are reached.
+- **Don't name a macro-defined type like a type variable.** An undeclared name in a
+  template argument is a type variable until something defines it as a type, so
+  `(defn f (v:&(Vector Foo)) …)` is generic over `Foo` if nothing ever defines `Foo`.
+  A misspelt name there isn't an error.
 
 Otherwise a macro-produced definition is registered exactly like a written one.
 The expansion's protocols, struct names, `defn` signatures and values are

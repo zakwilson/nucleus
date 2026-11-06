@@ -1,0 +1,6 @@
+; A typo in :except would otherwise drop a field the struct doesn't own.
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(defstruct S v:(Vector i32))
+(derive-drop S :except (w))
+(defn main ():i32 (return 0))

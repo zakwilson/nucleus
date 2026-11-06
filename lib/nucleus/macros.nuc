@@ -130,12 +130,14 @@
 ; stays a call — see design/stage16-ergonomics/case-alternatives.md. An empty
 ; (:or) is false, matching the file's other variadics.
 ; Because = is overloadable, case works over any type with an equality (ints,
-; enum constants, symbols, C strings). `form` is re-evaluated per comparison, so
-; it should be a pure, side-effect-free expression.
+; enum constants, symbols, C strings). A `form` that isn't a name or a literal is
+; bound once first, so it runs once.
 (defmacro case (form :rest clauses)
   (let ((acc ?&Node) null
         i:i32 0
-        n:i32 (ast-len clauses))
+        n:i32 (ast-len clauses)
+        bind:bool (and (!= (form 'kind) NODE-SYM) (!= (form 'kind) NODE-INT))
+        subject:ptr (cond bind (gensym) true form))
     (while (< i n)
       (if (= i (- n 1))
         ; Lone trailing element: the default arm.
@@ -163,13 +165,14 @@
                       k:i32 1
                       m:i32 (ast-len val))
                   (while (< k m)
-                    (set! tests `(~@tests (= ~form ~(ast-at val k))))
+                    (set! tests `(~@tests (= ~subject ~(ast-at val k))))
                     (set! k (+ k 1)))
                   (set! test `(or ~@tests)))
-                (set! test `(= ~form ~val)))
+                (set! test `(= ~subject ~val)))
               (set! acc `(~@acc ~test ~(ast-at clauses (+ i 1))))))
           (set! i (+ i 2)))))
-    `(cond ~@acc)))
+    (cond bind `(let (~subject ~form) (cond ~@acc))
+          true `(cond ~@acc))))
 
 ; (when condition body) — one-armed conditional; body only if condition is true.
 ; For multiple body forms, wrap them in (do ...).
@@ -264,6 +267,10 @@
 ; Example: (dotimes (i:i32 n) (process (node-at items i:i32)))
 ; `ast-at` is a compiler special form, so this macro works even in programs that
 ; have not imported the node runtime.
+; A zero of the count's type, for the index; `emit-let` recognizes the name, so a
+; literal count's index can meet an unsigned operand (nuc-iron-doom ISSUE-004).
+(defmacro __index-init (n) `(* ~n 0))
+
 (defmacro dotimes (spec :rest body)
   (let ((var-node ?&Node) (ast-at spec 0)
         (n-node ?&Node) (ast-at spec 1))
@@ -272,7 +279,7 @@
     (when (or (!= (spec 'kind) NODE-LIST) (!= (ast-len spec) 2)
               (= var-node null) (!= (var-node 'kind) NODE-SYM))
       (macro-error spec "dotimes: the first argument must be (var count)"))
-    `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
+    `(let (~var-node (__index-init ~n-node))
        (while (< ~var-node ~n-node) :step (inc! ~var-node)
          (do ~@body)))))
 

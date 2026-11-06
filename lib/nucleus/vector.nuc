@@ -92,7 +92,7 @@
         (set! (v 'cap) new-cap)))))
 
 ; ---------------------------------------------------------------------------
-; Coll T conformance: count, conj, empty?.
+; Coll T conformance: count, empty?. Growable T: conj.
 ; ---------------------------------------------------------------------------
 
 ; count -> number of live elements.
@@ -147,6 +147,15 @@
 ; append: add at the back (same as conj for a vector).
 (defn append (self:&(Vector T) elem:T):void
   (conj self elem))
+
+; push/pop: the back of the vector as a stack; `pop` on an empty vector is `none`.
+(defn push (self:&(Vector T) elem:T):void
+  (conj self elem))
+
+(defn pop (self:&(Vector T)):?T
+  (when (= (field self 'len) 0) (return none))
+  (set! (self 'len) (- (field self 'len) 1))
+  (return (some (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 (field self 'len))))))
 
 ; contains?: linear scan with =. (Scalar element types.)
 (defn contains? (self:&(Vector T) elem:T):bool
@@ -312,6 +321,7 @@
 ; be declared before it can name the associated iterator type.)
 ; ---------------------------------------------------------------------------
 (extend (Vector T) (Coll T (VecIter T)))
+(extend (Vector T) (Growable T))
 
 (defn iter (self:&(Vector T)) (VecIter T)
   (let (it:&(VecIter T) (alloca (VecIter T)))

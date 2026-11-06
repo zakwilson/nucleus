@@ -394,6 +394,7 @@
 ; (HashSetIter T) must be declared before it can name the associated iterator.)
 ; ---------------------------------------------------------------------------
 (extend (HashSet T) (Coll T (HashSetIter T)))
+(extend (HashSet T) (Growable T))
 
 (defn iter (self:&(HashSet T)) (HashSetIter T)
   (let (it:&(HashSetIter T) (alloca (HashSetIter T)))

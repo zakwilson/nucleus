@@ -125,21 +125,22 @@
     (return))
   (string-push-u64 out (as ui64 v)))
 
-(extend i64 ToStr)
-(defn to-str (self:i64 out:&String):!void
-  (string-push-i64 out self) (return (ok)))
-
-(extend i32 ToStr)
-(defn to-str (self:i32 out:&String):!void
-  (string-push-i64 out (as i64 self)) (return (ok)))
-
-(extend usize ToStr)
-(defn to-str (self:usize out:&String):!void
-  (string-push-u64 out (as ui64 self)) (return (ok)))
-
-(extend ui64 ToStr)
-(defn to-str (self:ui64 out:&String):!void
-  (string-push-u64 out self) (return (ok)))
+; One overload per width: a widening rule would tie `ui32` between `i64`, `usize`
+; and `ui64`.
+(macmap ((t push wide)
+         `(do (extend ~t ToStr)
+              (defn to-str ((self ~t) (out (ref String))):!void
+                (~push out (as ~wide self)) (return (ok)))))
+  ((i8    string-push-i64 i64)
+   (i16   string-push-i64 i64)
+   (i32   string-push-i64 i64)
+   (i64   string-push-i64 i64)
+   (ssize string-push-i64 i64)
+   (ui8   string-push-u64 ui64)
+   (ui16  string-push-u64 ui64)
+   (ui32  string-push-u64 ui64)
+   (ui64  string-push-u64 ui64)
+   (usize string-push-u64 ui64)))
 
 ; --- other bases -------------------------------------------------------------
 ;

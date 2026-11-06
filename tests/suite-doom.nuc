@@ -790,3 +790,346 @@ missing key :sens for #user/Opt"))
         ov:StrView (string-as-view &out))
     (try (check-eq (strview-trim-end &ov) "3 -1"))
     (drop &out)))
+
+; nuc-iron-doom ISSUE-001: a member place with N keys is `(set m k… v)`.
+(deftest doom-set-place-two-keys
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Grid (cells (array i32 16)) width:i32)
+(defn invoke (g:&Grid x:i32 y:i32):i32 (aref (g 'cells) (+ x (* y (g 'width)))))
+(defn set (g:&Grid x:i32 y:i32 v:i32):void (set! (aref (g 'cells) (+ x (* y (g 'width)))) v))
+(defn main ():i32
+  (let (g:&Grid (Grid (width 4)))
+    (set! (g 1 2) 7)
+    (printf \"%d\\n\" (g 1 2)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-004: a literal count's index adapts to an unsigned operand
+; its whole range fits, on either side of the operator.
+(deftest doom-dotimes-index-unsigned
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defconst N 4)
+(defn main ():i32
+  (let (base:usize 10 s:usize 0 b:ui8 1)
+    (dotimes (i 8) (set! s (+ s (+ base i))))
+    (dotimes (i N) (set! s (+ i s)))
+    (dotimes (i 200) (set! b (+ b i)))
+    (printf \"%llu %d\\n\" (as ui64 s) (as i32 b)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "114 189"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-005 and ISSUE-010: a Vector's elements as a Slice, and a
+; template's `count` over both, which `Coll`'s namespace reaches.
+(deftest doom-as-slice-and-template-count
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.vector)
+(import-use nucleus.slice)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(import-use nucleus.hashset)
+(defmacro total (s) `(unsafe/cast i32 (count ~s)))
+(defn main ():i32
+  (let (v (make (Vector i32)))
+    (conj &v 5)
+    (conj &v 6)
+    (let (s:(Slice i32) (as-slice &v)
+          p:&i32 (&s 0)
+          sum:i32 0)
+      (set! @p 7)
+      (doseq (x &s (SliceIter i32)) (set! sum (+ sum x)))
+      (printf \"%d %d %d %d\\n\" (&v 0) (total &v) (total &s) sum)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 2 2 13"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-008: a defconst's value may be a macro call.
+(deftest doom-defconst-macro-value
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.node)
+(defmacro squares ()
+  (let (out (node-list-new 0))
+    (node-push out 'array)
+    (node-push out 'i32)
+    (dotimes (i 4) (node-push out (node-int (* i i))))
+    out))
+(defmacro answer () `42)
+(defconst TABLE (squares))
+(defconst A (answer))
+(defconst B (as i64 (answer)))
+(defn main ():i32
+  (printf \"%d %d %lld\\n\" (aref TABLE 3) A B)
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "9 42 42"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-012: punctuation the reader takes maps to a mnemonic, for a
+; solitary name, an overload and a local alike.
+(deftest doom-name-punctuation
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn f32->i32 (f:f32):i32 (return (unsafe/cast i32 f)))
+(defn a<b (x:i32):i32 (return x))
+(defn a<b (x:f64):i32 (return 2))
+(defstruct P+Q x:i32)
+(defn main ():i32
+  (let (p*q:i32 3 r (P+Q 4))
+    (printf \"%d %d %d %d %d\\n\" (f32->i32 2.5) (a<b 1) (a<b 1.5) p*q (r 'x)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "2 1 2 3 4"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-014: Vector is a stack.
+(deftest doom-vector-push-pop
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.vector)
+(import-use nucleus.create)
+(import-use nucleus.coll)
+(defn main ():i32
+  (let (v (make (Vector i32)) sum:i32 0)
+    (push &v 1)
+    (push &v 2)
+    (while-some (x (pop &v)) (set! sum (+ (* sum 10) x)))
+    (printf \"%d %d\\n\" sum (unsafe/cast i32 (count &v))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "21 0"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-015: a name for a literal adapts at dispatch as the literal does.
+(deftest doom-named-literal-dispatch
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct V x:f32 y:f32)
+(defn _* (v:V k:f32):V (return (V (* (v 'x) k) (* (v 'y) k))))
+(defn scale (x:f32):i32 (return 32))
+(defn scale (x:i8 y:i8):i32 (return 8))
+(defconst K 0.5)
+(defconst L 3)
+(defn main ():i32
+  (let (v (V 2.0 4.0) a (* v 0.5) b (* v K))
+    (printf \"%d %d %d\\n\" (if (= (a 'y) (b 'y)) 1 0) (scale K) (scale L L)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 32 8"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-017: every integer width formats.
+(deftest doom-str-every-width
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.fmt)
+(import-use nucleus.string)
+(defn main ():i32
+  (let (a:ui32 7 b:i16 -3 c:ui8 5 d:i8 -1 e:ui16 9 f:ssize -2
+        s (str a \" \" b \" \" c \" \" d \" \" e \" \" f)
+        v (string-as-view &s))
+    (printf \"%.*s\\n\" (unsafe/cast i32 (v 'len)) (as ptr (v 'data))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 -3 5 -1 9 -2"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-018: `deftype` takes a fn type's two groups.
+(deftest doom-deftype-fn-groups
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(deftype Op (fn i32)(i32 i32))
+(deftype- Un (fn i32) (i32))
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
+(defn neg (a:i32):i32 (return (- 0 a)))
+(defn apply2 (f:Op a:i32 b:i32):i32 (return (f a b)))
+(defn apply1 (f:Un a:i32):i32 (return (f a)))
+(defn main ():i32
+  (printf \"%d %d\\n\" (apply2 add 2 3) (apply1 neg 4))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "5 -4"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-019: a struct literal binds T as its value.
+(deftest doom-struct-literal-binds-value
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(defstruct P a:i32 b:i32)
+(defn- vec-of (n:i32 v:T):(Vector T)
+  (let (out (make (Vector T)))
+    (dotimes (i:i32 n) (conj &out v))
+    (return out)))
+(defn main ():i32
+  (let (v:(Vector P) (vec-of 3 (P 1 2))
+        w (vec-of 2 (P 3 4)))
+    (printf \"%d %d %d\\n\" (unsafe/cast i32 (count &v)) ((&v 2) 'b) ((&w 1) 'a)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3 2 3"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-020: `(S v)` copies an S, so `new` and `make` take one.
+(deftest doom-new-copies-a-value
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.allocator)
+(import-use nucleus.create)
+(defstruct P x:i32 y:i32)
+(defstruct L next:?&L v:i32)
+(defn main ():i32
+  (let (v (P 1 2) p (new P heap v) m (make P heap v)
+        a (new L heap) b (new L heap a 3))
+    (set! (v 'y) 9)
+    (printf \"%d %d %d\\n\" (p 'y) (m 'y) (b 'v)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "2 2 3"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-022: `none` takes its type from the other arguments.
+(deftest doom-none-generic-arg
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(defstruct P x:i32)
+(defn tag (x:?i32):i32 (match x ((some v) (return v)) ((none) (return -1))))
+(defn first-or (v:&(Vector T) d:T):T (return (if (> (count v) 1) (v 1) d)))
+(defn main ():i32
+  (let (v (make (Vector ?&P)) u (make (Vector ?i32)))
+    (conj &v none)
+    (conj &u none)
+    (conj &u (some 4))
+    (printf \"%d %d %d\\n\" (unsafe/cast i32 (count &v)) (tag (first-or &u none)) (tag (&u 0))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 4 -1"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-026: an argument's tails are target-typed as a bare constructor is.
+(deftest doom-sum-in-arg-tails
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn title (b:bool):CStr (return (if b \"yes\" \"no\")))
+(defn show (t:?CStr):void
+  (match t ((some s) (puts s)) ((none) (puts \"none\"))))
+(defn show2 (a:i32 t:?CStr):void (show t))
+(defn show2 (a:i64 t:?CStr):void (show t))
+(defn pick (n:i32):?i32 (return (some n)))
+(defmacro via (c x) `(show (if ~c (some ~x) none)))
+(defstruct H t:?CStr)
+(defn main ():i32
+  (let (c true d false n:i32 1)
+    (show (if d (some (title true)) none))
+    (show (cond d none c (some (title false)) true none))
+    (show (case n 1 (some (title true)) none))
+    (show (do (some (title false))))
+    (show (let (x (title true)) (some x)))
+    (show (match (pick 1) ((some y) (some (title false))) ((none) none)))
+    (show (if c (if d none (some (title true))) none))
+    (show2 1 (if c (some (title false)) none))
+    (via c (title true))
+    (let (h (H (if c (some (title false)) none))) (show (h 't))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "none\nno\nyes\nno\nyes\nno\nyes\nno\nyes\nno"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-029: nullability tells two overloads apart. Alone, either takes both.
+(deftest doom-overload-by-nullability
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Q a:i32)
+(defn f (x:?&Q):i32 (return 1))
+(defn f (x:&Q):i32 (return 2))
+(defn g (x:&&Q):i32 (return 3))
+(defn g (x:&?&Q):i32 (return 4))
+(defn only (x:?&Q):i32 (return 5))
+(defn only (x:i32):i32 (return 6))
+(defn main ():i32
+  (let (q (Q 0) n:?&Q none r:&Q &q)
+    (printf \"%d %d %d %d %d\\n\" (f n) (f &q) (g &r) (g &n) (only &q)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 2 3 4 5"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-030: a generic stamped for `&Q` and `?&Q` is two instances, nested too.
+(deftest doom-generic-pointer-kind-instances
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.slice)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(import-use nucleus.create)
+(defstruct Q a:i32)
+(defn view (v:&(Vector T)):(Slice T)
+  (return (slice-of (unsafe/cast (ptr T) (v 'data)) (v 'len))))
+(defn same (x:T :where (Any T)):T (return x))
+(defn main ():i32
+  (let (v (make (Vector &Q)) q (Q 7) n:?&Q none u (make (Vector ?&Q)))
+    (conj &v &q)
+    (conj &u n)
+    (let (s (view &v) e (&s 0) s2 (view &u) e2 (&s2 0) m (same n) r (same &q))
+      (printf \"%d %s %s %d\\n\" (@e 'a) (if (none? @e2) \"none\" \"some\")
+              (if (none? m) \"none\" \"some\") (r 'a))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 none none 7"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-031: `case` runs its form once, in value and statement position.
+(deftest doom-case-once
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defvar calls:i32 0)
+(defn next ():i32 (inc! calls) (return 6))
+(defn main ():i32
+  (let (a (case (next) 5 50 6 60 0))
+    (case (next) 1 (printf \"one\\n\") (:or 2 6) (printf \"six\\n\") 0)
+    (printf \"%d %d\\n\" a calls))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "six\n60 2"))
+    (drop &out)))
+
+; nuc-iron-doom ISSUE-025: a derived drop reaches Drop fields, nested and by value, and
+; leaves pointers and :except alone; `delete` runs it and gives the bytes back.
+(deftest doom-derive-drop-and-delete
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use nucleus.create)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
+(import-use nucleus.allocator)
+(defstruct Res id:i32)
+(defn drop (r:&Res):void (printf \"drop %d\\n\" (r 'id)))
+(extend Res Drop)
+(defstruct Inner a:Res b:i32)
+(derive-drop Inner)
+(defstruct Outer i:Inner r:Res shared:Res p:&Res n:i32 v:(Vector i32))
+(derive-drop Outer :except (shared))
+(defstruct Plain x:i32)
+(defn main ():i32
+  (let (ext (Res 9))
+    (with (o (Outer (Inner (Res 1) 0) (Res 2) (Res 3) &ext 0 (make (Vector i32))))
+      (conj &(o 'v) 5))
+    (let (h (new Inner heap (Res 4) 1) q (new Plain heap 7))
+      (delete h heap)
+      (delete q heap)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "drop 1\ndrop 2\ndrop 4"))
+    (drop &out)))

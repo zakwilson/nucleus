@@ -1010,11 +1010,13 @@
                   (node-cons (union-target-spelling udd (unsafe/cast &Type target)) (as ptr n) ln) ln))))))
 
 ; A call or union-literal argument is not a want position (its type may pick the overload),
-; so only the built-in sum constructors are target-typed there, against a slot
-; type the caller already knows; `err` constructs as `err!`, since handler
-; negotiation belongs to a return site.
+; so only the built-in sum constructors are target-typed there, in the argument or
+; in the tails of its `if`/`cond`/`case`/`do`/`let`/`match`, against a slot type the
+; caller already knows; `err` constructs as `err!`, since handler negotiation
+; belongs to a return site.
 (defn arg-target-rewrite (form:ptr target:?&Type):ptr
-  (when (or (= target null) (= (arg-sum-ctor form) 0)) (return form))
+  (when (= target null) (return form))
+  (when (= (arg-sum-ctor form) 0) (return (arg-tails-rewrite form target)))
   (let (n:&Node (unsafe/cast &Node form))
     (when (and (= (n 'kind) NODE-LIST)
                (= (-> (node-at form 0) (unsafe/cast &Node _) (_ 's)) "err"))
@@ -1022,6 +1024,63 @@
         (when (!= g-resolve 0) (resolve-map-shifted form bang))
         (return (union-target-rewrite bang target)))))
   (return (union-target-rewrite form target)))
+
+; Element `i` of a list headed `h`: 1 a tail, 2 a `match` clause whose last form is
+; one, 0 neither.
+(defn arg-tail-kind (n:&Node h:Symbol i:i32):i32
+  (let (last:i32 (- (node-len n) 1))
+    (cond (= h "cond") (return (if (and (>= i 2) (= (% i 2) 0)) 1 0))
+          (= h "if") (return (if (>= i 2) 1 0))
+          (= h "case") (return (if (and (>= i 3) (or (= i last) (= (% i 2) 1))) 1 0))
+          (= h "let") (return (if (and (>= i 2) (= i last)) 1 0))
+          (= h "do") (return (if (and (>= i 1) (= i last)) 1 0))
+          (= h "match") (return (if (>= i 2) 2 0)))
+    (return 0)))
+
+(defn arg-tail-head (form:ptr):Symbol
+  (when (or (= form null) (!= (node-kind form) NODE-LIST) (= (node-len form) 0))
+    (return (symbol-none)))
+  (let (h:?&Node (node-at form 0))
+    (return (if (= (node-kind h) NODE-SYM) ((unsafe/cast &Node h) 's) (symbol-none)))))
+
+; Is `form` a sum constructor, or a control form with one in a tail?
+(defn arg-sum-tail? (form:ptr):bool
+  (when (!= (arg-sum-ctor form) 0) (return true))
+  (let (h:Symbol (arg-tail-head form))
+    (when (symbol-none? h) (return false))
+    (let (n:&Node (unsafe/cast &Node form))
+      (dotimes (i (node-len form))
+        (let (k:i32 (arg-tail-kind n h i)
+              e:ptr (node-at form i))
+          (cond (= k 1) (when (arg-sum-tail? e) (return true))
+                (and (= k 2) (= (node-kind e) NODE-LIST) (>= (node-len e) 2))
+                (when (arg-sum-tail? (node-at e (- (node-len e) 1))) (return true)))))))
+  (return false))
+
+; `n` with element `i` replaced. Written on a copy: a stamped body is re-read.
+(defn node-with-at (n:&Node i:i32 v:ptr):&Node
+  (let (c:&Node (node-list-new (n 'line)))
+    (dotimes (k (node-len n))
+      (node-push c (if (= k i) v (node-at n k))))
+    (when (!= g-resolve 0) (resolve-map-shifted n c))
+    (return c)))
+
+(defn arg-tails-rewrite (form:ptr target:?&Type):ptr
+  (let (h:Symbol (arg-tail-head form))
+    (when (symbol-none? h) (return form))
+    (let (out:&Node (unsafe/cast &Node form))
+      (dotimes (i (node-len form))
+        (let (k:i32 (arg-tail-kind out h i)
+              e:ptr (node-at out i))
+          (cond (= k 1)
+                (let (r:ptr (arg-target-rewrite e target))
+                  (when (!= r e) (set! out (node-with-at out i r))))
+                (and (= k 2) (= (node-kind e) NODE-LIST) (>= (node-len e) 2))
+                (let (last:i32 (- (node-len e) 1)
+                      r:ptr (arg-target-rewrite (node-at e last) target))
+                  (when (!= r (node-at e last))
+                    (set! out (node-with-at out i (node-with-at (unsafe/cast &Node e) last r))))))))
+      (return out))))
 
 ; `none`, or a list headed by `some`/`ok`/`err`/`err!`.
 (defn arg-sum-ctor (form:ptr):i32

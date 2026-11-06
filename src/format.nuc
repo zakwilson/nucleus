@@ -127,20 +127,17 @@
       (when (!= (isdigit (as i32 (aref (v 'data) 0))) 0)
         (set! lead 1)))
     (while (< i n)
-      (let (c:i32 (as i32 (aref (v 'data) i)))
-        (when (or (= c 63) (= c 33)) (set! special 1)))
+      (when (> ((ir-name-escape (as i32 (aref (v 'data) i))) 'len) 0)
+        (set! special 1))
       (set! i (+ i 1)))
     ; The overwhelmingly common case: nothing to escape, so nothing is copied.
     (when (and (= special 0) (= lead 0)) (return name))
-    ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
     (let (outn:i64 0
           j:i64 0)
       (when (!= lead 0) (set! outn 1))
       (while (< j n)
-        (let (c:i32 (as i32 (aref (v 'data) j)))
-          (cond (= c 63) (set! outn (+ outn 6))
-                (= c 33) (set! outn (+ outn 5))
-                true     (set! outn (+ outn 1))))
+        (let (m:i64 (as i64 ((ir-name-escape (as i32 (aref (v 'data) j))) 'len)))
+          (set! outn (+ outn (if (> m 0) m 1))))
         (set! j (+ j 1)))
       (let (s:ptr (arena-alloc (+ outn 1))
             si:i64 0
@@ -149,19 +146,38 @@
           (set! (aref (unsafe/cast &i8 s) 0) 95)
           (set! si 1))
         (while (< k n)
-          (let (c:i32 (as i32 (aref (v 'data) k)))
-            (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
-                  (= c 33) (set! si (ir-name-append s si "_BANG"))
-                  true     (do (set! (aref (unsafe/cast &i8 s) si) (unsafe/cast i8 c))
-                               (set! si (+ si 1)))))
+          (let (c:i32 (as i32 (aref (v 'data) k))
+                esc:StrView (ir-name-escape c))
+            (if (> (esc 'len) 0)
+              (set! si (ir-name-append s si esc))
+              (do (set! (aref (unsafe/cast &i8 s) si) (unsafe/cast i8 c))
+                  (set! si (+ si 1)))))
           (set! k (+ k 1)))
         (set! (aref (unsafe/cast &i8 s) si) 0)
         (return (strview (unsafe/cast &ui8 s) (as usize si)))))))
 
+; A reader-legal character LLVM's identifier refuses, as its escape, or "". `/`, `:`
+; and `#` stay out: each already means something in a name, so each stays refused.
+(defn ir-name-escape (c:i32):StrView
+  (case c
+    63  (return "_QMARK")
+    33  (return "_BANG")
+    62  (return "_GT")
+    60  (return "_LT")
+    43  (return "_PLUS")
+    42  (return "_STAR")
+    61  (return "_EQ")
+    37  (return "_PCT")
+    38  (return "_AMP")
+    124 (return "_BAR")
+    94  (return "_CARET")
+    126 (return "_TILDE")
+    (return "")))
+
 ; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
 ; a FINAL ir-name — the diagnostic backstop that catches any LLVM-illegal
 ; character ir-name-token/sanitize-for-ir/sanitize-for-c don't already handle.
-; ir-name-token only special-cases `?`/`!`; the overloaded/mangled path and the
+; ir-name-token maps only `ir-name-escape`'s characters; the overloaded/mangled path and the
 ; cheader path both end in a blanket sanitize (`[0-9a-zA-Z_.]` / `[A-Za-z0-9_]`
 ; respectively) and can never emit anything illegal — this predicate exists for
 ; the SOLITARY ir-name path (ns-ir-base / defn-ir-name's fallback / emit-defvar

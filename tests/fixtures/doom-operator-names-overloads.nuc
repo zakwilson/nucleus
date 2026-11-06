@@ -1,0 +1,5 @@
+(defstruct V x:f32)
+(defn _* (v:V k:f32):V (return v))
+(defn main ():i32
+  (let (v (V 1.0) s:StrView "x" w (* v s))
+    (return 0)))

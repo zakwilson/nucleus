@@ -669,8 +669,9 @@ target it.
 
 The receiver is **by value**, which is what lets a literal be an argument:
 `(to-str 42 out)` works, where a `(ref Self)` receiver would make the literal
-an rvalue with no address to take. Conformers: `i64`, `i32`, `usize`, `ui64`,
-`StrView`, `CStr`, `Char`, `bool`, `f64`, `f32`, and `Radix` (below).
+an rvalue with no address to take. Conformers: every integer width (`i8`…`i64`,
+`ui8`…`ui64`, `usize`, `ssize`), `StrView`, `CStr`, `Char`, `bool`, `f64`, `f32`,
+and `Radix` (below).
 
 `String` deliberately does **not** conform — by value would be a move. Write it
 through `(string-as-view s)`, which is O(1).

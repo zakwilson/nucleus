@@ -247,14 +247,19 @@ one) still joins a literal branch with an `S`-valued sibling as `S`:
 An untyped `let` binding of a literal binds the value too:
 `(let (step (Fixed 24)) (* step x))` makes `step` a `Fixed`, as
 `step:Fixed` would. A binding that wants the literal's address says so with
-an `&S` annotation, or takes `&step`.
+an `&S` annotation, or takes `&step`. Only a literal can fill an `&S` binding
+that way: any other `S` value, such as a call's result or a `(v 0)` that reads a
+`Vector`'s element, is refused, because the binding would point at a copy.
+
+`(S v)` with `v` already an `S` value is a copy of `v`, so `(new S a v)` and
+`(make S a v)` place a copy of an existing value.
 A cond or match whose branches still disagree is an error at a return. It is never
 the zero that a valueless body returns. An overloaded or generic call
 counts the literal as a by-value `S` too: `(conj &v (Pt 1 2))` on a
 `(Vector Pt)` binds `T = Pt`, and `(rq &v (Pt 3 4))` reaches a `p:Pt` overload.
 That reading is tried only when the literal's own `&S` finds no method, so an
-`&S` overload still wins and `(idt (Pt 1 2))` over `(x:T)` still binds
-`T = &Pt`. A comparison always reads the literal by value: `(= (Pt 1 2) p)`
+`&S` overload still wins. A type variable the literal is the first to bind takes
+the value: `(idt (Pt 1 2))` over `(x:T)` binds `T = Pt`. A comparison always reads the literal by value: `(= (Pt 1 2) p)`
 reaches a by-value `=` for `Pt`, with an `&Pt` operand loaded through, or is
 refused. It never compares the literal's address, and a struct has no `=`
 unless one is defined
@@ -976,11 +981,12 @@ function declared to return a `defunion` (or template instance), a typed
 resolves against that type, and the want carries into the value tails of
 `if`/`cond`/`do`/`let`/`with`/`match`. A **call, union-literal or struct-literal
 argument** is narrower, because its type can pick the overload: only the built-in `(some v)`,
-`none`, `(ok v)`, `(err e)` and `(err! e)` are target-typed there, and only as
-the argument itself (not through an `if`). The type comes from the union-literal
-or struct-literal field, the parameter of a function with one definition, or the type every
-same-arity overload declares at that position — when overloads disagree the
-constructor stays untyped. An argument `(err e)` builds the error value, as
+`none`, `(ok v)`, `(err e)` and `(err! e)` are target-typed there, as the argument
+itself or in the value tails of its `if`/`cond`/`case`/`do`/`let`/`match`. The type
+comes from the union-literal or struct-literal field, the parameter of a function with
+one definition, the type every same-arity overload declares at that position, or the
+parameter of the one method the other arguments leave, so `(conj &v none)` on a
+`(Vector ?&P)` is typed by `v`. Otherwise the constructor stays untyped. An argument `(err e)` builds the error value, as
 `err!` does. The `name:(Type ...)` colon-paren sugar works for parenthesized
 types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
 in binding positions, equivalent to the list form `(name (Result i64 i32))`.

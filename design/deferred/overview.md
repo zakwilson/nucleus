@@ -861,3 +861,7 @@ because the niche constructors and `match` know only those names
 the layout, which `docs/structs-unions.md` says user code shouldn't have to
 know. Revisit by letting the niche eliminators carry the union's own arm
 names, so any two-arm union of that shape gets the niche.
+
+## Expanding every macro before any prescan
+
+Iron Doom ISSUE-011 asked that anything possible at the top level be possible in a top-level expansion. That's built with pending forms and body deferral, which keep expansion in the dispatch loop ([../doom-port-fixes/toplevel-macro-parity.md](../doom-port-fixes/toplevel-macro-parity.md)). Racket-style phases (option A there) would have given cleaner semantics, with no name ever pending, at the cost of compiling helpers twice, a form cache per file, and macros that read `struct-fields` needing layouts before the prescans that make them. Revisit if a real issue or growing compiler complexity demands it.

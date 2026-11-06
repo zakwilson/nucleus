@@ -8,10 +8,11 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 
 ### `(Coll E It)` — minimum every collection implements
 
+Every collection conforms, including the ones that can't grow: `Slice` and the `Const` collections. `conj` is [`Growable`](#growable-e--a-collection-that-takes-more-elements)'s, so a `:where ((Coll E It) C)` body that calls `conj` also needs `((Growable E) C)`.
+
 ```lisp
 (defprotocol (Coll E It)
   (count:usize  ((self (ref Self))))
-  (conj:void    ((self (ref Self)) elem:E))
   (empty?:i32   ((self (ref Self))))
   (iter:It      ((self (ref Self)))))
 ```
@@ -19,7 +20,6 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 | Method | Description |
 |--------|-------------|
 | `count` | Number of live elements. |
-| `conj` | Add an element in the collection's natural way, mutating in place. For a vector this is append; for a set this is insert; for a map this takes an `(Entry K V)` pair. |
 | `empty?` | Returns `1` when `count = 0`, else `0`. |
 | `iter` | Returns a fresh iterator over the collection's elements **by value**. The return type is the associated iterator type `It`, which must conform to `(Iterator E)`. |
 
@@ -31,6 +31,15 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 ```
 
 In practice, `doseq` handles this automatically — see [Macros](macros.md) for the `(doseq (var coll IterType) …)` form. The fill-in-place helpers (`iter-init`, `hashset-iter`, `hmap-iter-entries`) remain available as internal helpers that the value-returning `iter` methods wrap; the documented protocol surface is value-return only.
+
+### `(Growable E)` — a collection that takes more elements
+
+```lisp
+(defprotocol (Growable E)
+  (conj:void ((self (ref Self)) elem:E)))
+```
+
+`conj` adds an element in the collection's natural way, mutating in place: an append on a `Vector`, an insert on a `HashSet`, an `(Entry K V)` pair on a `HashMap`. `Slice` and the `Const` collections don't conform, since neither can grow.
 
 ### `(Seq E)` — ordered, index-addressable sequences
 
@@ -119,6 +128,16 @@ All four methods take `(ref Self)` receivers. The algebra methods (`union`, `dif
 Every owning collection conforms to `Drop` so a `with`-bound value frees its buffer at scope exit, in reverse binding order. See [Special forms](special-forms.md) for `with`/`move`/`defer` semantics.
 
 `Drop` is declared in `lib/nucleus/coll.nuc` so every owning collection library can `(import-use nucleus.coll)` and extend it.
+
+`(derive-drop T)` (`(import-use nucleus.create)`) gives a struct a `drop` that drops each field whose own type conforms to `Drop`, in declaration order, and conforms `T`. A pointer field is left alone, and so is a field of any other type, including a `(Maybe …)` or an array of `Drop` values. A struct copy is shallow, so `(derive-drop T :except (f g))` names fields this struct shares rather than owns; a name that isn't a field is refused. The fields' own `Drop` must come first, so derive inner structs above outer ones. `T` must be a plain struct: as with `struct-fields`, a template or an instance is refused.
+
+```lisp
+(defstruct Level things:(Vector Thing) names:(Vector StrView))
+(derive-drop Level)
+
+(defstruct World level:Level players:(Vector Player))
+(derive-drop World :except (players))     ; the session owns players
+```
 
 ---
 
@@ -237,14 +256,18 @@ An owning collection may not escape by `return` without `move`; `new` places it 
 ```lisp
 ; Coll T
 (count:usize    ((self (ref (Vector T)))))
-(conj:void      ((self (ref (Vector T))) elem:T))
 (empty?:i32     ((self (ref (Vector T)))))
+
+; Growable T
+(conj:void      ((self (ref (Vector T))) elem:T))
 
 ; Seq T
 (invoke:T       ((self (ref (Vector T))) i:usize))   ; called as (v i)
 (set:void       ((self (ref (Vector T))) i:usize elem:T)) ; (set! (v i) x)
 ; also i:i32 and i:i64 for both — a negative index exits with a message
 (append:void    ((self (ref (Vector T))) elem:T))
+(push:void      ((self (ref (Vector T))) elem:T))    ; the same, as a stack
+(pop:?T         ((self (ref (Vector T)))))           ; removes the last; none when empty
 (contains?:i32  ((self (ref (Vector T))) elem:T))
 (insert:void    ((self (ref (Vector T))) i:usize elem:T))
 (remove-at:void ((self (ref (Vector T))) i:usize))
@@ -677,8 +700,9 @@ one. A generic function may take `(Const (Vector T))` and friends.
 ```
 
 A literal of constants costs no allocation, `init` or `drop`: it is a private
-constant global and a two-word header. A `Const` has `count`, `empty?`, `iter`
-(a `ConstIter`), `contains?`, and per shape `(v i)`, or `get`/`(m k)`/`keys`/`vals`.
+constant global and a two-word header. A `Const` conforms to `(Coll E ConstIter)`
+and has `count`, `empty?`, `iter` (a `ConstIter`), `contains?`, and per shape
+`(v i)`, or `get`/`(m k)`/`keys`/`vals`.
 It has no mutating method: `(conj s 3)` on a `ConstSet` is a no-match error with
 the note `a Const collection is read-only -- build one with (make (HashSet i32) heap ...)`.
 

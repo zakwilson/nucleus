@@ -72,7 +72,7 @@
 ; source-level compiler error, not a raw LLVM parse error at link/verify time.
 {:name "sm5-illegal-char-rejected" :expect :reject
  :file "tests/fixtures/sm5-illegal-char.nuc"
- :messages ["illegal character '%' in generated symbol for 'weird%name'"]}
+ :messages ["illegal character '@' in generated symbol for 'weird@name'"]}
 
 ; Stage 14 TC-1: a zero-arg return-only-tyvar generic called with no expected
 ; type (no declared binding → no want) must FAIL with the dedicated diagnostic,
@@ -121,7 +121,7 @@
 ;   reinterpretation -> "use unsafe/cast"
 {:name "as-lossy-rejected" :expect :reject
  :file "tests/fixtures/as-lossy.nuc"
- :messages ["as: lossy conversion from i32 to i8 -- use unsafe/cast"]}
+ :messages ["as: lossy conversion from i32 to i8 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits"]}
 {:name "as-raw-to-ref-rejected" :expect :reject
  :file "tests/fixtures/as-raw-to-ref.nuc"
  :messages ["unchecked pointer (ptr Rec) where non-null &Rec is required -- use as-ref (checked) or unsafe/cast"]}
@@ -142,7 +142,7 @@
  :messages ["unknown type 'NoSuchType' in the annotation 'x:NoSuchType'"]}
 {:name "as-sugar-lossy" :expect :reject
  :file "tests/fixtures/as-sugar-lossy.nuc"
- :messages ["as: lossy conversion from i64 to i32 -- use unsafe/cast"]}
+ :messages ["as: lossy conversion from i64 to i32 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits"]}
 {:name "as-sugar-raw-to-ref" :expect :reject
  :file "tests/fixtures/as-sugar-raw-to-ref.nuc"
  :messages ["use as-ref (checked) or unsafe/cast (unchecked assertion)"]}
@@ -214,10 +214,10 @@
  :messages ["as: a capturing closure cannot be used as a function pointer"]}
 {:name "w9-as-literal-too-big" :expect :reject
  :file "tests/fixtures/w9-as-literal-too-big.nuc"
- :messages ["as: lossy conversion from i32 to i8 -- use unsafe/cast"]}
+ :messages ["as: lossy conversion from i32 to i8 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits"]}
 {:name "w9-as-literal-signed-into-unsigned" :expect :reject
  :file "tests/fixtures/w9-as-literal-signed-into-unsigned.nuc"
- :messages ["as: lossy conversion from i32 to ui8 -- use unsafe/cast"]}
+ :messages ["as: lossy conversion from i32 to ui8 -- use as-checked to check the value fits, or unsafe/cast to reinterpret its bits"]}
 {:name "w9-as-float-inexact" :expect :reject
  :file "tests/fixtures/w9-as-float-inexact.nuc"
  :messages ["as: lossy conversion from f64 to f32 -- use unsafe/cast"]}
@@ -1189,10 +1189,14 @@
  :file "tests/fixtures/s24-conforms-runtime.nuc" :line 3
  :messages ["conforms?: only available inside a defmacro, macrolet or compile-time body"]}
 ; CQ-1b: a no stays right — the conformance that would contradict it is refused.
+{:name "doom-protocol-method-qualified" :expect :reject
+ :file "tests/fixtures/doom-protocol-method-qualified.nuc" :line 5
+ :messages ["cannot bind 'user/val': a binding name may not be qualified"]
+ :notes ["write ~'val to bind the caller's name"]}
 {:name "s24-conforms-late" :expect :reject
- :file "tests/fixtures/s24-conforms-late.nuc" :line 9
+ :file "tests/fixtures/s24-conforms-late.nuc" :line 8
  :messages ["Pt conforms to Shout here"]
- :notes ["s24-conforms-late.nuc:8: conforms? answered no for (Pt, Shout) before this"]}
+ :notes ["s24-conforms-late.nuc:7: conforms? answered no for (Pt, Shout) before this"]}
 {:name "s24-conforms-clone-drop" :expect :reject
  :file "tests/fixtures/s24-conforms-clone-drop.nuc" :line 7
  :messages ["R conforms to Drop here"]
@@ -1454,6 +1458,26 @@
 {:name "doom-deferred-field-typo" :expect :reject
  :file "tests/fixtures/doom-deferred-field-typo.nuc" :line 3
  :messages ["unknown type: Innr (did you mean 'Inner'?)"]}
+; A call spelled like a field reads as a designated initializer (nuc-iron-doom ISSUE-007).
+{:name "doom-designated-call" :expect :reject
+ :file "tests/fixtures/doom-designated-call.nuc" :line 5
+ :messages ["struct literal: type mismatch for field 'inner'"]
+ :notes ["(inner ...) is read as a designated initializer for field 'inner'; bind the call first to pass it positionally"]}
+; A struct with its own operator methods is told about them, not the built-in (nuc-iron-doom ISSUE-015).
+{:name "doom-operator-names-overloads" :expect :reject
+ :file "tests/fixtures/doom-operator-names-overloads.nuc" :line 4
+ :messages ["no matching method for '_*' with operand types (V, StrView)"]}
+; A `let` typed &T holds no value (nuc-iron-doom ISSUE-021).
+{:name "doom-let-ref-of-value" :expect :reject
+ :file "tests/fixtures/doom-let-ref-of-value.nuc" :line 4
+ :messages ["let: a &P binding can't hold a P value: it would point at a copy"]}
+; A `dotimes` index adapts only while its range is known (nuc-iron-doom ISSUE-004).
+{:name "doom-index-assigned" :expect :reject
+ :file "tests/fixtures/doom-index-assigned.nuc" :line 5
+ :messages ["_+: mixed signed/unsigned operands — use explicit cast"]}
+{:name "doom-index-too-wide" :expect :reject
+ :file "tests/fixtures/doom-index-too-wide.nuc" :line 3
+ :messages ["_+: mixed signed/unsigned operands — use explicit cast"]}
 ; `set!` on a Slice element whose `set` the file reaches only by prefix (nuc-doom ISSUE-049).
 {:name "doom-set-place-unimported" :expect :reject
  :file "tests/fixtures/doom-set-place-unimported.nuc" :line 4
@@ -1487,3 +1511,8 @@
 {:name "doom-edn-default-no-field" :expect :reject
  :file "tests/fixtures/doom-edn-default-no-field.nuc" :line 4
  :messages ["derive-edn: :edn-default names no field of user/P"]}
+
+; derive-drop's :except names a field that doesn't exist (nuc-iron-doom ISSUE-025).
+{:name "doom-derive-drop-except-typo" :expect :reject
+ :file "tests/fixtures/doom-derive-drop-except-typo.nuc" :line 5
+ :messages ["derive-drop: :except names no field of this struct"]}
