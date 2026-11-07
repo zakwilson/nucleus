@@ -1542,6 +1542,7 @@
             (drop &pf)
             (drop &names)))
         (dotimes (k (count (ref c 'libs))) (conj av (fstr "-l" (invoke (ref c 'libs) k))))
+        (dotimes (k (count (ref c 'link-args))) (conj av (invoke (ref c 'link-args) k)))
         (conj av "-o") (conj av (fstr so ".tmp"))
         (dotimes (k (count &objs)) (conj (ref e 'after) (invoke &objs k)))
         (graph-add g e)))

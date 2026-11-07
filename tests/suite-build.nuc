@@ -1170,6 +1170,19 @@
     (drop &p))
   (return (ok)))
 
+; :link-args reach the shared library's link too, so a version script can
+; limit what it exports.
+(deftest bt7-shared-link-args
+  (let (p:String (try (bt7-library "shlink" "{:kind :library :name \"fz\" :version \"1.0\" :shared true :link-args [\"-Wl,--version-script=fz.map\"]}\n"))
+        pv:StrView (string-as-view &p)
+        tool:String (bt-abs "build/nucleus")
+        tv:StrView (string-as-view &tool))
+    (try (write-into pv "fz.map" "{ global: fz.core__fz-answer; local: *; };\n"))
+    (try (bt4-sh pv (bt-sv (str "XDG_CACHE_HOME=$PWD/cache " tv " build 2>err && nm -D --defined-only build/lib/libfz.so > syms && grep -q 'T fz.core__fz-answer' syms && ! grep -q 'fz-twice' syms"))))
+    (drop &tool)
+    (drop &p))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; BT-8: dependencies and lookup
 ; ---------------------------------------------------------------------------

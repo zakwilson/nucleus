@@ -150,7 +150,7 @@ One EDN map. Every key is optional.
 | `:default-target` | symbol or string | The target a build without `--target=` builds; the host by default |
 | `:opt` | 0–3 | The optimization level, as `-O` |
 | `:cflags` | vector of strings | Passed to clang, for C header imports and for `:c-sources` |
-| `:link-args` | vector of strings | Passed to the link |
+| `:link-args` | vector of strings | Passed to the link, a `:shared` library's too (for a version script, say) |
 | `:libs` | vector or set of strings | Libraries to link, as `--link-lib=` |
 | `:c-sources` | vector of strings | C files compiled to `build/obj/` and linked in |
 | `:pkg-config` | map | Requirement sets for C headers, below |

@@ -5798,3 +5798,11 @@ The same held one step on, for an element of an array field under a macro call
 `emit-untyped-receiver` now expands a macro at the receiver's head and takes the
 address of any field, `aref` or `deref` form, and `set!`'s last-resort receiver goes
 through it too.
+
+## Lua-port fixes: a shared library's link takes `:link-args` (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-048): the `:shared true` edge built its
+`clang -shared` line without the project's `:link-args`, silently, so a library had
+no way to pass a version script, and every standard-library instance it used stayed
+exported (its ISSUE-049). The edge now appends them after `:libs`.
+`bt7-shared-link-args` covers it (nuctests 1744 passed, bootstrap holds).
