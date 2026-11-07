@@ -20767,7 +20767,8 @@
                     has-rest:i32 (defn-params-has-rest params-node))
                 (when (= g-layout-defer 0)
                   (let (pm:ptr (generic-register-method fname ret ptypes nparams
-                                 has-rest 0 (as ptr f)))
+                                 has-rest (if (>= (varargs-marker-at params-node) 0) 1 0)
+                                 (as ptr f)))
                     (defn-params-set-opt (as ?&Node params-node)
                       (unsafe/cast &Type ((unsafe/cast &Method pm) 'fn-type)))))))))))
       (set! g-defining-private save-priv))))))

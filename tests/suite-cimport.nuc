@@ -920,3 +920,32 @@ int main(void){
     (drop &got)
     (drop &p)
     (return (ok))))
+
+; nuc-lua ISSUE-013: a `defn` in an IMPORTED file implementing its header's
+; declaration got a `declare` beside its `define` (invalid IR), and a `:varargs`
+; one was prescanned as non-variadic, so the C declaration joined it as an overload.
+(deftest lua-imported-file-implements-header
+  (let (impl:String (try (test-write-file "limpl.nuc"
+                            "(ns limpl)
+(set-ir-prefix \"\")
+(import-use \"tests/fixtures/lua-impl.h\")
+(defn li_add (a:i32 b:i32):i32 (return (+ a b)))
+(defn li_sum (n:i32 :varargs ap):i32
+  (let (s:i32 0)
+    (dotimes (i n) (set! s (+ s (unsafe/va-arg ap i32))))
+    (return s)))
+"))
+        p:String (try (test-write-file "lmain.nuc"
+                         "(import-use \"tests/fixtures/lua-impl.h\")
+(import limpl)
+(import-use \"stdio.h\")
+(defn main ():i32
+  (printf \"%d %d\\n\" (li_add 2 3) (li_sum 3 10 20 30))
+  (return 0))
+"))
+        got:String (try (build-run-file "" "" (string-as-view &p))))
+    (try (check-golden (string-as-view &got) "5 60\n"))
+    (drop &got)
+    (drop &p)
+    (drop &impl)
+    (return (ok))))

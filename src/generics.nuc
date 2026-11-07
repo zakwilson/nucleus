@@ -832,6 +832,7 @@
       (type-set-params ft param-types nparams)
       (set! (ft 'ret) ret)
       (set! (ft 'has-rest) has-rest)
+      (set! (ft 'variadic) variadic)
       (set-fields! m
                    'variadic    variadic
                    'has-rest    has-rest
@@ -1137,6 +1138,19 @@
                      'src-ns   g-ns-user
                      'priv     0))
       (return true))))
+
+; Does a `defn` of this unit implement the C declaration? Its `define` will carry
+; the symbol, so the header must not also `declare` it: an imported file's
+; signature is registered before its header is read, and its key bound later.
+(defn generic-implements-c-fn? (fname:Symbol ret:?&Type ptypes:ptr nparams:i32 variadic:i32):bool
+  (when-some (g (generic-lookup-exact fname))
+    (let (cpfx:Symbol (ns-ir-prefix g-ns-user))
+      (doseq (m (g 'methods) (VecIter &Method))
+        (when (and (= (m 'ir-fixed) 0) (= (m 'kind) METHOD-USER) (= (m 'origin-template) null)
+                   (= (method-ir-prefix g m) cpfx)
+                   (c-implements? m ret ptypes nparams variadic))
+          (return true)))))
+  (return false))
 
 ; Does `m` implement the C declaration? Its slots must be the C ones as a Nucleus
 ; program writes them, and only a bare `ptr` writes `void *`: `free (self:&Box)` is

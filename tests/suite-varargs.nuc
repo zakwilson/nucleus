@@ -133,3 +133,21 @@
     (drop &hdr)
     (drop &lp)
     (return (ok))))
+
+; nuc-lua ISSUE-013: the signature prescan left a :varargs defn's type
+; non-variadic, so a call written above the definition failed its arity check.
+(deftest varargs-called-before-its-definition
+  (let (p:String (try (test-write-file "vfwd.nuc"
+                         "(import-use \"stdio.h\")
+(defn caller ():i32 (return (vsum 3 1 2 3)))
+(defn vsum (n:i32 :varargs ap):i32
+  (let (s:i32 0)
+    (dotimes (i n) (set! s (+ s (unsafe/va-arg ap i32))))
+    (return s)))
+(defn main ():i32 (printf \"%d\\n\" (caller)) (return 0))
+"))
+        got:String (try (build-run-file "" "" (string-as-view &p))))
+    (try (check-golden (string-as-view &got) "6\n"))
+    (drop &got)
+    (drop &p)
+    (return (ok))))

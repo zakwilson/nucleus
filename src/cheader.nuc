@@ -1138,6 +1138,10 @@
           (set! (csym 'returns-twice) 1)))
       (when (= fname "malloc")
         (set! g-malloc-decl-done 1))
+      ; A `defn` that implements this declaration emits its `define` under
+      ; the same symbol, and LLVM refuses a declare beside it.
+      (when (generic-implements-c-fn? fname (as ?&Type ret-type) param-types num-params is-variadic)
+        (return 1))
       ; Emit LLVM declare, lowering a struct-by-value parameter or return
       ; to the platform C ABI (sret / byval / register coercion) exactly
       ; as `emit-nuch-declare-import` and `emit-defn` do.

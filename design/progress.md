@@ -5710,3 +5710,18 @@ Found by the nuc-lua port (its ISSUE-002 and ISSUE-003).
 
 `tests/fixtures/lua-shapes.{h,c}` and `lua-header-shapes` in `tests/suite-cimport.nuc`
 cover both.
+
+## Lua-port fixes: a header function defined in an imported file (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-013). `lauxlib.h` declares `luaL_error`, and the
+port defines it in an imported file under `(set-ir-prefix "")`.
+
+- **No second `declare`.** The header's declaration was emitted beside the definition,
+  which LLVM rejects as a redefinition. `c-finish-fn-decl` still binds the name, so
+  unqualified calls resolve, but skips the `declare` when a C-prefixed user method
+  already implements it (`generic-implements-c-fn?`).
+- **A `:varargs` definition matches its header.** The prescan registered the method
+  without its variadic flag, so the header's `...` read as a different overload.
+
+`lua-imported-file-implements-header` (with `tests/fixtures/lua-impl.h`) and
+`varargs-called-before-its-definition` cover both.
