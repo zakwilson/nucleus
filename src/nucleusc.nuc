@@ -4598,7 +4598,7 @@
       (abi-args-begin ret-info)
       (let (arglist:StrView (abi-arg-frag (as ptr vv)))
         (when (!= (ret-info 'kind) ABI-DIRECT)
-          (return (abi-emit-struct-call ret-info target (cr 'ir-name) arglist 1)))
+          (return (abi-emit-struct-call ret-info target (cr 'ir-name) arglist 1 "")))
         (let (tmp:StrView (new-tmp))
           (emit g-body-stream "  " tmp " = call " (type-to-ir target) " " (cr 'ir-name) "("
                 arglist ")\n")
@@ -8353,34 +8353,19 @@
               (vararg-promote av (cc 'line)))
             (str-into argbuf sep (abi-arg-frag (as ptr av))))
           (inc! i))
-        ; A variadic callee needs its signature spelled at the call site so the
-        ; `...` boundary is visible; a fixed one takes the bare return type.
-        (let (callee-sig:StrView (type-to-ir ret-type))
-          (when (!= (fn-type 'variadic) 0)
-            (let ((sig String) (str-alloc g-arena (type-to-ir ret-type) " ("))
-              (set! i 0)
-              (while (< i nfixed)
-                (let (pt:ptr ((field-at (fn-type 'params) i) 'type))
-                  (when (!= i 0) (str-into sig ", "))
-                  (str-into sig (type-to-ir pt)))
-                (inc! i))
-              (when (!= nfixed 0) (str-into sig ", "))
-              (str-into sig "...)")
-              (set! callee-sig (string-as-view sig))))
-          ; A struct return is `sret`/register-coerced exactly as for a direct
-          ; call — abi-emit-struct-call prints its `ir-name` operand verbatim,
-          ; so the callee register works where a `@name` does. Never reached for
-          ; a variadic fn type: `abi-classify` of a non-struct return is DIRECT.
+        ; A variadic callee needs its signature spelled so the `...` boundary is visible.
+        (let (ret-ir:StrView (type-to-ir ret-type)
+              sig:StrView (if (!= (fn-type 'variadic) 0) (abi-va-call-sig fn-type ret-info) ""))
           (let (arglist:StrView (string-as-view argbuf)
                 callee:StrView (fnptr-callee (fv 'val)))
             (when (!= (ret-info 'kind) ABI-DIRECT)
               (return (abi-emit-struct-call ret-info ret-type callee
-                                            arglist nargs)))
+                                            arglist nargs sig)))
             (when (= (ret-type 'kind) TY-VOID)
-              (emit g-body-stream "  call " callee-sig " " callee "(" arglist ")\n")
+              (emit g-body-stream "  call " ret-ir sig " " callee "(" arglist ")\n")
               (return (alloc-val ty-void "")))
             (let (tmp:StrView (new-tmp))
-              (emit g-body-stream "  " tmp " = call " callee-sig " " callee "(" arglist ")\n")
+              (emit g-body-stream "  " tmp " = call " ret-ir sig " " callee "(" arglist ")\n")
               (return (alloc-val ret-type tmp)))))))))
 
 ; A function pointer loaded from memory is a data `ptr`; where functions live in
@@ -8764,7 +8749,10 @@
     ; If the callee has :rest, fold trailing args into a runtime Node cons
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
-          ft0:(ptr Type) (ss 'type))
+          ft0:(ptr Type) (ss 'type)
+          ; A `declare`'s extra arguments are a variadic tail too: the callee can't tell.
+          va-call:bool (or (!= (ft0 'variadic) 0)
+                           (and (!= (ss 'extern-decl) 0) (> nargs (ft0 'num-params)))))
       ; W9 item 41: `(dyn P)` dispatch on a method name with exactly ONE
       ; definition. emit-generic-call forwards a boxed receiver through the
       ; vtable, but a single conformer leaves the method a solitary `defn`, so
@@ -8871,9 +8859,9 @@
           ; a variadic argument takes the integer convention (no FP registers,
           ; no flattening). Idempotent, so asserting it per trailing argument is
           ; the same as detecting the crossing exactly once.
-          (when (and (!= (ft0 'variadic) 0) (>= i (ft0 'num-params)))
+          (when (and va-call (>= i (ft0 'num-params)))
             (abi-args-varargs))
-          (when (and (!= (ft0 'variadic) 0)
+          (when (and va-call
                      (>= i (ft0 'num-params))
                      (!= (type-is-strview (av 'type)) 0)
                      (= (av 'is-lit) 0))
@@ -8882,7 +8870,7 @@
                     (av 'val) ", 0\n")
               (set! (av 'type) ty-ptr)
               (set! (av 'val) d)))
-          (when (and (!= (ft0 'variadic) 0) (>= i (ft0 'num-params)))
+          (when (and va-call (>= i (ft0 'num-params)))
             (vararg-promote av (cc 'line)))
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
           ; or the byval / register-coerced fragment for a struct-by-value arg
@@ -8897,43 +8885,22 @@
         ; needs a local `declare`, and — Stage 20 L4 — decides whether the name
         ; means the host's copy or the program's.
         (macro-jit-ensure-decl ss (cc 'line))
-        (if (!= (ft 'variadic) 0)
-          (do
-            (let ((sigs String) (str-alloc g-arena (type-to-ir (ft 'ret)) " ("))
-              (set! i 0)
-              (while (< i (ft 'num-params))
-                (let (pt:ptr ((field-at (ft 'params) i) 'type))
-                  (when (!= i 0) (str-into sigs ", "))
-                  (str-into sigs (type-to-ir pt)))
-                (inc! i))
-              (when (!= (ft 'num-params) 0) (str-into sigs ", "))
-              (str-into sigs "...)")
-              (let (sig:StrView (string-as-view sigs))
-                (if (-> ft (_ 'ret) (unsafe/cast &Type _) (_ 'kind) (= _ TY-VOID))
-                  (do
-                    (emit g-body-stream "  call " sig " " (ss 'ir-name) "(" arglist ")\n")
-                    ; Stage 10 Phase F1: noreturn callee — close the block.
-                    (when (!= (ss 'noreturn) 0) (terminate-after-noreturn)))
-                  (let (tmp:StrView (new-tmp))
-                    (emit g-body-stream "  " tmp " = call " sig " " (ss 'ir-name) "(" arglist
-                          ")\n")
-                    (return (alloc-val (ft 'ret) tmp)))))))
-          (do
-            (let (ret-info:&AbiInfo (unsafe/cast &AbiInfo call-ret-info))
-              (if (!= (ret-info 'kind) ABI-DIRECT)
-                ; Struct return: emit the lowered call + reconstruction.
-                (return (abi-emit-struct-call ret-info (ft 'ret) (ss 'ir-name)
-                                              arglist eff-nargs))
-                (if (-> ft (_ 'ret) (unsafe/cast &Type _) (_ 'kind) (= _ TY-VOID))
-                  (do
-                    (emit g-body-stream "  call " (type-to-ir (ft 'ret)) " " (ss 'ir-name) "("
-                          arglist ")\n")
-                    ; Stage 10 Phase F1: noreturn callee — close the block.
-                    (when (!= (ss 'noreturn) 0) (terminate-after-noreturn)))
-                  (let (tmp:StrView (new-tmp))
-                    (emit g-body-stream "  " tmp " = call " (type-to-ir (ft 'ret)) " "
-                          (ss 'ir-name) "(" arglist ")\n")
-                    (return (alloc-val (ft 'ret) tmp))))))))
+        (let (ret-info:&AbiInfo (unsafe/cast &AbiInfo call-ret-info)
+              sig:StrView (if va-call (abi-va-call-sig ft ret-info) ""))
+          (if (!= (ret-info 'kind) ABI-DIRECT)
+            ; Struct return: emit the lowered call + reconstruction.
+            (return (abi-emit-struct-call ret-info (ft 'ret) (ss 'ir-name)
+                                          arglist eff-nargs sig))
+            (if (-> ft (_ 'ret) (unsafe/cast &Type _) (_ 'kind) (= _ TY-VOID))
+              (do
+                (emit g-body-stream "  call " (type-to-ir (ft 'ret)) sig " " (ss 'ir-name) "("
+                      arglist ")\n")
+                ; Stage 10 Phase F1: noreturn callee — close the block.
+                (when (!= (ss 'noreturn) 0) (terminate-after-noreturn)))
+              (let (tmp:StrView (new-tmp))
+                (emit g-body-stream "  " tmp " = call " (type-to-ir (ft 'ret)) sig " "
+                      (ss 'ir-name) "(" arglist ")\n")
+                (return (alloc-val (ft 'ret) tmp))))))
         (return (alloc-val ty-void "")))))))
 
 ; ============================================================
@@ -10915,7 +10882,7 @@
       (str-into argbuf ", " (abi-arg-frag (as ptr (unsafe/ptr+ (unsafe/cast &Val args) i)))))
     (let (arglist:StrView (string-as-view argbuf))
       (when (!= (ret-info 'kind) ABI-DIRECT)
-        (return (abi-emit-struct-call ret-info ret-ty fnp arglist (+ nargs 1))))
+        (return (abi-emit-struct-call ret-info ret-ty fnp arglist (+ nargs 1) "")))
       (when (= (-> ret-ty (unsafe/cast &Type _) (_ 'kind)) TY-VOID)
         (emit g-body-stream "  call void " fnp "(" arglist ")\n")
         (return (alloc-val ty-void "")))

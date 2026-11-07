@@ -1552,7 +1552,31 @@
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call (info:&AbiInfo ret:?&Type ir-name:StrView arglist:StrView nargs:i32):&Val
+; ` (ptr, i32, ...)`: the lowered parameter list a call to variadic `ft` must spell,
+; so the callee's `...` is visible. A function type can't carry byval or sret.
+(defn abi-va-call-sig (ft:(ptr Type) ret-info:&AbiInfo):StrView
+  (let ((acc String) (str-alloc g-arena " (")
+        sep:StrView "")
+    (when (= (ret-info 'kind) ABI-MEMORY)
+      (str-into acc "ptr")
+      (set! sep ", "))
+    (abi-args-begin ret-info)
+    (dotimes (i (ft 'num-params))
+      (let (pty:?&Type ((field-at (ft 'params) i) 'type)
+            info:&AbiInfo (abi-classify-arg pty)
+            k:i32 (info 'kind))
+        (str-into acc sep)
+        (when (= k ABI-DIRECT) (str-into acc (type-to-ir pty)))
+        (when (= k ABI-MEMORY) (str-into acc "ptr"))
+        (when (= k ABI-COERCE1) (str-into acc (info 'reg0)))
+        (when (= k ABI-COERCE2) (str-into acc (info 'reg0) ", " (info 'reg1)))
+        (set! sep ", ")))
+    (str-into acc sep "...)")
+    (return (string-as-view acc))))
+
+; `sig` is abi-va-call-sig's text for a variadic callee, otherwise "".
+(defn abi-emit-struct-call (info:&AbiInfo ret:?&Type ir-name:StrView arglist:StrView nargs:i32
+                            sig:StrView):&Val
   (let (ii:&AbiInfo info
         k:i32 (info 'kind)
         ty:StrView (type-to-ir ret))
@@ -1561,14 +1585,14 @@
             sep:StrView "")
         (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (when (> nargs 0) (set! sep ", "))
-        (emit g-body-stream "  call void " ir-name "(ptr sret(" ty ") align " (ii 'align) " "
+        (emit g-body-stream "  call void" sig " " ir-name "(ptr sret(" ty ") align " (ii 'align) " "
               slot sep arglist ")\n")
         (let (v:StrView (new-tmp))
           (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
           (return (alloc-val ret v)))))
     (when (= k ABI-COERCE1)
       (let (tmp:StrView (new-tmp))
-        (emit g-body-stream "  " tmp " = call " (ii 'reg0) " " ir-name "(" arglist ")\n")
+        (emit g-body-stream "  " tmp " = call " (ii 'reg0) sig " " ir-name "(" arglist ")\n")
         (let (slot:StrView (new-tmp))
           (emit g-entry-stream "  " slot " = alloca " ty "\n")
           (emit g-body-stream "  store " (ii 'reg0) " " tmp ", ptr " slot "\n")
@@ -1578,7 +1602,7 @@
     ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
     (let (rty:StrView (fstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
           tmp:StrView (new-tmp))
-      (emit g-body-stream "  " tmp " = call " rty " " ir-name "(" arglist ")\n")
+      (emit g-body-stream "  " tmp " = call " rty sig " " ir-name "(" arglist ")\n")
       (let (slot:StrView (new-tmp)
             e0:StrView ""
             gp:StrView ""

@@ -741,7 +741,7 @@
             ; for this call, so the ABI lowering has to be spelled out.
             (let (arglist:StrView (fstr "ptr " ctx ", ptr " detail-val)
                   mres:&Val (abi-emit-struct-call (abi-classify maybe-ty)
-                                                     maybe-ty hfn arglist 2))
+                                                     maybe-ty hfn arglist 2 ""))
               (emit g-body-stream "  store ptr " saved ", ptr " (ght 'ir-name) "\n")
               (emit g-body-stream "  store %" (msd 'ir-name) " " (mres 'val)
                     ", ptr " mslot "\n")
