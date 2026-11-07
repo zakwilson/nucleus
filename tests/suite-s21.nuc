@@ -4132,6 +4132,28 @@ int main(void) {
 ")))
     (try (check-golden (string-as-view &out) "5 1 1 1\n"))
     (drop &out))
+  ; An element of an array field under a macro call, as `&uvalue(o)->uv[n-1].uv` is.
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct UV n:i32)
+(defstruct U pad:i64 uv:(array UV 2))
+(defstruct H u:&U)
+(defmacro uval (h) `(~h 'u))
+(defmacro elem (h i) `(aref ((uval ~h) 'uv) ~i))
+(defn main ():i32
+  (let (u:&U (alloca U)
+        h:&H (alloca H))
+    (set! (h 'u) u)
+    (set! ((aref ((uval h) 'uv) 1) 'n) 7)
+    (let (p:&i32 (ref ((aref ((uval h) 'uv) 1) 'n))
+          q:&i32 (ref ((elem h 0) 'n)))
+      (set! @p (+ @p 1))
+      (set! @q 3)
+      (set! ((elem h 0) 'n) (+ ((elem h 0) 'n) 1)))
+    (printf \"%d %d\\n\" ((aref (u 'uv) 0) 'n) ((aref (u 'uv) 1) 'n)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "4 8\n"))
+    (drop &out))
   (return (ok)))
 
 ; With nucleus.error loaded only by `import-ct`, an `err` site called

@@ -7396,7 +7396,7 @@
             (let (t:StrView (new-tmp))
               (emit-load t (type-to-ir ft) (fa 'val) ft)
               (return (alloc-val ft t))))))))
-  (let (p:&Val (emit-node rnode scope)
+  (let (p:&Val (emit-untyped-receiver rnode scope line)
         pk:i32 (-> p (as &Val _) (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
     (when (or (= pk TY-STRUCT) (= pk TY-UNION))
       (die-at line
@@ -8158,10 +8158,25 @@
       (return null))))
 
 ; A receiver node-type can't type, such as a field of a macro call's result: a
-; struct field's own address rather than a copy of the struct, else its value.
+; struct place's own address rather than a copy of the struct, else its value.
 (defn emit-untyped-receiver (recv:ptr scope:&Scope line:i32):&Val
-  (when (!= (field-place-parts recv) null)
-    (when-some (pa (emit-place-address (unsafe/cast &Node recv) scope line))
+  (when (= g-resolve 0) (return (emit-untyped-receiver-in recv scope line)))
+  (let (d:usize (resolve-depth)
+        v:&Val (emit-untyped-receiver-in recv scope line))
+    (resolve-pop-to d)
+    (return v)))
+
+; A field, `aref` or `deref` form: the forms whose address is never a call's.
+(defn place-form? (n:ptr):bool
+  (when (!= (field-place-parts n) null) (return true))
+  (when (or (!= (node-kind n) NODE-LIST) (= (node-len n) 0)) (return false))
+  (let (h:?&Node (node-at n 0))
+    (return (or (and (= h 'aref) (= (node-len n) 3)) (and (= h 'deref) (= (node-len n) 2))))))
+
+(defn emit-untyped-receiver-in (recv0:ptr scope:&Scope line:i32):&Val
+  (let (recv:ptr (ref-operand-expand recv0))
+    (when (place-form? recv)
+      (when-some (pa (emit-place-address (unsafe/cast &Node recv) scope line))
       (let (ft:&Type (-> pa (_ 'type) (unsafe/cast &Type _) (_ 'elem) (unsafe/cast &Type _)))
         (when (or (= (ft 'kind) TY-STRUCT) (= (ft 'kind) TY-UNION)) (return pa))
         (when (= (ft 'kind) TY-ARRAY)
@@ -8169,7 +8184,7 @@
         (let (t:StrView (new-tmp))
           (emit-load t (type-to-ir ft) (pa 'val) ft)
           (return (alloc-val ft t))))))
-  (return (emit-node recv scope)))
+    (return (emit-node recv scope))))
 
 ; Store a VALUE in a fresh entry-block slot owned by a hidden binding of the
 ; current scope, so `binding-address-val` stays the one owner of its escape taint.

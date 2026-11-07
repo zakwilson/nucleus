@@ -5793,3 +5793,8 @@ recognised the main thread. node-type leaves a macro call untyped, so the receiv
 1-argument `ref`, the field `ref` and `set!`'s receiver use it, so a `set!` one level
 deeper is no longer refused either. `s21-place-under-macro-call` covers it (nuctests
 1743 passed, bootstrap holds).
+The same held one step on, for an element of an array field under a macro call
+(`&uvalue(o)->uv[n-1].uv`, found by the port's `lua_setiuservalue`):
+`emit-untyped-receiver` now expands a macro at the receiver's head and takes the
+address of any field, `aref` or `deref` form, and `set!`'s last-resort receiver goes
+through it too.
