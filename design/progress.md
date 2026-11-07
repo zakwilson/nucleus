@@ -5782,3 +5782,14 @@ anonymous struct holding `__int128`.
 The compiler's own sources read such a declaration, so a compiler built by one without
 the fix emits its types in another order: the fixed point holds from the third round
 (nuctests 1742 passed).
+
+## Lua-port fixes: a place under a macro call (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-043): `(ref (((G L) 'mainth) 'l))`, Lua's
+`&G(L)->mainth.l`, gave the address of a copy of `mainth`, so `lua_yieldk` never
+recognised the main thread. node-type leaves a macro call untyped, so the receiver
+`((G L) 'mainth)` was emitted as a struct value and stored in a temporary.
+`emit-untyped-receiver` takes such a receiver's address when it is a field, and the
+1-argument `ref`, the field `ref` and `set!`'s receiver use it, so a `set!` one level
+deeper is no longer refused either. `s21-place-under-macro-call` covers it (nuctests
+1743 passed, bootstrap holds).

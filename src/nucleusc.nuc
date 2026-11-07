@@ -7385,7 +7385,7 @@
     (let (base:?&Node (node-at fp 0)
           sel:?&Node (node-at fp 1))
       (when (and (= (node-kind base) NODE-LIST) (= (node-type base scope) null))
-        (let (bv:&Val (emit-node base scope)
+        (let (bv:&Val (emit-untyped-receiver base scope line)
               bt:&Type (unsafe/cast &Type (bv 'type)))
           (when (or (= (bt 'kind) TY-STRUCT) (= (bt 'kind) TY-UNION))
             (die-at line
@@ -8139,7 +8139,7 @@
         ct:ptr (as ptr (receiver-type recv scope))
         pre:?&Val null)
     (when (= ct null)
-      (let (v:&Val (emit-node recv scope))
+      (let (v:&Val (emit-untyped-receiver recv scope line))
         (set! pre v)
         (set! ct (v 'type))))
     (let (route:i32 (callable-place-route (as ?&Type ct) nargs sel))
@@ -8156,6 +8156,20 @@
                        (emit-field-intrinsic (node-list2 recv sel line) scope pv sel line)))
           (return (emit-ref-temporary v scope line))))
       (return null))))
+
+; A receiver node-type can't type, such as a field of a macro call's result: a
+; struct field's own address rather than a copy of the struct, else its value.
+(defn emit-untyped-receiver (recv:ptr scope:&Scope line:i32):&Val
+  (when (!= (field-place-parts recv) null)
+    (when-some (pa (emit-place-address (unsafe/cast &Node recv) scope line))
+      (let (ft:&Type (-> pa (_ 'type) (unsafe/cast &Type _) (_ 'elem) (unsafe/cast &Type _)))
+        (when (or (= (ft 'kind) TY-STRUCT) (= (ft 'kind) TY-UNION)) (return pa))
+        (when (= (ft 'kind) TY-ARRAY)
+          (return (alloc-val (array-decay (as ptr ft)) (pa 'val))))
+        (let (t:StrView (new-tmp))
+          (emit-load t (type-to-ir ft) (pa 'val) ft)
+          (return (alloc-val ft t))))))
+  (return (emit-node recv scope)))
 
 ; Store a VALUE in a fresh entry-block slot owned by a hidden binding of the
 ; current scope, so `binding-address-val` stays the one owner of its escape taint.
@@ -13016,8 +13030,9 @@
         (let (t:ptr (as ptr (receiver-type (as ptr rn) scope)))
           (when (and (!= t null) (or (= ((unsafe/cast &Type t) 'kind) TY-STRUCT)
                                      (= ((unsafe/cast &Type t) 'kind) TY-UNION)))
-            (when-some (pa (emit-place-address rn scope line)) (return pa)))))
-      (set! v (emit-node (as ptr rn) scope)))
+            (when-some (pa (emit-place-address rn scope line)) (return pa)))
+          (when (= t null) (set! v (emit-untyped-receiver (as ptr rn) scope line)))))
+      (when (= v null) (set! v (emit-node (as ptr rn) scope))))
     (let (pv:&Val (unsafe/cast &Val v)
           pk:i32 (-> pv (_ 'type) (unsafe/cast &Type _) (_ 'kind)))
       (when (or (= pk TY-STRUCT) (= pk TY-UNION))

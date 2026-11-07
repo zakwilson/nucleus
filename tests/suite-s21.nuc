@@ -4106,6 +4106,34 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; A place under a macro call is still a place: Lua's `&G(L)->mainth.l` took the
+; address of a copy of `mainth` (nuc-lua ISSUE-043).
+(deftest s21-place-under-macro-call
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Th n:i32)
+(defstruct Lx pad:i64 l:Th)
+(defstruct Gs y:i32 mainth:Lx)
+(defstruct St g:&Gs)
+(defmacro G (s) `(~s 'g))
+(defmacro mainthread (g) `(ref ((~g 'mainth) 'l)))
+(defn main ():i32
+  (let (g:&Gs (alloca Gs)
+        s:&St (alloca St))
+    (set! (s 'g) g)
+    (set! ((((G s) 'mainth) 'l) 'n) 4)
+    (let (p:&Th (mainthread (G s))
+          q:&Th (ref (field ((G s) 'mainth) 'l))
+          r:&Lx (ref (G s) 'mainth))
+      (set! (p 'n) (+ (p 'n) 1))
+      (printf \"%d %d %d %d\\n\" (((g 'mainth) 'l) 'n)
+              (if (= (as ptr p) (as ptr (ref ((g 'mainth) 'l)))) 1 0)
+              (if (= (as ptr q) (as ptr p)) 1 0) (if (= (as ptr r) (as ptr (ref (g 'mainth)))) 1 0))))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "5 1 1 1\n"))
+    (drop &out))
+  (return (ok)))
+
 ; With nucleus.error loaded only by `import-ct`, an `err` site called
 ; `err-find-handler`, which the program never defined (nuc-doom ISSUE-039).
 ; Imported for real as well, the handler chain must still be consulted.
