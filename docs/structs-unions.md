@@ -781,7 +781,9 @@ site emits.
 ## Recognized libc function attributes: `noreturn` and `returns_twice`
 
 A C header carries no attribute metadata the importer trusts — even an
-explicit `__attribute__((noreturn))` is discarded — so a small set of
+explicit `__attribute__((noreturn))` is discarded, wherever GCC admits it: before
+the declaration, after it, or between the return type and the name (`void
+__attribute__((noreturn)) f(void);`, Lua's `l_noret`) — so a small set of
 well-known libc functions is recognized **by name** instead and gets the
 matching LLVM attribute on its `declare`: `exit`, `abort`, `_exit`, `_Exit`,
 `quick_exit`, `abort_handler_s`, `longjmp` and `siglongjmp` get `noreturn` (a

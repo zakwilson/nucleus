@@ -867,7 +867,8 @@
 ; and the gate's cap: a declaration with more parameters than this is skipped
 ; rather than silently truncated. Before W3b the array was 16 entries and
 ; `num-params` was incremented past it, so `type-set-params` read off the end.
-(defconst C-MAX-PARAMS 32)
+; 64 is clang's widest, `_mm512_set_epi8`.
+(defconst C-MAX-PARAMS 64)
 
 ; Record that `fname`'s declaration was skipped, and — when `loud` — say so on
 ; stderr immediately. `g-cheader-skipped` (declared in nucleusc.nuc, above
@@ -1358,7 +1359,9 @@
     ; C decays an array in a parameter or return position; a struct MEMBER keeps
     ; its extent, which is why the call is here and not in c-parse-type.
     (set! ret-type (as ptr (array-decay ret-type)))
-    (set! pos (c-skip-ws buf pos len))
+    ; GCC admits attributes between the return type and the name, where Lua's
+    ; `l_noret` puts `__attribute__((noreturn))`; they read as the name otherwise.
+    (set! pos (c-skip-attributes buf pos len))
     (when (and (< pos len) (= (cstr-byte-at buf pos) 40))
       (let (fr:i32 (c-parse-fnret-decl buf pos len ret-type out-end decl-start))
         (when (>= fr 0) (return fr))))

@@ -912,11 +912,13 @@ int main(void){
 (defn main ():i32
   (printf \"%lld %s %zu %d\\n\" (ls_twice 21) (ls_name 1) (sizeof LReg)
           (if (= ((aref regs 1) 'func) null) 0 1))
-  (return 0))
+  (fflush stdout)
+  (ls_die \"%s %d\\n\" \"died\" 7)
+  (return 1))
 "))
         got:String (try (build-run-file "" "--link-arg=tests/fixtures/lua-shapes.c"
                                         (string-as-view &p))))
-    (try (check-golden (string-as-view &got) "42 one 16 0\n"))
+    (try (check-golden (string-as-view &got) "42 one 16 0\ndied 7\n"))
     (drop &got)
     (drop &p)
     (return (ok))))

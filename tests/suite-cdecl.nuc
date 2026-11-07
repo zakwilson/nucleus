@@ -120,7 +120,7 @@
     (try (check-warning-at ds "./tests/fixtures/w3b-skip.h" 24
            "skipping C declaration 'w3b_skip_void': a 'void' parameter"))
     (try (check-warning-at ds "./tests/fixtures/w3b-skip.h" 29
-           "skipping C declaration 'w3b_skip_many': more than 32 parameters"))
+           "skipping C declaration 'w3b_skip_many': more than 64 parameters"))
     (try (check-ir-parses iv))
     (drop &c))
   (return (ok)))

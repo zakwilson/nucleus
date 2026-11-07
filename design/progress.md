@@ -5740,3 +5740,15 @@ dead temporary. nuc-doom ISSUE-040 had fixed this for a binding receiver only.
 
 `s21-array-field-of-nested-place` covers struct and union members, `field`, and an
 element receiver.
+
+## Lua-port fixes: an attribute after the return type (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-026): Lua's `l_noret` expands to `void
+__attribute__((noreturn))`, so every error function in its internal headers
+(`luaG_runerror`, `luaD_throw`) was skipped: `__attribute__` read as the name.
+`c-parse-func-decl` now skips an attribute run after the return type, as it already
+did before the declaration and after the parameters. `lua-header-shapes` covers it.
+
+That makes clang's intrinsics readable where `__DEFAULT_FN_ATTRS` sat between the type
+and the name, and `_mm512_set_epi8` takes 64 parameters: `C-MAX-PARAMS` is now 64, so
+`w3b-sdl` stays silent.
