@@ -26,6 +26,10 @@
 (defn f_ta (x:cd_ta):i32 (return x))
 (defn f_tb (x:cd_tb):i32 (return 0))
 (defn f_tc (x:cd_tc):i32 (return 0))
+(defn f_te (x:cd_te):i32 (return (deref x)))
+(defn f_tf (x:cd_tf):i32 (return x))
+(defn f_q (m:(ptr cd_mixed_ptr)):i32 (return (+ (m 'q) (deref (m 'p)))))
+(defn f_next (l:(ptr cd_link)):i32 (return ((l 'next) 'n)))
 (defn main ():i32
   (printf \"cd_plain %lld\\n\" (as i64 (sizeof cd_plain)))
   (printf \"cd_ptrs %lld\\n\" (as i64 (sizeof cd_ptrs)))
@@ -33,6 +37,8 @@
   (printf \"cd_bits %lld\\n\" (as i64 (sizeof cd_bits)))
   (printf \"cd_three %lld\\n\" (as i64 (sizeof cd_three)))
   (printf \"cd_td %lld\\n\" (as i64 (sizeof cd_td)))
+  (printf \"cd_mixed_ptr %lld\\n\" (as i64 (sizeof cd_mixed_ptr)))
+  (printf \"cd_link %lld\\n\" (as i64 (sizeof cd_link)))
   (printf \"cd_tagarr %lld\\n\" (as i64 (sizeof cd_tagarr)))
   (printf \"cd_anonarr %lld\\n\" (as i64 (sizeof cd_anonarr)))
   (return 0))
@@ -48,6 +54,8 @@ int main(void){
   printf(\"cd_bits %zu\\n\", sizeof(struct cd_bits));
   printf(\"cd_three %zu\\n\", sizeof(struct cd_three));
   printf(\"cd_td %zu\\n\", sizeof(cd_td));
+  printf(\"cd_mixed_ptr %zu\\n\", sizeof(struct cd_mixed_ptr));
+  printf(\"cd_link %zu\\n\", sizeof(struct cd_link));
   printf(\"cd_tagarr %zu\\n\", sizeof(cd_tagarr));
   printf(\"cd_anonarr %zu\\n\", sizeof(cd_anonarr));
   return 0;
@@ -75,12 +83,17 @@ int main(void){
     (drop &c))
   (return (ok)))
 
-; CD-1's residue fails SAFE. Declarators that disagree in pointer depth leave
-; the struct opaque with a located error and no layout: `*p` has already
-; collapsed the base into `ptr`, and giving `q` that type is exactly the silent
-; class L1 removed.
-(deftest cd1-mixed-pointer-refused
-  (try (check-opaque-at (cd-header) "cd_mixed_ptr" "48"))
+; A later declarator starts from the base under the first one's stars, which
+; c-ptr-to keeps: `int *p, q;` gives `q` the `int`, and `struct cd_link *prev,
+; *next;` makes `next` a pointer to cd_link that `f_next` dereferences, not a
+; bare `ptr` (`(l 'next)` was then refused as no struct pointer).
+(deftest cd1-later-declarator-base
+  (let (c:Compiled (try (compile-source (cd-main-src)))
+        ir:StrView (compiled-ir &c))
+    (try (check-empty (string-as-view (ref c 'raw-text))))
+    (try (check-line ir "%cd_mixed_ptr = type { ptr, i32 }"))
+    (try (check-line ir "%cd_link = type { ptr, ptr, i32 }"))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -96,6 +109,8 @@ int main(void){
     (try (check-line ir "define i32 @f_ta(i32 %x.arg) section \".text.f_ta\" {"))
     (try (check-line ir "define i32 @f_tb(ptr %x.arg) section \".text.f_tb\" {"))
     (try (check-line ir "define i32 @f_tc(i64 %x.arg) section \".text.f_tc\" {"))
+    (try (check-line ir "define i32 @f_te(ptr %x.arg) section \".text.f_te\" {"))
+    (try (check-line ir "define i32 @f_tf(i32 %x.arg) section \".text.f_tf\" {"))
     (drop &c))
   (return (ok)))
 

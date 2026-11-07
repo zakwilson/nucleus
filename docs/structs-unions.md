@@ -299,11 +299,12 @@ bit-field width:
 struct cd { int a, b; char *s, *t; int x, y[3]; unsigned p : 3, q : 5; };
 ```
 
-imports as `%cd = type { i32, i32, ptr, ptr, i32, [3 x i32], [1 x i8] }`. The one
-shape that is refused is declarators that **disagree in pointer depth**
-(`int *p, q;`): the first declarator's `*` has already collapsed the base type
-into `ptr`, so there is nothing left to give `q`, and the struct goes opaque
-rather than giving `q` the wrong type.
+imports as `%cd = type { i32, i32, ptr, ptr, i32, [3 x i32], [1 x i8] }`. A later
+declarator starts from the base type under the first one's `*`s, so in
+`struct ci { struct ci *previous, *next; };` both fields are pointers to `ci`
+(`((c 'next) 'previous)` works), and in `int *p, q;` `q` is an `int`. Only a base
+the first declarator can't name is lost: after `void *p`, a later `*q` is bare
+`ptr`, and a by-value one is refused.
 
 A declaration may also carry a declarator list **after the body**, and every
 declarator in it is a type name:
@@ -323,7 +324,7 @@ declarators are consumed so the declaration after them is read from the right
 place. An `extern` variable declaration is imported; see
 [Variables from a C header](compiler.md#variables-from-a-c-header).
 
-A member whose type the parser genuinely cannot represent — an array whose extent does not fold to a compile-time constant, a declarator list of mixed pointer depth, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members, multi-declarator lines and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
+A member whose type the parser genuinely cannot represent — an array whose extent does not fold to a compile-time constant, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members, multi-declarator lines and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
 
 ### Array members
 
@@ -405,8 +406,7 @@ A type stays opaque either because no header in the translation unit defines
 it — `FILE` is this case: a plain `(import-use "stdio.h")` only ever sees
 `typedef struct _IO_FILE FILE;`, never `struct _IO_FILE`'s body — or because
 its definition uses a construct the C declaration parser cannot represent: an
-array member whose extent does not fold to a compile-time constant, or a
-declarator list whose declarators disagree in pointer depth (`int *p, q;`). The
+array member whose extent does not fold to a compile-time constant. The
 five constructs that used to belong on this list — bit-fields, C11 anonymous
 members, inline function-pointer members, multi-declarator lines, and the
 flexible array member — are all represented now, so `FILE`, `sigcontext`,
@@ -603,15 +603,13 @@ shows as its element type. It is a compiler-minted name and is not spellable.
 its own array extents, and each is recorded:
 
 ```c
-typedef int  cd_ta, *cd_tb;      /* cd_ta -> i32,  cd_tb -> ptr        */
+typedef int  cd_ta, *cd_tb;      /* cd_ta -> i32,  cd_tb -> (ptr i32)  */
 typedef long cd_tc, cd_td[4];    /* cd_tc -> i64,  cd_td -> [4 x i64]  */
 ```
 
 As with a [multi-declarator struct field
-line](#c-header-struct-ingestion), the one case that is refused is a later
-declarator whose base the first declarator's `*` already consumed
-(`typedef int *a, b;` — `b` is recorded known-but-unrepresentable rather than
-given `a`'s type).
+line](#c-header-struct-ingestion), a later declarator starts from the base under the first one's `*`s:
+`typedef int *a, b;` makes `a` a pointer to `int` and `b` an `int`.
 
 ## A C typedef is a Nucleus type name
 

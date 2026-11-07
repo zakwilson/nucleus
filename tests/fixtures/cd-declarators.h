@@ -18,8 +18,8 @@
    is why "it compiled" is never the assertion.
 
    `int` / `short` / `char` throughout, so the stated sizes hold on any target
-   with a 4-byte int. LINE NUMBERS BELOW ARE ASSERTED: `cd1-mixed-pointer-refused`
-   pins the line `struct cd_mixed_ptr` is declared on. */
+   with a 4-byte int. A later declarator starts from the base under the first
+   one's stars, which c-ptr-to keeps (lua-bugfixes, nuc-lua ISSUE-040). */
 
 /* ---- CD-1: multi-declarator field lines ---------------------------------- */
 
@@ -40,16 +40,20 @@ struct cd_bits { unsigned a : 3, b : 5; int c; };
    %cd_three = type { i16, i16, i16, i32 }                         sizeof 12 */
 struct cd_three { short p, q, r; int n; };
 
-/* ---- CD-1's residue: it must fail SAFE, not guess ------------------------ */
+/* ---- CD-1: the base under the first declarator's stars ------------------ */
 
-/* Declarators that disagree in POINTER DEPTH. `*p` has already collapsed the
-   base into `ptr`, so there is nothing left for `q` — the struct stays opaque
-   with a located error rather than giving `q` the first declarator's type. */
+/* Declarators that disagree in POINTER DEPTH. `*p` keeps its pointee, so `q`
+   is the `int` under it: %cd_mixed_ptr = type { ptr, i32 }      sizeof 16 */
 struct cd_mixed_ptr { int *p, q; };
+
+/* A later starred declarator points where the first does: `next` is a
+   pointer to cd_link, which the test dereferences, not a bare `ptr`. */
+struct cd_link { struct cd_link *prev, *next; int n; };
 
 /* ---- CD-2: comma-separated typedef declarator lists ---------------------- */
 
 typedef int cd_ta, *cd_tb;
+typedef int *cd_te, cd_tf;
 typedef long cd_tc, cd_td[4];
 
 /* ---- CD-3: with-body aggregate array typedefs ---------------------------- */

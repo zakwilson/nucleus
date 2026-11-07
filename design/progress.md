@@ -5767,3 +5767,18 @@ Found by the nuc-lua port (its ISSUE-033): a compilation with more than 256 `def
 died with "defmacro: macro table full". The cap guarded the fixed array of the C
 implementation; `g-macros` has been a growable `Vector` since, so the check is gone.
 `s21-many-macros` defines 300.
+
+## Lua-port fixes: a later declarator keeps the base type (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-040): `struct CallInfo *previous, *next;` gave
+`next` a bare `ptr`, so `((ci 'next) 'previous)` was refused as no struct pointer.
+CD-1 and CD-2 treated the first declarator's stars as consuming the base, which was
+true before typed C pointers; `c-ptr-to` now keeps the pointee, so `c-ptr-base` peels
+the first declarator's levels and each later declarator applies its own stars to that
+base. `int *p, q;` and `typedef int *a, b;` are then exact rather than refused; only a
+base the first can't name (`void *p, *q`) stays bare `ptr`. `cd1-later-declarator-base`
+and the CD-2 signatures cover it; the L1 fixture's unreadable-body witness is now an
+anonymous struct holding `__int128`.
+The compiler's own sources read such a declaration, so a compiler built by one without
+the fix emits its types in another order: the fixed point holds from the third round
+(nuctests 1742 passed).

@@ -1154,6 +1154,10 @@ defined type and `(defvar u:cd_anonarr)` is `[3 x %__carr.cd_anonarr]`.
 
 ### 8.2 What is left, and why it is not a defect
 
+> **Superseded (lua-bugfixes, `design/progress.md`).** Typed C pointers made
+> `c-parse-type` keep the pointee, so the first declarator's base is no longer
+> lost: `c-ptr-base` recovers it, and mixed pointer depths are now exact.
+
 Declarators that **disagree in pointer depth** — `int *p, q;` in a struct body,
 `typedef int *a, b;` at top level — are refused, for the reason above. A struct
 gets the located opaque error at every by-value use and no `%X = type` line; a

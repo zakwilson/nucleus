@@ -413,15 +413,32 @@
               (set! p e)))))
     (return 0)))
 
-; A `*` in the span c-parse-type consumed belongs to the FIRST declarator and was
-; already collapsed into `ptr`, so a later one on the same line has no base left
-; (c-header-layout.md §8.2).
-(defn c-span-has-star (buf:ptr start:i64 stop:i64):i32
-  (let (p:i64 start)
+; The `*`s in the span c-parse-type consumed: they belong to the FIRST
+; declarator, so a later one on the same line starts from the base under them.
+(defn c-span-stars (buf:ptr start:i64 stop:i64):i32
+  (let (p:i64 start
+        n:i32 0)
     (while (< p stop)
-      (when (= (cstr-byte-at buf p) 42) (return 1))
-      (set! p (+ p 1))))
-  (return 0))
+      (when (= (cstr-byte-at buf p) 42) (inc! n))
+      (set! p (+ p 1)))
+    (return n)))
+
+; The base type under the first declarator's `depth` pointers, which c-ptr-to
+; kept, so that `struct S *a, *b;` gives `b` a pointer to `S` too. Null when a
+; level is bare `ptr` (`void *`, an unresolved pointee): that base is lost.
+(defn c-ptr-base (t:ptr depth:i32):ptr
+  (let (acc:ptr t
+        i:i32 0)
+    (while (< i depth)
+      (when (or (= acc null) (= acc (as ptr ty-ptr))) (return null))
+      (let (ty:&Type (unsafe/cast &Type acc))
+        (when (or (!= (ty 'kind) TY-PTR) (= (as ptr (ty 'elem)) null)) (return null))
+        (set! acc (as ptr (ty 'elem))))
+      (inc! i))
+    ; c-ptr-to's char pointees, as the by-value types they stand for.
+    (cond (= acc (as ptr ty-c-char)) (return (as ptr ty-i8))
+          (= acc (as ptr ty-c-uchar)) (return (as ptr ty-ui8))
+          true (return acc))))
 
 ; Stage 16 PK-3: the argument of `aligned(…)`, which C admits as any integer
 ; constant expression. Two forms carry every occurrence in the headers surveyed:
@@ -2434,8 +2451,8 @@
           (do
             (set! spec-start pos)
             (set! fty (c-parse-type buf pos len (as &i64 &te)))
-            (set! base-ty fty)
-            (when (!= (c-span-has-star buf spec-start te) 0) (set! base-ty null)))
+            (let (stars:i32 (c-span-stars buf spec-start te))
+              (set! base-ty (if (> stars 0) (c-ptr-base fty stars) fty))))
           ; Continuing `T a, *b;`: the specifiers are the previous declarator's,
           ; and only this declarator's own stars apply.
           (let (p2:i64 (c-skip-type-quals buf pos len)
@@ -2444,7 +2461,7 @@
               (inc! ns)
               (set! p2 (c-skip-type-quals buf (+ p2 1) len)))
             (set! te p2)
-            (set! fty (if (= ns 0) base-ty ty-ptr))))
+            (set! fty (if (= ns 0) base-ty (c-ptr-to base-ty ns)))))
         (when (= fty null) (set! bad 1) (set! done 1))
         ; D1: keeping the `ptr` c-parse-type returns here would give the struct a
         ; silently wrong layout; abandoning it leaves the name opaque instead.
@@ -2870,7 +2887,8 @@
             base0:ptr base
             bad0:i32 bad
             plain:i32 0)
-        (when (!= (c-span-has-star buf te tend) 0) (set! base0 null))
+        (let (stars:i32 (c-span-stars buf te tend))
+          (when (> stars 0) (set! base0 (c-ptr-base base stars))))
         ; `(*name)(args)` — a function-pointer typedef, which is a pointer
         ; whatever its return and argument types are. It has to be recognized
         ; HERE: the naive fallback would take `int` for the declarator of
@@ -2928,7 +2946,9 @@
             (while (and (< p len) (= (cstr-byte-at buf p) 42))
               (inc! ns)
               (set! p (c-skip-type-quals buf (+ p 1) len)))
-            (when (> ns 0) (set! dty ty-ptr) (set! dbad 0))
+            ; A pointer is representable whatever its base; an unrepresentable
+            ; base (bad0) is only a placeholder, so it points at nothing known.
+            (when (> ns 0) (set! dty (c-ptr-to (if (!= bad0 0) null base0) ns)) (set! dbad 0))
             (set! dn2 (c-read-ident buf p len (as &i64 &ne2)))
             (if (= (symbol-len dn2) 0)
               (set! p len)
