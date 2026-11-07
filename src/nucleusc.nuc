@@ -7292,6 +7292,19 @@
   (when-some (rv (binding-storage rnode scope line)) (return rv))
   (return (materialize-struct-value v scope line)))
 
+; The same for a nested place, `((o 'in) 'buf)`: an array field decays to the
+; place's storage, not a copy's (nuc-lua ISSUE-023). Null when that isn't the case.
+(defn array-field-place-receiver (recv:?&Node sel:?&Node scope:&Scope line:i32):?&Val
+  (when (or (!= (node-kind recv) NODE-LIST) (not (storage-place? recv scope))) (return null))
+  (let (lit:?&Node (selector-literal-sym sel)
+        t:?&Type (receiver-type recv scope))
+    (when (or (= lit null) (= t null)) (return null))
+    (when (and (!= (t 'kind) TY-STRUCT) (!= (t 'kind) TY-UNION)) (return null))
+    (let (fr:?&FieldRef (struct-field-ref (as ?&StructDef (t 'sdef)) (lit 's)))
+      (when (= fr null) (return null))
+      (when (!= (-> fr (_ 'type) (unsafe/cast &Type _) (_ 'kind)) TY-ARRAY) (return null))
+      (return (emit-place-address (unsafe/cast &Node recv) scope line)))))
+
 (defn pointer-typed? (n:?&Node scope:&Scope):bool
   (if-some (t (node-type n scope)) (return (= (t 'kind) TY-PTR)) (return false)))
 
@@ -7352,6 +7365,12 @@
     (when (and (= hd 'field) (= len 3) (quoted-selector-node? (node-at n 2)))
       (return (node-list2 (node-at n 1) (node-at n 2) (node-line n 0))))
     (return null)))
+
+; A receiver's type for deciding whether it has storage. node-type leaves
+; `(aref p i)` on a `&T` untyped, so `((aref p i) 'f)` would be copied (ISSUE-023).
+(defn receiver-type (n:?&Node scope:&Scope):?&Type
+  (when-some (t (node-type n scope)) (return t))
+  (return (place-value-type n scope)))
 
 (defn emit-lvalue-receiver (rnode:?&Node scope:&Scope what:StrView line:i32):&Val
   (when-some (rv (binding-storage rnode scope line)) (return rv))
@@ -7817,7 +7836,9 @@
 (defn emit-field (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 3) (die-at (cc 'line) "field expects (field value selector)"))
-    (let (callee-val:&Val (emit-node (node-at cc 1) scope))
+    (let (callee-val:&Val (if-some (pa (array-field-place-receiver (node-at cc 1) (node-at cc 2) scope (cc 'line)))
+                            pa
+                            (emit-node (node-at cc 1) scope)))
       (when (= (is-member-access-receiver (callee-val 'type)) 0)
         (die-at (cc 'line) "field: operand must be a struct or union, or a pointer to one"))
       (return (emit-field-intrinsic (node-list2 (node-at cc 1) (node-at cc 2) (cc 'line))
@@ -8115,7 +8136,7 @@
 (defn emit-callable-place (x:&Node recv:ptr sel-at:i32 scope:&Scope line:i32):?&Val
   (let (sel:?&Node (node-at (as ptr x) sel-at)
         nargs:i32 (- (node-len (as ptr x)) sel-at)
-        ct:ptr (node-type recv scope)
+        ct:ptr (as ptr (receiver-type recv scope))
         pre:?&Val null)
     (when (= ct null)
       (let (v:&Val (emit-node recv scope))
@@ -12992,7 +13013,7 @@
               (return (emit-binding-address rn scope (node-line (as ptr rn) line)))))
           0))
       (when (= (rn 'kind) NODE-LIST)
-        (let (t:ptr (node-type (as ptr rn) scope))
+        (let (t:ptr (as ptr (receiver-type (as ptr rn) scope)))
           (when (and (!= t null) (or (= ((unsafe/cast &Type t) 'kind) TY-STRUCT)
                                      (= ((unsafe/cast &Type t) 'kind) TY-UNION)))
             (when-some (pa (emit-place-address rn scope line)) (return pa)))))
@@ -15425,6 +15446,9 @@
                     (let (stamped-ty:ptr (parse-type-from-node (as ptr head) (head 'line)))
                       (when (= ((unsafe/cast &Type stamped-ty) 'kind) TY-STRUCT)
                         (return (emit-struct-lit n scope ((unsafe/cast &Type stamped-ty) 'sdef)))))))))))
+        (when (= (node-len nn) 2)
+          (when-some (pa (array-field-place-receiver head (node-at nn 1) scope (nn 'line)))
+            (return (emit-callable-value n scope pa))))
         (return (emit-callable-value n scope (emit-node (as ptr head) scope))))
       (let (h:Symbol (head 's)
             hp:ptr (as ptr head))

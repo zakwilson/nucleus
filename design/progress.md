@@ -5725,3 +5725,18 @@ port defines it in an imported file under `(set-ir-prefix "")`.
 
 `lua-imported-file-implements-header` (with `tests/fixtures/lua-impl.h`) and
 `varargs-called-before-its-definition` cover both.
+
+## Lua-port fixes: an array field of a nested place (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-023): `luaL_buffinit` sets `B->b = B->init.b`, and
+`((B 'init) 'b)` decayed to the address of a copy of `init`, so every buffer wrote into a
+dead temporary. nuc-doom ISSUE-040 had fixed this for a binding receiver only.
+
+- `array-field-place-receiver`: when a head-position or `field` read selects an array
+  field of a storage place, the receiver is emitted as the place's address.
+- `receiver-type`: `node-type` leaves `(aref p i)` on a `&T` untyped, which sent
+  `((aref p i) 'in)` to the copy path, in `ref` as well. The receiver checks fall back to
+  `place-value-type`.
+
+`s21-array-field-of-nested-place` covers struct and union members, `field`, and an
+element receiver.

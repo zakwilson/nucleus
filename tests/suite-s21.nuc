@@ -4054,6 +4054,26 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; The same through a nested place: `((o 'in) 'b)` decayed into a copy of `in`,
+; so luaL_buffinit's `B->init.b` pointed at a dead temporary (nuc-lua ISSUE-023).
+(deftest s21-array-field-of-nested-place
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct In x:i32 b:(array i8 8))
+(defstruct Out n:i64 in:In un:(union d:f64 c:(array i8 8)))
+(defn main ():i32
+  (let (o:&Out (alloca Out)
+        arr:&Out (alloca Out 2))
+    (set! (aref ((o 'in) 'b) 0) 65)
+    (set! (aref (field (o 'un) 'c) 1) 66)
+    (set! (aref (((aref arr 1) 'in) 'b) 2) 67)
+    (printf \"%d %d %d %d\\n\" (aref (ref (o 'in) 'b) 0) (aref (ref (o 'un) 'c) 1)
+            (aref (ref ((aref arr 1) 'in) 'b) 2) (if (= (as ptr ((o 'in) 'b)) (as ptr (ref (o 'in) 'b))) 1 0)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "65 66 67 1\n"))
+    (drop &out))
+  (return (ok)))
+
 ; With nucleus.error loaded only by `import-ct`, an `err` site called
 ; `err-find-handler`, which the program never defined (nuc-doom ISSUE-039).
 ; Imported for real as well, the handler chain must still be consulted.

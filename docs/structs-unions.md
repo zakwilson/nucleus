@@ -195,7 +195,8 @@ via the field GEP with no load — so it is directly indexable:
 Consequently an array field cannot be assigned as a whole (`(set! (r 'cells) …)`
 is refused, as `s.xs = …` is in C); write through the decayed pointer with
 an element place, or copy with `memcpy`. `(ref r 'cells)` gives the same address as
-`(r 'cells)`.
+`(r 'cells)`. So does a nested place: `((o 'in) 'cells)` and `(((aref rows i) 'in) 'cells)`
+decay to the storage inside `o` and `rows`, as `o->in.cells` does in C, never to a copy.
 
 A struct literal fills an array field from an `(array T ...)` literal, in a
 `defvar`'s constant initializer (see
