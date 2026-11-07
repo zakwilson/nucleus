@@ -5752,3 +5752,18 @@ did before the declaration and after the parameters. `lua-header-shapes` covers 
 That makes clang's intrinsics readable where `__DEFAULT_FN_ATTRS` sat between the type
 and the name, and `_mm512_set_epi8` takes 64 parameters: `C-MAX-PARAMS` is now 64, so
 `w3b-sdl` stays silent.
+
+## Lua-port fixes: a field of a union member is a place (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-032): `(set! (((uv 'u) 'open) 'next) n)`, Lua's
+`uv->u.open.next = n` with `u` a union, was refused as a store into a temporary.
+`place-value-type` followed a field only through a struct, so a union member's field
+had no type and the receiver was emitted as a value. It follows a union as well now.
+`s21-field-of-union-member-place` covers it.
+
+## Lua-port fixes: no cap on the number of macros (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-033): a compilation with more than 256 `defmacro`s
+died with "defmacro: macro table full". The cap guarded the fixed array of the C
+implementation; `g-macros` has been a growable `Vector` since, so the check is gone.
+`s21-many-macros` defines 300.

@@ -4074,6 +4074,38 @@ int main(void) {
     (drop &out))
   (return (ok)))
 
+; Past 256 macros a program still compiles (nuc-lua ISSUE-033): the cap
+; outlived the fixed array it guarded.
+(deftest s21-many-macros
+  (let (h:String (str "(import-use \"stdio.h\")\n") i:i64 0)
+    (while (< i 300)
+      (str-into &h "(defmacro m" i " (x) `(+ ~x " i "))\n")
+      (set! i (+ i 1)))
+    (str-into &h "(defn main ():i32 (printf \"%d\\n\" (as i32 (m299 (m0 1)))) 0)\n")
+    (let (out:String (try (build-run-source (string-as-view &h)))
+          ov:StrView (string-as-view &out))
+      (try (check-eq (strview-trim-end &ov) "300"))
+      (drop &out))
+    (drop &h)))
+
+; A field of a union member is a place, as Lua's `uv->u.open.next` is (nuc-lua ISSUE-032).
+(deftest s21-field-of-union-member-place
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Up tag:i32 (u (union (open (struct a:i32 next:i64)) value:f64)))
+(defn main ():i32
+  (let (x:&Up (alloca Up)
+        arr:&Up (alloca Up 2))
+    (set! (((x 'u) 'open) 'a) 5)
+    (set! (((x 'u) 'open) 'next) 6)
+    (set! ((field ((aref arr 1) 'u) 'open) 'a) 7)
+    (printf \"%d %ld %d\\n\" (((x 'u) 'open) 'a) (((x 'u) 'open) 'next)
+            ((((aref arr 1) 'u) 'open) 'a)))
+  0)
+")))
+    (try (check-golden (string-as-view &out) "5 6 7\n"))
+    (drop &out))
+  (return (ok)))
+
 ; With nucleus.error loaded only by `import-ct`, an `err` site called
 ; `err-find-handler`, which the program never defined (nuc-doom ISSUE-039).
 ; Imported for real as well, the handler chain must still be consulted.

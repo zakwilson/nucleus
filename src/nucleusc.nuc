@@ -7350,7 +7350,7 @@
     (when-some (bt (place-value-type base scope))
       (let (st:&Type bt)
         (when (and (= (st 'kind) TY-PTR) (!= (st 'elem) null)) (set! st (unsafe/cast &Type (st 'elem))))
-        (when (and (= (st 'kind) TY-STRUCT) (!= (st 'sdef) null))
+        (when (and (or (= (st 'kind) TY-STRUCT) (= (st 'kind) TY-UNION)) (!= (st 'sdef) null))
           (let (sd:&StructDef (unsafe/cast &StructDef (st 'sdef))
                 fi:i32 (struct-field-idx sd ((unsafe/cast &Node (node-at sel 1)) 's)))
             (when (>= fi 0) (return ((field-at (sd 'fields) fi) 'type)))))))
@@ -19470,8 +19470,6 @@
           (dotimes (pi pcount)
             (refuse-qualified-binder (aref (unsafe/cast &Symbol pnames) pi) (ff 'line)))
           ; Register in macro table
-          (when (>= (unsafe/cast i32 (count g-macros)) 256)
-            (die-at (ff 'line) "defmacro: macro table full"))
           (let (mdef:&MacroDef (new MacroDef g-arena))
             (when (!= g-resolve 0) (resolve-note-link form (symbol-as-view jit-name)))
             (set-fields! mdef
