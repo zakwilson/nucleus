@@ -1358,13 +1358,20 @@
     (when (and (< pos len) (= (cstr-byte-at buf pos) 40))
       (let (fr:i32 (c-parse-fnret-decl buf pos len ret-type out-end decl-start))
         (when (>= fr 0) (return fr))))
-    ; Read the function name
+    ; Read the function name, which `RET (name)(args)` parenthesizes to stop a
+    ; function-like macro expanding it. Lua's headers declare every function so.
     (let (name-end:i64 0
-          fname:Symbol (c-read-ident buf pos len (as &i64 &name-end)))
+          paren:bool (and (< pos len) (= (cstr-byte-at buf pos) 40))
+          fname:Symbol (c-read-ident buf (if paren (c-skip-ws buf (+ pos 1) len) pos) len
+                                     (as &i64 &name-end)))
       (when (= (symbol-len fname) 0)
          (set! @out-end pos) (return 0))
       (set! pos name-end)
       (set! pos (c-skip-ws buf pos len))
+      (when paren
+        (when (or (>= pos len) (!= (cstr-byte-at buf pos) 41))
+          (set! @out-end pos) (return 0))
+        (set! pos (c-skip-ws buf (+ pos 1) len)))
       ; Expect '('
       (when (or (>= pos len) (!= (cstr-byte-at buf pos) 40))
          (set! @out-end pos) (return 0))

@@ -2585,14 +2585,15 @@
             ; An element with no layout would give the array a wrong size and
             ; the enclosing struct wrong offsets — the same two obligations a
             ; by-value defstruct field carries (W3a / W1d).
+            ; Mode 2 = the prescan: leave the length provisional (0) rather than
+            ; folding it, because macros are not registered during a prescan and
+            ; folding there would accept `(_* K 2)` while refusing `(* K 2)`. A C
+            ; header's struct is still opaque then too: emission asks again.
+            ; See g-array-ok's note in src/nucleusc.nuc.
+            (when (= array-ok 2) (return (array-type et 0)))
             (reject-opaque-type et (node-line etn line) "array element")
             (reject-valist et (node-line etn line) "array element")
             (reject-cycle-pending-layout et (node-line etn line) "array element")
-            ; Mode 2 = the prescan: leave the length provisional (0) rather than
-            ; folding it, because macros are not registered during a prescan and
-            ; folding there would accept `(_* K 2)` while refusing `(* K 2)`.
-            ; See g-array-ok's note in src/nucleusc.nuc.
-            (when (= array-ok 2) (return (array-type et 0)))
             (when (= (const-fold-int lnn (as &i64 &len) lline) 0)
               (die-at lline "(array T N): length must be a compile-time integer constant"))
             (when (<= len 0)

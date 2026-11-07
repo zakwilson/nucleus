@@ -5695,3 +5695,18 @@ LLVM's `va_arg` turned out to crash at `-O0` on x86-64 as well as being wrong on
 so both aggregate classes are open-coded. `tests/run-varargs-cross-test.sh` runs C against
 all three list classes at `-O0` and `-O2`, under qemu where it's there.
 `tests/suite-varargs.nuc` and `examples/varargs.nuc` cover the rest.
+
+## Lua-port fixes: `lua.h` imports (lua-bugfixes)
+
+Found by the nuc-lua port (its ISSUE-002 and ISSUE-003).
+
+- **`RET (name)(args)` is read.** Lua declares every API function this way, so that a
+  function-like macro of the same name can't expand there, and the importer skipped all
+  157. One pair of parentheses around the name is now read; `int ((f))(int);` stays the
+  canonical unread shape, and `s16-c2-skip-reason-recorded` uses it.
+- **A `defvar` array of a header's struct.** The provisional prescan resolves the element
+  before the header's layout is in, and checked opacity first; it now returns before that
+  check, as it already did for a struct defined later in Nucleus.
+
+`tests/fixtures/lua-shapes.{h,c}` and `lua-header-shapes` in `tests/suite-cimport.nuc`
+cover both.

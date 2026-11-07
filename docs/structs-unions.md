@@ -757,8 +757,10 @@ A declaration is skipped when it has:
   `_BitInt`);
 * **more than 32 parameters** (the importer's fixed parameter array), so a
   truncated signature is never registered;
-* a **declarator shape the parser does not recognize at all** — a parenthesised
-  declarator (`int (f)(int);`) is the canonical case. This one reports only at
+* a **declarator shape the parser does not recognize at all** — a doubly
+  parenthesised declarator (`int ((f))(int);`) is the canonical case. A name in
+  one pair, `int (f)(int);`, which keeps a function-like macro of the same name
+  from expanding and is how `lua.h` declares every function, is read. This one reports only at
   the point of use, since a preprocessed header is full of variables and macro
   remnants that legitimately take the same path, and a warning on every one of
   them would bury the tier above.

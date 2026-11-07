@@ -16,6 +16,6 @@ struct S16U08 { unsigned int a; int b; };
 unsigned s16u_f(void);
 signed s16u_g(unsigned x, signed y);
 
-/* C2: a parenthesised declarator the parser does not read. It must be recorded
-   with a reason, not dropped silently. */
-int (s16u_odd)(int);
+/* C2: a doubly parenthesised declarator the parser does not read. It must be
+   recorded with a reason, not dropped silently. */
+int ((s16u_odd))(int);
