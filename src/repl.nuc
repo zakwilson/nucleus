@@ -1063,7 +1063,9 @@
                                             (abi-classify-arg ((field-at (ft 'params) pi) 'type))
                                             ((field-at (ft 'params) pi) 'type)
                                             (symbol-none))
-                                          (set! need-comma 1)))
+                                          (set! need-comma 1))
+                                        (when (!= (ft 'variadic) 0)
+                                          (emit g-repl-preamble (if (!= need-comma 0) ", ..." "..."))))
                                       (emit g-repl-preamble ")\n")
                                       ; R3/D8: a later macro JIT module is
                                       ; assembled with this preamble, so its own
@@ -1479,15 +1481,21 @@
             ((field-at (ftt 'params) i) 'type)
             (symbol-intern (fstr "a" i)))
           (set! need-comma 1)))
-      (let (obuf:StrView (string-as-view ob))
+      (let (va:bool (!= (ftt 'variadic) 0)
+            obuf:StrView (if va
+                           (fstr (string-as-view ob) (if (> ((string-as-view ob) 'len) 0) ", ..." "..."))
+                           (string-as-view ob))
+            ; A `...` forwards only through musttail, which also needs the callee's type.
+            call:StrView (if va "musttail call" "call")
+            sig:StrView (if va (abi-va-call-sig ftt ret-info) ""))
         (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
         (emit out "  %fp = load ptr, ptr @" fname ".tgt, align 8\n")
         ; A MEMORY return lowers to `void` + the sret operand, so it takes the
         ; same no-result path a genuinely void function does.
         (if (or (= ((ftt 'ret) 'kind) TY-VOID)
                 (= (ret-info 'kind) ABI-MEMORY))
-          (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
-          (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n"))
+          (emit out "  " call " void" sig " %fp(" obuf ")\n  ret void\n}\n\n")
+          (emit out "  %r = " call " " ret-ir sig " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n"))
         (drop &ob)))))
 
 ; `@<fname>.trace`: the same ABI-lowered signature as the thunk, wrapped in an
@@ -1553,6 +1561,9 @@
 
 ; The shim under its own resource tracker, returned so `untrace` can remove it.
 (defn jit-trace-module (line:i32 fname-ir:Symbol ft:?&Type):ptr
+  ; The shim has to act after the call, which rules out the musttail a `...` needs.
+  (when (-> ft (unsafe/cast &Type _) (_ 'variadic) (!= _ 0))
+    (die-at line (fstr "trace: can't trace variadic '" fname-ir "'")))
   (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib)
         (s String) (make String))
     (emit s "; ModuleID = '<repl-trace>'\n")

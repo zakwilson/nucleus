@@ -43,6 +43,10 @@
 (defvar ty-i64:&Type  (make-type TY-I64))
 ; Bare `ptr`: untyped and unchecked — C's void*, and the type of `null`.
 (defvar ty-ptr:&Type  (make-ptr-type PTR-RAW))
+; `VaList`: `ptr` in IR, set apart by its own pointee. The value is the address of
+; the list's storage (design/lua-bugfixes/variadic-functions.md §5).
+(defvar ty-valist-tag:&Type (make-type TY-VOID))
+(defvar ty-valist:&Type (make-valist-type))
 (defvar ty-ui8:&Type  (make-type TY-UI8))
 (defvar ty-ui16:&Type (make-type TY-UI16))
 (defvar ty-ui32:&Type (make-type TY-UI32))
@@ -328,6 +332,9 @@
 (defvar g-narrow-gen:i32 0)
 (defvar g-narrow-gen-next:i32 0)
 (defvar g-trap-declared:i32 0)
+(defvar g-va-declared:i32 0)
+; Depth of forms that might not run all their parts, in this function.
+(defvar g-branch-depth:i32 0)
 
 ; Current output buffer for top-level emission. An ALIAS — it is re-pointed at
 ; whichever of the module buffers the form being emitted belongs to — so it is a
@@ -1341,7 +1348,15 @@
   (when (!= (marker-named n "where") 0) (return 1))
   (when (!= (marker-named n "rest") 0) (return 1))
   (when (!= (marker-named n "optional") 0) (return 1))
+  (when (!= (marker-named n "varargs") 0) (return 1))
   (return 0))
+
+; Where `:varargs` sits in a parameter list, or -1.
+(defn varargs-marker-at (params-node:?&Node):i32
+  (when (= params-node null) (return -1))
+  (dotimes (i (node-len params-node))
+    (when (!= (marker-named (as ?&Node (node-at params-node i)) "varargs") 0) (return i)))
+  (return -1))
 
 ; ------------------------------------------------------------
 ; Declaration attributes: `:noreturn`, `:returns-twice`
@@ -4209,6 +4224,9 @@
       (do
         (when (!= g-resolve 0) (resolve-note-sym n lookup-name sym))
         (when (!= (sym 'moved) 0)
+          (when (type-is-valist (sym 'type))
+            (die-at (node-line n line)
+              (fstr "use of '" (nn 's) "' after passing it: a VaList is consumed by a call -- pass a va-copy instead")))
           (die-at (node-line n line) (fstr "use after move: '" (nn 's) "'")))
         (when (!= (sym 'is-const) 0)
           (when (!= (sym 'const-node) null)
@@ -7828,6 +7846,7 @@
         ; W3a: an opaque C type has no size. Refuse here rather than emitting a
         ; GEP over an undefined `%Foo` (or, worse, a plausible-looking number).
         (reject-opaque-type ty (node-line (as ptr tn) (cc 'line)) "sizeof")
+        (reject-valist ty (node-line (as ptr tn) (cc 'line)) "sizeof")
         (emit g-body-stream "  " gep " = getelementptr " (type-to-ir ty) ", ptr null, i32 1\n")
         (let (sz:StrView (new-tmp))
           ; sizeof yields a pointer-sized integer (size_t), not a hardcoded i64.
@@ -7844,6 +7863,7 @@
       (set! g-array-ok 1)
       (let (ty:&Type (parse-type-from-node tn tl))
         (reject-opaque-type ty tl "alignof")
+        (reject-valist ty tl "alignof")
         (reject-cycle-pending-layout ty tl "alignof")
         (return (alloc-val (ptr-int-type) (fstr (abi-alignof ty))))))))
 
@@ -8268,10 +8288,10 @@
 ;   otherwise: exactly num-params.
 ; A zero-filled non-fn Type answers variadic/has-rest/nopt = 0 and num-params 0,
 ; i.e. the exact rule — which is what a box wants.
-(defn call-arity-ok (sig:?&Type nargs:i32 open-tail:i32):i32
+(defn call-arity-ok (sig:?&Type nargs:i32):i32
   (when (= sig null) (return 1))
   (let (np:i32 (sig 'num-params))
-    (when (or (!= (sig 'variadic) 0) (!= open-tail 0)) (return (if (< nargs np) 0 1)))
+    (when (!= (sig 'variadic) 0) (return (if (< nargs np) 0 1)))
     (when (!= (sig 'has-rest) 0) (return (if (< nargs (- np 1)) 0 1)))
     (when (!= (sig 'nopt) 0)
       (when (< nargs (- np (sig 'nopt))) (return 0))
@@ -8284,13 +8304,16 @@
 ; formatted only on the failure path, so the check costs nothing on the hot
 ; direct-call path.
 (defn check-call-arity (what:StrView name:Symbol sig:(ptr Type) nargs:i32
-                        open-tail:i32 line:i32):void
-  (when (!= (call-arity-ok sig nargs open-tail) 0) (return))
+                        declared:i32 line:i32):void
+  (when (!= (call-arity-ok sig nargs) 0) (return))
   (let (subject:StrView what
         np:i32 (sig 'num-params))
     (when (not (symbol-none? name)) (set! subject (fstr "call to '" name "'")))
-    (when (or (!= (sig 'variadic) 0) (!= open-tail 0))
+    (when (!= (sig 'variadic) 0)
       (die-at line (fstr subject ": expected at least " np " args, got " nargs)))
+    (when (and (!= declared 0) (> nargs np))
+      (die-at line (fstr subject ": expected " np " args, got " nargs
+                         " -- declare a C variadic function with ':varargs'")))
     (when (!= (sig 'has-rest) 0)
       (die-at line
         (fstr subject ": expected at least " (- np 1) " args, got " nargs)))
@@ -8325,6 +8348,7 @@
       (while (< i nargs)
         (let (av:&Val (emit-node (node-at cc (+ i arg-start)) scope)
               slot:&Val (as &Val (unsafe/ptr+ (unsafe/cast &Val args) i)))
+          (consume-valist-arg (as ?&Node (node-at cc (+ i arg-start))) scope)
           (memcpy (as ptr slot) (as ptr av) (sizeof Val))
           ; A variadic fn type's `...` tail has no declared parameter to check
           ; against, exactly as for a variadic defn.
@@ -8542,8 +8566,8 @@
     ; matching method"); this path resolves the callee by NAME, so nothing ever
     ; compared the counts. Checked here, before any argument is emitted, so the
     ; diagnostic is the first thing reported and no argument's own errors mask
-    ; it. `:rest` / `:optional` / a variadic `declare` are all admitted by the
-    ; shared rule — the check is one CALL, not a second copy of the rule.
+    ; it. `:rest` / `:optional` / `:varargs` are all admitted by the shared rule
+    ; — the check is one CALL, not a second copy of the rule.
     (check-call-arity "call" (ss 'name) ft0 nargs (ss 'extern-decl) (cc 'line))
     ; Stage 10 escape analysis (lifecycle.md §2.3): manually freeing a
     ; with-owned binding double-frees — the armed cleanup also fires at scope
@@ -8566,6 +8590,7 @@
                        (emit-node (arg-target-rewrite an (fn-param-type ft0 i)) scope)
                        (emit-arg-with-want an scope (literal-param-want (fn-param-type ft0 i) lw (cc 'line)))))
           (resolve-pop-to rsd)
+          (consume-valist-arg (as ?&Node an) scope)
           (memcpy (unsafe/ptr+ (unsafe/cast &Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing :optional args, emitting each default
@@ -8622,6 +8647,10 @@
 ; `argno` its 1-based position.
 (defn coerce-call-argument (slot:&Val ptype:ptr scope:&Scope
                             subject:StrView argno:i32 line:i32):void
+    ; Both lower to `ptr`, so the guard below would pass a `ptr` as a list.
+    (when (!= (type-is-valist (slot 'type)) (type-is-valist (as ?&Type ptype)))
+      (die-at line (fstr subject ": argument " argno " has type " (type-display (slot 'type))
+                         ", parameter is " (type-display (as ?&Type ptype)))))
     ; Stage 14 NS-3 (design/stage14/native-strings.md): materialize an
     ; unmaterialized StrView string literal that flows into a StrView-typed
     ; parameter. Its IR type already matches the parameter ("%StrView"),
@@ -8750,9 +8779,7 @@
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
           ft0:(ptr Type) (ss 'type)
-          ; A `declare`'s extra arguments are a variadic tail too: the callee can't tell.
-          va-call:bool (or (!= (ft0 'variadic) 0)
-                           (and (!= (ss 'extern-decl) 0) (> nargs (ft0 'num-params)))))
+          va-call:bool (!= (ft0 'variadic) 0))
       ; W9 item 41: `(dyn P)` dispatch on a method name with exactly ONE
       ; definition. emit-generic-call forwards a boxed receiver through the
       ; vtable, but a single conformer leaves the method a solitary `defn`, so
@@ -9128,6 +9155,7 @@
         (if-some (sym (scope-lookup scope name))
           ; `is-local` is 1 for a stored global too (conventions.md); only home tells.
           (when (and (!= (sym 'is-local) 0) (!= (sym 'home) g-globals))
+            (reject-valist (sym 'type) line (fstr "closure capture of '" name "'"))
             (if (= cap-box null)
               ; REJECT mode (`fn`).
               (die-at line
@@ -11491,6 +11519,177 @@
 ; shapes: legacy libc free (free(NULL) is a no-op, so a slot disarmed via
 ; (set! name null) or `move` is safe), a Drop-protocol call (null-guarded for
 ; the same reason), and a (defer expr) re-emitted in its registration scope.
+; ------------------------------------------------------------
+; Variadic definitions (design/lua-bugfixes/variadic-functions.md)
+; ------------------------------------------------------------
+
+(defconst EMIT-COND 0)
+(defconst EMIT-WHILE 1)
+(defconst EMIT-AND 2)
+(defconst EMIT-OR 3)
+(defconst EMIT-IF-SOME 4)
+(defconst EMIT-WHEN-SOME 5)
+(defconst EMIT-MATCH 6)
+
+; Every form that may not run each of its parts. A list passed in one arm of a
+; branch isn't consumed on the other arm, so `consume-valist-arg` stands down here.
+(defn emit-branching (form:i32 n:?&Node scope:&Scope):&Val
+  (inc! g-branch-depth)
+  (let (r:&Val (case form
+                 EMIT-COND (emit-cond n scope)
+                 EMIT-WHILE (emit-while n scope)
+                 EMIT-AND (emit-short-circuit n scope 1)
+                 EMIT-OR (emit-short-circuit n scope 0)
+                 EMIT-IF-SOME (emit-if-some n scope 0)
+                 EMIT-WHEN-SOME (emit-if-some n scope 1)
+                 (emit-match n scope)))
+    (set! g-branch-depth (- g-branch-depth 1))
+    (return r)))
+
+; Q4: a callee's use of a list is target-dependent, so the caller's is over.
+(defn consume-valist-arg (arg:?&Node scope:&Scope):void
+  (when (or (= arg null) (!= g-branch-depth 0)) (return))
+  (let (an:(ptr Node) arg)
+    (when (!= (an 'kind) NODE-SYM) (return))
+    (if-some (sym (scope-lookup scope (an 's)))
+      (when (type-is-valist (sym 'type)) (set! (sym 'moved) 1))
+      0)))
+
+(defn va-intrinsics-declare ():void
+  (when (= g-va-declared 0)
+    (emit g-out "declare void @llvm.va_start.p0(ptr)\n"
+                "declare void @llvm.va_end.p0(ptr)\n"
+                "declare void @llvm.va_copy.p0.p0(ptr, ptr)\n")
+    (set! g-va-declared 1)))
+
+; Storage for one list in the entry block, and the slot holding its address.
+(defn va-list-storage (list:StrView slot:StrView):void
+  (va-intrinsics-declare)
+  (emit g-entry-stream "  " list " = alloca " (va-list-ir) ", align " (va-list-align) "\n")
+  (emit g-entry-stream "  " slot " = alloca ptr, align " g-target-ptr-bytes "\n")
+  (emit g-entry-stream "  store ptr " list ", ptr " slot ", align " g-target-ptr-bytes "\n"))
+
+; `:varargs ap`: an owned binding, so that every exit ends the list.
+(defn emit-varargs-entry (fn-scope:&Scope name:Symbol):void
+  (let (mn:StrView (ir-name-token (symbol-as-view name))
+        list:StrView (fstr "%" mn ".list")
+        slot:StrView (fstr "%" mn ".addr")
+        cl:&Cleanup (new Cleanup g-arena))
+    (va-list-storage list slot)
+    (emit g-entry-stream "  call void @llvm.va_start.p0(ptr " list ")\n")
+    (scope-define fn-scope name ty-valist slot 1)
+    (set! @cl (Cleanup-va-end list))
+    (scope-push-cleanup fn-scope (as ptr cl))))
+
+(defn va-copy-form? (n:?&Node):bool
+  (when (or (= n null) (!= (node-kind (as ptr n)) NODE-LIST) (< (node-len n) 1)) (return false))
+  (return (= (node-at n 0) 'va-copy)))
+
+(defn emit-va-copy-binding (bname:ptr form:ptr inner:&Scope line:i32):void
+  (let (fc:&Node (unsafe/cast &Node form)
+        name:Symbol (symbol-none)
+        ty:ptr (extract-name-and-type bname (as &Symbol &name) (node-line bname line)))
+    (when (!= (node-len form) 2) (die-at (fc 'line) "va-copy expects 1 arg"))
+    (when (and (!= ty null) (not (type-is-valist (as ?&Type ty))))
+      (die-at (fc 'line) (fstr "with: va-copy makes a VaList, but '" name "' is "
+                               (type-display (as ?&Type ty)))))
+    (let (src:&Val (emit-node (node-at form 1) inner)
+          mn:StrView (ir-name-token (symbol-as-view name))
+          id:i32 g-tmp
+          list:StrView (fstr "%" mn ".list." id)
+          slot:StrView (fstr "%" mn ".addr." id)
+          cl:&Cleanup (new Cleanup g-arena))
+      (inc! g-tmp)
+      (when (not (type-is-valist (src 'type)))
+        (die-at (fc 'line) (fstr "va-copy: expected a VaList, got " (type-display (src 'type)))))
+      (va-list-storage list slot)
+      (emit g-body-stream "  call void @llvm.va_copy.p0.p0(ptr " list ", ptr " (src 'val) ")\n")
+      (scope-define inner name ty-valist slot 1)
+      (set! @cl (Cleanup-va-end list))
+      (scope-push-cleanup inner (as ptr cl)))))
+
+; The refusals table of variadic-functions.md §4.1: what a promoted argument can
+; legally be read as, and what LLVM's `va_arg` reads correctly.
+(defn va-arg-check (ty:&Type line:i32):void
+  (let (k:i32 (ty 'kind))
+    (when (= k TY-PTR)
+      (when (= (ty 'pkind) PTR-REF)
+        (die-at line (fstr "unsafe/va-arg: nothing proves '" (type-display ty)
+                           "' non-null -- read ?" (type-display ty) " and narrow it")))
+      (return))
+    (when (or (= k TY-CSTR) (= k TY-FN) (= k TY-F64)) (return))
+    (when (or (= k TY-F32) (= k TY-F16))
+      (die-at line (fstr "unsafe/va-arg: '" (type-display ty) "' arrives promoted to 'f64' -- read f64 and narrow it")))
+    (when (or (= k TY-F80) (= k TY-F128))
+      (die-at line (fstr "unsafe/va-arg: '" (type-display ty) "' can't be read from a variadic list yet")))
+    (when (!= (type-is-strview ty) 0)
+      (die-at line "unsafe/va-arg: a StrView arrives as its data pointer -- read CStr"))
+    (when (= (is-int-or-bool ty) 0)
+      (die-at line "unsafe/va-arg: a struct can't be read from a variadic list yet"))
+    (let (pt:&Type (if (= g-target-ptr-bytes 2) ty-i16 ty-i32))
+      (when (or (!= (is-bool-type ty) 0) (< (int-width ty) (int-width pt)))
+        (die-at line (fstr "unsafe/va-arg: '" (type-display ty) "' arrives promoted to '"
+                           (type-display pt) "' -- read " (type-display pt) " and narrow it"))))))
+
+(defn va-gep (base:StrView off:StrView):StrView
+  (let (r:StrView (new-tmp))
+    (emit g-body-stream "  " r " = getelementptr i8, ptr " base ", i64 " off "\n")
+    (return r)))
+
+(defn va-select (test:StrView ty:StrView a:StrView b:StrView):StrView
+  (let (r:StrView (new-tmp))
+    (emit g-body-stream "  " r " = select i1 " test ", " ty " " a ", " ty " " b "\n")
+    (return r)))
+
+; The address of the next argument of an aggregate-class list, advancing the list.
+; LLVM's `va_arg` is wrong on AAPCS, and at -O0 on x86-64 it uses a spill it never
+; wrote; `select`, not blocks, so no enclosing phi needs to know (§3, §5).
+(defn emit-va-next (h:StrView fp:bool):StrView
+  (let (sysv:bool (= (va-list-class) VA-SYSV)
+        ; Field offsets, and the 16-byte slot of an FP register.
+        off-p:StrView (va-gep h (if sysv (if fp "4" "0") (if fp "28" "24")))
+        top-p:StrView (va-gep h (if sysv "16" (if fp "16" "8")))
+        stk-p:StrView (va-gep h (if sysv "8" "0"))
+        step:StrView (if fp "16" "8")
+        off:StrView (new-tmp)
+        wide:StrView (new-tmp)
+        inreg:StrView (new-tmp)
+        top:StrView (new-tmp)
+        stk:StrView (new-tmp)
+        next:StrView (new-tmp))
+    (emit g-body-stream "  " off " = load i32, ptr " off-p "\n")
+    (emit g-body-stream "  " wide " = " (if sysv "zext" "sext") " i32 " off " to i64\n")
+    ; SysV counts up to the end of the save area; AAPCS counts up to zero.
+    (if sysv
+      (emit g-body-stream "  " inreg " = icmp ult i32 " off ", " (if fp "176" "48") "\n")
+      (emit g-body-stream "  " inreg " = icmp slt i32 " off ", 0\n"))
+    (emit g-body-stream "  " top " = load ptr, ptr " top-p "\n")
+    (emit g-body-stream "  " stk " = load ptr, ptr " stk-p "\n")
+    (emit g-body-stream "  " next " = add i32 " off ", " step "\n")
+    (let (addr:StrView (va-select inreg "ptr" (va-gep top wide) stk)
+          stk2:StrView (va-select inreg "ptr" stk (va-gep stk "8"))
+          off2:StrView (va-select inreg "i32" next off))
+      (emit g-body-stream "  store i32 " off2 ", ptr " off-p "\n")
+      (emit g-body-stream "  store ptr " stk2 ", ptr " stk-p "\n")
+      (return addr))))
+
+(defn emit-va-arg (call:?&Node scope:&Scope):&Val
+  (let (cc:&Node (unsafe/cast &Node call))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "unsafe/va-arg expects a list and a type"))
+    (let (lv:&Val (emit-node (node-at cc 1) scope)
+          tn:?&Node (node-at cc 2)
+          tl:i32 (node-line (as ptr tn) (cc 'line))
+          ty:&Type (parse-type-from-node tn tl)
+          r:StrView (new-tmp))
+      (when (not (type-is-valist (lv 'type)))
+        (die-at (cc 'line) (fstr "unsafe/va-arg: expected a VaList, got " (type-display (lv 'type)))))
+      (va-arg-check ty tl)
+      (if (= (va-list-class) VA-CURSOR)
+        (emit g-body-stream "  " r " = va_arg ptr " (lv 'val) ", " (type-to-ir ty) "\n")
+        (emit g-body-stream "  " r " = load " (type-to-ir ty) ", ptr "
+              (emit-va-next (lv 'val) (= (ty 'kind) TY-F64)) "\n"))
+      (return (as &Val (alloc-val ty r))))))
+
 (defn emit-scope-cleanups (scope:&Scope):void
   (when (= g-block-term 1) (return))
   (let (sc:&Scope scope
@@ -11506,6 +11705,8 @@
           (match cl
             ((defer dnode dscope) (emit-node dnode dscope))
             ((drop slot dropfn dropret) (emit-drop-cleanup slot dropfn dropret))
+            ((va-end list)
+              (emit g-body-stream "  call void @llvm.va_end.p0(ptr " list ")\n"))
             ((libc-free slot)
               (let (tmp:StrView (new-tmp))
                 (emit g-body-stream "  " tmp " = load ptr, ptr " slot ", align 8\n")
@@ -11808,6 +12009,7 @@
                 (when (arg-struct-literal? bval-node ty inner) (set! ty ((unsafe/cast &Type ty) 'elem))))
               (when (= ty null)
                 (die-at (node-line bname (cc 'line)) (fstr "let: missing :type on '" name "'")))
+              (reject-valist-binding (as ?&Type ty) (node-line bname (cc 'line)) name)
               ; Stage 15 W5d (ergonomics.md §3.10): an `(array T …)` initializer
               ; refines an elem-less declared pointer to `ptr:T`, so `(aref a i)`
               ; works on a binding annotated with the bare `ptr`. IR-inert (every
@@ -11900,6 +12102,10 @@
             entry-want:ptr g-want-type
             i:i32 0)
         (while (< i (node-len binds))
+          (when (va-copy-form? (as ?&Node (node-at binds (+ i 1))))
+            (emit-va-copy-binding (node-at binds i) (node-at binds (+ i 1)) inner (cc 'line))
+            (set! i (+ i 2))
+            (continue))
           (let (bname:ptr (node-at binds i)
                 bval-node:ptr (node-at binds (+ i 1))
                 name:Symbol (symbol-none)
@@ -11917,6 +12123,7 @@
               (set! ty ((unsafe/cast &Val pre-v) 'type)))
             (when (= ty null)
               (die-at (node-line bname (cc 'line)) (fstr "with: missing :type on '" name "'")))
+            (reject-valist-binding (as ?&Type ty) (node-line bname (cc 'line)) name)
               ; W5d (§3.10), mirror of emit-let: an `(array T …)` initializer
               ; refines an elem-less declared pointer to `ptr:T`.
 
@@ -12451,6 +12658,9 @@
           ; Refuse before the RHS is emitted, with a message that says why.
           (reject-array-type (sym 'type) (node-line (as ptr target) (cc 'line))
             (fstr "set!: '" (target 's) "'"))
+          (when (type-is-valist (sym 'type))
+            (die-at (node-line (as ptr target) (cc 'line))
+              (fstr "set!: '" (target 's) "' is a VaList -- bind a copy with va-copy")))
             (let (v:&Val
                    ; TC-2: arm the want channel with the slot's declared type so a
                    ; generic constructor on the RHS infers a return-only tyvar.
@@ -15267,7 +15477,7 @@
           (die-at (node-line n 0) (fstr "tagged literal '#" (node-head-sym (node-rest n))
                                   "' is data syntax: Nucleus source has no reader for it")))
         (when (= hp 'with) (return (emit-with n scope)))
-        (when (= hp 'cond) (return (emit-cond n scope)))
+        (when (= hp 'cond) (return (emit-branching EMIT-COND n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
         (when (= hp 'quasiquote) (return (emit-quasiquote n scope)))
         (when (= hp 'ast-first) (return (emit-ast-read n scope 0)))
@@ -15279,7 +15489,7 @@
         ; `'(a ~b)` is legitimate data. quasiquote-levels.md §6 Q2.
         (when (or (= hp 'unquote) (= hp 'unquote-splice))
           (die-at (nn 'line) (fstr (symbol-as-view h) " outside quasiquote")))
-        (when (= hp 'while) (return (emit-while n scope)))
+        (when (= hp 'while) (return (emit-branching EMIT-WHILE n scope)))
         (when (= hp 'break) (return (emit-loop-jump n scope true)))
         (when (= hp 'continue) (return (emit-loop-jump n scope false)))
         (when (= hp 'set!) (return (emit-set n scope)))
@@ -15289,8 +15499,8 @@
         (when (= hp 'goto-ptr) (return (emit-goto-ptr n scope)))
         (when (= hp 'array) (return (emit-array-lit n scope)))
         (when (= hp 'not) (return (emit-not n scope)))
-        (when (= hp '_and) (return (emit-short-circuit n scope 1)))
-        (when (= hp '_or) (return (emit-short-circuit n scope 0)))
+        (when (= hp '_and) (return (emit-branching EMIT-AND n scope)))
+        (when (= hp '_or) (return (emit-branching EMIT-OR n scope)))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'as-checked) (return (emit-as-checked n scope)))
@@ -15319,8 +15529,8 @@
         (when (= hp 'err-name) (return (emit-err-accessor n scope 0)))
         (when (= hp 'err-message) (return (emit-err-accessor n scope 1)))
         (when (= hp 'type-token) (return (emit-type-token n scope)))
-        (when (= hp 'if-some) (return (emit-if-some n scope 0)))
-        (when (= hp 'when-some) (return (emit-if-some n scope 1)))
+        (when (= hp 'if-some) (return (emit-branching EMIT-IF-SOME n scope)))
+        (when (= hp 'when-some) (return (emit-branching EMIT-WHEN-SOME n scope)))
         (when (= hp 'defer) (return (emit-defer n scope)))
         (when (= hp 'move) (return (emit-move n scope)))
         ; Stage 13 L3 (lambda.md §"fn — anonymous function"): an anonymous
@@ -15361,7 +15571,10 @@
         (when (and (= hp 'cfn) (= (as ptr (scope-lookup scope (symbol-intern "cfn"))) null))
           (return (emit-cfn n scope)))
         ; Stage 10 tagged sums (unions.md §3–§4)
-        (when (= hp 'match) (return (emit-match n scope)))
+        (when (= hp 'match) (return (emit-branching EMIT-MATCH n scope)))
+        (when (= hp 'unsafe/va-arg) (return (emit-va-arg n scope)))
+        (when (= hp 'va-copy)
+          (die-at (-> n (unsafe/cast &Node _) (_ 'line)) "va-copy: only as the init of a `with` binding"))
         ; Stage 17 A1: `try` lowers to the match its former library macro built,
         ; but picks the ok arm's binder count from the operand's type (`!void`'s
         ; ok arm is payload-less) — which is why it is not a macro.
@@ -15725,6 +15938,7 @@
   (let (tl:i32 (node-line (as ptr tn) line)
         ty:&Type (parse-type-from-node (as ptr tn) tl))
     (reject-opaque-type ty tl "sizeof")
+    (reject-valist ty tl "sizeof")
     (reject-cycle-pending-layout ty tl "sizeof")
     (return (abi-sizeof ty))))
 
@@ -16845,6 +17059,7 @@
           ; Type flag, identical to the postfix spelling `trap-zero:i32:volatile`).
           (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
             (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
+          (reject-valist (as ?&Type ty) name-line "defvar")
           (emit-global-def cc name ty
             (if (= init-cell null) null (node-first (unsafe/cast &Node init-cell)))
             attr-flags))))))
@@ -17561,6 +17776,7 @@
               ; enclosing struct has no layout either. `ptr:Foo` is the fix.
               (reject-opaque-type fty
                 (node-line field (cc 'line)) "defstruct field")
+              (reject-valist fty (node-line field (cc 'line)) "defstruct field")
               ; W1d: a by-value field whose type the cycle has not laid out yet
               ; would give THIS struct a wrong size and wrong offsets.
               (reject-cycle-pending-layout fty
@@ -17951,6 +18167,9 @@
           params-node:ptr (node-at cc 2))
       (when (not (node-is-list params-node))
         (die-at ((unsafe/cast &Node name-node) 'line) "defn: params must be list"))
+      (when (and (>= (varargs-marker-at (as ?&Node params-node)) 0)
+                 (!= (defn-is-generic-template call) 0))
+        (die-at (cc 'line) "defn: a variadic function can't be generic"))
       ; A bounded-generic template — `:where` or a parametric-struct receiver —
 
       ; emits no code itself; it is registered in prescan and monomorphized per
@@ -17978,6 +18197,7 @@
         ; (no size, no layout) — refuse at the signature, where the line is exact,
         ; rather than at type-to-ir's ambient-line backstop.
         (reject-opaque-type ret (cc 'line) "defn return type")
+        (reject-valist ret (cc 'line) "defn return type")
         (reject-cycle-pending-layout ret (cc 'line) "defn return type")
         (guard-name-kind fname (cc 'line) NK-FUNCTION)
         ; L8: warn when a public defn's signature exposes a capturing-closure env
@@ -18025,7 +18245,10 @@
               has-rest:i32 0
               rest-idx:i32 -1
               opt-idx:i32 -1
-              nopt:i32 0)
+              nopt:i32 0
+              va-at:i32 (varargs-marker-at (as ?&Node params-node))
+              va-name:Symbol (symbol-none)
+              is-va:i32 0)
           ; Scan for :rest and :optional. :rest must be second-to-last so the rest
           ; param itself is the trailing entry. :optional comes after all required
           ; params; everything after it (until end or :rest) is an optional spec.
@@ -18052,6 +18275,16 @@
               (die-at ((unsafe/cast &Node (node-at params-node opt-idx)) 'line)
                       "defn: :optional must be followed by at least one param"))
             (set! nopt (- (- raw-nparams 1) opt-idx)))
+          (when (>= va-at 0)
+            (when (or (!= has-rest 0) (!= opt-idx -1))
+              (die-at (cc 'line) "defn: :varargs cannot be combined with :rest or :optional"))
+            (when (or (!= va-at (- raw-nparams 2))
+                      (= (node-at params-node (+ va-at 1)) null)
+                      (!= (node-kind (node-at params-node (+ va-at 1))) NODE-SYM))
+              (die-at (cc 'line) "defn: :varargs comes last and binds one bare name"))
+            (set! va-name (-> params-node (node-at _ (+ va-at 1)) (unsafe/cast &Node _) (_ 's)))
+            (set! is-va 1)
+            (set! raw-nparams va-at))
           (let (nparams:i32 raw-nparams)
             (when (!= has-rest 0) (set! nparams (- nparams 1)))
             (when (!= opt-idx -1) (set! nparams (- nparams 1)))
@@ -18116,13 +18349,15 @@
             (type-set-params ft param-types nparams)
             (type-set-param-names ft param-names nparams)
             (set-fields! ft
-                         'variadic     0
+                         'variadic     is-va
                          'has-rest     has-rest
                          'nopt         nopt
                          'opt-defaults opt-defaults)
             ; Solitary names (and fallback defns with no registered generic) keep
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
+            (when (and (!= is-va 0) (!= (defn-is-mangled fname) 0))
+              (die-at (cc 'line) (fstr "defn: variadic '" fname "' can't be overloaded")))
             (when (= (defn-is-mangled fname) 0)
               (check-ir-name-legal (cc 'line) fname (symbol-as-view (defn-ir-name fname param-types nparams ret)))
               (let (fsym:&Sym (scope-define g-globals fname (as ptr ft)
@@ -18167,6 +18402,9 @@
                 (aref (unsafe/cast &Symbol param-names) i)
                 (aref (unsafe/cast &ptr param-types) i))
               (inc! i))
+            (when (!= is-va 0)
+              (refuse-qualified-binder va-name (cc 'line))
+              (emit-varargs-entry fn-scope va-name))
             (set! i body-start)
             ; Pre-scan the body for (label NAME) decls so forward gotos and
             ; last-decl-wins resolution work.
@@ -18244,14 +18482,14 @@
             ; that define's byte span in g-def-buf (§5.1). Nothing it does emits.
             (let (pd:?&ProgDefn
                     (program-defn-record (defn-ir-name fname param-types nparams ret)
-                                         fname ret param-types nparams 0))
+                                         fname ret param-types nparams is-va))
               ; L5: the mangled counterpart of the CT prescan's `@fname`.
               (ct-module-defn-note (defn-ir-name fname param-types nparams ret))
               ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
               ; (`weak_odr` for a definition this unit only carries a copy of)
               ; are the same decision, taken once in `def-linkage`.
               (defn-link-check fname (defn-ir-name fname param-types nparams ret)
-                               (fn-link-sig ret param-types nparams false) (cc 'line))
+                               (fn-link-sig ret param-types nparams (!= is-va 0)) (cc 'line))
               (emit g-out "define " (def-linkage) (abi-ret-ir g-fn-ret-abi ret) " "
                     (defn-ir-name fname param-types nparams ret) "(")
               ; A MEMORY return prepends the hidden sret pointer parameter.
@@ -18271,7 +18509,9 @@
                     (aref (unsafe/cast &ptr param-types) i)
                     (aref (unsafe/cast &Symbol param-names) i))
                   (set! need-comma 1)
-                  (inc! i)))
+                  (inc! i))
+                (when (!= is-va 0)
+                  (emit g-out (if (!= need-comma 0) ", ..." "..."))))
               ; Stage 10 Phase F1: the LLVM `noreturn` function attribute lets the
               ; optimizer and verifier know control never returns from this define.
               ; Stage 14 AVR-5: emit-fn-attrs-for then appends any string function

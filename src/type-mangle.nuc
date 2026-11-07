@@ -139,6 +139,7 @@
 ; Pointers nest as ref:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
 (defn type-spelling (t:?&Type):Symbol
+  (when (type-is-valist t) (return (symbol-intern "VaList")))
   (let (tt:ptr:Type t
         k:i32 (tt 'kind))
     (case k

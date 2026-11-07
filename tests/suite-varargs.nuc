@@ -1,0 +1,135 @@
+; Variadic functions (design/lua-bugfixes/variadic-functions.md §10).
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.test) (import-use nucleus.create)
+
+(defn check-varargs-oracle ():!String
+  (return (build-run-file "" "--link-arg=tests/fixtures/varargs-oracle.c"
+                          "tests/fixtures/varargs-oracle.nuc")))
+
+; C calls Nucleus and Nucleus calls C, past both register files, with each pair
+; of columns computed once by a C callee and once by a Nucleus one.
+(deftest varargs-c-oracle
+  (try (require-cc))
+  (let (got:String (try (check-varargs-oracle)))
+    (try (check-golden (string-as-view &got)
+           "15355 15355\n15355 15355\n30710 30710\n7 8 2\n37\n8 x=7/2.50\n"))
+    (drop &got)
+    (return (ok))))
+
+(deftest varargs-cross-targets
+  (try (require-cc))
+  (try (check-script-ok "./tests/run-varargs-cross-test.sh" ""))
+  (return (ok)))
+
+(deftest varargs-refuses-where-a-list-could-outlive-its-frame
+  (try (check-source-rejects "(defstruct S (l VaList))\n"
+         "defstruct field: a VaList may only be a parameter"))
+  (try (check-source-rejects "(defvar g:VaList null)\n"
+         "defvar: a VaList may only be a parameter"))
+  (try (check-source-rejects "(defn f (:varargs ap):VaList (return ap))\n"
+         "defn return type: a VaList may only be a parameter"))
+  (try (check-source-rejects "(declare f (x:VaList):VaList)\n"
+         "declare return type: a VaList may only be a parameter"))
+  (try (check-source-rejects
+         "(defn f (:varargs ap):i32 (let (x:usize (sizeof VaList)) (return 0)))\n"
+         "sizeof: a VaList may only be a parameter"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (b ap) (return 0)))\n"
+         "'b': a VaList can't be rebound"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (with (b ap) (return 0)))\n"
+         "'b': a VaList can't be rebound"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (set! ap ap) (return 0))\n"
+         "set!: 'ap' is a VaList"))
+  (try (check-source-rejects
+         "(defn f (:varargs ap):i32 (let (g (vfn ():i32 (return (unsafe/va-arg ap i32)))) (return (g))))\n"
+         "closure capture of 'ap'"))
+  (return (ok)))
+
+(deftest varargs-refuses-what-unsafe-va-arg-cannot-read
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap i16)) (return 0)))\n"
+         "unsafe/va-arg: 'i16' arrives promoted to 'i32' -- read i32 and narrow it"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap f32)) (return 0)))\n"
+         "unsafe/va-arg: 'f32' arrives promoted to 'f64'"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap bool)) (return 0)))\n"
+         "unsafe/va-arg: 'bool' arrives promoted to 'i32'"))
+  (try (check-source-rejects "(defstruct P a:i32 b:i32)
+(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap P)) (return 0)))\n"
+         "unsafe/va-arg: a struct can't be read from a variadic list yet"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap StrView)) (return 0)))\n"
+         "unsafe/va-arg: a StrView arrives as its data pointer -- read CStr"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap &i32)) (return 0)))\n"
+         "unsafe/va-arg: nothing proves '&i32' non-null"))
+  (try (check-source-rejects "(defn f (:varargs ap):i32 (let (x (unsafe/va-arg ap f128)) (return 0)))\n"
+         "unsafe/va-arg: 'f128' can't be read from a variadic list yet"))
+  (try (check-source-rejects "(defn f (a:i32):i32 (return (unsafe/va-arg a i32)))\n"
+         "unsafe/va-arg: expected a VaList, got i32"))
+  (return (ok)))
+
+; Q4. The arms of a branch are not a second use: only one of them runs.
+(deftest varargs-passing-consumes-the-list
+  (try (check-source-rejects "(defn g (l:VaList):i32 (return 0))
+(defn f (:varargs ap):i32 (g ap) (g ap) (return 0))\n"
+         "use of 'ap' after passing it: a VaList is consumed by a call"))
+  (try (check-source-rejects "(defn g (l:VaList):i32 (return 0))
+(defn f (:varargs ap):i32 (g ap) (return (unsafe/va-arg ap i32)))\n"
+         "use of 'ap' after passing it"))
+  (let (acc:bool (try (source-compiles? "(defn g (l:VaList):i32 (return 0))
+(defn f (x:i32 :varargs ap):i32 (if (> x 0) (g ap) (g ap)) (return 0))
+(defn main ():i32 (return 0))\n")))
+    (when (not acc) (fail! "a pass in each arm of an `if` was refused")))
+  (return (ok)))
+
+(deftest varargs-valist-is-not-a-pointer
+  (try (check-source-rejects "(defn g (l:VaList):i32 (return 0))
+(defn f (x:ptr):i32 (return (g x)))\n"
+         "argument 1 has type ptr, parameter is VaList"))
+  (try (check-source-rejects "(defn g (l:ptr):i32 (return 0))
+(defn f (:varargs ap):i32 (return (g ap)))\n"
+         "argument 1 has type VaList, parameter is ptr"))
+  (return (ok)))
+
+(deftest varargs-marker-shape
+  (try (check-source-rejects "(defn f (:varargs):i32 (return 0))\n"
+         "defn: :varargs comes last and binds one bare name"))
+  (try (check-source-rejects "(defn f (:varargs ap b):i32 (return 0))\n"
+         "defn: :varargs comes last and binds one bare name"))
+  (try (check-source-rejects "(defn f (:varargs ap:i32):i32 (return 0))\n"
+         "defn: :varargs comes last and binds one bare name"))
+  (try (check-source-rejects "(defn f (a:i32 :optional (b:i32 1) :varargs ap):i32 (return 0))\n"
+         "defn: :varargs cannot be combined with :rest or :optional"))
+  (try (check-source-rejects "(defn f (a:i32 :varargs ap):i32 (return 0))
+(defn f (a:f64):i32 (return 0))\n"
+         "defn: variadic 'f' can't be overloaded"))
+  (try (check-source-rejects "(declare f (:varargs ap):i32)\n"
+         "declare: ':varargs' comes last and takes no name"))
+  (try (check-source-rejects "(defn f (a:i32):i32 (let (x (va-copy a)) (return 0)))\n"
+         "va-copy: only as the init of a `with` binding"))
+  (try (check-source-rejects "(defn f (a:i32):i32 (with (x (va-copy a)) (return 0)))\n"
+         "va-copy: expected a VaList, got i32"))
+  (return (ok)))
+
+; The binder stays home, and `declare` reads the header back as a variadic.
+(deftest varargs-nuch-round-trip
+  (let (lp:String (try (test-write-file "valib.nuc"
+                         "(defn vl-sum (n:i32 :varargs ap):i64
+  (let (t:i64 0)
+    (dotimes (i n) (set! t (+ t (as i64 (unsafe/va-arg ap i32)))))
+    (return t)))\n"))
+        hdr:String (try (emit-for-file "" "--emit-nuch" (string-as-view &lp))))
+    (try (check-contains (string-as-view &hdr) "(declare vl-sum ((n i32) :varargs) :i64)"))
+    (drop &hdr)
+    (drop &lp)
+    (return (ok))))
+
+(deftest varargs-cheader-compiles-under-cc
+  (try (require-cc))
+  (let (lp:String (try (test-write-file "vahdr.nuc"
+                         "(defn vh_sum (n:i32 :varargs ap):i64 (return 0))
+(defn vh_list (fmt:CStr ap:VaList):i32 (return 0))\n"))
+        hdr:String (try (emit-for-file "" "--emit-cheader" (string-as-view &lp))))
+    (try (check-contains (string-as-view &hdr) "#include <stdarg.h>"))
+    (try (check-contains (string-as-view &hdr) "int64_t vh_sum(int32_t n, ...);"))
+    (drop &hdr)
+    (drop &lp)
+    (return (ok))))

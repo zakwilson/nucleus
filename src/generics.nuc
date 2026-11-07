@@ -701,7 +701,9 @@
 ; :rest marker is present (the marker itself is not a parameter).
 (defn defn-params-count (params-node:?&Node):i32
   (let (nraw:i32 (node-len params-node)
-        n:i32 (node-len params-node))
+        n:i32 (node-len params-node)
+        va-at:i32 (varargs-marker-at params-node))
+    (when (>= va-at 0) (return va-at))
     (dotimes (i nraw)
       ; W5f: a malformed parameter may be NULL (an empty list `()` reads as a
       ; null node). `marker-named` is null-safe; the located diagnostic for a
@@ -759,7 +761,8 @@
 
 ; `line` is blamed for a colon-spelled parameter, whose interned symbol has none.
 (defn defn-params-to-types-at (params-node:?&Node line:i32):ptr
-  (let (nraw:i32 (node-len params-node)
+  (let (va-at:i32 (varargs-marker-at params-node)
+        nraw:i32 (if (>= va-at 0) va-at (node-len params-node))
         has-rest:i32 0
         rest-idx:i32 -1
         opt-idx:i32 -1)
@@ -3924,7 +3927,7 @@
     "deref" "ptr+" "field" "sizeof" "alignof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
     "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
-    "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/ptr+" "unsafe/funcall-ptr-1"
+    "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/va-arg" "va-copy" "unsafe/ptr+" "unsafe/funcall-ptr-1"
     "unsafe/funcall-ptr-i32" "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
     "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some" "move" "defer"
     "err-name" "err-message" "match" "__make" "__init-then" "err!" "try"
@@ -7579,6 +7582,9 @@
         (when (= hp '_or) (return ty-bool))
         ; `unsafe/cast` types exactly as the retired bare `cast` used to.
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
+        (when (= hp 'unsafe/va-arg)
+          (return (parse-type-from-node (node-at n 2) (node-line n 0))))
+        (when (= hp 'va-copy) (return ty-valist))
         (when (or (= hp 'as) (= hp 'as-checked)) (return (node-type-as n)))
         ; Lockstep with emit-list: `ref` is the value-world address-of head too.
         (when (= hp 'ref) (return (node-type-ref n scope)))

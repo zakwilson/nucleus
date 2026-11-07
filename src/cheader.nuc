@@ -349,9 +349,8 @@
   ; preprocessing host's; usize/ssize are the emission target's pointer width.
   (when (= name "size_t") (return ty-usize))
   (when (= name "ssize_t") (return ty-ssize))
-  ; __gnuc_va_list / va_list — treat as ptr
-  (when (= name "__gnuc_va_list") (return ty-ptr))
-  (when (= name "va_list") (return ty-ptr))
+  (when (= name "__gnuc_va_list") (return ty-valist))
+  (when (= name "va_list") (return ty-valist))
   ; FILE* — opaque struct, treated as ptr
   (when (= name "FILE") (return ty-ptr))
   ; Fallback: if unknown, return ptr
@@ -4104,6 +4103,9 @@
                  "Err" "int32_t"
                  "CStr" "const char*"
                  "ptr" "void*"})
+    (when (= name "VaList")
+      (cheader-note-c-include (symbol-intern "stdarg.h"))
+      (return "va_list"))
     (match (mapping (symbol-as-view name))
       ((some n) (return n))
       (none
@@ -4855,7 +4857,8 @@
 ; A parameter's `name:type` node: null for a `:optional`/`:rest` marker, and the
 ; declaration half of a `(decl default)` cell after `:optional`.
 (defn cheader-param-decl (p:ptr opt:bool):ptr
-  (when (or (!= (marker-named (as ?&Node p) "optional") 0) (!= (marker-named (as ?&Node p) "rest") 0))
+  (when (or (!= (marker-named (as ?&Node p) "optional") 0) (!= (marker-named (as ?&Node p) "rest") 0)
+            (!= (marker-named (as ?&Node p) "varargs") 0))
     (return null))
   (when (and opt (= (node-kind p) NODE-LIST) (> (node-len p) 0)) (return (node-at p 0)))
   (return p))
@@ -4961,7 +4964,8 @@
       ; parameters have to be in hand before the return type can be spelled.
       (let ((acc String) (str-alloc g-arena "")
             params:ptr (node-at form 2)
-            n:i32 (node-len params))
+            va-at:i32 (varargs-marker-at (as ?&Node params))
+            n:i32 (if (>= va-at 0) va-at (node-len params)))
         (let (emitted:i32 0
               rest:bool false
               opt:bool false)
@@ -4986,7 +4990,8 @@
                     ; No type node at all — a shape this pass cannot read.
                     (not (symbol-none? pname))
                       (str-into acc "void* " pc))))))
-          (when (= emitted 0) (str-into acc "void"))
+          (cond (>= va-at 0) (str-into acc (if (= emitted 0) "..." ", ..."))
+                (= emitted 0) (str-into acc "void"))
           ; At file scope, so the parameter's tag is not scoped to the prototype.
           (when rest (emit g-hdr "struct Node;\n")))
         (let (rtnode:ptr (cheader-defn-ret-node form))

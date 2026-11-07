@@ -403,6 +403,7 @@
 
 (defn resolve-type-name (name:Symbol line:i32 array-ok:i32):&Type
   (let (sv:StrView (symbol-as-view name))
+  (when (= name "VaList") (return ty-valist))
   (if-some (at (env-arg-type name array-ok)) (return at) 0)
   (reject-bare-sigil name line)
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
@@ -2585,6 +2586,7 @@
             ; the enclosing struct wrong offsets — the same two obligations a
             ; by-value defstruct field carries (W3a / W1d).
             (reject-opaque-type et (node-line etn line) "array element")
+            (reject-valist et (node-line etn line) "array element")
             (reject-cycle-pending-layout et (node-line etn line) "array element")
             ; Mode 2 = the prescan: leave the length provisional (0) rather than
             ; folding it, because macros are not registered during a prescan and
@@ -2860,14 +2862,19 @@
                           (let (cur:ptr plist
                                 count:i32 0)
                             (while (> (node-len cur) 0)
-                              (inc! count)
+                              (if (!= (marker-named (as ?&Node (node-first (unsafe/cast &Node cur))) "varargs") 0)
+                                (do
+                                  (when (> (node-len cur) 1)
+                                    (die-at line "function type: ':varargs' comes last and takes no name"))
+                                  (set! is-va 1))
+                                (inc! count))
                               (set! cur (node-rest (unsafe/cast &Node cur))))
                             (set! num-p count)
                             (set! param-arr (arena-alloc (* (as i64 count) (ptr-bytes))))
                             ; Parse each param type
                             (set! cur plist)
                             (let (pi:i32 0)
-                              (while (> (node-len cur) 0)
+                              (while (< pi count)
                                 (set! (aref (unsafe/cast &ptr param-arr) pi) (parse-type-from-node (node-first (unsafe/cast &Node cur)) line))
                                 (inc! pi)
                                 (set! cur (node-rest (unsafe/cast &Node cur)))))))))

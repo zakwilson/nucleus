@@ -608,6 +608,8 @@ table has to be built at run time. For the constant grammar, see
 
 Function pointer types are written as `(fn:rettype (param-types...))` in sugared form, or `((fn rettype) (param-types...))` in desugared/canonical form.
 
+A variadic function-pointer type ends its parameters with `:varargs`: `((fn i32) (CStr :varargs))`.
+
 In parameter, `let`-binding, struct-field and union-member positions, either the
 canonical list form or the colon-paren sugar works — the reader fuses an
 open-segment name (`f:`, `f:ptr:`) immediately followed by `(`, then absorbs
@@ -959,6 +961,61 @@ the equivalent C does. The target is the **target's** C `int` — 16-bit on AVR,
 A variadic callee's **fixed** parameters are ordinary typed slots and take the
 rules above; only the `...` tail is promoted. A materialized `StrView` in the
 tail contributes just its `data` pointer — see [Strings](strings.md).
+
+### Variadic functions
+
+`:varargs` makes a function C-variadic: callable from C with `...`, and calling
+variadic C functions the same way. It's the last thing in a parameter list, and
+can't be combined with `:rest` or `:optional`. It may be the only parameter.
+
+```lisp
+(defn sum (n:i32 :varargs ap):i64      ; define: binds ap:VaList
+  (let (t:i64 0)
+    (dotimes (i n)
+      (set! t (+ t (as i64 (unsafe/va-arg ap i32)))))
+    (return t)))
+
+(declare printf (fmt:CStr :varargs):i32)   ; declare: no name
+((fn i32) (CStr :varargs))                 ; function-pointer type
+```
+
+For an API only Nucleus calls, prefer a macro or `:rest`: nothing checks a
+variadic tail. A variadic `defn` can't be generic or overloaded, since overloading
+would mangle the C name, and closures can't be variadic.
+
+**`VaList`** is a built-in type, and neither a `ptr` nor convertible to one. It
+may be a parameter type, or a binding made by `:varargs` or `va-copy`, and nothing
+else: not a field, global, array element, return type, closure capture or `sizeof`
+operand, and it can't be rebound or assigned. Those would let a list outlive its
+frame. A `va_list` parameter in an imported C header is a `VaList`, so a list can be
+passed straight to `vsnprintf`. A `va_list` *field* in a C struct isn't supported
+yet: it imports with a pointer's size, which is only right on a cursor target.
+
+**`(unsafe/va-arg ap T)`** reads the next argument. Reading past the end, or as
+the wrong type, is undefined. `T` must be a type the promotions leave alone:
+
+| Admitted | Refused |
+|---|---|
+| `i32`, `ui32`, `Char`, `i64`, `ui64`, `usize`, `ssize`, `f64`, `ptr`, `ptr:T`, `?&T`, `CStr`, function pointers; on AVR, `i16` and `ui16` | Narrower integers, `bool`, `f32`: they arrive promoted, and the message names the type to read |
+| | `&T`: nothing proves it non-null. Read `?&T` and narrow |
+| | Structs, unions and arrays. A `StrView` passed in a variadic position arrives as its data pointer, so read `CStr` |
+| | `f80`, `f128` |
+
+**Passing a `VaList` to a call consumes it.** Whether the callee advances the
+caller's list depends on the target, so any later use is an error. To use a list
+twice, copy it first with **`va-copy`**, which is ended when its `with` exits:
+
+```lisp
+(with (aq (va-copy ap))
+  (vsnprintf null 0 fmt aq))
+(vsnprintf buf n fmt ap)
+```
+
+A pass in each arm of a branch counts as one use. A pass inside a loop isn't
+caught: don't.
+
+Variadics run on x86-64 Linux, aarch64 Linux and riscv64 Linux. Windows, Darwin
+and AVR compile but have never been run.
 
 ### Condition position is an elimination, not a coercion
 

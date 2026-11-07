@@ -8,11 +8,9 @@
 ; accepting. Asserted BY VALUE, not by exit code: a check that quietly swallowed
 ; one of these would still link.
 ;
-; The other variable-arity shape — a hand-written `(declare printf (fmt:CStr))`
-; called with extra arguments, which is the documented way to reach a C variadic
-; function (Nucleus has no `...` spelling, and `:rest` is refused in a
-; declaration) — needs a unit with no header-derived `printf` to shadow, so it
-; is pinned separately by `tests/fixtures/w9-declare-open-tail.nuc`.
+; The other variable-arity shape, a hand-written `declare` with `:varargs`, needs
+; a unit with no header-derived `printf` to shadow, so it is pinned separately by
+; `tests/fixtures/w9-declare-open-tail.nuc`.
 (import-use "stdio.h")
 (import-use nucleus.allocator)
 (import-use nucleus.node)   ; count-rest is :rest — the call builds a Node list

@@ -108,7 +108,7 @@
 ; ---------------------------------------------------------------------------
 
 (defn fp2-src ():StrView
-  (return "(declare printf (fmt:CStr):i32)
+  (return "(declare printf (fmt:CStr :varargs):i32)
 (defstruct Pt x:i64 y:i64)
 (defstruct Big a:i64 b:i64 c:i64)
 (defn sum-pt (p:Pt):i64
@@ -197,7 +197,7 @@
 
 (defn fp4-src ():StrView
   (return "(import-use \"tests/fixtures/s16-fnptr.h\")
-(declare printf (fmt:CStr):i32)
+(declare printf (fmt:CStr :varargs):i32)
 (defn cmpv (a:ptr b:ptr):i32 (return 0))
 (defn ten (a:i32):i32 (return (* a 10)))
 (defn main ():i32

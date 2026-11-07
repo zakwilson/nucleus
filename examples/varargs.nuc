@@ -1,0 +1,63 @@
+; Variadic functions defined in Nucleus: C-callable, so the tail is C's.
+(declare printf (fmt:CStr :varargs):i32)
+(declare vsnprintf (buf:ptr n:usize fmt:CStr ap:VaList):i32)
+
+(defn sum (n:i32 :varargs ap):i64
+  (let (t:i64 0)
+    (dotimes (i n)
+      (set! t (+ t (as i64 (unsafe/va-arg ap i32)))))
+    (return t)))
+
+; An integer and a double alternate, so each register file runs out on its own.
+(defn weigh (n:i32 :varargs ap):f64
+  (let (t:f64 0.0)
+    (dotimes (i n)
+      (set! t (+ t (* (unsafe/cast f64 (unsafe/va-arg ap i64)) (unsafe/va-arg ap f64)))))
+    (return t)))
+
+; A second pass over one list takes a copy, and a list passed on is spent.
+(defn fmt-len (buf:ptr cap:usize fmt:CStr :varargs ap):i32
+  (with (aq (va-copy ap))
+    (let (n:i32 (vsnprintf null 0 fmt aq))
+      (vsnprintf buf cap fmt ap)
+      (return n))))
+
+(defn vlen (fmt:CStr ap:VaList):i32
+  (return (vsnprintf null 0 fmt ap)))
+
+(defn outer (fmt:CStr :varargs ap):i32
+  (return (vlen fmt ap)))
+
+; Passing in each arm is fine: only one of them runs.
+(defn pick (first:bool fmt:CStr :varargs ap):i32
+  (if first
+    (return (vlen fmt ap))
+    (return (+ 100 (vlen fmt ap)))))
+
+; The only parameter, as C23 allows.
+(defn only (:varargs ap):f64
+  (return (unsafe/va-arg ap f64)))
+
+(defn early (stop:bool :varargs ap):i32
+  (when stop (return -1))
+  (return (unsafe/va-arg ap i32)))
+
+(defvar g-buf:(array i8 64))
+
+(defn main ():i32
+  (printf "%ld\n" (sum 3 1 2 3))
+  (printf "%ld\n" (sum 8 1 2 3 4 5 6 7 8))
+  (let (small:i16 -300 x:f32 2.5 big:i64 5)
+    (printf "%ld\n" (sum 2 small (as i32 7)))
+    (printf "%.2f\n" (weigh 2 big x (as i64 3) 1.5))
+    (printf "%.2f\n" (only x)))
+  (printf "%.1f\n" (weigh 9 (as i64 1) 1.0 (as i64 2) 2.0 (as i64 3) 3.0 (as i64 4) 4.0 (as i64 5) 5.0
+                          (as i64 6) 6.0 (as i64 7) 7.0 (as i64 8) 8.0 (as i64 9) 9.0))
+  (printf "%d\n" (fmt-len (as ptr g-buf) 64 "%s=%d/%.2f" "x" 7 2.5))
+  (printf "%s\n" (as CStr g-buf))
+  (printf "%d\n" (outer "%d %d" 12 345))
+  (printf "%d %d\n" (pick true "%d" 1234) (pick false "%d" 1234))
+  (printf "%d %d\n" (early true 5) (early false 5))
+  (let (f:((fn i64) (i32 :varargs)) sum)
+    (printf "%ld\n" (f 2 40 2)))
+  (return 0))

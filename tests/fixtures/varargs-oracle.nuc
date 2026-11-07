@@ -1,0 +1,46 @@
+; The Nucleus half of varargs-oracle.c.
+(declare c_main ():void)
+(declare c_vsum (n:i32 ap:VaList):i64)
+(declare vsnprintf (buf:ptr n:usize fmt:CStr ap:VaList):i32)
+
+(defstruct Big a:i64 b:i64 c:i64)
+(defstruct Pair a:i64 b:i64)
+
+(defn n_vsum (n:i32 ap:VaList):i64
+  (let (t:i64 0)
+    (dotimes (i n)
+      (set! t (+ t (as i64 (unsafe/va-arg ap i32))))
+      (set! t (+ t (unsafe/cast i64 (unsafe/va-arg ap f64))))
+      (set! t (+ t (unsafe/va-arg ap i64)))
+      (set! t (+ t (as i64 (deref (unsafe/cast &i8 (unsafe/va-arg ap CStr)))))))
+    (return t)))
+
+(defn n_sum (n:i32 :varargs ap):i64
+  (return (n_vsum n ap)))
+
+(defn n_copy (n:i32 :varargs ap):i64
+  (let (a:i64 0)
+    (with (aq (va-copy ap))
+      (set! a (n_vsum n aq)))
+    (return (+ a (c_vsum n ap)))))
+
+(defn n_big (n:i32 :varargs ap):Big
+  (let (a:i64 (unsafe/va-arg ap i64)
+        b:i64 (unsafe/va-arg ap i64))
+    (return (Big a b (as i64 n)))))
+
+(defn n_pair (p:Pair n:i32 :varargs ap):i64
+  (let (t:i64 (+ (p 'a) (p 'b)))
+    (dotimes (i n)
+      (set! t (+ t (as i64 (unsafe/va-arg ap i32)))))
+    (return t)))
+
+(defn n_forward (buf:ptr cap:i32 fmt:CStr :varargs ap):i32
+  (with (aq (va-copy ap))
+    (let (n:i32 (vsnprintf null 0 fmt aq))
+      (vsnprintf buf (as usize cap) fmt ap)
+      (return n))))
+
+(defn main ():i32
+  (c_main)
+  (return 0))

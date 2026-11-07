@@ -43,6 +43,7 @@
 (import-use suite-globals)
 (import-use suite-conversions)
 (import-use suite-fnptr)
+(import-use suite-varargs)
 (import-use suite-cdecl)
 (import-use suite-namespaces)
 (import-use suite-runtime)

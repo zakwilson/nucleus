@@ -262,6 +262,7 @@
   (string-clear g-def-buf))
 
 (defn reset-function-state ():void
+  (set! g-branch-depth 0)
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)

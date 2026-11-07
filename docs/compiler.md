@@ -278,9 +278,9 @@ what the callee's signature says:
 | an ordinary `defn` / `extern` | exactly `num-params` |
 | a `defn` with `:optional` | `num-params - <optional count>` … `num-params` |
 | a `defn` with `:rest` | at least `num-params - 1` (the rest slot folds the tail) |
-| a function imported from a C header, declared variadic (`printf`) | at least the fixed prefix |
-| a hand-written `declare` | at least `num-params` — see below |
-| a function-pointer value called indirectly | exactly `num-params` |
+| a variadic function: `:varargs` on a `defn`, `declare` or function-pointer type, or imported from a C header | at least the fixed prefix |
+| a hand-written `declare` without `:varargs` | exactly `num-params` |
+| a non-variadic function-pointer value called indirectly | exactly `num-params` |
 | a `(BoxedFn …)` / `(dyn P)` handle | exactly the box signature's `num-params` |
 
 ```
@@ -290,15 +290,13 @@ t.nuc:7: error: call to 'opt': expected at most 2 args, got 3
 t.nuc:7: error: call to 'r': expected at least 2 args, got 1
 ```
 
-**A hand-written `declare` is open-tailed.** A `declare` is a prototype you
-*assert*, not a body the compiler has seen, and Nucleus has no `...` spelling
-(`:rest` / `:optional` are `defn`-only and are [rejected in a
-declaration](toplevel.md)). So declaring a C variadic function means declaring
-its fixed parameters and letting the extra arguments ride the call site, and the
-arity check admits that: more arguments than parameters is legal against a
-declared signature, *fewer* is still an error. Importing the function's C header
-instead (`(import "stdio.h")`) is the precise route — the header carries a real
-variadic flag, so the fixed prefix is checked exactly and the tail is free.
+**A `declare` says what it means.** `(declare printf (fmt:CStr :varargs):i32)`
+is a C variadic function, and a `declare` without `:varargs` takes exactly its
+parameters, so a forgotten marker is reported at the call:
+
+```
+t.nuc:7: error: call to 'puts': expected 1 args, got 2 -- declare a C variadic function with ':varargs'
+```
 
 **Arguments past the fixed prefix take C's default argument promotions.** An
 integer narrower than C's `int` is widened to `int` (`zext` for an unsigned

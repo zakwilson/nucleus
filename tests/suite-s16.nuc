@@ -3449,7 +3449,7 @@ map=2
 ; by-value parameter, straight off a call result with no binding at all, and
 ; `.set!` on a by-value local mutating the local copy as in C.
 (deftest s16-sv1-struct-value-receiver
-  (let (out:String (try (build-run-source "(declare printf (fmt:CStr):i32)
+  (let (out:String (try (build-run-source "(declare printf (fmt:CStr :varargs):i32)
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n (* n 2))))
 (defn sum (p:Pt):i64 (return (+ (field p 'x) (+ (p 'y) (field p 'x)))))

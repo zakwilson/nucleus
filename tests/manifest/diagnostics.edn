@@ -981,10 +981,7 @@
  :file "tests/fixtures/w9-rest-too-few.nuc" :line 7
  :messages ["call to 'r': expected at least 2 args, got 1"]}
 
-; A `declare`d signature is OPEN-TAILED: Nucleus has no `...` spelling, so the
-; documented way to call a C variadic function is to declare its fixed
-; parameters and let the extras ride the call site. This is the carve-out the
-; check must not swallow — three tests above (n6/sm3/s1) already depend on it.
+; `:varargs` is the spelling of a C variadic tail; a plain `declare` has none.
 {:name "w9-declare-open-tail" :expect :accept
  :file "tests/fixtures/w9-declare-open-tail.nuc"}
 
@@ -992,6 +989,10 @@
 {:name "w9-declare-too-few" :expect :reject
  :file "tests/fixtures/w9-declare-too-few.nuc" :line 9
  :messages ["call to 'some-c-fn': expected at least 2 args, got 1"]}
+
+{:name "w9-declare-extra-args" :expect :reject
+ :file "tests/fixtures/w9-declare-extra-args.nuc" :line 7
+ :messages ["call to 'puts': expected 1 args, got 2 -- declare a C variadic function with ':varargs'"]}
 
 ; --- Stage 15 W9 defect 21: protocols are namespaced entities -------------------
 ; design/stage15-stress-test/progress.md W9 row 21; the ruling is recorded as a

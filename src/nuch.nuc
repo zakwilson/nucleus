@@ -86,8 +86,10 @@
 ; still-legacy source (e.g. an unmigrated import) exports the same new-style entry.
 (defn emit-nuch-declare (form:ptr):void
   (emit g-hdr "(declare " (defn-name-only (node-at form 1)) " (")
-  (let (params:ptr (node-at form 2))
-    (dotimes (i (node-len params))
+  (let (params:ptr (node-at form 2)
+        va-at:i32 (varargs-marker-at (as ?&Node params)))
+    ; A `defn`'s `:varargs ap` exports without its binder.
+    (dotimes (i (if (>= va-at 0) (+ va-at 1) (node-len params)))
       (when (!= i 0) (emit g-hdr " "))
       (let (p:ptr (node-at params i))
         ; A cell named like a type constructor (`ptr`, `Vector`) would read back as
@@ -489,13 +491,12 @@
     (when (strview-ends-with &sv &suffix) (return 1))
     (return 0)))
 
-; `:rest`/`:optional` are defn-only, and a declaration has no machinery for
-; them; a C variadic tail needs no marker, since a declared signature is open-tailed.
+; `:rest`/`:optional` are defn-only: a declaration has no machinery for them.
 (defn reject-declare-marker (n:?&Node line:i32):void
   (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
     (die-at line
       (fstr "declare: '" (marker-spelling n)
-            "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)"))))
+            "' is not supported in a declaration -- a C variadic function is declared with ':varargs'"))))
 
 ; A `declare` parameter as it reads before types resolve.
 (defn declare-param-named? (p:ptr):bool
@@ -538,8 +539,13 @@
 ; can render the declared signature by calling the very parse the import runs,
 ; rather than a second copy of it.
 (defn declare-param-types (params-node:ptr line:i32 io-n:&i32):ptr
-  (let (nparams:i32 0)
+  (let (nparams:i32 0
+        va-at:i32 (varargs-marker-at (as ?&Node params-node)))
     (when (!= params-node null) (set! nparams (node-len params-node)))
+    (when (>= va-at 0)
+      (when (!= va-at (- nparams 1))
+        (die-at line "declare: ':varargs' comes last and takes no name"))
+      (set! nparams va-at))
     (set! (aref io-n 0) nparams)
     (when (<= nparams 0) (return null))
     (let (ptypes:ptr (arena-alloc (* nparams (ptr-bytes))))
@@ -671,6 +677,7 @@
                   "': legacy 'name:ret' syntax is no longer supported — write (declare "
                   (defn-name-only name-node) " (params) :ret)")))
         (let (fname:Symbol (symbol-none)
+              is-va:i32 (if (>= (varargs-marker-at (as ?&Node params-node)) 0) 1 0)
               ret:ptr (if (!= ndi-new 0)
                         (fn-parse-ret-type (node-at form 3) (ff 'line))
                         (extract-name-and-type name-node (as &Symbol &fname)
@@ -679,6 +686,7 @@
           (when (= ret null)
             (die-at ((unsafe/cast &Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))
+          (reject-valist (as ?&Type ret) (ff 'line) "declare return type")
           ; W9 item 29: emit-only is a promise the prescan registered THIS name
           ; from THIS header. It registers nothing the skip below already
           ; refused, so ask before assuming; a name it skipped is still a plain
@@ -714,7 +722,7 @@
                      (= (str-ends-with g-source-path ".nuch") 0))
             (let (anp:i32 0
                   apt:ptr (declare-param-types params-node (ff 'line) (as &i32 &anp)))
-              (when (generic-adopt-c-fn fname ret apt anp 0)
+              (when (generic-adopt-c-fn fname ret apt anp is-va)
                 (finalize-generics))))
           (when (and (!= m NUCH-AFTER)
                      (!= (scope-lookup-key g-globals fname) null))
@@ -748,7 +756,7 @@
             ; unaffected.
             (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
               (when (!= site null)
-                (let (msig:StrView (c-fn-sig-render (as ?&Type ret) ptypes nparams 0)
+                (let (msig:StrView (c-fn-sig-render (as ?&Type ret) ptypes nparams is-va)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
                                                           fname)))
                   (set! ((unsafe/cast &CDeclSite site) 'sig) msig)
@@ -759,14 +767,10 @@
             (let (ft:&Type (as &Type (make-type TY-FN)))
               (set! (ft 'ret) ret)
               (type-set-params ft ptypes nparams)
-              (set! (ft 'variadic) 0)
+              (set! (ft 'variadic) is-va)
               (let (dsym:&Sym (scope-define g-globals fname (as ptr ft)
                                   (symbol-as-view link-ir) 0))
-                ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
-                ; signature, so the new call-arity check admits the extra trailing
-                ; arguments a C variadic call needs — the idiom this very file's
-                ; `:rest`-in-a-declaration diagnostic points users at, and which
-                ; `docs/toplevel.md` documents. Too few arguments is still refused.
+                ; A prototype: too many arguments may mean a missing `:varargs`.
                 (set! (dsym 'extern-decl) 1)
                 (when (!= is-noreturn 0) (set! (dsym 'noreturn) 1))
                 (when (!= is-returns-twice 0)
@@ -784,7 +788,7 @@
             ; defined and linkable). `ir-fixed` because the producing unit
             ; already chose this symbol — see finalize-generics.
             (when (not (generic-has-c-method? fname link-ir))
-              (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
+              (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 is-va null))
                 (set! ((unsafe/cast &Method dm) 'ir-name) link-ir)
                 (set! ((unsafe/cast &Method dm) 'ir-fixed) 1)))
             (when (= m NUCH-REG)
@@ -810,7 +814,9 @@
                    (abi-classify-arg (aref (unsafe/cast &ptr ptypes) j))
                    (aref (unsafe/cast &ptr ptypes) j)
                    (symbol-none))
-                  (set! need-comma 1)))
+                  (set! need-comma 1))
+                (when (!= is-va 0)
+                  (emit g-out (if (!= need-comma 0) ", ..." "..."))))
               ; Trailing LLVM function attributes, additive so a `declare` and the
               ; `define` it names carry the same set (emit-defn does the same).
               (emit g-out ")")

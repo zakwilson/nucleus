@@ -730,7 +730,7 @@ typedef struct RLTag rl_arr_t[1];
   (try (require-cc))
   (try (check-agrees-with-cc "s16u" "tests/fixtures"
     "(import-use \"tests/fixtures/s16-unsigned.h\")
-(declare printf (fmt:CStr):i32)
+(declare printf (fmt:CStr :varargs):i32)
 (defn main ():i32
   (printf \"%ld %ld %ld %ld %ld %ld %ld %ld\\n\"
     (as i64 (sizeof S16U01)) (as i64 (sizeof S16U02)) (as i64 (sizeof S16U03))

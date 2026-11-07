@@ -1,13 +1,30 @@
 # Variadic functions defined in Nucleus
 
-**Status:** proposed 2026-11-07. Q1–Q9 (§9) are unruled and nothing is built.
-Written for the Lua port (`nuc-lua`, `PROMPT.md` §6.4). Until this is ruled on,
-a missing feature stays a recorded workaround there, so the port keeps its
-variadic entry points in C.
+**Status:** built 2026-11-07 on `lua-bugfixes`, with Q1–Q9 ruled as recommended
+(tentatively, by the project owner). Written for the Lua port (`nuc-lua`,
+`PROMPT.md` §6.4). The language docs are in `docs/types.md`, "Variadic functions".
 
-**One separate bug:** while measuring this, the `declare` route for calling C
-variadics turned out to miscompile (§2.2). That fix is VA-0 and doesn't depend on
-any ruling here.
+**As built, against this document:**
+
+- **`va_arg` is open-coded on x86-64 too.** §3's "Correct" for x86-64 was measured
+  through `llc` at its default level. Nucleus defaults to `-O0`, and there LLVM's
+  `va_arg` of a `load`ed list crashes: the fast register allocator reloads a spill
+  it never wrote, because the custom inserter's new blocks reuse a vreg marked
+  killed. Both aggregate classes now use `emit-va-next`, in `select`s rather than
+  blocks so no enclosing `phi` has to know. The cursor class keeps `va_arg`, which
+  passed at `-O0` and `-O2` on riscv64. §8's rejected "open-code on every target"
+  is half-taken.
+- **Q6's diagnostic never shipped.** AArch64 works, from the same code as x86-64.
+- **Q7 went further than recommended.** `musttail` forwarding works in the JIT, on
+  x86-64, so a variadic `defn` can be redefined at the REPL, including with an
+  `sret` return. Only `trace` refuses one, since its shim acts after the call.
+- **VA-1 to VA-5 are one commit**, because the open-coding rearranged VA-3 and VA-5.
+- **Q2:** the uses were tests only. `extern-decl` stays, to word the error.
+- **Q4 is approximate.** `consume-valist-arg` stands down inside any branching
+  form, so a second pass in a loop or in only one arm isn't caught. It sees a bare
+  symbol passed through the direct or indirect call path, not an overloaded one.
+- **`cheader`:** a `va_list` struct field imports as a pointer, as it always did. It
+  wasn't given the refusal §6 asks for.
 
 ## 1. Summary
 
@@ -347,6 +364,8 @@ workaround tags, and the port has no C left at all.
 ## 11. Not measured
 
 - Anything on LLVM above 19.1.7.
+- Variadics under the x32 or aarch64-be ABIs. `emit-va-next` assumes little-endian
+  and 64-bit pointers.
 - Running Windows, Darwin or AVR.
 - `musttail` forwarding (Q7).
 - A struct by value in a variadic *call* tail from Nucleus to C. It goes through the existing

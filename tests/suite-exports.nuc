@@ -254,7 +254,7 @@
 
 (defn ns6-consumer-src (nuch:StrView):String
   (return (str "(exclude-prelude)\n(import-prefixed \"" nuch "\" g)\n"
-               "(declare printf (fmt:CStr):i32)\n"
+               "(declare printf (fmt:CStr :varargs):i32)\n"
                "(defn main () :i32\n"
                "  (printf \"area=%d perimeter=%d\\n\" (g/area 6 7) (g/perimeter 6 7))\n"
                "  (return 0))\n")))
@@ -328,7 +328,7 @@
   (let (e:Exports (try (b3-exports "b3r"))
         src:String (str "(exclude-prelude)\n(import-prefixed \""
                         (exports-nuch-path &e) "\" g)\n"
-                        "(declare printf (fmt:CStr):i32)\n"
+                        "(declare printf (fmt:CStr :varargs):i32)\n"
                         "(defn main () :i32\n"
                         "  (let (p:(ref g/Pt) (g/Pt 20 22))\n"
                         "    (printf \"sum=%d\\n\" (g/pt-sum p)))\n"
@@ -388,7 +388,7 @@
 
 (defn sm3-consumer-src (nuch:StrView):String
   (return (str "(exclude-prelude)\n(import-use \"" nuch "\")\n"
-               "(declare printf (fmt:CStr):i32)\n"
+               "(declare printf (fmt:CStr :varargs):i32)\n"
                "(defn main () :i32\n"
                "  (printf \"full=%d push=%d even4=%d even7=%d even6L=%d\\n\"\n"
                "    (full? 5) (push! 7) (even? 4) (even? 7) (even? (as i64 6)))\n"
@@ -512,7 +512,7 @@
     (let (e:Exports (try (export-surfaces "w23b" (string-as-view &bp)))
           src:String (str "(exclude-prelude)\n(import \""
                           (exports-nuch-path &e) "\")\n"
-                          "(declare printf (fmt:CStr):i32)\n"
+                          "(declare printf (fmt:CStr :varargs):i32)\n"
                           "(defn main ():i32\n"
                           "  (printf \"d=%lld\\n\" (w23b/describe 20))\n"
                           "  (return 0))\n")
@@ -620,7 +620,7 @@
         libll:String (try (emit-into "" "--emit-llvm" (s1-newlib) dir "lib.ll"))
         src:String (str "(exclude-prelude)
 (import-use \"" (string-as-view &nuch) "\")
-(declare printf (fmt:CStr):i32)
+(declare printf (fmt:CStr :varargs):i32)
 (defn main () :i32
   (printf \"twice=%d add3=%d scale32=%d scale64=%ld\\n\"
     (twice 21) (add3 1 2 3) (scale 4) (scale (as i64 5)))
@@ -720,7 +720,7 @@
 
 (defn dc-consumer-src (nuch:StrView body:StrView):String
   (return (str "(exclude-prelude)\n(import-prefixed \"" nuch "\" d)\n"
-               "(declare printf (fmt:CStr):i32)\n"
+               "(declare printf (fmt:CStr :varargs):i32)\n"
                "(defn main () :i32\n" body "\n  (return 0))\n")))
 
 ; The consumer reads the stored constants through the library's symbols and

@@ -5683,3 +5683,15 @@ A protocol's method is now refused as a qualified binder, as a `defn`'s name is.
 bare in a template, a name its file defines used to surface as "does not conform".
 
 Gate: stage2 and stage3 identical. 1720 pass, the same 5 suite-target fail. Every ruled probe passes. Of the 44 forms in §1's matrix that compile as written, 42 compile through a macro as written; the other two need `~'val` for a protocol method, and now say so. `make bootstrap` still waits for a boot refresh.
+
+## Variadic functions (lua-bugfixes)
+
+Built [lua-bugfixes/variadic-functions.md](lua-bugfixes/variadic-functions.md), Q1–Q9 as
+recommended. `:varargs` in `defn`, `declare` and function-pointer types; `VaList`, with
+`va_list` in a C header importing as one; `unsafe/va-arg`; `va-copy`. A plain `declare`
+is now exact, and a tail on one is an error that names `:varargs`.
+
+LLVM's `va_arg` turned out to crash at `-O0` on x86-64 as well as being wrong on AArch64,
+so both aggregate classes are open-coded. `tests/run-varargs-cross-test.sh` runs C against
+all three list classes at `-O0` and `-O2`, under qemu where it's there.
+`tests/suite-varargs.nuc` and `examples/varargs.nuc` cover the rest.

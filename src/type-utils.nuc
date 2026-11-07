@@ -65,6 +65,25 @@
 ; use ("sizeof", "alloca", "field access", "defn parameter", …) so the message
 ; says which rule was broken as well as which type broke it. No-op for every
 ; non-opaque type, so this is free to call from any type-consuming site.
+(defn make-valist-type ():&Type
+  (let (t:&Type (make-ptr-type PTR-RAW))
+    (set! (t 'elem) ty-valist-tag)
+    (return t)))
+
+(defn type-is-valist (t:?&Type):bool
+  (when (= t null) (return false))
+  (let (tt:ptr:Type t)
+    (return (and (= (tt 'kind) TY-PTR) (= (tt 'elem) ty-valist-tag)))))
+
+; A list dies with its frame or its `with`, so it stays out of anything that lasts.
+(defn reject-valist (t:?&Type line:i32 what:StrView):void
+  (when (type-is-valist t)
+    (die-at line (fstr what ": a VaList may only be a parameter, or bound by :varargs or va-copy"))))
+
+(defn reject-valist-binding (t:?&Type line:i32 name:Symbol):void
+  (when (type-is-valist t)
+    (die-at line (fstr "'" name "': a VaList can't be rebound -- use (with (q (va-copy ap)) ...)"))))
+
 (defn reject-opaque-type (t:?&Type line:i32 what:StrView):void
   (let (sd:?&StructDef (opaque-sdef-of t))
     (when (!= sd null)
