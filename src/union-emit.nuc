@@ -1837,6 +1837,35 @@
               (val-copy-taint (as ptr rv) (as ptr p))
               (return rv))))))))
 
+; `(unsafe/ptr- a b)`: C's `a - b`, the element count between two pointers of one
+; element type, as an ssize (nuc-lua ISSUE-021).
+(defn ptr-diff-elem (t:?&Type):?&Type
+  (when (= t null) (return null))
+  (when (= (t 'kind) TY-CSTR) (return ty-i8))
+  (when (= (t 'kind) TY-PTR) (return (t 'elem)))
+  (return null))
+
+(defn emit-ptr-sub (call:ptr scope:&Scope):&Val
+  (let (cc:&Node (unsafe/cast &Node call))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "unsafe/ptr- expects 2 args"))
+    (let (a:&Val (emit-node (node-at cc 1) scope)
+          b:&Val (emit-node (node-at cc 2) scope)
+          ae:?&Type (ptr-diff-elem (a 'type))
+          be:?&Type (ptr-diff-elem (b 'type)))
+      (when (or (= ae null) (= be null))
+        (die-at (cc 'line) "unsafe/ptr-: operands must be typed pointers"))
+      (when (= (type-eq ae be) 0)
+        (die-at (cc 'line) (fstr "unsafe/ptr-: element types differ: " (type-display (a 'type))
+                                 " and " (type-display (b 'type)))))
+      (let (ai:StrView (new-tmp) bi:StrView (new-tmp) d:StrView (new-tmp) r:StrView (new-tmp)
+            it:StrView (ptr-int-ir))
+        (emit g-body-stream "  " ai " = ptrtoint ptr " (a 'val) " to " it "\n")
+        (emit g-body-stream "  " bi " = ptrtoint ptr " (b 'val) " to " it "\n")
+        (emit g-body-stream "  " d " = sub " it " " ai ", " bi "\n")
+        (emit g-body-stream "  " r " = sdiv exact " it " " d ", ptrtoint (ptr getelementptr ("
+              (type-to-ir ae) ", ptr null, i32 1) to " it ")\n")
+        (return (alloc-val ty-ssize r))))))
+
 ; Eliminate a condition to bool, for the six condition sites. An ELIMINATION,
 ; not a coercion — kept out of `coerce-int-val` so a `bool` slot does not become
 ; a universal sink. design/stage16-ergonomics/bool-truthiness.md

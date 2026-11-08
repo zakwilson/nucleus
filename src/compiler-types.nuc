@@ -372,6 +372,8 @@
   ; every alias registered before it (struct-upgrade-aliases, src/cheader.nuc).
   ; null for every non-alias StructDef.
   (alias-of ?&StructDef)
+  ; A C header's bodiless `struct T;` that a `defstruct` completed: the two are one type.
+  (completed-by ?&StructDef)
   ; --- Stage 16 PK-1 (design/stage16-ergonomics/c-boundary-defects.md §7) ---
   ; 1 = `__attribute__((packed))` / `(defstruct :packed …)`: every field sits at
   ; the next byte with no padding and the struct's own alignment is 1. Three

@@ -1415,15 +1415,21 @@
     (drop &l))
   (return (ok)))
 
-; D3 reversed: a template reaches public names only. A `user` file's private name
-; has no full name at all, so the template is refused where it is written.
+; A `user` file's private name is its file's (nuc-lua ISSUE-050), so a template
+; naming one expands in that file only, and is refused where another expands it.
 (deftest an4-user-private-refused
   (let (l:String (try (test-write-file "an4-plib.nuc" "(defn- secret (x:i32):i32 (return x))
 (defmacro use-secret (e) `(secret ~e))
 ")))
-    (try (an4-refused-in (string-as-view &l) "an4-p.nuc" "(import-use an4-plib)
+    (let (m:String (try (test-write-file "an4-p.nuc" "(import-use an4-plib)
 (defn main ():i32 (return (use-secret 1)))
-" 2 "macro 'use-secret' names 'secret', which is private to its file"))
+"))
+          c:Compiled (try (w1-compile (string-as-view &m)))
+          want:String (str "unknown: 'secret', which a macro names, is private to " (string-as-view &l)))
+      (try (check-error-at (ref c 'diags) (string-as-view &m) 2 (string-as-view &want)))
+      (drop &want)
+      (drop &c)
+      (drop &m))
     (drop &l))
   (return (ok)))
 

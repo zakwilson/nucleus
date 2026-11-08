@@ -202,7 +202,7 @@
      "array" "label" "goto" "label-addr" "goto-ptr"
      "." ".&" "cast" "as" "as-checked" "addr-of" "deref"
      "ptr-set!" "ptr+" "_get" "field" ".set!"
-     "sizeof" "alignof" "alloca" "aref" "aset!"
+     "sizeof" "alignof" "offsetof" "alloca" "aref" "aset!"
      ; Stage 18 TF-4: the call site's own file and line, as literals.
      "source-file" "source-line"
      ; literals / quoting
@@ -1024,6 +1024,9 @@
 ; Computed defconsts awaiting a first reference, by scope key (nuc-doom ISSUE-024).
 (defvar g-pending-consts:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
 (defvar g-pending-list:&(Vector &PendingConst) (new (Vector &PendingConst) g-arena))
+(defvar g-pending-macros:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
+(defvar g-pending-macro-list:&(Vector &PendingConst) (new (Vector &PendingConst) g-arena))
+(defvar g-pending-macro-bare:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
 ; `g-file-ns` by path, for the walk that asks it once per flattened import.
 (defvar g-path-ns:&(HashMap Symbol Symbol) (new (HashMap Symbol Symbol) g-arena))
 
@@ -1868,6 +1871,13 @@
     (set! g-array-ok 0)
     (return t)))
 
+; An `extern`'s variant: as a defvar's, and `(array T 0)` is unsized (mode 4).
+(defn extract-decl-name-and-type-extern (node:?&Node out-name:&Symbol line:i32):?&Type
+  (set! g-array-ok 4)
+  (let (t:?&Type (extract-name-and-type node out-name line))
+    (set! g-array-ok 0)
+    (return t)))
+
 ; The prescan's variant: an array type resolves to its element type with a
 ; PROVISIONAL length (see g-array-ok mode 2 above). Used by prescan-defvar-name
 ; alone.
@@ -2214,12 +2224,12 @@
   (when (= rn null) (return null))
   (let (rnn:?&Node rn)
     (when (= (rnn 'kind) NODE-KEYWORD)
-      (let (new:&Node (alloc-node))
-        (set-fields! new
+      (let (fresh:&Node (alloc-node))
+        (set-fields! fresh
                      'kind NODE-SYM
                      'line (rnn 'line)
                      's    (rnn 's))
-        (return new)))
+        (return fresh)))
     (return rn)))
 
 ; The normalized return-type node of a defn form, style-agnostic and non-dying
@@ -3775,17 +3785,9 @@
     (when (symbol-none? defpath) (return (none)))
     (let (head:StrView (fstr verb ": " name
                          " — defined in a file this unit imports circularly, and not registered yet at this point")
-          ; Stage 15 W8 G-0 rewrote this sentence. It used to say "not macros,
-          ; constants or enum members"; the value half moved into the prescan, so
-          ; the only names left registering at emission time are macros,
-          ; `deferror` ids and `extern` declarations. Keep it accurate — a note
-          ; that names a coupling the compiler no longer has sends the reader to
-          ; break a cycle they do not need to break.
+          ; Name only couplings the compiler still has, or the reader breaks a cycle needlessly.
           note:StrView (fstr "  note: " (import-cycle-note defpath)
-                         ; No `Either …, or …` like the layout message below:
-                         ; a macro has no pointer escape, so there is no second
-                         ; alternative to offer.
-                         "; a cycle resolves function signatures and value names before any emission, but a macro, deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. The fix is to "
+                         "; a cycle resolves function signatures, value names and macros before they are reached, but a deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. The fix is to "
                          (import-cycle-advice)))
       (return (some (fstr head "\n" note))))))
 
@@ -3850,6 +3852,13 @@
 ; spelling cannot be written here. `qualifier-scope-note` carries the two tiers
 ; of explanation (B1's "another file binds that prefix" and B2a's general rule).
 (defn qualifier-scope-message (verb:StrView name:Symbol):?StrView
+  (when (> (qualifier-len name) 0)
+    (let (r:&NameRef (resolve-spelling name)
+          owner:Symbol (priv-path-of-ns (r 'qual)))
+      (when (and (= (r 'status) NR-UNBOUND) (not (symbol-none? owner)))
+        (return (some (fstr verb ": '" (r 'bare) "', which a macro names, is private to " owner
+                            "\n  note: a macro naming a private name expands only in its own file; make '"
+                            (r 'bare) "' public to use the macro here"))))))
   (match (qualifier-scope-note name)
     (none 0)
     ((some note)
@@ -4503,6 +4512,18 @@
   (when (!= (node-is-int-literal n) 0) (return 1))
   (return (node-is-const-int-literal n scope)))
 
+; `(sizeof T)` / `(alignof T)` / `(offsetof T f)`: a usize a signed partner takes as a literal,
+; at least pointer-wide as before it was usize (nuc-lua ISSUE-025).
+(defn size-query? (n:?&Node):bool
+  (and (= (node-kind n) NODE-LIST) (or (= (node-len n) 2) (= (node-len n) 3))
+       (or (node-sym-is? (node-at n 0) "sizeof") (node-sym-is? (node-at n 0) "alignof")
+           (node-sym-is? (node-at n 0) "offsetof"))))
+
+(defn size-query-adapt (partner:?&Type):?&Type
+  (when (or (= partner null) (= (is-unsigned partner) 1)) (return null))
+  (when (>= (int-width partner) (int-width (ptr-int-type))) (return partner))
+  (return (ptr-int-type)))
+
 ; Is `n` a `dotimes` index whose every value `t` holds? Its range is known, so it
 ; adapts as the literal count would (nuc-iron-doom ISSUE-004).
 (defn index-adapts? (n:?&Node scope:&Scope t:?&Type):bool
@@ -4821,6 +4842,8 @@
     (when (!= (is-unsigned at) (is-unsigned bt))
       (when (index-adapts? a-node scope bt) (return bt))
       (when (index-adapts? b-node scope at) (return at))
+      (when (size-query? a-node) (return (size-query-adapt bt)))
+      (when (size-query? b-node) (return (size-query-adapt at)))
       (return null))
     (when (>= (int-width at) (int-width bt)) (return at))
     (return bt)))
@@ -4942,6 +4965,18 @@
 ; untyped int literals for the widen/adapt tier when the operand types differ. For
 ; operands that already share a type, the IR is byte-identical to the pre-Stage-9
 ; emit-binop (binop-coerce returns null and nothing is inserted).
+; In a bitwise operator a negative literal beside an unsigned operand is its two's
+; complement at that width, as C converts it, so `bit-not` is `xor -1` (nuc-lua ISSUE-028).
+(defn bitwise-literal-as-unsigned (v:&Val other:&Val op:(ptr BinOp)):&Val
+  (let (name:Symbol (op 'name))
+    (when (not (or (= name "_bit-and") (= name "_bit-or") (= name "_bit-xor"))) (return v))
+    (when (or (= (v 'is-lit) 0) (>= (v 'lit-i64) 0)) (return v))
+    (let (ot:?&Type (other 'type))
+      (when (or (= (is-int-type ot) 0) (= (is-unsigned ot) 0) (= (is-bool-type ot) 1)) (return v))
+      (let (w:i64 (int-width ot))
+        (when (and (< w 64) (< (v 'lit-i64) (- 0 (bit-shl (as i64 1) (- w 1))))) (return v)))
+      (return (alloc-val ot (v 'val))))))
+
 (defn emit-binop-vals (a:&Val b:&Val a-node:?&Node b-node:?&Node op:?&BinOp
                        scope:&Scope line:i32):&Val
   (let (bop:(ptr BinOp) op
@@ -5017,15 +5052,42 @@
         (let (op-name:Symbol (bop 'name))
           (when (and (!= op-name "=") (!= op-name "!="))
             (die-at line (fstr op-name ": CStr supports only = and != (Eq)")))
+          ; Identity first: only two distinct non-null pointers reach strcmp (nuc-lua ISSUE-042).
           (let (a-ptr:StrView (strview-data-ir a)
                 b-ptr:StrView (strview-data-ir b)
-                c:StrView (new-tmp))
-            (emit g-body-stream "  " c " = call i32 @strcmp(ptr " a-ptr ", ptr " b-ptr ")\n")
-            (let (r:StrView (new-tmp)
-                  icmp-op:StrView "eq")
-              (when (= op-name "!=") (set! icmp-op "ne"))
-              (emit g-body-stream "  " r " = icmp " icmp-op " i32 " c ", 0\n")
-              (return (alloc-val ty-bool r))))))))
+                id:i32 (new-label-id)
+                cmp-lbl:StrView (fstr "cstreq.cmp" id)
+                end-lbl:StrView (fstr "cstreq.end" id)
+                slot:StrView (fstr "%cstreq.val" id)
+                same:StrView (new-tmp)
+                an:StrView (new-tmp)
+                bn:StrView (new-tmp)
+                anyn:StrView (new-tmp)
+                stop:StrView (new-tmp)
+                c:StrView (new-tmp)
+                ceq:StrView (new-tmp)
+                r:StrView (new-tmp))
+            (emit g-entry-stream "  " slot " = alloca i1, align 1\n")
+            (emit g-body-stream "  " same " = icmp eq ptr " a-ptr ", " b-ptr "\n"
+                  "  " an " = icmp eq ptr " a-ptr ", null\n"
+                  "  " bn " = icmp eq ptr " b-ptr ", null\n"
+                  "  " anyn " = or i1 " an ", " bn "\n"
+                  "  " stop " = or i1 " same ", " anyn "\n"
+                  "  store i1 " same ", ptr " slot ", align 1\n"
+                  "  br i1 " stop ", label %" end-lbl ", label %" cmp-lbl "\n"
+                  cmp-lbl ":\n"
+                  "  " c " = call i32 @strcmp(ptr " a-ptr ", ptr " b-ptr ")\n"
+                  "  " ceq " = icmp eq i32 " c ", 0\n"
+                  "  store i1 " ceq ", ptr " slot ", align 1\n"
+                  "  br label %" end-lbl "\n"
+                  end-lbl ":\n"
+                  "  " r " = load i1, ptr " slot ", align 1\n")
+            (set! g-block-term 0)
+            (when (= op-name "!=")
+              (let (nr:StrView (new-tmp))
+                (emit g-body-stream "  " nr " = xor i1 " r ", true\n")
+                (return (alloc-val ty-bool nr))))
+            (return (alloc-val ty-bool r)))))))
     ; Pointer comparison — both operands are one `ptr` register, so the
     ; comparison is machine identity.
     ; Stage 15 W5c: a representation test, not TY-PTR — the only way a `CStr`
@@ -5043,8 +5105,9 @@
     (when (and (!= (is-ptr-repr (av 'type)) 0)
              (!= (is-ptr-repr (bv 'type)) 0))
       (when (!= (bop 'is-cmp) 0)
+        ; Addresses order unsigned, as C's do (nuc-lua ISSUE-055).
         (let (tmp:StrView (new-tmp))
-          (emit g-body-stream "  " tmp " = " (bop 'instr) " ptr " (av 'val) ", " (bv 'val) "\n")
+          (emit g-body-stream "  " tmp " = " (bop 'instr-u) " ptr " (av 'val) ", " (bv 'val) "\n")
           (return (alloc-val ty-bool tmp)))))
     ; Stage 16 (design/stage16-ergonomics/bool-type-plan.md): bool takes the six
     ; comparisons and no arithmetic — `(+ true true)` used to be `false`. Decided
@@ -5057,8 +5120,10 @@
           (die-at line (fstr (bop 'name) ": mixed bool and non-bool operands")))
         (when (= (bop 'is-cmp) 0)
           (die-at line (fstr (bop 'name) " does not apply to bool")))))
+    (set! av (bitwise-literal-as-unsigned av bv bop))
+    (set! bv (bitwise-literal-as-unsigned bv av bop))
     ; Widen / adapt mixed numeric operands (untyped int literals + int/float widening).
-    (let (adapted:ptr (binop-coerce a b a-node b-node scope line))
+    (let (adapted:ptr (binop-coerce av bv a-node b-node scope line))
       (when (!= adapted null)
         (set! av (unsafe/cast &Val (aref (unsafe/cast &ptr adapted) 0)))
         (set! bv (unsafe/cast &Val (aref (unsafe/cast &ptr adapted) 1)))))
@@ -5252,9 +5317,10 @@
                 (if (!= (is-unsigned src) 0)
                   (set! instr "zext")
                   (set! instr "sext")))))
-          (when (and (!= (is-int-or-bool src) 0) (!= (is-ptr-like dst) 0))
+          ; `is-ptr-repr`: a function pointer's bits are an address too (nuc-lua ISSUE-035).
+          (when (and (!= (is-int-or-bool src) 0) (!= (is-ptr-repr dst) 0))
             (set! instr "inttoptr"))
-          (when (and (!= (is-ptr-like src) 0) (!= (is-int-or-bool dst) 0))
+          (when (and (!= (is-ptr-repr src) 0) (!= (is-int-or-bool dst) 0))
             (set! instr "ptrtoint"))
           ; Float-to-float (different widths): fpext or fptrunc.
           ;
@@ -5982,6 +6048,19 @@
       (when (!= (qualifier-eq spelling (symbol-as-view ns) n) 0) (return ns))))
   (return (symbol-none)))
 
+(defn own-priv-qual? (q:StrView):bool
+  (when (or (= (q 'len) 0) (!= (text-byte-at q 0) 35)) (return false))
+  (match (priv-ns-of-path g-source-path)
+    ((some pns) (return (= q (symbol-as-view pns))))
+    (none (return false))))
+
+; The file whose private namespace is `ns`, or none.
+(defn priv-path-of-ns (ns:StrView):Symbol
+  (when (= g-priv-files null) (return (symbol-none)))
+  (doseq (pf (unsafe/cast &(Vector &PrivFile) g-priv-files) (VecIter &PrivFile))
+    (when (= ns (symbol-as-view (pf 'ns))) (return (pf 'path))))
+  (return (symbol-none)))
+
 (defn file-closure-has-ns (ns:Symbol):bool
   (when (= g-ns-declared 0) (return false))
   (return (contains? (file-closure-namespaces) ns)))
@@ -6008,6 +6087,9 @@
         ; A file may always name its own namespace, qualified or not.
         (= (r 'qual) (symbol-as-view g-current-ns))
           (set! (r 'ns) g-current-ns)
+        ; Its own private namespace too: a template's full name for a `defn-` (ISSUE-050).
+        (own-priv-qual? (r 'qual))
+          (set! (r 'ns) (symbol-intern (r 'qual)))
         ; `user` is the unqualified space and the prelude's namespace; it is
         ; flattened into every file by construction.
         (= (r 'qual) "user")
@@ -6129,7 +6211,7 @@
       (let (hit:?&Sym null)
         ; A file naming its own namespace sees its own private names, as does one
         ; that imported the namespace with `unsafe/import-private`; no other does.
-        (if (or (= (r 'ns) g-current-ns)
+        (if (or (= (r 'ns) g-current-ns) (own-priv-qual? (symbol-as-view (r 'ns)))
                 (not (symbol-none? (file-prefix-private-path name n))))
           (set! hit (scope-frame-find sc (r 'canonical)))
           (set! hit (scope-frame-find-public sc (r 'canonical))))
@@ -6574,10 +6656,30 @@
     (die-at line (core-reserved-message "type" (strip-ns-qualifier (sd 'name))
                                         (fstr "%" (sd 'ir-name)))))
   (doseq (o g-structs (VecIter &StructDef))
-    (when (and (= (o 'ir-name) (sd 'ir-name)) (!= (o 'name) (sd 'name)) (= (o 'alias-of) null))
+    (when (and (= (o 'ir-name) (sd 'ir-name)) (!= (o 'name) (sd 'name)) (= (o 'alias-of) null)
+               (not (c-declaration-to-complete? o)) (= (as ptr (o 'completed-by)) null))
       (die-at line (fstr "defstruct: " (strip-ns-qualifier (sd 'name)) " links as %" (sd 'ir-name)
                          ", the LLVM type of " (o 'name)
                          " — rename it, or give this file an (ns …)")))))
+
+; A C header's `struct T;` with no body, which a `defstruct T` of one link name
+; completes as C's .c file does (nuc-lua ISSUE-037).
+(defn c-declaration-to-complete? (o:&StructDef):bool
+  (return (and (!= (o 'from-c) 0) (!= (o 'opaque) 0) (= (o 'alias-of) null)
+               (= (as ptr (o 'completed-by)) null))))
+
+(defn complete-c-declarations (sd:&StructDef):void
+  (doseq (o g-structs (VecIter &StructDef))
+    (when (and (!= (as ptr o) (as ptr sd)) (= (o 'ir-name) (sd 'ir-name)) (c-declaration-to-complete? o))
+      (set-fields! o
+                   'fields       (sd 'fields)
+                   'num-fields   (sd 'num-fields)
+                   'packed       (sd 'packed)
+                   'align-attr   (sd 'align-attr)
+                   'laid-out     (sd 'laid-out)
+                   'opaque       0
+                   'emitted      (sd 'emitted)
+                   'completed-by sd))))
 
 ; `nuc_` link names belong to the core libraries (core-link-names.md §4.2).
 (defn core-reserved-link? (irn:StrView):bool
@@ -6725,8 +6827,19 @@
 ; emits. Identity under `user` (empty prefix) and for any name without `?`/`!`
 ; (ir-name-token returns it unchanged) → byte-identical bootstrap.
 (defn ns-ir-base (name:Symbol):Symbol
-  (return (def-compose (ns-ir-prefix g-current-ns)
+  (return (def-compose (if (!= g-defining-private 0)
+                         (ns-private-ir-prefix g-current-ns)
+                         (ns-ir-prefix g-current-ns))
                        (ir-name-token (symbol-as-view name)))))
+
+; A private definition is internal, so no C name constrains it: under an empty
+; `set-ir-prefix` it keeps its namespace's prefix, and two namespaces' private
+; helpers don't collide (nuc-lua ISSUE-053).
+(defn ns-private-ir-prefix (ns:Symbol):Symbol
+  (let (p:Symbol (ns-ir-prefix ns))
+    (when (and (= (symbol-len p) 0) (!= ns "user"))
+      (return (ns-prefix-sanitize (symbol-as-view ns))))
+    (return p)))
 
 ; ============================================================
 ; Stage 15 W5e — file-scoped private names
@@ -7870,9 +7983,8 @@
         (reject-valist ty (node-line (as ptr tn) (cc 'line)) "sizeof")
         (emit g-body-stream "  " gep " = getelementptr " (type-to-ir ty) ", ptr null, i32 1\n")
         (let (sz:StrView (new-tmp))
-          ; sizeof yields a pointer-sized integer (size_t), not a hardcoded i64.
           (emit g-body-stream "  " sz " = ptrtoint ptr " gep " to " (ptr-int-ir) "\n")
-          (return (alloc-val (ptr-int-type) sz)))))))
+          (return (alloc-val ty-usize sz)))))))
 
 ; The compiler's layout model answers, as `cfold-sizeof` does, since LLVM has no
 ; alignof constant expression; so a cycle-pending layout is refused here too.
@@ -7886,7 +7998,37 @@
         (reject-opaque-type ty tl "alignof")
         (reject-valist ty tl "alignof")
         (reject-cycle-pending-layout ty tl "alignof")
-        (return (alloc-val (ptr-int-type) (fstr (abi-alignof ty))))))))
+        (return (alloc-val ty-usize (fstr (abi-alignof ty))))))))
+
+; `(offsetof T f)`, C's offsetof: the layout model's byte offset of field `f`, a
+; usize constant that folds where `sizeof` does (nuc-lua ISSUE-010).
+(defn offsetof-bytes (call:?&Node line:i32):i64
+  (let (cc:(ptr Node) call)
+    (when (!= (node-len cc) 3) (die-at line "offsetof expects a type and a field name"))
+    (let (tn:?&Node (node-at cc 1)
+          tl:i32 (node-line (as ptr tn) line)
+          fname:?&Node (node-at cc 2))
+      (when (and (= (node-kind fname) NODE-LIST) (= (node-len fname) 2)
+                 (node-sym-is? (node-at fname 0) "quote"))
+        (set! fname (node-at fname 1)))
+      (when (!= (node-kind fname) NODE-SYM)
+        (die-at tl "offsetof: the second operand must name a field"))
+      (let (ty:&Type (parse-type-from-node tn tl))
+        (reject-opaque-type ty tl "offsetof")
+        (reject-cycle-pending-layout ty tl "offsetof")
+        (when (and (!= (ty 'kind) TY-STRUCT) (!= (ty 'kind) TY-UNION))
+          (die-at tl (fstr "offsetof: " (type-display ty) " is not a struct or union")))
+        (let (sd:&StructDef (unsafe/cast &StructDef (ty 'sdef))
+              fs:Symbol ((unsafe/cast &Node fname) 's)
+              i:i32 (struct-field-index sd fs))
+          (when (< i 0)
+            (die-at tl (fstr "offsetof: no field '" fs "' in " (type-display ty))))
+          (when (!= ((field-at (sd 'fields) i) 'bit-width) 0)
+            (die-at tl (fstr "offsetof: '" fs "' is a bit-field, which has no byte offset")))
+          (return (as i64 (/ (field-bit-offset sd i) 8))))))))
+
+(defn emit-offsetof (call:?&Node scope:&Scope):&Val
+  (return (alloc-val ty-usize (fstr (offsetof-bytes call (node-line call 0))))))
 
 (defn emit-alloca-form (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
@@ -7946,19 +8088,27 @@
 (defn emit-aref (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 3) (die-at (cc 'line) "aref expects 2 args"))
-    (let (p:&Val (emit-node (node-at cc 1) scope))
-      (when (or (!= ((p 'type) 'kind) TY-PTR)
-              (= ((p 'type) 'elem) null))
+    (let (p:&Val (emit-node (node-at cc 1) scope)
+          cstr:bool (= ((p 'type) 'kind) TY-CSTR))
+      (when (and (not cstr)
+                 (or (!= ((p 'type) 'kind) TY-PTR)
+                     (= ((p 'type) 'elem) null)))
         (die-at (cc 'line) "aref: operand must be typed pointer"))
-      (require-derefable (p 'type) (cc 'line) "aref")
+      (when (not cstr) (require-derefable (p 'type) (cc 'line) "aref"))
       (let (idx:&Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx 'type)) 0)
           (die-at (cc 'line) "aref: index must be integer"))
         (let (idxp:StrView (gep-index-ir idx))
-          (let (elem:?&Type ((p 'type) 'elem)
+          ; A CStr reads as C's `const char *`: its bytes are i8 (nuc-lua ISSUE-017).
+          (let (elem:?&Type (if cstr ty-i8 ((p 'type) 'elem))
                 gep:StrView (new-tmp))
             (emit g-body-stream "  " gep " = getelementptr inbounds " (type-to-ir elem) ", ptr "
                   (p 'val) ", " (ptr-int-ir) " " idxp "\n")
+            ; A row of an array of arrays decays as any array read does (nuc-lua ISSUE-031).
+            (when (= (-> elem (unsafe/cast &Type _) (_ 'kind)) TY-ARRAY)
+              (let (rv:&Val (alloc-val (array-decay elem) gep))
+                (val-copy-taint rv p)
+                (return rv)))
             (let (val:StrView (new-tmp))
               (emit g-body-stream "  " val " = load " (type-to-ir elem) ", ptr " gep ", align "
                     (type-size elem) "\n")
@@ -7969,6 +8119,8 @@
     (when (!= (node-len cc) 4) (die-at (cc 'line) "set!: (aref a i) place expects an index and a value"))
     (reject-readonly-place (node-at cc 1) scope (cc 'line))
     (let (p:&Val (emit-node-at cc 1 scope))
+      (when (= ((p 'type) 'kind) TY-CSTR)
+        (die-at (cc 'line) "set!: (aref s i) place: a CStr is C's const char *, so its bytes are read-only -- write through (ptr i8)"))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
         (die-at (cc 'line) "set!: (aref a i) place: operand must be typed pointer"))
@@ -8109,6 +8261,18 @@
           (return rv))))
     (when (and (= h 'aref) (= n 3))
       (let (p:&Val (emit-node (node-at (as ptr x) 1) scope))
+        ; `&(aref s i)` on a CStr is C's `s + i`, still a `const char *`.
+        (when (= ((p 'type) 'kind) TY-CSTR)
+          (let (idx:&Val (emit-node (node-at (as ptr x) 2) scope))
+            (when (= (is-int-type (idx 'type)) 0)
+              (die-at line "ref: (aref p i) index must be integer"))
+            (let (idxp:StrView (gep-index-ir idx)
+                  gep:StrView (new-tmp))
+              (emit g-body-stream "  " gep " = getelementptr inbounds i8, ptr "
+                    (p 'val) ", " (ptr-int-ir) " " idxp "\n")
+              (let (rv:&Val (alloc-val (p 'type) gep))
+                (val-copy-taint (as ptr rv) (as ptr p))
+                (return rv)))))
         (when (or (!= ((p 'type) 'kind) TY-PTR) (= ((p 'type) 'elem) null))
           (die-at line "ref: (aref p i) operand must be a typed pointer"))
         (require-derefable (p 'type) line "ref")
@@ -12044,6 +12208,7 @@
                   ty:ptr (extract-name-and-type bname (as &Symbol &name)
                                                 (node-line bname (cc 'line)))
                   pre-v:ptr null)
+              (refuse-reserved-binder name (node-line bname (cc 'line)))
               ; CE-1 (closure-enhancements.md §CE-1): env-type inference. A bare-
               ; symbol binding with no spelled type — which previously always died
               ; here — adopts the type of its emitted init value, so a closure
@@ -12308,6 +12473,9 @@
           join-want:ptr (if (and (!= g-want-type null) (= ((unsafe/cast &Type g-want-type) 'kind) TY-STRUCT))
                           g-want-type
                           (cond-literal-join-want cc (/ nargs 2) scope))
+          cstr-want:ptr (cond-cstr-join-want cc (/ nargs 2) scope)
+          strlit-want:ptr (if (and (!= cstr-want null) (or (= my-want null) (= (type-is-strview my-want) 0)))
+                            cstr-want my-want)
           id:i32 (new-label-id)
           end-lbl:StrView (fstr "cond.end" id)
           fall-lbl:StrView (fstr "cond.fall" id)
@@ -12369,13 +12537,13 @@
           ; w/o explicit make) against the armed want. Re-arm first: a prior test
           ; (a generic call) may have consumed it. No-op when want is null or not a
           ; union; recursion into nested control forms happens via emit-node.
-          (set! g-want-type my-want)
+          (set! g-want-type (if (= (node-kind body-node) NODE-STR) strlit-want my-want))
           (set! body-node (union-target-rewrite body-node my-want))
           (let (bv:&Val (emit-node-as call (+ 2 (* i 2)) body-node scope)
                 bterm:i32 g-block-term)
             (when (= bterm 0)
               ; A string-literal branch joins as a StrView, or as CStr under a CStr want.
-              (set! bv (join-strlit-branch bv my-want (cc 'line)))
+              (set! bv (join-strlit-branch bv strlit-want (cc 'line)))
               (set! bv (join-struct-branch bv join-want (cc 'line)))
               (let (join-lbl:StrView (fstr "cond.join" id "." i)
                     bty:ptr (bv 'type)
@@ -12591,6 +12759,10 @@
     ; `()` reads as a null node, so the place judgement has to precede any deref.
     (when (= place null) (die-nonplace place line))
     (when (!= (pc 'kind) NODE-LIST) (die-nonplace place line))
+    ; A macro naming a place is that place, as Lisp's setf (nuc-lua ISSUE-020);
+    ; a binding of the head's name is the member place `(x 'f)` instead.
+    (when (set-place-macro? place scope)
+      (return (emit-set (node-list3 (node-at cc 0) (macroexpand-form place -1) v line) scope)))
     ; A writable collection takes precedence over the field write, which is the
     ; read path's rule with `set` in place of `get`/`invoke`.
     (let (sc:ptr (set-place-call place v line scope))
@@ -12644,6 +12816,13 @@
             (fstr "set!: " (type-display rt)
                   " has no `set` method -- a computed key writes through the `set` generic"))))))
   (return (emit-field-set (field-set-cell recv key v line) scope)))
+
+(defn set-place-macro? (place:?&Node scope:&Scope):bool
+  (when (or (!= (node-kind place) NODE-LIST) (= (node-len place) 0)) (return false))
+  (let (hd:?&Node (node-at place 0))
+    (when (!= (node-kind hd) NODE-SYM) (return false))
+    (when (= (find-macro ((unsafe/cast &Node hd) 's)) null) (return false))
+    (return (= (scope-lookup scope ((unsafe/cast &Node hd) 's)) null))))
 
 (defn die-nonplace (place:?&Node line:i32):void
   :noreturn
@@ -13424,6 +13603,13 @@
   (return null))
 
 (defn find-macro (spelling:Symbol):?&MacroDef
+  (let (hit:?&MacroDef (find-macro-registered spelling))
+    (when (!= hit null) (return hit)))
+  (when (fold-pending-macro-ref spelling) (return (find-macro-registered spelling)))
+  (return null))
+
+; Without compiling a cycle partner's macro on demand: a binder check must not.
+(defn find-macro-registered (spelling:Symbol):?&MacroDef
   ; Stage 16: lexical bindings win over the global registry. `find-macro` is the
   ; registry's only reader, so this one probe covers emit-list's dispatch,
   ; node-type, gcheck, valid-walk and the BK-MACRO name-kind lookup at once.
@@ -14165,6 +14351,19 @@
 
 ; A binding name is never qualified, whoever wrote it: a template's full name is a
 ; reference (ambient-namespaces.md, "AN-4 as built").
+; A local named like a special form or a visible macro would be read as that form
+; at the head of a list, so the binding is refused where it is made (nuc-lua ISSUE-038, 051).
+(defn refuse-reserved-binder (name:Symbol line:i32):void
+  (when (or (symbol-none? name) (!= (qualifier-len name) 0)) (return))
+  (let (at:i32 (if (= line 0) g-form-line line))
+    (when (!= (special-form-named name) 0)
+      (die-at at (fstr "cannot bind '" name "': '" name
+                       "' already names a special form — a symbol may name only one kind of thing")))
+    (when (!= (find-macro-registered name) null)
+      (die-at at (fstr "cannot bind '" name "': '" name
+                       "' names a macro in scope, which a list headed by it would expand"
+                       "\n  note: rename the binding, or the macro")))))
+
 (defn refuse-qualified-binder (name:Symbol line:i32):void
   (when (or (= (qualifier-len name) 0) (= (symbol-byte-at name 0) 35)) (return))
   (let (r:&NameRef (resolve-spelling name))
@@ -14282,7 +14481,7 @@
     (return name)))
 
 ; `ns/bare` for the binding `name` resolves to in the template's file, `user/bare`
-; in `user`. Only public names have one: a file-private `user` name is refused.
+; in `user`. A file-private `user` name is its file's `#pN/bare` (nuc-lua ISSUE-050).
 (defn qq-full-name (name:Symbol hit:&BindingHit line:i32):Symbol
   (let (bare:Symbol (if (> (qualifier-len name) 0) ((resolve-spelling name) 'bare) name)
         kind:i32 (hit 'kind)
@@ -14294,6 +14493,9 @@
     (when (symbol-none? ns) (set! ns g-ns-user))
     (when (and (!= payload null) (!= (binding-is-private kind payload) 0)
                (or (= ns g-ns-user) (= (symbol-byte-at ns 0) 35)))
+      (match (priv-ns-of-path g-source-path)
+        ((some pns) (return (symbol-intern (fstr pns "/" bare))))
+        (none 0))
       (diag-stage-note "a template reaches public names only; make it public, or give its file an (ns …)")
       (die-at line (fstr (ct-body-who) " names '" bare "', which is private to its file")))
     (return (symbol-intern (fstr ns "/" bare)))))
@@ -15565,11 +15767,13 @@
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
+        (when (= hp 'unsafe/ptr-) (return (emit-ptr-sub n scope)))
         (when (= hp 'field) (return (emit-field n scope)))
         (when (and (= hp 'get) (= (node-len n) 3)) (die-if-get-reads-field n scope))
         (when (= hp 'invoke) (return (emit-invoke n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
         (when (= hp 'alignof) (return (emit-alignof n scope)))
+        (when (= hp 'offsetof) (return (emit-offsetof n scope)))
         (when (= hp 'source-file) (return (emit-source-file n)))
         (when (= hp 'source-line) (return (emit-source-line n)))
         (when (= hp 'alloca) (return (emit-alloca-form n scope)))
@@ -16054,6 +16258,9 @@
         (when (and (= hd 'sizeof) (= nargs 1))
           (set! (aref out 0) (cfold-sizeof (node-at (as ptr ee) 1) nl))
           (return 1))
+        (when (= hd 'offsetof)
+          (set! (aref out 0) (offsetof-bytes ee nl))
+          (return 1))
         ; (char "x") — the same one-byte literal defvar-init-ir renders directly,
         ; repeated here so it composes: `(+ (char "a") 1)`.
         (when (and (= hd 'char) (= nargs 1))
@@ -16438,6 +16645,29 @@
                 (return true))))))
       (return false))))
 
+; C's `char x[N] = "..."`: the bytes, then zeros; the NUL may be left out when the
+; text fills the array exactly, as C allows (nuc-lua ISSUE-044).
+(defn defvar-write-string-array (lit:&Node ty:?&Type encl:i32):void
+  (let (tt:(ptr Type) ty
+        et:?&Type (tt 'elem)
+        n:i32 (tt 'arr-len)
+        s:StrView (symbol-as-view (lit 's))
+        len:i64 (strview-byte-len s))
+    (when (or (= (is-int-type et) 0) (!= (int-width et) 8) (= (is-bool-type et) 1))
+      (die-at (node-line lit encl)
+        (fstr "defvar: a string literal initializes only an (array i8 N) or (array ui8 N), not an "
+              (type-display ty))))
+    (when (> len (as i64 n))
+      (die-at (node-line lit encl)
+        (fstr "defvar: the string literal is " len " bytes, longer than its " (type-display ty))))
+    (emit g-out "c\"")
+    (dotimes (j n)
+      (let (c:i32 (if (< (as i64 j) len) (text-byte-at s (as i64 j)) 0))
+        (if (or (= c 92) (= c 34) (< c 32) (>= c 127))
+          (emit g-out "\\" (hexu c 2))
+          (emit g-out (as Char (as ui32 c))))))
+    (emit g-out "\"")))
+
 ; Write the LLVM constant for a value of type `ty` initialized by `init`.
 ; Aggregates stream their bracketed/braced element list; everything else defers
 ; to defvar-init-ir, so every scalar rule (integer folding, range checks, float
@@ -16447,6 +16677,9 @@
   (set! init (const-aggregate-init init))
   (let (tt:(ptr Type) ty
         tk:i32 (tt 'kind))
+    (when (and (= tk TY-ARRAY) (= (node-kind init) NODE-STR))
+      (defvar-write-string-array (unsafe/cast &Node init) ty encl)
+      (return))
     (when (= tk TY-ARRAY)
       (when (= (const-array-lit? init) 0)
         (die-at (node-line init encl)
@@ -16566,6 +16799,27 @@
 ; with no line of its own (lib/nucleus/node.nuc `node-line`). Stage 15 W4a.
 ; An empty view is "no constant rendering exists" (soft mode's answer); an
 ; initializer is never the empty string, so the two cannot be confused.
+; A function's address is a link-time constant, as `@f` is to LLVM (nuc-lua ISSUE-004).
+; "" when `nn` names no function.
+(defn defvar-fn-address (nn:(ptr Node) ty:&Type line:i32):StrView
+  (let (ft:?&Type null
+        irn:StrView "")
+    (if-some (sym (scope-lookup g-globals (nn 's)))
+      (when (and (= (sym 'is-local) 0) (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind) (= _ TY-FN)))
+        (macro-jit-ensure-decl sym line)
+        (set! ft (sym 'type))
+        (set! irn (sym 'ir-name)))
+      (when-some (fv (generic-fn-value nn line))
+        (set! ft (fv 'type))
+        (set! irn (fv 'val))))
+    (when (= ft null) (return ""))
+    (avr-reject-fn-value line (fstr "the initializer '" (nn 's) "'"))
+    (when (and (= (type-eq ft ty) 0)
+               (not (and (= (ty 'kind) TY-PTR) (= (ty 'elem) null))))
+      (die-at line (fstr "defvar: '" (nn 's) "' is " (type-display ft) ", which does not match the slot's "
+                         (type-display ty))))
+    (return irn)))
+
 (defn defvar-init-ir (init:?&Node ty:?&Type encl:i32):StrView
   (let (nn:&Node (unsafe/cast &Node init)
         ty-kind:i32 ((unsafe/cast &Type ty) 'kind))
@@ -16735,6 +16989,8 @@
       ; because an element must be constant. Without this, `(defvar a:i32 b)`
       ; would be refused while `(defvar a:i32 (+ b 0))` — which reaches the
       ; terminal fall-through below — was accepted, an arbitrary asymmetry.
+      (let (fa:StrView (defvar-fn-address nn (unsafe/cast &Type ty) (node-line init encl)))
+        (when (not (str-empty? &fa)) (return fa)))
       (when (!= g-defvar-soft 0) (return ""))
       (die-at (node-line init encl) (fstr "defvar: unsupported init symbol '" (nn 's) "'")))
     ; (char "x") — char literal, one byte stored in an int field.
@@ -17126,12 +17382,23 @@
   (when (= (path-under-ct-lib-root g-source-path) 0) (return false))
   (return (!= (host-exports? irn) 0)))
 
+; An aggregate's initializer that is a macro call is classified by its expansion,
+; so a macro can write a constant table (nuc-lua ISSUE-036).
+(defn expand-init-macro (n:?&Node ty:?&Type):?&Node
+  (when (or (!= (node-kind n) NODE-LIST) (= (node-len n) 0)) (return n))
+  (let (tt:(ptr Type) ty)
+    (when (and (!= (tt 'kind) TY-ARRAY) (!= (tt 'kind) TY-STRUCT)) (return n)))
+  (let (h:?&Node (node-at n 0))
+    (when (!= (node-kind h) NODE-SYM) (return n))
+    (when (= (find-macro ((unsafe/cast &Node h) 's)) null) (return n))
+    (return (as ?&Node (desugar (macroexpand-form n -1))))))
+
 ; The storage half of `defvar`, shared with an aggregate `defconst` (DECL-ATTR-CONST).
 (defn emit-global-def (cc:&Node name:Symbol ty:ptr init-node:?&Node attr-flags:i32):void
   (guard-name-kind name (cc 'line) NK-VALUE)
   (when (repl-redefine-global cc name (as ?&Type ty) init-node attr-flags) (return))
   (guard-value-redefinition name (cc 'line))
-  (set! init-node (const-aggregate-init init-node))
+  (set! init-node (const-aggregate-init (expand-init-macro init-node (as ?&Type ty))))
   ; G-5 step 4: a non-null typed-pointer global must be initialized.
   (when (= init-node null)
     (defvar-require-init name (as ?&Type ty) (cc 'line)))
@@ -17692,11 +17959,11 @@
 ; attributes with an argument, and a struct field is the only declaration with
 ; anywhere to put one. `:bits 0` is C's unnamed zero-width member and is
 ; reported as -1, since 0 already means "not a bitfield".
-(defn field-peel-attrs (field:ptr out-align:&i32 out-bits:&i32
+(defn field-peel-attrs (fld:ptr out-align:&i32 out-bits:&i32
                         strict:i32 line:i32):ptr
   (set! (aref out-align 0) 0)
   (set! (aref out-bits 0) 0)
-  (let (cur:ptr field
+  (let (cur:ptr fld
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -17760,19 +18027,28 @@
 ; AN-2 surface: `(:anon T)` declares a C11 anonymous member — a real member with
 ; no name of its own, whose fields are named through the outer struct. Returns
 ; its type node, or null for an ordinary field.
-(defn field-anon-type-node (field:ptr):ptr
-  (when (= field null) (return null))
-  (let (fn2:&Node (unsafe/cast &Node field))
+(defn field-anon-type-node (fld:ptr):ptr
+  (when (= fld null) (return null))
+  (let (fn2:&Node (unsafe/cast &Node fld))
     (when (!= (fn2 'kind) NODE-LIST) (return null))
-    (when (!= (node-len field) 2) (return null))
-    (let (hd:ptr (node-at field 0))
+    (when (!= (node-len fld) 2) (return null))
+    (let (hd:ptr (node-at fld 0))
       (when (= hd null) (return null))
       (let (h2:&Node (unsafe/cast &Node hd))
         (when (!= (h2 'kind) NODE-KEYWORD) (return null))
         (when (= (if (= (h2 's) "anon") 1 0) 0) (return null))
-        (return (node-at field 1))))))
+        (return (node-at fld 1))))))
+
+(defvar g-layout-prescan:i32 0)
 
 (defn defstruct-fill-layout (sd:&StructDef form:&Node strict:i32):ptr
+  (let (save:i32 g-layout-prescan)
+    (set! g-layout-prescan (if (= strict 0) 1 0))
+    (let (r:ptr (defstruct-fill-layout-1 sd form strict))
+      (set! g-layout-prescan save)
+      (return r))))
+
+(defn defstruct-fill-layout-1 (sd:&StructDef form:&Node strict:i32):ptr
   (let (cc:&Node (unsafe/cast &Node form)
         aflags:i32 0
         aalign:i32 0
@@ -17793,7 +18069,7 @@
         ; `node-line` (which also upgrades an interned symbol field's line-0
         ; to the defstruct's own line), never a raw `(field line)` deref.
         (let (anon-t:ptr (field-anon-type-node (node-at cc (+ (+ i 2) nattrs)))
-              field:ptr (field-peel-attrs (node-at cc (+ (+ i 2) nattrs))
+              fld:ptr (field-peel-attrs (node-at cc (+ (+ i 2) nattrs))
                                           (as &i32 &falign)
                                           (as &i32 &fbits) strict
                                           (cc 'line))
@@ -17802,20 +18078,20 @@
                         ; — the second (and, per the port's Major finding,
                         ; the load-bearing) storage position.
                         fty:ptr (if (!= anon-t null)
-                                  (as ptr (parse-type-from-node anon-t (node-line field (cc 'line))))
+                                  (as ptr (parse-type-from-node anon-t (node-line fld (cc 'line))))
                                   (if (= strict 0)
-                                    (extract-decl-name-and-type-layout field (as &Symbol &fname)
-                                                         (node-line field (cc 'line)))
-                                    (extract-decl-name-and-type field (as &Symbol &fname)
-                                                         (node-line field (cc 'line))))))
+                                    (extract-decl-name-and-type-layout fld (as &Symbol &fname)
+                                                         (node-line fld (cc 'line)))
+                                    (extract-decl-name-and-type fld (as &Symbol &fname)
+                                                         (node-line fld (cc 'line))))))
           ; AN-2: the minted name is the field index, so the layout prescan and
           ; the emission agree on it.
           (when (!= anon-t null)
             (set! fname (symbol-intern (fstr "__anon." i)))
-            (reject-anon-member-type fty (node-line field (cc 'line))))
+            (reject-anon-member-type fty (node-line fld (cc 'line))))
           (when (= fty null)
             (when (= strict 0) (return null))
-            (die-at (node-line field (cc 'line)) (fstr "defstruct: field '" fname
+            (die-at (node-line fld (cc 'line)) (fstr "defstruct: field '" fname
                                                        "' missing :type")))
           (if (= strict 0)
             (do
@@ -17829,14 +18105,14 @@
               ; W3a: a by-value field of an opaque C type has no size, so the
               ; enclosing struct has no layout either. `ptr:Foo` is the fix.
               (reject-opaque-type fty
-                (node-line field (cc 'line)) "defstruct field")
-              (reject-valist fty (node-line field (cc 'line)) "defstruct field")
+                (node-line fld (cc 'line)) "defstruct field")
+              (reject-valist fty (node-line fld (cc 'line)) "defstruct field")
               ; W1d: a by-value field whose type the cycle has not laid out yet
               ; would give THIS struct a wrong size and wrong offsets.
               (reject-cycle-pending-layout fty
-                (node-line field (cc 'line)) "defstruct field")))
+                (node-line fld (cc 'line)) "defstruct field")))
           (when (!= fbits 0)
-            (reject-bitfield-type fty (node-line field (cc 'line)) fbits strict))
+            (reject-bitfield-type fty (node-line fld (cc 'line)) fbits strict))
           (set! (aref (unsafe/cast &Symbol fnm) i) fname)
           ; A repeated field is unreachable by name and silently inflates the
           ; layout; --emit-cheader duly emitted it twice, producing a header no
@@ -17846,7 +18122,7 @@
                   j:i32 0)
               (while (< j i)
                 (when (= (aref (unsafe/cast &Symbol fnm) j) nm)
-                  (die-at (node-line field (cc 'line))
+                  (die-at (node-line fld (cc 'line))
                     (fstr "defstruct: duplicate field '" fname "'")))
                 (set! j (+ j 1)))))
           (set! (aref (unsafe/cast &ptr ftp) i) fty)
@@ -17947,7 +18223,8 @@
             (set! (sd 'emitted) 1))
           ; D9: queued as well, so the line replays into a later module; inert
           ; where the eager write landed. repl-libraries.md §3.3.
-          (queue-type-line sd)))))))
+          (queue-type-line sd)
+          (complete-c-declarations sd)))))))
 
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))
@@ -18086,8 +18363,8 @@
       ; and the line it is blamed at must be computed without dereferencing it.
       ; `extract-decl-name-and-type` then raises `die-empty-decl`, the same words
       ; `(defvar ())` gets, because an extern's operand is that same declaration.
-      (set! ty (extract-decl-name-and-type arg1 (as &Symbol &name)
-                                      (node-line arg1 (cc 'line))))
+      (set! ty (extract-decl-name-and-type-extern arg1 (as &Symbol &name)
+                                             (node-line arg1 (cc 'line))))
       (when (= ty null)
         (die-at (node-line arg1 (cc 'line))
           (fstr "extern: missing :type on '" name "'")))
@@ -18452,6 +18729,7 @@
             (abi-args-begin (unsafe/cast ptr:AbiInfo g-fn-ret-abi))
             (while (< i nparams)
               (refuse-qualified-binder (aref (unsafe/cast &Symbol param-names) i) (cc 'line))
+              (refuse-reserved-binder (aref (unsafe/cast &Symbol param-names) i) (cc 'line))
               (abi-emit-param-prologue fn-scope
                 (aref (unsafe/cast &Symbol param-names) i)
                 (aref (unsafe/cast &ptr param-types) i))
@@ -19427,6 +19705,8 @@
             (when (!= (p 'kind) NODE-SYM)
               (die-at (node-line (as ptr p) encl)
                       (fstr what ": param must be a symbol")))
+            ; Here, not at the body's binding, which has no line to report.
+            (refuse-reserved-binder (p 's) (node-line (as ptr p) encl))
             (set! (aref (unsafe/cast &Symbol pnames) ai) (p 's))
             (inc! ai)))
         (inc! pi))
@@ -19463,6 +19743,7 @@
       (when (not (node-is-list params-node))
         (die-at (name-node 'line) "defmacro: params must be a list"))
       (guard-name-kind (name-node 's) (ff 'line) NK-MACRO)
+      (when (pending-macro-done? (name-node 's) (ff 'line)) (return))
       ; Stage 15 B4 (R4): a second `defmacro` of one name used to append a second
       ; MacroDef that `find-macro`'s first-match scan could never reach — the
       ; first definition won, silently.
@@ -20312,7 +20593,7 @@
             ; this pass records nothing for it. `emit-import` diagnoses it at
             ; the form's own line, the same deferral the missing-library case
             ; below already makes.
-            (when (= (node-kind (as ptr nn)) NODE-STR) (set! path (nn 's)))
+            (when (= (node-kind (as ptr nn)) NODE-STR) (set! path (string-import-path (nn 's))))
             (when (= (node-kind (as ptr nn)) NODE-SYM)
               ; A missing library is diagnosed by `do-import`, at the import
               ; form's own line. Staying silent here keeps one diagnosis.
@@ -20350,10 +20631,21 @@
     (when (= (node-kind (as ptr nn)) NODE-SYM) (return (resolve-import (nn 's) line)))
     (when (and (= (node-kind (as ptr nn)) NODE-STR)
                (or (!= (str-ends-with (nn 's) ".nuc") 0)
-                   (!= (str-ends-with (nn 's) ".nuch") 0))
-               (!= (file-exists (symbol-as-view (nn 's))) 0))
-      (return (nn 's)))
+                   (!= (str-ends-with (nn 's) ".nuch") 0)))
+      (let (p:Symbol (string-import-path (nn 's)))
+        (when (!= (file-exists (symbol-as-view p)) 0) (return p))))
     (return (symbol-none))))
+
+; A `.nuc` string path is looked for beside the importing file, then as given
+; (nuc-lua ISSUE-054).
+(defn string-import-path (s:Symbol):Symbol
+  (let (v:StrView (symbol-as-view s)
+        dir:Symbol (source-file-dir))
+    (when (or (strview-has-prefix v "/") (symbol-none? dir) (= dir ".")) (return s))
+    (when (and (= (str-ends-with s ".nuc") 0) (= (str-ends-with s ".nuch") 0)) (return s))
+    (let (c:StrView (fstr dir "/" v))
+      (when (!= (file-exists c) 0) (return (symbol-intern c))))
+    (return s)))
 
 ; The heads whose index 1 names a library, for every walk that follows imports.
 ; `(import lib p)` is prefixed like `import-prefixed`; its length is its emitter's to check.
@@ -20629,11 +20921,11 @@
           (when (or (!= (arm 'kind) NODE-LIST) (= (node-len (as ptr arm)) 0)) (return 1))
           (when (!= (node-kind (node-at (as ptr arm) 0)) NODE-SYM) (return 1))
           (dotimes (fi (- (node-len (as ptr arm)) 1))
-            (let (field:ptr (node-at (as ptr arm) (+ fi 1))
+            (let (fld:ptr (node-at (as ptr arm) (+ fi 1))
                   fname:Symbol (symbol-none))
-              (when (= field null) (return 1))
-              (let (fty:ptr (extract-name-and-type field (as &Symbol &fname)
-                                                   (node-line field line)))
+              (when (= fld null) (return 1))
+              (let (fty:ptr (extract-name-and-type fld (as &Symbol &fname)
+                                                   (node-line fld line)))
                 (when (= fty null) (return 1))
                 (when (!= (opaque-sdef-of fty) null) (return 1))
                 (when (!= (cycle-pending-sdef fty) null) (return 1)))))))
@@ -21038,10 +21330,30 @@
     (set! g-defining-private save-priv)
     (set! g-form-line save-line)))
 
+; The layout prescan runs before a header's constants are in, so it folds a
+; constant only if its value folds now; else the use waits (nuc-lua ISSUE-030).
+(defn pending-const-folds-now? (pc:&PendingConst):bool
+  (let (save-path:Symbol g-source-path
+        save-ns:Symbol g-current-ns
+        save-imports:?&ImportVec g-file-imports
+        v:i64 0)
+    (set! (pc 'state) 1)
+    (set! g-source-path (pc 'path))
+    (set! g-current-ns (pc 'ns))
+    (set! g-file-imports (as ?&ImportVec (pc 'imports)))
+    (let (ok:i32 (const-fold-int (node-at (unsafe/cast &Node (pc 'form)) 2) (as &i64 &v) (pc 'line)))
+      (set! (pc 'state) 0)
+      (set! g-source-path save-path)
+      (set! g-current-ns save-ns)
+      (set! g-file-imports save-imports)
+      (return (!= ok 0)))))
+
 (defn fold-pending-key (key:Symbol):bool
   (match (get g-pending-consts key)
     ((some i) (let (pc:&PendingConst (g-pending-list (as usize i)))
                 (when (!= (pc 'state) 0) (return false))
+                (when (and (!= g-layout-prescan 0) (not (pending-const-folds-now? pc)))
+                  (return false))
                 (fold-pending-const pc)
                 (return true)))
     (none (return false))))
@@ -21064,6 +21376,84 @@
   (when (= (count g-pending-list) 0) (return false))
   (match (get g-pending-consts (qualify-name (priv-key-use name)))
     ((some i) (let (pc:&PendingConst (g-pending-list (as usize i)))
+                (when (or (!= (pc 'path) g-source-path) (!= (pc 'line) line)) (return false))
+                (when (= (pc 'state) 2) (return true))
+                (set! (pc 'state) 1)
+                (return false)))
+    (none (return false))))
+
+; Every file's `defmacro` is recorded by the whole-graph prescan, so a use the
+; emission order hasn't reached, across an import cycle, compiles it on demand (nuc-lua ISSUE-052).
+(defn prescan-pending-macro (form:?&Node):void
+  (when (or (< (node-len form) 3) (!= (node-kind (node-at form 1)) NODE-SYM)) (return))
+  (let (key:Symbol (qualify-name (priv-key-use ((unsafe/cast &Node (node-at form 1)) 's))))
+    (match (get g-pending-macros key) ((some j) (return)) (none 0))
+    (let (pc:&PendingConst (new PendingConst g-arena))
+      (set-fields! pc 'form (as ptr form) 'ns g-current-ns 'path g-source-path
+                   'imports (as ptr g-file-imports) 'private g-defining-private
+                   'line (node-line form 0) 'state 0)
+      (assoc g-pending-macros key (unsafe/cast i32 (count g-pending-macro-list)))
+      (assoc g-pending-macro-bare ((unsafe/cast &Node (node-at form 1)) 's) 1)
+      (conj g-pending-macro-list pc))))
+
+; Only once emission has begun, and only for a file still being emitted: before,
+; no macro is registered by design; after, its own form registered it.
+(defn fold-pending-macro-key (key:Symbol):bool
+  (match (get g-pending-macros key)
+    ((some i) (let (pc:&PendingConst (g-pending-macro-list (as usize i)))
+                ; Its own file reaches the form in order; folding there would run before its import-ct.
+                (when (or (!= (pc 'state) 0) (= (pc 'path) g-source-path)
+                          (= (import-list-has g-importing (pc 'path)) 0)
+                          (and (= (pc 'ns) g-ns-user) (not (file-imports-path? (pc 'path)))))
+                  (return false))
+                (let (save-path:Symbol g-source-path
+                      save-ns:Symbol g-current-ns
+                      save-imports:?&ImportVec g-file-imports
+                      save-priv:i32 g-defining-private
+                      save-line:i32 g-form-line
+                      fs:&FnState (push-function-state))
+                  (set! (pc 'state) 1)
+                  (set! g-source-path (pc 'path))
+                  (set! g-current-ns (pc 'ns))
+                  (set! g-file-imports (as ?&ImportVec (pc 'imports)))
+                  (set! g-defining-private (pc 'private))
+                  (set! g-form-line (pc 'line))
+                  (emit-defmacro (unsafe/cast &Node (pc (quote form))))
+                  (set! (pc 'state) 2)
+                  (pop-function-state fs)
+                  (set! g-source-path save-path)
+                  (set! g-current-ns save-ns)
+                  (set! g-file-imports save-imports)
+                  (set! g-defining-private save-priv)
+                  (set! g-form-line save-line)
+                  (return true))))
+    (none (return false))))
+
+; A `user` macro's bare key is also what every C header import flattens to.
+(defn file-imports-path? (path:Symbol):bool
+  (dotimes (i (file-import-forms-count))
+    (when (= ((invoke (unsafe/cast &ImportVec g-file-imports) i) 'path) path) (return true)))
+  (return false))
+
+(defn fold-pending-macro-ref (name:Symbol):bool
+  (when (or (= (count g-pending-macro-list) 0) (not g-promises-open)) (return false))
+  (match (get g-pending-macro-bare (strip-ns-qualifier name)) ((some j) 0) (none (return false)))
+  (when (!= (qualifier-len name) 0)
+    (let (r:&NameRef (resolve-spelling name))
+      (return (and (= (r 'status) NR-QUALIFIED) (fold-pending-macro-key (r 'canonical))))))
+  (when (fold-pending-macro-key (qualify-name (priv-key-use name))) (return true))
+  (dotimes (i (file-imports-count))
+    (match (file-flattened-ns-at i)
+      ((some fns) (when (fold-pending-macro-key (ns-qualify-in fns name)) (return true)))
+      (none 0)))
+  ; No bare fallback: it would hand a library's local the user file's macro.
+  (return false))
+
+; The macro's own form, reached after a use compiled it, has nothing left to do.
+(defn pending-macro-done? (name:Symbol line:i32):bool
+  (when (= (count g-pending-macro-list) 0) (return false))
+  (match (get g-pending-macros (qualify-name (priv-key-use name)))
+    ((some i) (let (pc:&PendingConst (g-pending-macro-list (as usize i)))
                 (when (or (!= (pc 'path) g-source-path) (!= (pc 'line) line)) (return false))
                 (when (= (pc 'state) 2) (return true))
                 (set! (pc 'state) 1)
@@ -21182,6 +21572,11 @@
                   (prescan-pending-const (as ptr f)))
             true
               (prescan-defenum-names (as ptr f)))
+          (set! g-defining-private save-priv)))
+      (when (or (= h "defmacro") (= h "defmacro-"))
+        (let (save-priv:i32 g-defining-private)
+          (set! g-defining-private (if (= h "defmacro-") 1 0))
+          (prescan-pending-macro (as ptr f))
           (set! g-defining-private save-priv))))))
 
 ; Stage 15 W1a/W1b (design/stage15-stress-test/resolution.md) — the second
@@ -22819,7 +23214,7 @@
                   (!= (str-ends-with spath ".nuch") 0))
           ; Synthesize a fake sym-name by stripping leading directories.
           (let (name:Symbol (nn 's)
-                path:Symbol (nn 's))
+                path:Symbol (string-import-path (nn 's)))
             ; Stage 15 W9 item 6: `path` is the string verbatim (no search), so
             ; the old `(= path null)` test here could never fire and a missing
             ; file fell through to `read-file`'s unlocated `perror` — while the
@@ -23530,14 +23925,14 @@
 
 ; Assemble the full module IR. The caller owns the returned String and must
 ; drop it (the module buffers are cleared here).
-(defn assemble-module-ir (source-file:Symbol):String
+(defn assemble-module-ir (src-path:Symbol):String
   (let ((irs String) (make String)
         (refd (Vector i32)) (make (Vector i32)))
     (string-reserve &irs 262144)
     (reserve &refd (count g-strs))
     (fill-program-str-refs &refd)
-    (emit irs "; ModuleID = '" source-file "'\n")
-    (emit irs "source_filename = \"" source-file "\"\n")
+    (emit irs "; ModuleID = '" src-path "'\n")
+    (emit irs "source_filename = \"" src-path "\"\n")
     (emit irs "target datalayout = \"" ((unsafe/cast &Target g-target) 'datalayout) "\"\n")
     (emit irs "target triple = \"" g-target-triple "\"\n")
     ; RV-1: pin the psABI in the module (survives --emit-llvm; llc errors loudly
@@ -23606,9 +24001,9 @@
 
 ; The generated IR as an LLVM module. LLVM prefixes its errors with the buffer
 ; name, and a line there is an IR line.
-(defn output-module (ir:ptr ir-len:i64 source-file:Symbol):ptr
+(defn output-module (ir:ptr ir-len:i64 src-path:Symbol):ptr
   (let (ctx:ptr (LLVMContextCreate)
-        bufname:Symbol (symbol-intern (fstr "<generated IR for " source-file ">"))
+        bufname:Symbol (symbol-intern (fstr "<generated IR for " src-path ">"))
         mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len (symbol-as-cstr bufname))
         mod:ptr null
         parse-err:ptr null
@@ -23651,8 +24046,8 @@
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
-(defn compile-and-link (ir:ptr ir-len:i64 source-file:Symbol):void
-  (let (mod:ptr (output-module ir ir-len source-file))
+(defn compile-and-link (ir:ptr ir-len:i64 src-path:Symbol):void
+  (let (mod:ptr (output-module ir ir-len src-path))
       (let (tm:ptr (output-target-machine))
         (when (!= g-fast-math 0) (set-module-fast-math mod))
         (when (> g-opt-level 0) (run-opt-pipeline mod tm))
@@ -23883,16 +24278,16 @@
 
 ; `--run`: the module `-o` would link, JIT'd in a session of its own (the
 ; compile-time one holds mirror copies of program functions), entered at `main`.
-(defn run-module (ir:ptr ir-len:i64 source-file:Symbol):i32
+(defn run-module (ir:ptr ir-len:i64 src-path:Symbol):i32
   (let (main-ret:?&Type null)
     (if-some (s (scope-lookup g-globals (symbol-intern "main")))
       (when (= ((unsafe/cast &Type (s 'type)) 'kind) TY-FN)
         (set! main-ret ((unsafe/cast &Type (s 'type)) 'ret)))
       0)
     (when (= main-ret null)
-      (eprint "nucleusc: --run: " source-file " defines no 'main' function\n")
+      (eprint "nucleusc: --run: " src-path " defines no 'main' function\n")
       (exit 1))
-    (let (mod:ptr (output-module ir ir-len source-file))
+    (let (mod:ptr (output-module ir ir-len src-path))
       (when (!= g-fast-math 0) (set-module-fast-math mod))
       (when (> g-opt-level 0)
         (let (tm:ptr (output-target-machine))
@@ -23922,18 +24317,18 @@
             (return (mf g-run-argc g-run-argv))))))))
 
 ; Close module streams; emit textual IR (--emit-llvm), an object/binary, or run it.
-(defn flush-module-ir (source-file:Symbol):void
+(defn flush-module-ir (src-path:Symbol):void
   (drain-pending-union-irs)
-  (let ((ir String) (assemble-module-ir source-file)
+  (let ((ir String) (assemble-module-ir src-path)
         v:StrView (string-as-view ir))
     (cond (!= g-emit-llvm 0)
             (emit stdout v)
           (!= g-resolve 0)
-            (resolve-write-report source-file)
+            (resolve-write-report src-path)
           (!= g-run 0)
-            (exit (run-module (as ptr (v 'data)) (as i64 (v 'len)) source-file))
+            (exit (run-module (as ptr (v 'data)) (as i64 (v 'len)) src-path))
           true
-            (compile-and-link (as ptr (v 'data)) (as i64 (v 'len)) source-file))
+            (compile-and-link (as ptr (v 'data)) (as i64 (v 'len)) src-path))
     (drop &ir)))
 
 
@@ -24032,7 +24427,7 @@
     (return (compiler-main argc argv))))
 
 (defn compiler-main (argc:i32 argv:ptr):int
-  (let (source-file:Symbol (symbol-none)
+  (let (src-path:Symbol (symbol-none)
         run-from:i32 argc
         i:i32 1)
     (while (< i argc)
@@ -24173,8 +24568,8 @@
               (= (text-byte-at argview 0) 45)
                 (do (eprint "unknown flag: " argview "\n") (return 2))
               true
-                (if (symbol-none? source-file)
-                  (set! source-file (symbol-intern argview))
+                (if (symbol-none? src-path)
+                  (set! src-path (symbol-intern argview))
                   (do (eprint "unexpected argument: " argview "\n") (return 2)))))
       (inc! i))
 
@@ -24182,7 +24577,7 @@
       (eprint "nucleusc: -march=native describes the host and cannot be combined with --target=\n")
       (return 2))
     (when (and (= g-run 0) (< run-from argc)
-               (or (= g-interactive 0) (symbol-none? source-file)))
+               (or (= g-interactive 0) (symbol-none? src-path)))
       (eprint "nucleusc: '--' passes arguments to a --run or -i program; there is none\n")
       (return 2))
     (when (!= g-run 0)
@@ -24199,11 +24594,11 @@
         (when (not (str-empty? &clash))
           (eprint "nucleusc: --run cannot be combined with " clash "\n")
           (return 2)))
-      (when (symbol-none? source-file)
+      (when (symbol-none? src-path)
         (eprint "usage: nucleusc --run [options] <file.nuc> [-- args...]\n")
         (return 2))
       (set! g-run-argc (+ (- argc run-from) 1))
-      (set! g-run-argv (run-program-argv source-file argv run-from argc)))
+      (set! g-run-argv (run-program-argv src-path argv run-from argc)))
 
     (when (!= g-resolve 0)
       (let (clash:StrView "")
@@ -24223,24 +24618,24 @@
     ; REPL mode. With a file, its `main` runs beside the prompt
     ; (design/stage27-build/run-repl.md), and its C requirements are the session's.
     (when (!= g-interactive 0)
-       (when (not (symbol-none? source-file))
-         (set! g-repl-entry source-file)
+       (when (not (symbol-none? src-path))
+         (set! g-repl-entry src-path)
          (set! g-run-argc (+ (- argc run-from) 1))
-         (set! g-run-argv (run-program-argv source-file argv run-from argc))
-         (when (symbol-none? g-creq-root) (set! g-creq-root source-file)))
+         (set! g-run-argv (run-program-argv src-path argv run-from argc))
+         (when (symbol-none? g-creq-root) (set! g-creq-root src-path)))
        (if (symbol-none? g-creq-root)
          (creq-apply-pkgs g-pkg-config-args)
          (creqs-resolve g-creq-root))
        (return (repl-main)))
 
     ; Batch mode — require source file
-    (when (symbol-none? source-file)
+    (when (symbol-none? src-path)
        (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--depfile=<path>] [--missing-imports=<path>] [--ct-source=<root>=<dir>] [--list-imports] [--pkg-config=<pkg>] [--link-lib=<name>] [--library=<name>@<version>] [--build-id=<id>] [--strict-initializers] [--c-require=<edn>] [--c-require-unsafe=<edn>] [--c-requirements-of=<file>] [--resolve] [-i [<file.nuc>]] [--repl-format=text|json] [--run] [-I<path>] <file.nuc> [-- <args>...]\n") (return 2))
-    (set! g-source-path source-file)
+    (set! g-source-path src-path)
     (when (!= g-list-imports 0)
-      (list-imports-main source-file)
+      (list-imports-main src-path)
       (return 0))
-    (when (= g-dump-ast 0) (creqs-resolve source-file))
+    (when (= g-dump-ast 0) (creqs-resolve src-path))
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
       ; by its own `defvar` initializer — the constants by the loader, the rest
@@ -24290,11 +24685,11 @@
           (if (= g-header-request 1) (set! g-emit-nuch 1) (set! g-emit-cheader 1))
           (header-out-open)
           (if (= g-header-request 1)
-            (emit-nuch-header g-root-forms source-file)
-            (emit-cheader-header g-root-forms source-file))
+            (emit-nuch-header g-root-forms src-path)
+            (emit-cheader-header g-root-forms src-path))
           (header-out-close)
-          (depfile-write (depfile-target source-file))
+          (depfile-write (depfile-target src-path))
           (return 0))
-        (flush-module-ir source-file)
-        (depfile-write (depfile-target source-file)))))
+        (flush-module-ir src-path)
+        (depfile-write (depfile-target src-path)))))
     (return 0)))

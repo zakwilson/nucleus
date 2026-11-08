@@ -1,0 +1,6 @@
+(defstruct S v:i32)
+(defmacro next (x) `(+ ~x 100))
+(defn main ():i32
+  (let (s:S (S 5)
+        next:(ptr S) &s)
+    (next 'v)))

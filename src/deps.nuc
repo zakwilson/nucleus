@@ -97,8 +97,8 @@
             true (string-push-bytes-raw out (unsafe/ptr+ (p 'data) (as i64 k)) 1)))))
 
 ; The `-o` path, or the source when the output goes to stdout.
-(defn depfile-target (source-file:Symbol):Symbol
-  (if (symbol-none? g-output-path) (return source-file) (return g-output-path)))
+(defn depfile-target (src-path:Symbol):Symbol
+  (if (symbol-none? g-output-path) (return src-path) (return g-output-path)))
 
 ; gcc format: `target: dep …`, each path once, in first-read order. Written to a
 ; temporary and renamed, so a reader never sees half a file.
@@ -221,10 +221,10 @@
 
 ; One EDN map per import form, the root file's first, then each reached file's.
 ; Macro output is not seen; the `--diagnostics=edn` retry covers it (§3).
-(defn list-imports-main (source-file:Symbol):void
+(defn list-imports-main (src-path:Symbol):void
   (let (out:String (make String)
         seen:(Vector Symbol) (make (Vector Symbol)))
-    (list-imports-file source-file &out &seen)
+    (list-imports-file src-path &out &seen)
     (emit-all stdout &out)
     (drop &seen)
     (drop &out)))

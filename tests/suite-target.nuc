@@ -199,15 +199,15 @@
 "))
         pv:StrView (string-as-view &p))
     (try (cflag-stand-in))
-    (let (with:Compiled (try (cflag-emit (string-as-view &flag) "" pv))
+    (let (wc:Compiled (try (cflag-emit (string-as-view &flag) "" pv))
           without:Compiled (try (cflag-emit "" "" pv)))
-      (try (check-no-errors (ref with 'diags)))
-      (try (check-line (compiled-ir &with) "declare ptr @gtk_label_new(ptr)"))
-      (try (check-line (compiled-ir &with) "declare void @g_object_unref(ptr)"))
+      (try (check-no-errors (ref wc 'diags)))
+      (try (check-line (compiled-ir &wc) "declare ptr @gtk_label_new(ptr)"))
+      (try (check-line (compiled-ir &wc) "declare void @g_object_unref(ptr)"))
       (when (without 'ok?) (fail! "the flag-free compile must fail"))
       (try (check-error-at (ref without 'diags) pv 1
              "c-include: failed to preprocess 'gtk/gtk.h'"))
-      (drop &with)
+      (drop &wc)
       (drop &without))
     (drop &p) (drop &flag))
   (return (ok)))
@@ -534,9 +534,7 @@
 ; the reserved name. `MP_OVER` is the decimal-overflow guard; a clang predefine
 ; is not the header's macro at all.
 (deftest s17-cmacro-refused
-  (try (check-macro-unknown "_MP_BASE"))
   (try (check-macro-skipped "MP_FN" "is a function-like macro, which is not imported"))
-  (try (check-macro-skipped "MP_STR" "is a macro whose body does not fold to an integer constant"))
   (try (check-macro-skipped "MP_FLOAT" "is a macro whose body does not fold to an integer constant"))
   (try (check-macro-skipped "MP_OVER" "is a macro whose body does not fold to an integer constant"))
   (let (pre:String (try (first-clang-predefine)))
@@ -545,14 +543,14 @@
     (drop &pre))
   (return (ok)))
 
-; `unsafe/import-private` is the documented way past the leading-underscore
-; rule, and the same `_MP_BASE` the table above refuses comes through.
+; A `_` name is imported as any other since nuc-lua ISSUE-024, and a string
+; macro is a CStr constant since ISSUE-012.
 (deftest s17-cmacro-private
-  (let (out:String (try (build-run-source "(unsafe/import-private \"tests/layout/macros.h\" m)
+  (let (out:String (try (build-run-source "(import-use \"tests/layout/macros.h\")
 (import-use nucleus.io)
-(defn main ():i32 (print _MP_BASE \"\\n\") (return 0))
+(defn main ():i32 (print _MP_BASE \" \" MP_STR \"\\n\") (return 0))
 ")))
-    (try (check-eq (string-as-view &out) "8\n"))
+    (try (check-eq (string-as-view &out) "8 not an integer\n"))
     (drop &out))
   (return (ok)))
 
@@ -1163,8 +1161,8 @@ int main(void) {
 ; line. avr-libc's vector table is full of `reti`, so a whole-file search proves
 ; nothing about the handler.
 (defn disasm-body (dis:StrView name:StrView):!String
-  (let (label:String (str "<" name ">:")
-        lv:StrView (string-as-view &label)
+  (let (lbl:String (str "<" name ">:")
+        lv:StrView (string-as-view &lbl)
         it:LineIter (strview-lines &dis)
         out:String (make String)
         seen:bool false
@@ -1177,7 +1175,7 @@ int main(void) {
               (set! done true)
               (str-into &out l "\n"))
             (when (contains? l lv) (set! seen true))))))
-    (drop &label)
+    (drop &lbl)
     (when (not seen) (fail! "no disassembly for " name "\n     " (test-show dis)))
     (return (ok out))))
 

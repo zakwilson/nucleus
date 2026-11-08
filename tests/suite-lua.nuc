@@ -1,0 +1,307 @@
+; Fixes for the nuc-lua port's ISSUES.md rulings of 2026-11-08
+; (design/lua-bugfixes/overview.md). Diagnostics are rows in
+; tests/manifest/diagnostics.edn; the units here run programs.
+
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.file)
+(import-use nucleus.process)
+
+; ISSUE-025: `sizeof` is usize, and a signed partner takes it as a literal.
+(deftest lua-sizeof-usize
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct P a:i64 b:i64)
+(defn main ():i32
+  (let (n:i64 3 s:i32 2 u:usize 20)
+    (printf \"%ld %ld %ld %d %d\\n\" (* n (sizeof P)) (* s (sizeof P)) (* u (alignof P))
+            (if (>= u (sizeof P)) 1 0) (if (< (sizeof i32) u) 1 0)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "48 32 160 1 1"))
+    (drop &out)))
+
+; ISSUE-010: `offsetof` is a constant, so it folds where `sizeof` does.
+(deftest lua-offsetof
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct S a:i8 b:i64 c:i32)
+(defstruct W k:i32 (u (union x:i8 y:i64)))
+(defconst OFF (offsetof S c))
+(defvar pad:(array i8 (offsetof S b)))
+(defn main ():i32
+  (printf \"%ld %ld %ld %ld %ld %ld\\n\" (offsetof S a) (offsetof S 'b) OFF
+          (sizeof (array i8 (offsetof S b))) (offsetof W u)
+          (offsetof (union x:i8 y:i64) y))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "0 8 16 8 8 0"))
+    (drop &out)))
+
+; ISSUE-021: `unsafe/ptr-` counts elements, as C's `p - q`.
+(deftest lua-ptr-diff
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct P a:i64 b:i64)
+(defn main ():i32
+  (let (arr:(ptr P) (unsafe/cast (ptr P) (alloca (array P 8)))
+        s:CStr \"hello\")
+    (printf \"%ld %ld %ld\\n\" (unsafe/ptr- (unsafe/ptr+ arr 7) arr)
+            (unsafe/ptr- arr (unsafe/ptr+ arr 2)) (unsafe/ptr- &(aref s 3) s)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 -2 3"))
+    (drop &out)))
+
+; ISSUE-017: a CStr indexes as C's `const char *`; `&(aref s i)` is still one.
+(deftest lua-cstr-aref
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (s:CStr \"hello\" n:i32 0)
+    (while (!= (aref s n) 0) (inc! n))
+    (printf \"%c %d %s\\n\" (aref s 1) n &(aref s 2)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "e 5 llo"))
+    (drop &out)))
+
+; ISSUE-020: a macro naming a place is that place.
+(deftest lua-set-macro-place
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use \"errno.h\")
+(defstruct B v:i32)
+(defmacro my-errno () `(deref (__errno_location)))
+(defmacro bv (b) `(~b 'v))
+(defn main ():i32
+  (let (b:&B (alloca B))
+    (set! (my-errno) 42)
+    (set! (bv b) 3)
+    (printf \"%d %d\\n\" (my-errno) (b 'v)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "42 3"))
+    (drop &out)))
+
+; ISSUE-019: a `char *` and a string literal join as CStr, as C's `c ? p : "lit"`.
+(deftest lua-char-ptr-join
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use \"stdlib.h\")
+(defn pick (c:bool p:(ptr i8)):CStr (if c p \"nil\"))
+(defn main ():i32
+  (let (p:(ptr i8) (getenv \"NUC_LUA_NOT_SET\"))
+    (let (r (if (!= p null) p \"none\")) (puts r))
+    (puts (if (= p null) \"lit\" p))
+    (puts (pick false p)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "none\nlit\nnil"))
+    (drop &out)))
+
+; ISSUE-004: a function's address is a constant in an aggregate initializer.
+(deftest lua-fn-address-initializer
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Reg name:CStr func:(fn i32)(i32))
+(defn- f (a:i32):i32 (return (+ a 1)))
+(defn g (a:i32):i32 (return (* a 10)))
+(defvar regs:(array Reg 3) (array Reg (Reg \"f\" f) (Reg \"g\" g) (Reg null null)))
+(defvar hook:(fn i32)(i32) g)
+(defvar any:ptr f)
+(defn main ():i32
+  (printf \"%d %d %d %d\\n\" (funcall ((aref regs 0) 'func) 2) (funcall ((aref regs 1) 'func) 2)
+          (funcall hook 4) (if (= any null) 0 1))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3 20 40 1"))
+    (drop &out)))
+
+; ISSUE-012, 014, 024, 046: a header's string macros, pointer casts, `_` names
+; and array variables are imported.
+(deftest lua-header-macros
+  (try (require-cc))
+  (let (p:String (try (test-write-file "lmac.nuc"
+                         "(import-use \"tests/fixtures/lua-macros.h\")
+(import-use \"stdio.h\")
+(defn main ():i32
+  (printf \"%s|%s|%s|%d %d|%d %d|%s %d\\n\" LM_FILEHANDLE LM_VERSION LM_ESC _LM_FULL _LM_LINE
+          (lm_call LM_DFL) (if (= (as ptr LM_NOADDR) (unsafe/cast ptr -1)) 1 0)
+          (unsafe/cast CStr (as ptr lm_ident)) (aref lm_table 2))
+  (return 0))
+"))
+        got:String (try (build-run-file "" "--link-arg=tests/fixtures/lua-macros.c"
+                                        (string-as-view &p))))
+    (try (check-golden (string-as-view &got) "FILE*|Lua 5.5|a\tbA|0 1|1 1|ident 6\n"))
+    (drop &got)
+    (drop &p)
+    (return (ok))))
+
+; ISSUE-046: `(extern x:(array T 0))` declares C's `extern T x[]`, beside a
+; definition of any length, before or after it.
+(deftest lua-extern-unsized-array
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(extern ident:(array i8 0))
+(defvar ident:(array i8 4) (array i8 97 98 99 0))
+(extern later:(array i32 0))
+(defn main ():i32
+  (printf \"%s %d\\n\" (unsafe/cast CStr (as ptr ident)) (aref later 1))
+  0)
+(defvar later:(array i32 2) (array i32 5 6))
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "abc 6"))
+    (drop &out)))
+
+; ISSUE-050: in a file with no `(ns …)`, a macro names the file's own private helper.
+(deftest lua-macro-names-file-private
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn- helper (x:i32):i32 (return (+ x 1)))
+(defvar- base:i32 10)
+(defmacro twice (x) `(helper (helper (+ base ~x))))
+(defn main ():i32
+  (printf \"%d\\n\" (twice 5))
+  (return 0))
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "17"))
+    (drop &out)))
+
+; ISSUE-027: unary minus flips a float zero's sign, as C's `-x`, and is still
+; `0 - x` on an integer, an unsigned one and a constant.
+(deftest lua-unary-minus
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defconst N (- 3))
+(defn main ():i32
+  (let (z:f64 0.0 f:f32 1.5 i:i32 7 u:ui64 5)
+    (printf \"%g %g %g %d %lu %d %ld\\n\" (- z) (- (- z)) (as f64 (- f)) (- i) (- u) N (sizeof (array i8 (- 0 N)))))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "-0 0 -1.5 -7 18446744073709551611 -3 3"))
+    (drop &out)))
+
+; ISSUE-028, 041: a negative literal beside an unsigned operand of a bitwise
+; operator is its bit pattern, so `bit-not` takes an unsigned value.
+(deftest lua-bitwise-unsigned-literal
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (u:ui32 5 status:ui32 0xFFFFFFFF w:ui64 1)
+    (printf \"%u %u %lu %u\\n\" (bit-not u) (bit-and status (bit-not (as ui32 0x800000)))
+            (bit-or w -2) (bit-xor u -1)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "4294967290 4286578687 18446744073709551615 4294967290"))
+    (drop &out)))
+
+; ISSUE-042: `=` on CStrs is equal contents, but the same pointer, or a null on
+; either side, answers without strcmp.
+(deftest lua-cstr-eq-null
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defvar- strlocal:CStr \"local\")
+(defn kind (found:bool):CStr (return (if found strlocal (as CStr null))))
+(defn main ():i32
+  (let (what:CStr (kind false) same:CStr (kind true) n:CStr (as CStr null))
+    (printf \"%d %d %d %d %d\\n\" (if (!= what strlocal) 1 0) (if (= same strlocal) 1 0)
+            (if (= n what) 1 0) (if (= strlocal \"local\") 1 0) (if (= strlocal \"other\") 1 0)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 1 1 1 0"))
+    (drop &out)))
+
+; ISSUE-044, 036: an i8 array global takes a string, and an aggregate
+; initializer may be a macro call.
+(deftest lua-global-array-initializers
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defvar ident:(array i8 4) \"abc\")
+(defvar padded:(array i8 8) \"ab\")
+(defmacro three () `(array i32 1 2 3))
+(defvar g:(array i32 3) (three))
+(defn main ():i32
+  (printf \"%s %s %d %d\\n\" (as ptr ident) (as ptr padded) (aref padded 7) (aref g 2))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "abc ab 0 3"))
+    (drop &out)))
+
+; ISSUE-055, 035: pointers compare unsigned, and a function pointer casts to an integer.
+(deftest lua-pointer-compare-and-cast
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn lt (a:(ptr i8) b:(ptr i8)):bool (return (< a b)))
+(defn g (x:i32):i32 (return x))
+(defn main ():i32
+  (let (x:(ptr i8) (unsafe/cast (ptr i8) 0x7fffffffffffffff)
+        y:(ptr i8) (unsafe/cast (ptr i8) 0x8000000000000000)
+        f:(fn i32)(i32) g)
+    (printf \"%d %d\\n\" (as i32 (lt x y)) (if (!= (unsafe/cast usize f) 0) 1 0)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 1"))
+    (drop &out)))
+
+; ISSUE-029, 030, 031, 037: a constant over a function-like macro imports; a
+; defconst over a header constant sizes a struct; a 2-D row decays; a defstruct
+; completes the header's declaration.
+(deftest lua-header-types
+  (try (require-cc))
+  (let (out:String (try (build-run-source "(ns p37)
+(set-ir-prefix \"\")
+(import-use \"stdio.h\")
+(import-use \"tests/fixtures/lua-types.h\")
+(defconst X LT_IDSIZE)
+(defstruct S a:i32 b:(array i8 X))
+(defstruct LtBlock depth:i32)
+(defn main ():i32
+  (let (g:(ptr LtGrid) (alloca LtGrid)
+        h:(ptr LtHolder) (alloca LtHolder)
+        b:(ptr LtBlock) (alloca LtBlock))
+    (set! (aref (aref (g 'a) 2) 1) 21)
+    (set! (b 'depth) 5)
+    (set! (h 'bl) b)
+    (printf \"%d %d %d %d %u %d %d\\n\" LT_VNUMINT LT_VNUMFLT (as i32 X) (unsafe/cast i32 (sizeof S))
+            LT_FRESH (aref (aref (g 'a) 2) 1) ((h 'bl) 'depth)))
+  0)
+"))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "3 19 60 64 256 21 5"))
+    (drop &out)))
+
+; ISSUE-053, 054: under set-ir-prefix "", two namespaces' private helpers of one
+; name each link; a string-path import is found beside the importing file.
+(deftest lua-private-helpers-and-string-import
+  (let (a:String (try (test-write-file "la.nuc" "(ns la)
+(set-ir-prefix \"\")
+(defn- helper ():i32 (return 1))
+(defn a-f ():i32 (return (helper)))
+"))
+        b:String (try (test-write-file "lb.nuc" "(ns lb)
+(set-ir-prefix \"\")
+(defn- helper ():i32 (return 2))
+(defn b-f ():i32 (return (helper)))
+"))
+        z:String (try (test-write-file "lz.nuc" "(ns lz)
+(defn z-f ():i32 (return 8))
+"))
+        m:String (try (test-write-file "lmain.nuc" "(import-use \"stdio.h\")
+(import-use la)
+(import-use lb)
+(import-use \"lz.nuc\")
+(defn main ():i32
+  (printf \"%d %d %d\\n\" (a-f) (b-f) (z-f))
+  (return 0))
+"))
+        out:String (try (build-run-file "" "" (string-as-view &m)))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "1 2 8"))
+    (drop &out)
+    (drop &m)
+    (drop &z)
+    (drop &b)
+    (drop &a)))

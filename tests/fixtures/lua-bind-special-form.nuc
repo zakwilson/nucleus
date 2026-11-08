@@ -1,0 +1,3 @@
+(defstruct Label pc:i32)
+(defn pcof (label:(ptr Label)):i32 (return (label 'pc)))
+(defn main ():i32 0)

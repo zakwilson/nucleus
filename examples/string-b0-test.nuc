@@ -12,10 +12,10 @@
 (import-use nucleus.char)
 (import-use nucleus.create)
 
-(defn show-maybe (label:CStr m:?usize):void
+(defn show-maybe (lbl:CStr m:?usize):void
   (match m
-    ((some i) (printf "%s=%llu\n" label (as ui64 i)))
-    (none     (printf "%s=none\n" label))))
+    ((some i) (printf "%s=%llu\n" lbl (as ui64 i)))
+    (none     (printf "%s=none\n" lbl))))
 
 (defn main ():i32
 

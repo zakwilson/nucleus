@@ -1,0 +1,3 @@
+(import-use "tests/fixtures/lua-types.h")
+(defn main ():i32
+  (return LT_ARITY))

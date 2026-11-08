@@ -249,8 +249,8 @@
   (fail! "expected non-empty output, got nothing"))
 
 ; The general escape hatch, for a condition the six do not name.
-(defn check (cond:bool what:StrView):!void
-  (when cond (return (ok)))
+(defn check (c:bool what:StrView):!void
+  (when c (return (ok)))
   (fail! "expected " what))
 
 (defn check-eq-int (got:i64 want:i64 what:StrView):!void

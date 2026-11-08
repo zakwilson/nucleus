@@ -26,7 +26,9 @@
     (return s)))
 
 (defn scope-define (s:&Scope name:Symbol type:?&Type ir-name:StrView is-local:i32):&Sym
-  (when (!= (s 'parent) null) (refuse-qualified-binder name g-form-line))
+  (when (!= (s 'parent) null)
+    (refuse-qualified-binder name g-form-line)
+    (refuse-reserved-binder name g-form-line))
   (let (sc:&Scope s)
     ; Stage 12: globals are keyed by their fully-qualified name. The global scope
     ; is the unique null-parent scope; local scopes (params, let bindings) always

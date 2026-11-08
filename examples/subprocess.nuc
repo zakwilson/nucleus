@@ -10,13 +10,13 @@
 (import-use nucleus.strview)
 
 ; One-shot: run it, capture both streams, wait.
-(defn show (label:StrView c:&Command):void
+(defn show (lbl:StrView c:&Command):void
   (match (run c)
     ((ok o)
-     (print label " exit=" (exit-code (ref o 'status))
+     (print lbl " exit=" (exit-code (ref o 'status))
             " out=" (string-as-view (ref o 'out)))
      (drop &o))
-    ((err e) (print label " could not run\n"))))
+    ((err e) (print lbl " could not run\n"))))
 
 (defn main ():i32
   (let (hello:Command (command "echo"))

@@ -429,34 +429,20 @@
     (drop &m))
   (return (ok)))
 
-; A macro defined by the cycle partner. This is one of the two couplings a
-; prescan genuinely cannot carry: a macro name is registered by its EMITTER, and
-; a cycle member's body is emitted before the rest of the file it back-imports.
-;
-; The shell matched the message prefix and never read the note, which is the
-; half that tells the author what to do — and which names both cycle members, so
-; it is also what proves the compiler identified the cycle rather than guessing.
-(deftest w1d-cycle-macro-diagnosed
+; A macro defined by the cycle partner compiles on demand at the partner's use
+; (nuc-lua ISSUE-052).
+(deftest w1d-cycle-macro-compiles
   (let (a:String (try (test-write-file "w1-mca.nuc" "(import w1-mcb)
-(defmacro w1-amac (x) `(+ ,x 100))
+(defmacro w1-amac (x) `(+ ~x 100))
 (defn w1-mca ():i32 (return 1))
 "))
         b:String (try (test-write-file "w1-mcb.nuc" "(import w1-mca)
 (defn w1-mcb (n:i32):i32 (return (w1-amac n)))
 "))
-        bv:StrView (string-as-view &b)
         m:String (try (test-write-file "w1-mcm.nuc" "(import w1-mca)
 (defn main ():i32 (return (w1-mcb 5)))
-"))
-        c:Compiled (try (w1-compile (string-as-view &m)))
-        pair:String (str (string-as-view &a) " is in an import cycle with " bv))
-    (try (check-error-at (ref c 'diags) bv 2
-           "unknown: w1-amac — defined in a file this unit imports circularly, and not registered yet at this point"))
-    (try (check-note-at (ref c 'diags) bv 2 (string-as-view &pair)))
-    (try (check-note-at (ref c 'diags) bv 2
-           "a macro, deferror id or extern declaration registers only when its file is emitted"))
-    (drop &pair)
-    (drop &c)
+")))
+    (try (w1-exit (string-as-view &m) 105))
     (drop &m)
     (drop &b)
     (drop &a))

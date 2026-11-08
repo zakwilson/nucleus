@@ -1,0 +1,4 @@
+(defn main ():i32
+  (let (s:CStr "abc")
+    (set! (aref s 0) 65))
+  0)

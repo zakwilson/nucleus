@@ -65,9 +65,10 @@
         true                  `(macfoldr _* 1 ~@args)))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
+; Negation is `-1 * x`: `0.0 - 0.0` is +0.0 where C's `-x` is -0.0 (nuc-lua ISSUE-027).
 (defmacro - (:rest args)
   (cond (= (ast-len args) 0)  `0
-        (= (ast-len args) 1)  `(_- 0 ~(ast-at args 0))
+        (= (ast-len args) 1)  `(_* -1 ~(ast-at args 0))
         (= (ast-len args) 2)  `(_- ~(ast-at args 0) ~(ast-at args 1))
         true                  `(macfoldl _- 0 ~@args)))
 

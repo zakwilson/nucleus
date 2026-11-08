@@ -2684,8 +2684,8 @@ int main(void) {
     (drop &h))
   (return (ok)))
 
-; The reserved name is not a name, though `unsafe/import-private` still reaches
-; it. A ternary folds since nuc-doom ISSUE-011, and so does the step after it.
+; A `_` name is a name (nuc-lua ISSUE-024), through either import. A ternary
+; folds since nuc-doom ISSUE-011, and so does the step after it.
 (deftest s21-cenum-refused
   (let (h:String (try (test-write-file "s21e.h" (s21-enum-header)))
         hv:StrView (string-as-view &h))
@@ -2694,8 +2694,10 @@ int main(void) {
       (try (check-golden (string-as-view &out) "2 3\n"))
       (drop &out)
       (drop &a))
-    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return _S21E_PRIVATE))\n"))
-      (try (s21-exit1-at (string-as-view &a) 2 "undefined: _S21E_PRIVATE"))
+    (let (a:String (str "(import-use \"" hv "\")\n(import-use nucleus.io)\n(defn main ():i32 (print _S21E_PRIVATE \"\\n\") (return 0))\n")
+          out:String (try (build-run-source (string-as-view &a))))
+      (try (check-golden (string-as-view &out) "5\n"))
+      (drop &out)
       (drop &a))
     (let (a:String (str "(unsafe/import-private \"" hv "\" e)
 (import-use nucleus.io)

@@ -24,10 +24,10 @@
 ; Print a literal's bytes as hex. StrView arrives by value (a TY-STRUCT), so
 ; bind a pointer once and read fields through it (context/conventions.md,
 ; "A by-value struct parameter needs &v before field access").
-(defn dump (label:CStr s:StrView):void
+(defn dump (lbl:CStr s:StrView):void
   (let (p:&StrView &s
         n:i32 (unsafe/cast i32 (p 'len)))
-    (printf "%s len=%d bytes=" label n)
+    (printf "%s len=%d bytes=" lbl n)
     (dotimes (i:i32 n)
       (printf " %02x" (as i32 (aref (p 'data) (as i64 i)))))
     (printf "\n")))

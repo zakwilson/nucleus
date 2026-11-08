@@ -298,6 +298,24 @@
         (return (as ptr sd)))))
   (return null))
 
+; In a namespaced file the prelude's type outranks a C header's of one name, so
+; a bare use of the name is refused rather than silently the prelude's (nuc-lua ISSUE-034).
+(defn refuse-prelude-over-c-type (spelling:Symbol hit:&StructDef):void
+  (when (or (> (qualifier-len spelling) 0) (= g-current-ns "user") (core-ns? g-current-ns)) (return))
+  (when (not (core-ns? (hit 'src-ns))) (return))
+  (when-some (c (lookup-struct spelling))
+    (let (f:Symbol (c 'src-file))
+      (when (or (symbol-none? f) (!= (str-ends-with f ".nuc") 0) (!= (str-ends-with f ".nuch") 0)) (return))
+      (let (fv:StrView (symbol-as-view f) cut:usize 0)
+        (dotimes (j (fv 'len)) (when (= (text-byte-at fv (as i64 j)) 47) (set! cut (+ j 1))))
+        (set! f (symbol-intern (strview-drop-bytes fv cut))))
+      (die-at g-form-line
+        (fstr "'" spelling "' is the prelude's " (hit 'src-ns) "/" spelling
+              " in this namespaced file, but the C header " f " also defines it"
+              "\n  note: import the header with a prefix, (import \"" f "\" c), and write c/" spelling
+              "; or put (exclude-prelude) first in the entry file if the unit doesn't need the prelude"
+              "\n  note: write " (hit 'src-ns) "/" spelling " for the prelude's")))))
+
 ; Stage 15 B3′: the five REFERENCE resolvers. Each is the shared candidate-key
 ; walk (`name-ref-key-count` / `name-ref-key-at`, src/nucleusc.nuc) plus this
 ; registry's own two-line probe, then the re-export alias table, then the
@@ -323,7 +341,9 @@
         (let (reach:Symbol (priv-reach-enter spelling)
               hit:?&StructDef (lookup-struct k))
           (set! g-priv-reach-ns reach)
-          (when (!= hit null) (return hit))))
+          (when (!= hit null)
+            (when (> i 0) (refuse-prelude-over-c-type spelling (unsafe/cast &StructDef hit)))
+            (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-STRUCT))
     (when (!= al null) (return (unsafe/cast &StructDef al))))
@@ -1263,12 +1283,12 @@
                 (let (fi:i32 0
                       kept:i32 0)
                   (while (< fi nf)
-                    (let (field:ptr (node-at (as ptr arm) (+ fi 1))
+                    (let (fld:ptr (node-at (as ptr arm) (+ fi 1))
                           fname:Symbol (symbol-none)
-                          fty:ptr (extract-name-and-type field (as &Symbol &fname)
-                                                          (node-line field line)))
+                          fty:ptr (extract-name-and-type fld (as &Symbol &fname)
+                                                          (node-line fld line)))
                       (when (= fty null)
-                        (die-at (node-line field line)
+                        (die-at (node-line fld line)
                           (fstr "defunion: field '" fname "' missing :type")))
                       ; A `void` field carries no value, so it contributes none:
                       ; this is what makes `!void` — (Result void Err) — stamp an
@@ -1620,12 +1640,12 @@
             (if (str-empty? &acc) (set! acc (symbol-as-view piece))
               (set! acc (fstr acc ":" piece)))))
         (when (and (!= hit 0) (not (str-empty? &acc)))
-          (let (new:&Node (as &Node (alloc-node)))
-            (set-fields! new
+          (let (fresh:&Node (as &Node (alloc-node)))
+            (set-fields! fresh
                          'kind NODE-SYM
                          'line (n 'line)
                          's    (symbol-intern acc))
-            (return (as ?&Node (as ptr new)))))))
+            (return (as ?&Node (as ptr fresh)))))))
     (return node)))
 
 ; §3.7: the substituted body of a parametric alias application `(Name Arg…)`, or
@@ -2214,12 +2234,12 @@
                 here:NameEnv (name-env-enter (stt 'src-ns) (stt 'src-file) (stt 'src-imports)))
             (set! cur fields)
             (while (> (node-len cur) 0)
-              (let (field:ptr (node-first (unsafe/cast &Node cur))
+              (let (fld:ptr (node-first (unsafe/cast &Node cur))
                     fname:Symbol (symbol-none)
-                    fty:ptr (extract-name-and-type field (as &Symbol &fname)
-                                                   ((unsafe/cast &Node field) 'line)))
+                    fty:ptr (extract-name-and-type fld (as &Symbol &fname)
+                                                   ((unsafe/cast &Node fld) 'line)))
                 (when (= fty null)
-                  (die-at ((unsafe/cast &Node field) 'line)
+                  (die-at ((unsafe/cast &Node fld) 'line)
                     (fstr "defstruct template " (stt 'name) ": field '" fname "' missing :type")))
                 (set! (aref (unsafe/cast &Symbol fnm) fi) fname)
                 (set! (aref (unsafe/cast &ptr ftp) fi) fty))
@@ -2596,6 +2616,9 @@
             (reject-cycle-pending-layout et (node-line etn line) "array element")
             (when (= (const-fold-int lnn (as &i64 &len) lline) 0)
               (die-at lline "(array T N): length must be a compile-time integer constant"))
+            ; Mode 4 = an `extern`: `(array T 0)` is C's `extern T x[]`, of no extent
+            ; (nuc-lua ISSUE-046).
+            (when (and (= array-ok 4) (= len 0)) (return (array-type et -1)))
             (when (<= len 0)
               (die-at lline
                 (fstr "(array T N): length must be positive, got " len)))
@@ -2624,12 +2647,12 @@
                   i:i32 0)
               (set! cur rest)
               (while (> (node-len cur) 0)
-                (let (field:ptr (node-first (unsafe/cast &Node cur))
+                (let (fld:ptr (node-first (unsafe/cast &Node cur))
                       fname:Symbol (symbol-none)
                       ; G-2: an anonymous struct's field is a field, so it may
                       ; be an `(array T N)` on the same terms a defstruct field
                       ; may — one rule for "a field of an aggregate", not two.
-                      fty:ptr (extract-decl-name-and-type field (as &Symbol &fname) line))
+                      fty:ptr (extract-decl-name-and-type fld (as &Symbol &fname) line))
                   (when (= fty null)
                     (die-at line (fstr "struct: field '" fname "' missing :type")))
                   ; Intern so field-name pointer-equality works at access sites.
@@ -2661,11 +2684,11 @@
                   i:i32 0)
               (set! cur rest)
               (while (> (node-len cur) 0)
-                (let (field:ptr (node-first (unsafe/cast &Node cur))
+                (let (fld:ptr (node-first (unsafe/cast &Node cur))
                       fname:Symbol (symbol-none)
                       ; G-2: same for an anonymous union member (C's
                       ; `union { char b[4]; int w; }`).
-                      fty:ptr (extract-decl-name-and-type field (as &Symbol &fname) line))
+                      fty:ptr (extract-decl-name-and-type fld (as &Symbol &fname) line))
                   (when (= fty null)
                     (die-at line (fstr "union: member '" fname "' missing :type")))
                   (set! (aref (unsafe/cast &Symbol fnames) i) fname)

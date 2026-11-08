@@ -126,26 +126,26 @@
 ; ---------------------------------------------------------------------------
 
 ; `path`'s configuration into `c`; `label` names it in messages.
-(defn config-load (path:StrView label:StrView c:&BuildConfig err:&String):bool
+(defn config-load (path:StrView lbl:StrView c:&BuildConfig err:&String):bool
   (match (exec-read-file path)
     (none
       (string-clear err)
-      (str-into err "cannot read " label)
+      (str-into err "cannot read " lbl)
       (return false))
     ((some text)
       (let (t:String text
-            ok:bool (config-decode (string-as-view &t) label c err))
+            ok:bool (config-decode (string-as-view &t) lbl c err))
         (drop &t)
         (return ok)))))
 
 ; The project at `dir`, from its build.edn alone: a dependency's build-local.edn
 ; is its own checkout's business. `label` is how messages name its build.edn.
-(defn library-from-project (dir:StrView label:StrView tier:i32 where:StrView out:&Library
+(defn library-from-project (dir:StrView lbl:StrView tier:i32 where:StrView out:&Library
                             err:&String):bool
   (let (c:&BuildConfig (unsafe/cast &BuildConfig (malloc (sizeof BuildConfig)))
         cfg:String (str dir "/build.edn"))
     (set! @c (build-config))
-    (when (not (config-load (string-as-view &cfg) label c err))
+    (when (not (config-load (string-as-view &cfg) lbl c err))
       (drop &cfg)
       (return false))
     (drop &cfg)
@@ -309,7 +309,7 @@
 ; is a project directory, in file order, so a later file's entry comes later.
 (defstruct RegEntry name:StrView dir:StrView file:StrView)
 
-(defn registry-load (path:StrView into:&(Vector RegEntry) err:&String):bool
+(defn registry-load (path:StrView sink:&(Vector RegEntry) err:&String):bool
   (match (exec-read-file path)
     (none
       (string-clear err)
@@ -337,7 +337,7 @@
                           (dotimes (j (edn-count v))
                             (let (nm:StrView (config-name (edn-key v j)))
                               (match (edn-str (edn-val v j))
-                                ((ok d) (when (> (nm 'len) 0) (conj into (RegEntry nm (lk-expand d base) path))))
+                                ((ok d) (when (> (nm 'len) 0) (conj sink (RegEntry nm (lk-expand d base) path))))
                                 ((err e) (when ok
                                            (string-clear err)
                                            (str-into err path ":" line ": error: :libraries maps a name to a directory, as a string")
@@ -359,7 +359,7 @@
                                               (when (file-exists? (string-as-view &cfg)) (conj &subs sub))
                                               (drop &cfg))))
                                         (view-sort &subs)
-                                        (dotimes (k (count &subs)) (conj into (RegEntry "" (invoke &subs k) path)))
+                                        (dotimes (k (count &subs)) (conj sink (RegEntry "" (invoke &subs k) path)))
                                         (drop &subs)
                                         (drop &de))))))
                               ((err e) 0)))

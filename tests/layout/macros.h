@@ -3,8 +3,8 @@
  * case the importer must get right; the s17-cmacro-* units assert every one. */
 #pragma once
 
-/* Implementation-reserved: not registered, but must still FOLD — MP_PUB is
- * written in terms of it, which is how glibc writes S_IRWXU and F_GETOWN. */
+/* MP_PUB is written in terms of it, which is how glibc writes S_IRWXU and
+ * F_GETOWN. */
 #define _MP_BASE 010
 
 #define MP_PUB   (_MP_BASE | 0x20)

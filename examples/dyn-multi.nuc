@@ -32,9 +32,9 @@
 (extend Square Shape)
 
 ; Every call here goes through the box's vtable; `s` is a pointer to the box.
-(defn- report (label:StrView s:&(dyn Shape)):void
+(defn- report (lbl:StrView s:&(dyn Shape)):void
   (let (b:Size (bounds s))
-    (println label ": " (b 'w) "x" (b 'h) " area " (area s))))
+    (println lbl ": " (b 'w) "x" (b 'h) " area " (area s))))
 
 (defn main ():i32
   (with (a:(dyn Shape) (Rect 3 4)

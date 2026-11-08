@@ -353,7 +353,7 @@
 ; whichever is ready, is the fix (§2.3). A negative `fd` is ignored by `poll`,
 ; which is how a finished stream drops out of the set.
 ; ---------------------------------------------------------------------------
-(defn process-drain-one (p:&pollfd into:&String buf:&ui8):!void
+(defn process-drain-one (p:&pollfd sink:&String buf:&ui8):!void
   (when (< (p 'fd) 0) (return (ok)))
   (when (= (bit-and (p 'revents) (bit-or POLLIN (bit-or POLLHUP POLLERR))) 0)
     (return (ok)))
@@ -363,7 +363,7 @@
       (set! (p 'fd) -1)
       (when (< n 0) (return (err! process-read-failed)))
       (return (ok)))
-    (string-push-bytes-raw into buf (as usize n))
+    (string-push-bytes-raw sink buf (as usize n))
     (return (ok))))
 
 (defn process-capture (self:&Process out:&String errs:&String):!void

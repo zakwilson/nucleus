@@ -2033,7 +2033,7 @@
 
 ; `src` written to `file` and resolved; the local at `needle`'s `nth` occurrence
 ; plus `k` renamed to `new` in process.
-(defn rr4-rename (file:StrView src:StrView needle:StrView nth:i32 k:i64 new:StrView):!RenameResult
+(defn rr4-rename (file:StrView src:StrView needle:StrView nth:i32 k:i64 fresh:StrView):!RenameResult
   (let (p:String (try (test-write-file file src))
         pv:StrView (edit-arena-str &p)
         out:String (try (rr1-resolve pv))
@@ -2042,7 +2042,7 @@
       ((err e) (do (drop &out) (fail! "report-parse refused the report: " e)))
       ((ok rep)
         (let (ctx:&RnCtx (rename-ctx-new rep false)
-              r:RenameResult (rename-local ctx pv src (as usize at) new))
+              r:RenameResult (rename-local ctx pv src (as usize at) fresh))
           (drop &out)
           (return (ok r)))))))
 
@@ -2337,9 +2337,9 @@
     (return o)))
 
 ; The definition at `needle`'s `nth` occurrence plus `k` in `file` (text `src`), renamed to `new`.
-(defn rr5-plan (rs:&(Vector &RgRoot) file:StrView src:StrView needle:StrView nth:i32 k:i64 new:StrView):!Rr5Run
+(defn rr5-plan (rs:&(Vector &RgRoot) file:StrView src:StrView needle:StrView nth:i32 k:i64 fresh:StrView):!Rr5Run
   (let (at:i64 (try (rr2-at src needle nth k)))
-    (return (ok (Rr5Run rs (rename-global-plan rs file (as usize at) new (rr5-opts)))))))
+    (return (ok (Rr5Run rs (rename-global-plan rs file (as usize at) fresh (rr5-opts)))))))
 
 (defn rr5-refused (r:Rr5Run why:StrView):!void
   (let (p:&RgPlan (r 'plan))
@@ -2378,12 +2378,12 @@
     (conj v b)
     (return v)))
 
-(defn rr5-replace (t:StrView old:StrView new:StrView):String
+(defn rr5-replace (t:StrView old:StrView fresh:StrView):String
   (let (out:String (str "")
         rest:StrView t)
     (while true
       (match (strview-find &rest &old)
-        ((some j) (do (str-into &out (strview-take-bytes rest j) new)
+        ((some j) (do (str-into &out (strview-take-bytes rest j) fresh)
                       (set! rest (strview-drop-bytes rest (+ j (old 'len))))))
         (none (do (str-into &out rest) (return out)))))
     (return out)))

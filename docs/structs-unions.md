@@ -401,6 +401,17 @@ glibc. Nucleus registers the **name** with no layout, so:
   identity, so a `ptr:Foo` written before the definition sees the fields. The
   upgrade also reaches any `typedef struct Foo Bar;` alias registered while the
   tag was still opaque.
+* **A `defstruct` may complete it.** A header that only declares `struct
+  BlockCnt;` leaves the body to the program, as lparser.c does: a `(defstruct
+  BlockCnt …)` that links as the same LLVM type gives the declaration its fields,
+  so a header's `struct BlockCnt *` field and the program's `&BlockCnt` are one
+  type.
+* **A namespaced file must say which `Node` it means.** The prelude defines
+  `Node`, `StrView` and a few other names; in a file with an `(ns …)` the
+  prelude's wins over a flattened header's of the same name, and a use of that
+  bare name is refused, naming both. Import the header with a prefix and write
+  `c/Node`, write `nucleus.core/Node` for the prelude's, or put
+  `(exclude-prelude)` first in the entry file.
 
 A type stays opaque either because no header in the translation unit defines
 it — `FILE` is this case: a plain `(import-use "stdio.h")` only ever sees

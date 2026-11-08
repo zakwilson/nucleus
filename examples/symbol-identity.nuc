@@ -3,8 +3,8 @@
 (import-use "stdio.h")
 (import-use nucleus.node)   ; 'foo lowers to a call to intern-symbol
 
-(defn show (label:ptr eq:bool):void
-  (if eq (printf "%s: yes\n" label) (printf "%s: no\n" label)))
+(defn show (lbl:ptr eq:bool):void
+  (if eq (printf "%s: yes\n" lbl) (printf "%s: no\n" lbl)))
 
 (defn main ():int
   (show "'foo = 'foo"           (= 'foo 'foo))

@@ -1642,6 +1642,32 @@
     (drop &p))
   (return (ok)))
 
+; nuc-lua ISSUE-039: :programs builds each entry over one set of settings, a
+; shared C object once; run, and a build of one, choose it with --program=.
+(deftest lua-programs-share-settings
+  (let (p:String (try (bt3-project "lprogs"))
+        pv:StrView (string-as-view &p))
+    (try (bt4-sh pv "mkdir -p src && rm -rf build build.edn"))
+    (try (write-into pv "src/helper.c" "int helper(int x) { return x * 2; }\n"))
+    (try (write-into pv "src/helper.h" "int helper(int x);\n"))
+    (try (write-into pv "src/core.nuc" "(ns core)\n(import-use \"helper.h\")\n(defn twice (x:i32):i32 (return (helper x)))\n"))
+    (try (write-into pv "src/lua.nuc" "(import-use core)\n(defn main ():i32 (return (twice 3)))\n"))
+    (try (write-into pv "src/luac.nuc" "(import-use core)\n(defn main ():i32 (return (twice 4)))\n"))
+    (try (write-into pv "build.edn" "{:programs {lua \"src/lua.nuc\" luac \"src/luac.nuc\"}\n :c-sources [\"src/helper.c\"] :cflags [\"-Isrc\"]}\n"))
+    (try (bt5-expect pv "build" "" true "nucleus: building build/luac (an input was rebuilt)"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "lua"))) 6 "lua"))
+    (try (check-eq-int (as i64 (try (bt5-exit pv "luac"))) 8 "luac"))
+    (try (bt5-expect pv "build" "" true "nucleus: lua, luac are up to date"))
+    (try (bt5-expect pv "build" "--program=luac" true "nucleus: luac is up to date"))
+    (try (bt5-expect pv "run" "" false "nucleus: error: run runs one program; choose it with --program="))
+    (try (bt5-expect pv "build" "--program=nope" false "--program=nope: build.edn's :programs names lua, luac"))
+    (try (bt5-expect pv "clean" "" true ""))
+    (try (bt4-sh pv "test ! -e build"))
+    (try (write-into pv "build.edn" "{:entry \"src/lua.nuc\" :programs {luac \"src/luac.nuc\"}}\n"))
+    (try (bt5-expect pv "build" "" false ":entry and :programs both name the program"))
+    (drop &p))
+  (return (ok)))
+
 ; MT-3: a target's pkg-config reads its sysroot, so a package only the sysroot
 ; has resolves for that target, through its header index, and not for the host.
 (deftest mt3-sysroot-pkg-config

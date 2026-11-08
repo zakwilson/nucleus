@@ -18,8 +18,8 @@
     (if (= x 2) (return "two")
       (if (= x 3) (return "three") (return "?")))))
 
-(defn show (label:CStr v:&(Vector i32)):void
-  (printf "%s[" label)
+(defn show (lbl:CStr v:&(Vector i32)):void
+  (printf "%s[" lbl)
   (let (first:i32 1)
     (doseq (x v (VecIter i32))
       (when (= first 0) (printf " "))

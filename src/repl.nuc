@@ -2333,15 +2333,15 @@
 
 ; Every directory must exist before any is added — a prompt-time courtesy the
 ; batch `-I`/`-L` do not extend, where a typo surfaces three forms later.
-(defn repl-apply-dirs (args:&(Vector Symbol) cmd:StrView into:&(Vector Symbol)
-                       label:StrView line:i32):i32
+(defn repl-apply-dirs (args:&(Vector Symbol) cmd:StrView sink:&(Vector Symbol)
+                       lbl:StrView line:i32):i32
   (dotimes (i (count args))
     (when (not (dir-exists? (symbol-as-view (invoke args i))))
       (repl-error line (fstr cmd ": no such directory '" (invoke args i) "'"))
       (return 0)))
   (dotimes (i (count args))
-    (conj into (invoke args i))
-    (emit stderr label (invoke args i) "\n"))
+    (conj sink (invoke args i))
+    (emit stderr lbl (invoke args i) "\n"))
   (return 1))
 
 ; The file a `-l`-style name means. A name that already looks like a file

@@ -39,6 +39,9 @@
   prebuilt:IntSetting
   at:Loc)
 
+; One of `:programs`, which share every other setting (nuc-lua ISSUE-039).
+(defstruct ProgramSpec name:StrView entry:StrSetting)
+
 ; Owned by the BuildConfig that lists it.
 (defstruct TargetConfig name:StrView at:Loc cfg:&BuildConfig)
 
@@ -70,7 +73,8 @@
   provides:(Vector StrView)    ; a library's top-level namespaces; empty = derived
   shared:IntSetting            ; 1 = a library also builds a .so
   deps:(Vector DepSpec)
-  user-registry:IntSetting)    ; 0 = skip the default library-paths.edn
+  user-registry:IntSetting     ; 0 = skip the default library-paths.edn
+  programs:(Vector ProgramSpec))
 
 (defn str-setting ():StrSetting (return (StrSetting "" (Loc "" 0) false)))
 
@@ -85,7 +89,8 @@
                        (make (Vector CRequirement)) (make (Vector StrView))
                        (IntSetting 0 (Loc "" 0) false)
                        (make (Vector DepSpec))
-                       (IntSetting 1 (Loc "" 0) false))))
+                       (IntSetting 1 (Loc "" 0) false)
+                       (make (Vector ProgramSpec)))))
 
 (extend BuildConfig Drop)
 (defn drop (self:&BuildConfig):void
@@ -109,13 +114,14 @@
     (let (d:DepSpec (invoke (ref self 'deps) i))
       (drop (d 'versions))
       (free (as ptr (d 'versions)))))
-  (drop (ref self 'deps)))
+  (drop (ref self 'deps))
+  (drop (ref self 'programs)))
 
 ; ---------------------------------------------------------------------------
 ; Decoding one file
 ; ---------------------------------------------------------------------------
 
-(defconst CONFIG-KEYS ":name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target")
+(defconst CONFIG-KEYS ":name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target :programs")
 (defconst TARGET-KEYS ":triple :mcpu :mmcu :sysroot :linker :runner :opt :cflags :link-args :libs :c-sources :pkg-config :shared :deps")
 
 (defn config-line (n:?&Node fallback:i32):i32
@@ -149,7 +155,7 @@
     (return true)))
 
 ; A vector of non-empty strings, or a set of them when `set-ok`.
-(defn config-strings (into:&(Vector StrView) v:?&Node key:StrView file:StrView line:i32
+(defn config-strings (sink:&(Vector StrView) v:?&Node key:StrView file:StrView line:i32
                       err:&String set-ok:bool):bool
   (let (k:i32 (edn-kind v))
     (when (not (or (= k EDN-VECTOR) (and set-ok (= k EDN-SET))))
@@ -161,14 +167,14 @@
           ((ok s)
             (when (= (s 'len) 0)
               (return (config-fail err file (config-line e line) (str ":" key " has an empty string"))))
-            (conj into s))
+            (conj sink s))
           ((err x)
             (return (config-fail err file (config-line e line)
                       (str ":" key " takes strings, got " (edn-kind-name (edn-kind e)))))))))
     (return true)))
 
 ; `:provides [gtkw "gtkw-extra"]`: namespace roots, as symbols or strings.
-(defn config-roots (into:&(Vector StrView) v:?&Node file:StrView line:i32 err:&String):bool
+(defn config-roots (sink:&(Vector StrView) v:?&Node file:StrView line:i32 err:&String):bool
   (when (!= (edn-kind v) EDN-VECTOR)
     (return (config-fail err file line
               (str ":provides takes a vector of namespace names, got " (edn-kind-name (edn-kind v))))))
@@ -182,7 +188,7 @@
       (when (or (= (name 'len) 0) (strview-contains name "/") (strview-contains name "."))
         (return (config-fail err file (config-line e line)
                   (str ":provides takes top-level namespace names, such as gtkw"))))
-      (conj into name)))
+      (conj sink name)))
   (return true))
 
 (defn config-name (n:?&Node):StrView
@@ -330,12 +336,37 @@
         (when (not (config-decode-map tv file t err name)) (return false)))))
   (return true))
 
+; `:programs {lua "src/lua.nuc" luac "src/luac.nuc"}`: a later file's entry for a
+; name replaces the earlier one.
+(defn config-programs (c:&BuildConfig v:?&Node file:StrView line:i32 err:&String):bool
+  (when (!= (edn-kind v) EDN-MAP)
+    (return (config-fail err file line
+              (str ":programs takes a map from program names to entry files, got " (edn-kind-name (edn-kind v))))))
+  (dotimes (i (edn-count v))
+    (let (pv:?&Node (edn-val v i)
+          pl:i32 (config-line pv line)
+          name:StrView (config-name (edn-key v i))
+          en:StrSetting (str-setting))
+      (when (or (= (name 'len) 0) (strview-contains name "/"))
+        (return (config-fail err file pl (str ":programs keys are program names, as symbols or strings, without /"))))
+      (when (not (config-str-setting &en pv "programs" file pl err false)) (return false))
+      (config-program-set (ref c 'programs) name en)))
+  (return true))
+
+(defn config-program-set (ps:&(Vector ProgramSpec) name:StrView en:StrSetting):void
+  (dotimes (j (count ps))
+    (when (= ((invoke ps j) 'name) name)
+      (set ps j (ProgramSpec name en))
+      (return)))
+  (conj ps (ProgramSpec name en)))
+
 ; A key only the project sets, refused inside target `target`; a key only a
 ; target sets, refused at the top. "" for neither.
 (defn config-misplaced (key:StrView target:StrView):String
   (let (project-only:bool (or (= key "name") (= key "kind") (= key "version") (= key "entry") (= key "tests")
                               (= key "source-root") (= key "out-dir") (= key "provides")
-                              (= key "user-registry") (= key "targets") (= key "default-target"))
+                              (= key "user-registry") (= key "targets") (= key "default-target")
+                              (= key "programs"))
         target-only:bool (or (= key "triple") (= key "mcpu") (= key "mmcu") (= key "sysroot")
                              (= key "linker") (= key "runner")))
     (cond (and project-only (> (target 'len) 0))
@@ -373,6 +404,7 @@
                         (= key "runner") (config-runner c v file line err)
                         (= key "default-target") (config-str-setting (ref c 'default-target) v key file line err true)
                         (= key "targets") (config-targets c v file line err)
+                        (= key "programs") (config-programs c v file line err)
                         (= key "kind")
                           (match (edn-keyword v)
                             ((ok k)
@@ -431,79 +463,82 @@
 ; Merging (§8.9)
 ; ---------------------------------------------------------------------------
 
-(defn merge-setting (into:&StrSetting from:&StrSetting):void
-  (when (from 'set) (set! @into @from)))
+(defn merge-setting (sink:&StrSetting from:&StrSetting):void
+  (when (from 'set) (set! @sink @from)))
 
-(defn merge-union (into:&(Vector StrView) from:&(Vector StrView)):void
+(defn merge-union (sink:&(Vector StrView) from:&(Vector StrView)):void
   (dotimes (i (count from))
     (let (s:StrView (invoke from i)
           dup:bool false)
-      (dotimes (j (count into))
-        (when (= (invoke into j) s) (set! dup true)))
-      (when (not dup) (conj into s)))))
+      (dotimes (j (count sink))
+        (when (= (invoke sink j) s) (set! dup true)))
+      (when (not dup) (conj sink s)))))
 
-(defn merge-append (into:&(Vector StrView) from:&(Vector StrView)):void
-  (dotimes (i (count from)) (conj into (invoke from i))))
+(defn merge-append (sink:&(Vector StrView) from:&(Vector StrView)):void
+  (dotimes (i (count from)) (conj sink (invoke from i))))
 
 ; `from` is the later file. Scalars: it wins. Flags: append. Libraries: union.
 ; Requirement sets: kept side by side, so the compiler intersects them and can
 ; name each one's file; an `unsafe` set first drops the earlier ones it replaces.
 ; `from`'s requirements move into `into`, so drop `from` only after its vectors.
-(defn config-merge (into:&BuildConfig from:&BuildConfig):void
-  (merge-setting (ref into 'name) (ref from 'name))
-  (merge-setting (ref into 'kind) (ref from 'kind))
-  (merge-setting (ref into 'version) (ref from 'version))
-  (merge-setting (ref into 'entry) (ref from 'entry))
-  (merge-setting (ref into 'tests) (ref from 'tests))
-  (merge-setting (ref into 'source-root) (ref from 'source-root))
-  (merge-setting (ref into 'out-dir) (ref from 'out-dir))
-  (merge-setting (ref into 'triple) (ref from 'triple))
-  (merge-setting (ref into 'mcpu) (ref from 'mcpu))
-  (merge-setting (ref into 'mmcu) (ref from 'mmcu))
-  (merge-setting (ref into 'sysroot) (ref from 'sysroot))
-  (merge-setting (ref into 'linker) (ref from 'linker))
-  (merge-setting (ref into 'default-target) (ref from 'default-target))
+(defn config-merge (sink:&BuildConfig from:&BuildConfig):void
+  (merge-setting (ref sink 'name) (ref from 'name))
+  (merge-setting (ref sink 'kind) (ref from 'kind))
+  (merge-setting (ref sink 'version) (ref from 'version))
+  (merge-setting (ref sink 'entry) (ref from 'entry))
+  (merge-setting (ref sink 'tests) (ref from 'tests))
+  (merge-setting (ref sink 'source-root) (ref from 'source-root))
+  (merge-setting (ref sink 'out-dir) (ref from 'out-dir))
+  (merge-setting (ref sink 'triple) (ref from 'triple))
+  (merge-setting (ref sink 'mcpu) (ref from 'mcpu))
+  (merge-setting (ref sink 'mmcu) (ref from 'mmcu))
+  (merge-setting (ref sink 'sysroot) (ref from 'sysroot))
+  (merge-setting (ref sink 'linker) (ref from 'linker))
+  (merge-setting (ref sink 'default-target) (ref from 'default-target))
   (when (> (count (ref from 'runner)) 0)
-    (while (> (count (ref into 'runner)) 0) (remove-at (ref into 'runner) (- (count (ref into 'runner)) 1)))
-    (merge-append (ref into 'runner) (ref from 'runner)))
+    (while (> (count (ref sink 'runner)) 0) (remove-at (ref sink 'runner) (- (count (ref sink 'runner)) 1)))
+    (merge-append (ref sink 'runner) (ref from 'runner)))
   ; A target the earlier file named takes the later file's settings over its own;
   ; a new one moves across whole.
   (let (moved:&(Vector TargetConfig) (ref from 'targets))
     (dotimes (i (count moved))
       (let (t:TargetConfig (invoke moved i)
             at:i64 -1)
-        (dotimes (j (count (ref into 'targets)))
-          (when (= ((invoke (ref into 'targets) j) 'name) (t 'name)) (set! at (as i64 j))))
+        (dotimes (j (count (ref sink 'targets)))
+          (when (= ((invoke (ref sink 'targets) j) 'name) (t 'name)) (set! at (as i64 j))))
         (if (< at 0)
-          (conj (ref into 'targets) (TargetConfig (t 'name) (t 'at) (config-new)))
+          (conj (ref sink 'targets) (TargetConfig (t 'name) (t 'at) (config-new)))
           0)
-        (let (dst:TargetConfig (invoke (ref into 'targets)
-                                       (if (< at 0) (- (count (ref into 'targets)) 1) (as usize at))))
+        (let (dst:TargetConfig (invoke (ref sink 'targets)
+                                       (if (< at 0) (- (count (ref sink 'targets)) 1) (as usize at))))
           (config-merge (dst 'cfg) (t 'cfg)))))
     (while (> (count moved) 0)
       (let (t:TargetConfig (invoke moved (- (count moved) 1)))
         (drop (t 'cfg))
         (free (as ptr (t 'cfg)))
         (remove-at moved (- (count moved) 1)))))
-  (when ((ref from 'opt) 'set) (set! (into 'opt) (from 'opt)))
-  (merge-append (ref into 'cflags) (ref from 'cflags))
-  (merge-append (ref into 'link-args) (ref from 'link-args))
-  (merge-append (ref into 'c-sources) (ref from 'c-sources))
-  (merge-union (ref into 'libs) (ref from 'libs))
-  (when ((ref from 'shared) 'set) (set! (into 'shared) (from 'shared)))
-  (when ((ref from 'user-registry) 'set) (set! (into 'user-registry) (from 'user-registry)))
+  (when ((ref from 'opt) 'set) (set! (sink 'opt) (from 'opt)))
+  (merge-append (ref sink 'cflags) (ref from 'cflags))
+  (merge-append (ref sink 'link-args) (ref from 'link-args))
+  (merge-append (ref sink 'c-sources) (ref from 'c-sources))
+  (merge-union (ref sink 'libs) (ref from 'libs))
+  (when ((ref from 'shared) 'set) (set! (sink 'shared) (from 'shared)))
+  (when ((ref from 'user-registry) 'set) (set! (sink 'user-registry) (from 'user-registry)))
+  (dotimes (i (count (ref from 'programs)))
+    (let (ps:ProgramSpec (invoke (ref from 'programs) i))
+      (config-program-set (ref sink 'programs) (ps 'name) (ps 'entry))))
   (dotimes (i (count (ref from 'deps)))
     (let (d:DepSpec (invoke (ref from 'deps) i)
           at:i64 -1)
-      (dotimes (j (count (ref into 'deps)))
-        (when (= ((invoke (ref into 'deps) j) 'name) (d 'name)) (set! at (as i64 j))))
+      (dotimes (j (count (ref sink 'deps)))
+        (when (= ((invoke (ref sink 'deps) j) 'name) (d 'name)) (set! at (as i64 j))))
       (if (< at 0)
         (let (vs:&(Vector StrSetting) (unsafe/cast &(Vector StrSetting) (malloc (sizeof (Vector StrSetting)))))
           (set! @vs (make (Vector StrSetting)))
           (dotimes (k (count (d 'versions))) (conj vs (invoke (d 'versions) k)))
           (set! (d 'versions) vs)
-          (conj (ref into 'deps) d))
-        (let (o:DepSpec (invoke (ref into 'deps) (as usize at)))
+          (conj (ref sink 'deps) d))
+        (let (o:DepSpec (invoke (ref sink 'deps) (as usize at)))
           (merge-setting (ref o 'path) (ref d 'path))
           (when ((d 'prebuilt) 'set) (set! (o 'prebuilt) (d 'prebuilt)))
           ; Narrowing: every constraint holds, unless an unsafe one replaces them.
@@ -511,12 +546,12 @@
             (do (while (> (count (o 'versions)) 0) (remove-at (o 'versions) (- (count (o 'versions)) 1)))
                 (set! (o 'unsafe-version) (d 'unsafe-version)))
             (dotimes (k (count (d 'versions))) (conj (o 'versions) (invoke (d 'versions) k))))
-          (set (ref into 'deps) (as usize at) o)))))
+          (set (ref sink 'deps) (as usize at) o)))))
   (when (> (count (ref from 'provides)) 0)
-    (while (> (count (ref into 'provides)) 0)
-      (remove-at (ref into 'provides) (- (count (ref into 'provides)) 1)))
-    (merge-append (ref into 'provides) (ref from 'provides)))
-  (let (reqs:&(Vector CRequirement) (ref into 'pkg-config))
+    (while (> (count (ref sink 'provides)) 0)
+      (remove-at (ref sink 'provides) (- (count (ref sink 'provides)) 1)))
+    (merge-append (ref sink 'provides) (ref from 'provides)))
+  (let (reqs:&(Vector CRequirement) (ref sink 'pkg-config))
     (dotimes (i (count (ref from 'pkg-config)))
       (let (r:CRequirement (invoke (ref from 'pkg-config) i))
         (when (r 'unsafe)

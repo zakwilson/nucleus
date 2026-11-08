@@ -16,8 +16,8 @@
     (none (return -1))
     ((some v) (return v))))
 
-(defn show (label:StrView m:&(HashMap i32 i32)):void
-  (println label (count m) " entries: 1=" (at m 1) " 2=" (at m 2) " 3=" (at m 3)))
+(defn show (lbl:StrView m:&(HashMap i32 i32)):void
+  (println lbl (count m) " entries: 1=" (at m 1) " 2=" (at m 2) " 3=" (at m 3)))
 
 (defn fill (a:&(HashMap i32 i32) b:&(HashMap i32 i32)):void
   (assoc a 1 10) (assoc a 2 20)

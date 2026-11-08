@@ -56,7 +56,7 @@
 
 ; Split pkg-config's output on whitespace. A backslash escapes the byte after
 ; it — a path with a space prints as `with\ space` (probed with pkgconf 2.x).
-(defn pkg-config-words (out:&String into:&(Vector Symbol)):void
+(defn pkg-config-words (out:&String sink:&(Vector Symbol)):void
   (let (v:StrView (string-as-view out)
         n:usize (v 'len)
         w:String (make String)
@@ -68,13 +68,13 @@
                     (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) (as i64 i)) 1))
               (or (= c 32) (= c 9) (= c 10) (= c 13))
                 (do (when (> (byte-len &w) 0)
-                      (conj into (symbol-intern (string-as-view &w))))
+                      (conj sink (symbol-intern (string-as-view &w))))
                     (string-clear &w))
               true
                 (string-push-bytes-raw &w (unsafe/ptr+ (v 'data) (as i64 i)) 1)))
       (set! i (+ i 1)))
     (when (> (byte-len &w) 0)
-      (conj into (symbol-intern (string-as-view &w))))
+      (conj sink (symbol-intern (string-as-view &w))))
     (drop &w)))
 
 ; The child's diagnosis, or its exit code when it said nothing. pkg-config
@@ -100,7 +100,7 @@
 
 ; `--cflags` and `--libs` for `pkgs` into `into`. Both children succeed before
 ; anything is added. Empty on success, else the message to report.
-(defn pkg-config-query (pkgs:&(Vector Symbol) into:&PkgFlags):String
+(defn pkg-config-query (pkgs:&(Vector Symbol) sink:&PkgFlags):String
   (let (cf:String (make String) cf-err:String (make String)
         lb:String (make String) lb-err:String (make String)
         msg:String (make String))
@@ -115,16 +115,16 @@
           (set! msg (pkg-config-failure &lb-err st)))))
     (when (= (byte-len &msg) 0)
       (let (libs:(Vector Symbol) (make (Vector Symbol)))
-        (pkg-config-words &cf (ref into 'cflags))
+        (pkg-config-words &cf (ref sink 'cflags))
         (pkg-config-words &lb &libs)
         (dotimes (i (count &libs))
           (let (w:StrView (symbol-as-view (invoke &libs i)))
             (cond (strview-has-prefix w "-L")
-                    (conj (ref into 'lib-dirs) (symbol-intern (strview-drop-bytes w 2)))
+                    (conj (ref sink 'lib-dirs) (symbol-intern (strview-drop-bytes w 2)))
                   (strview-has-prefix w "-l")
-                    (conj (ref into 'libs) (symbol-intern (strview-drop-bytes w 2)))
+                    (conj (ref sink 'libs) (symbol-intern (strview-drop-bytes w 2)))
                   true
-                    (conj (ref into 'other) (invoke &libs i)))))
+                    (conj (ref sink 'other) (invoke &libs i)))))
         (drop &libs)))
     (drop &cf) (drop &cf-err)
     (drop &lb) (drop &lb-err)

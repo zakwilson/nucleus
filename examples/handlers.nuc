@@ -57,10 +57,10 @@
     ((ok v)  (return (some v)))
     ((err e) (return none))))     ; inner err declined by outer chain → none
 
-(defn show (label:ptr r:!i64):void
+(defn show (lbl:ptr r:!i64):void
   (match r
-    ((ok v)  (printf "%s: ok %lld\n" label v))
-    ((err e) (printf "%s: err %s\n" label (err-name e)))))
+    ((ok v)  (printf "%s: ok %lld\n" lbl v))
+    ((err e) (printf "%s: err %s\n" lbl (err-name e)))))
 
 (defn main ():i32
   ; (1) No handler bound: err returns the error value.

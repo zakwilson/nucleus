@@ -5806,3 +5806,72 @@ Found by the nuc-lua port (its ISSUE-048): the `:shared true` edge built its
 no way to pass a version script, and every standard-library instance it used stayed
 exported (its ISSUE-049). The edge now appends them after `:libs`.
 `bt7-shared-link-args` covers it (nuctests 1744 passed, bootstrap holds).
+
+## Lua-port fixes: the 2026-11-08 rulings (lua-bugfixes)
+
+The nuc-lua port's rulings, in [lua-bugfixes/overview.md](lua-bugfixes/overview.md).
+Thirteen built, uncommitted; 011, 018 and 022 went back to the owner with questions,
+016 got a proposal and 045 a plan. `tests/suite-lua.nuc` covers the built ones
+(nuctests 1751 passed; the 5 failures are the scratch build's LLVM 23 datalayouts,
+also in the baseline). The fixed point holds from stage 2 (stage2.ll == stage3.ll);
+stage 1 differs, as after any codegen change, so `make bootstrap` needs the converge
+cycle once the boot is refreshed. `make avr-test` passes.
+
+- **004:** `defvar-fn-address` makes a function's name a constant in any initializer.
+- **010:** `offsetof` is a special form (`offsetof-bytes`, also in `const-fold-int`).
+- **012, 014, 024, 046 (cheader):** string macros import as `c"…"` `defconst`s
+  (`cmacro-string`); a pointer cast imports typed (`cmacro-pointer-cast`); `_` names
+  import; array variables import, and `(extern x:(array T 0))` is an unsized
+  declaration (`g-array-ok` mode 4, length -1). A `StrView`-typed string constant
+  crashed the REPL's boot, which imports headers before the prelude.
+- **017, 019, 021:** `aref` on a `CStr`; `char *` and `CStr` join as `CStr`
+  (`cond-cstr-join-want`); `unsafe/ptr-` (`emit-ptr-sub`).
+- **020:** `set-place-macro?` expands a macro place, unless a local shadows the name
+  (`lib/nucleus/build/config.nuc` binds `into`).
+- **025:** `sizeof`/`alignof`/`offsetof` are `usize`; `size-query-adapt` in
+  `binop-result-type`.
+- **027:** `(- x)` is `(_* -1 x)`.
+- **050:** `resolve-spelling` admits the file's own `#pN`; `qq-full-name` writes it.
+
+## Lua-port fixes: the second reading of the 2026-11-08 rulings (lua-bugfixes)
+
+The later findings' rulings, in the second table of
+[lua-bugfixes/overview.md](lua-bugfixes/overview.md). Sixteen built, uncommitted; 056
+and 057 deferred. nuctests 1762 passed, the same 5 LLVM 23 datalayout failures as the
+baseline; stage2.ll == stage3.ll; avr-test, layout-test and abi-test pass. A boot
+refresh is due before `make bootstrap`'s stage 1 matches.
+
+- **028, 041:** `bitwise-literal-as-unsigned`, before `binop-coerce` for `_bit-and`,
+  `_bit-or`, `_bit-xor`.
+- **029 (cheader):** `cfnmacro-record` keeps each function-like macro;
+  `cfnmacro-call` substitutes the argument text and folds the result, depth 16.
+- **030:** `defstruct-fill-layout` sets `g-layout-prescan`; `fold-pending-key` then
+  folds only through `pending-const-folds-now?`.
+- **031:** `aref` of an array-of-arrays element is the row's GEP, `array-decay`ed, in
+  `emit-aref` and its `node-type`.
+- **034:** `refuse-prelude-over-c-type` in `struct-lookup-ref`, for a namespaced
+  non-core file whose bare name hits the prelude over a `.h` struct.
+- **035:** `emit-cast`'s `inttoptr`/`ptrtoint` test `is-ptr-repr`.
+- **036:** `expand-init-macro` in `emit-global-def`, for an array or struct slot.
+- **037:** `complete-c-declarations` at the end of `emit-defstruct`; StructDef gains
+  `completed-by`, which `type-eq` follows (`sdef-completed`), and
+  `struct-link-name-unique` skips the declarations a definition completes.
+- **038, 051:** `refuse-reserved-binder` from `scope-define`, the `defn` parameters and
+  `let`. It uses `find-macro-registered`, which doesn't compile pending macros. The
+  compiler, stdlib, tests and 14 examples renamed their locals.
+- **039 (build tool):** `:programs` in `BuildConfig` (`ProgramSpec`); `tool-dispatch`
+  makes a project per target × program, `tool-program-select` picks the entry,
+  `tool-c-edges` reuses an object edge another program added; `--program=`.
+  `lua-programs-share-settings` in suite-build.
+- **042:** CStr `=` branches on identity and null before `strcmp`.
+- **044:** `defvar-write-string-array`.
+- **052:** `prescan-pending-macro` records every `defmacro`; `find-macro`'s miss calls
+  `fold-pending-macro-ref`, which compiles one on demand (`fold-pending-macro-key`),
+  and `pending-macro-done?` skips its form later. `w1d-cycle-macro-diagnosed` became
+  `w1d-cycle-macro-compiles`, and the cycle note no longer lists macros.
+- **053:** `ns-private-ir-prefix` for a private `defn-` under an empty prefix, in
+  `ns-ir-base` and `method-ir-prefix`; `duplicate-signature-message` names both
+  namespaces.
+- **054:** `string-import-path` tries a relative `.nuc`/`.nuch` path beside the
+  importing file first.
+- **055:** pointer `<` and friends use `instr-u`.

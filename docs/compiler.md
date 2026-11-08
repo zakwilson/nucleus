@@ -262,11 +262,19 @@ The [pointer kinds](types.md#pointer-kinds-t-t-and-ptr-t) are
 reserved here too — `'ref' already names a pointer kind` — even though `ref`
 names no type on its own, and so is the retired `raw`.
 
-The rule governs **top-level definers only**. A `let`/`with` binding or a
-parameter may still take any name, including a type name: `(let (i32:i32 5) …)`
-and `(let (ref:i32 5) …)` are both legal, and shadow nothing that a local can
-refer to. That is deliberate — a local shadowing a global is ordinary — but it
-means "reserved" above means *undefinable*, not *unbindable*.
+A `let`/`with` binding or a parameter may take nearly any name, including a
+type name: `(let (i32:i32 5) …)` and `(let (ref:i32 5) …)` are both legal, and
+shadow nothing that a local can refer to. Two names it may not take, because a
+list headed by the local, `(label 'pc)`, would never reach it:
+
+* a **special form's** name — `cannot bind 'label': 'label' already names a
+  special form`;
+* a **macro in scope**, from this file or any import — `cannot bind 'next':
+  'next' names a macro in scope, which a list headed by it would expand`, with a
+  note to rename the binding or the macro.
+
+So a module's public macros are names its importers' locals can't take; a
+library is better off giving them names no local would.
 
 ### Call arity
 
@@ -1131,12 +1139,14 @@ declaration of their own:
 
 `extern FILE *stderr;` imports as a `(ptr FILE)`; a comma list such as
 `extern int optind, opterr, optopt;` imports each name. As with constants, a
-`_`-prefixed name stays out unless the import is `unsafe/import-private`, and
-any Nucleus definition of the same name wins over the header's. An explicit
-`(extern stderr:ptr)` beside the import is still accepted and declares the
-same symbol once. Three shapes are skipped, and a use names the reason: an
-array variable (`extern char *tzname[2];`), a declarator after a comma with
-its own `*`, and a variable of an opaque type.
+`_`-prefixed name is imported like any other, and any Nucleus definition of the
+same name wins over the header's. An explicit `(extern stderr:ptr)` beside the
+import is still accepted and declares the same symbol once. An array variable
+imports as an array: `extern char *tzname[2];` as `(array (ptr i8) 2)`, and
+`extern const char lua_ident[];` as `(array i8 0)`, an array of unknown extent (see
+[`extern`](toplevel.md)). Three shapes are skipped, and a use names the reason: an
+array whose extent doesn't fold, a declarator after a comma with its own `*`, and
+a variable of an opaque type.
 
 ## Integer constants from a C header
 
@@ -1168,17 +1178,32 @@ octal, `0x`, with `u`/`U`/`l`/`L` suffixes), character constants (`'x'`, `'\n'`,
 casts, `sizeof`, references to other macros from the same header, and
 references to the header's enumerators — so `S_IRWXU`, written
 `(__S_IREAD|__S_IWRITE|__S_IEXEC)`, folds even though none of its three parts is
-importable. A comparison, `!`, `&&` and `||` give an `int` 0 or 1, and `?:`
+importable. A call of one of the header's function-like macros folds too: its
+body, with each parameter replaced by the argument's text, as C substitutes it,
+so `LUA_VNUMINT`, written `makevariant(LUA_TNUMBER, 0)` over `#define
+makevariant(t,v) ((t) | ((v) << 4))`, is `3`, and a type argument works
+(`cast(l_uint32, CIST_C)`). A call with the wrong number of arguments, a body
+using `#` or `##`, and a variadic macro do not fold. A comparison, `!`, `&&` and `||` give an `int` 0 or 1, and `?:`
 takes its two arms' common type; both sides of `&&`, `||` and `?:` must fold,
 even the one C would not evaluate. A cast to an integer type converts as C does: `((Uint32)-1)` is
 `4294967295` and `(gint)(1u << 31)` is `-2147483648`. Anything else is skipped:
-function-like macros (`#define MAX(a,b) …`), string bodies,
+a function-like macro itself (`#define MAX(a,b) …`), which is no constant,
 floating-point bodies, a body that references a
 macro that did not itself fold, and a character constant above `0x7f` (its value
 depends on whether the target's `char` is signed). A skipped name is remembered,
 so using one is an error that names the header and the reason, such as
 `stdint.h defines 'INT64_C', but it is a function-like macro, which is not
 imported`, rather than "not defined anywhere".
+
+**String and pointer constants.** A body of string literals, or of names of other
+string macros, concatenated as C concatenates adjacent literals, is a `CStr`
+constant, C's `const char *`. So `LUA_VERSION`, written
+`"Lua " LUA_VERSION_MAJOR "." LUA_VERSION_MINOR`, is `c"Lua 5.5"`. Escapes are C's; a
+body that would hold a NUL byte or a character past `0xff` is skipped. A body that
+is a cast to a pointer type is a constant of that type: `SIG_DFL`, written
+`((__sighandler_t) 0)`, is a typed `null`, and `((void *) -1)` is the address -1. A
+cast of any other integer to a *function* pointer (`SIG_ERR`) is skipped, since
+no constant can hold it.
 
 **Every operation is typed as C types it.** A literal takes the first of `int`,
 `long`, `long long` that holds it — with the `unsigned` twin of each in between
@@ -1219,14 +1244,12 @@ imported constant the name is then an untyped literal: `i32` when the value fits
 The constants arrive while the import's declarations are read; its `#define`s
 follow at its end. So when an enumerator and a `#define` share a name —
 glibc writes `#define SHUT_RD SHUT_RD` beside the enum — the enumerator is the
-one registered. The rules below apply to both.
+one registered. The rules below apply to both. A name beginning with `_` is
+imported like any other (ISO C spells `setvbuf`'s `_IOFBF` that way); an unused one
+costs nothing, and a definition of yours still wins.
 
 **What is skipped.**
 
-- **Names beginning with `_`** — the identifier space C reserves for the
-  implementation. `__F_GETOWN` is not defined, though `F_GETOWN`, which is
-  written in terms of it, is. Reach them with
-  `(unsafe/import-private "fcntl.h" f)`, which lifts the rule for that import.
 - **The compiler's own predefined macros.** `-dM` reports `linux`, `unix` and
   `__GNUC__` for every header; importing any header would otherwise define
   `linux` as a global constant. They are still available for *folding* a

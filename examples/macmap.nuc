@@ -31,7 +31,7 @@
 ; past the fixed parameters. `(+ ~@vals)` takes them all: the prelude's `+` is
 ; variadic, over the same folds as below.
 (defn totals ():i32
-  (macmap ((label :rest vals) `(printf "%-7s %d\n" ~label (+ ~@vals)))
+  (macmap ((lbl :rest vals) `(printf "%-7s %d\n" ~lbl (+ ~@vals)))
     (("first" 1 7 3)
      ("second" 9)
      ("third" 4 4 8 2)))

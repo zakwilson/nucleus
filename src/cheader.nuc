@@ -1270,11 +1270,17 @@
           (when (and first (< p len) (= (cstr-byte-at buf p) 40)) (return 0))
           (set! first false)
           (let (vwhy:StrView why
-                arr:bool (and (< p len) (= (cstr-byte-at buf p) 91)))
-            (while (and (< p len) (= (cstr-byte-at buf p) 91))
-              (while (and (< p len) (!= (cstr-byte-at buf p) 93)) (set! p (+ p 1)))
-              (when (< p len) (set! p (c-skip-ws buf (+ p 1) len))))
-            (when (and (str-empty? &vwhy) arr) (set! vwhy "an array variable"))
+                vty:ptr ty)
+            ; `T x[N]` and `T x[]`, the latter of no extent (nuc-lua ISSUE-046).
+            (when (and (< p len) (= (cstr-byte-at buf p) 91))
+              (let (ae:i64 p)
+                (set! vty (c-array-declarator buf ty p len (as &i64 &ae) 1))
+                (when (= vty null)
+                  (while (and (< ae len) (= (cstr-byte-at buf ae) 91))
+                    (while (and (< ae len) (!= (cstr-byte-at buf ae) 93)) (set! ae (+ ae 1)))
+                    (when (< ae len) (set! ae (c-skip-ws buf (+ ae 1) len))))
+                  (when (str-empty? &vwhy) (set! vwhy "an array variable whose extent does not fold")))
+                (set! p (c-skip-ws buf ae len))))
             (when (and (str-empty? &vwhy) (!= stars 0))
               (set! vwhy "a declarator with its own '*' after a comma"))
             (when (str-empty? &vwhy)
@@ -1291,7 +1297,7 @@
                       (set! p (c-skip-ws buf (c-skip-parens buf p len) len)))
                     (set! more true)))))
             (if (str-empty? &vwhy)
-              (cheader-define-extern-var name (unsafe/cast &Type ty) buf decl-start)
+              (cheader-define-extern-var name (unsafe/cast &Type vty) buf decl-start)
               (cheader-record-skip name vwhy (cheader-line-at buf decl-start) quiet))))
         (when (>= p len) (set! @out-end p) (return 1))
         (when (= (cstr-byte-at buf p) 59) (set! @out-end (+ p 1)) (return 1))
@@ -1299,10 +1305,9 @@
         (set! p (c-skip-ws buf (+ p 1) len))))
     (return 0)))
 
-; Register and declare one header variable, under the rules a header constant
-; follows: `_`-names stay out, and an existing definition of the name wins.
+; Register and declare one header variable, under the rule a header constant
+; follows: an existing definition of the name wins.
 (defn cheader-define-extern-var (name:Symbol ty:&Type buf:ptr decl-start:i64):void
-  (when (and (!= (cmacro-private-name? name) 0) (= g-import-include-private 0)) (return))
   (when (or (!= (scope-lookup-key g-globals name) null) (cconst-name-taken? name)) (return))
   (let (irn:StrView (fstr "@" (ir-name-token (symbol-as-view name))))
     (link-claim-c-decl (symbol-intern irn) name (symbol-intern (type-to-ir ty))
@@ -1930,15 +1935,15 @@
     (set! g-cexpr-rank (c-rank (as i64 (* ((unsafe/cast &Target g-target) 'ptr-size) 8)) 1))
     (return n)))
 
-; A one-character constant, `'x'` or a simple escape. Refused past 0x7f, where
-; the value depends on the target's `char` signedness, and when multi-character.
-(defn c-cexpr-char (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
-  (let (p:i64 (+ pos 1)
+; One character of a C character or string literal at `p`, its escape decoded:
+; the byte, -1 for none; `out-end` past it. `quote` (39 or 34) ends the literal.
+(defn c-literal-char (buf:ptr p0:i64 len:i64 qt:i32 out-end:&i64):i64
+  (let (p:i64 p0
         v:i64 -1)
     (when (< p len)
       (let (c:i32 (cstr-byte-at buf p))
         (if (!= c 92)
-          (when (!= c 39) (set! v (as i64 c)) (set! p (+ p 1)))
+          (when (!= c qt) (set! v (as i64 c)) (set! p (+ p 1)))
           (when (< (+ p 1) len)
             (let (d:i32 (cstr-byte-at buf (+ p 1)))
               (set! p (+ p 2))
@@ -1970,6 +1975,14 @@
                                               (<= (cstr-byte-at buf p) 55)))
                       (set! v (+ (* v 8) (as i64 (- (cstr-byte-at buf p) 48))))
                       (set! p (+ p 1)))))))))))
+    (set! @out-end p)
+    (return v)))
+
+; A one-character constant, `'x'` or a simple escape. Refused past 0x7f, where
+; the value depends on the target's `char` signedness, and when multi-character.
+(defn c-cexpr-char (buf:ptr pos:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (p:i64 0
+        v:i64 (c-literal-char buf (+ pos 1) len 39 (as &i64 &p)))
     (if (and (< p len) (= (cstr-byte-at buf p) 39))
       (set! p (+ p 1))
       (set! @ok 0))
@@ -2043,6 +2056,10 @@
         ; wrong answer rather than a better one.
         (when (!= g-cmacro-folding 0)
           (let (mv:i64 0)
+            (when-some (fm (get g-cfnmacro-index tok))
+              (let (q:i64 (c-skip-body-ws buf e len))
+                (when (and (< q len) (= (cstr-byte-at buf q) 40))
+                  (return (cfnmacro-call fm buf q len out-end ok)))))
             (when (!= (cmacro-value tok (as &i64 &mv)) 0)
               (set! @out-end e)
               (return mv))))
@@ -3269,6 +3286,16 @@
   rank:i32)
 
 (defvar g-cmacros:&(Vector &CMacro) (new (Vector &CMacro) g-arena))
+
+; A function-like macro, which only a constant macro's body can call (nuc-lua ISSUE-029).
+(defstruct CFnMacro
+  name:Symbol
+  params:&(Vector Symbol)
+  body-start:i64
+  body-end:i64)
+
+(defvar g-cfnmacro-index:&(HashMap Symbol &CFnMacro) (new (HashMap Symbol &CFnMacro) g-arena))
+(defvar g-cfn-depth:i32 0)
 (defvar g-cmacro-index:&(HashMap Symbol &CMacro)
   (new (HashMap Symbol &CMacro) g-arena))
 ; clang's own predefines, subtracted before registration: `-include fcntl.h`
@@ -3283,9 +3310,95 @@
 
 (defn cheader-macro-reset ():void
   (let (v:&(Vector &CMacro) (new (Vector &CMacro) g-arena)
-        m:&(HashMap Symbol &CMacro) (new (HashMap Symbol &CMacro) g-arena))
+        m:&(HashMap Symbol &CMacro) (new (HashMap Symbol &CMacro) g-arena)
+        fm:&(HashMap Symbol &CFnMacro) (new (HashMap Symbol &CFnMacro) g-arena))
     (set! g-cmacros v)
-    (set! g-cmacro-index m)))
+    (set! g-cmacro-index m)
+    (set! g-cfnmacro-index fm)))
+
+; `NAME(a, b) body`, the `(` at `open`; a variadic one stays out.
+(defn cfnmacro-record (name:Symbol buf:ptr open:i64 line-end:i64):void
+  (let (ps:&(Vector Symbol) (new (Vector Symbol) g-arena)
+        p:i64 (c-skip-ws buf (+ open 1) line-end))
+    (while (and (< p line-end) (!= (cstr-byte-at buf p) 41))
+      (let (e:i64 0
+            id:Symbol (c-read-ident buf p line-end (as &i64 &e)))
+        (when (= (symbol-len id) 0) (return))
+        (conj ps id)
+        (set! p (c-skip-ws buf e line-end))
+        (when (and (< p line-end) (= (cstr-byte-at buf p) 44))
+          (set! p (c-skip-ws buf (+ p 1) line-end)))))
+    (when (>= p line-end) (return))
+    (let (m:&CFnMacro (new CFnMacro g-arena))
+      (set-fields! m 'name name 'params ps
+                   'body-start (c-skip-ws buf (+ p 1) line-end) 'body-end line-end)
+      (assoc g-cfnmacro-index name m))))
+
+(defn cfn-ident-byte? (c:i32):bool
+  (return (or (!= (isdigit c) 0) (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122)) (= c 95))))
+
+(defn cfn-push (acc:&String buf:ptr from:i64 to:i64):void
+  (string-push-bytes-raw acc (unsafe/cast &ui8 (unsafe/ptr+ (unsafe/cast &i8 buf) from))
+                         (as usize (- to from))))
+
+; `m(args…)` with the `(` at `open`: the body with each parameter replaced by its
+; argument's text, folded as an expression; `#` and `##` give up.
+(defn cfnmacro-call (m:&CFnMacro buf:ptr open:i64 len:i64 out-end:&i64 ok:&i32):i64
+  (let (close:i64 (c-skip-parens buf open len)
+        np:usize (count (m 'params))
+        starts:&(Vector i64) (new (Vector i64) g-arena)
+        ends:&(Vector i64) (new (Vector i64) g-arena)
+        a:i64 (+ open 1)
+        depth:i32 0
+        k:i64 (+ open 1))
+    (set! @out-end close)
+    (when (or (> g-cfn-depth 16) (!= (cstr-byte-at buf (- close 1)) 41))
+      (set! @ok 0)
+      (return 0))
+    (while (< k close)
+      (let (c:i32 (cstr-byte-at buf k))
+        (cond (or (= c 34) (= c 39)) (set! k (- (c-skip-quoted buf k close) 1))
+              (= c 40) (inc! depth)
+              (and (= c 41) (> depth 0)) (set! depth (- depth 1))
+              (or (= c 41) (and (= c 44) (= depth 0)))
+                (when (or (= c 44) (> np 0) (< (c-skip-ws buf a k) k))
+                  (conj starts a)
+                  (conj ends k)
+                  (set! a (+ k 1)))
+              true 0))
+      (set! k (+ k 1)))
+    (when (!= (count starts) np) (set! @ok 0) (return 0))
+    (let ((acc String) (str-alloc g-arena "")
+          b:ptr g-cmacro-buf
+          p:i64 (m 'body-start)
+          stop:i64 (m 'body-end))
+      (while (< p stop)
+        (let (c:i32 (cstr-byte-at b p)
+              q:i64 (+ p 1))
+          (cond (= c 35) (do (set! @ok 0) (return 0))
+                (or (= c 34) (= c 39)) (set! q (c-skip-quoted b p stop))
+                (!= (isdigit c) 0)
+                  (while (and (< q stop) (or (cfn-ident-byte? (cstr-byte-at b q)) (= (cstr-byte-at b q) 46)))
+                    (set! q (+ q 1)))
+                (cfn-ident-byte? c)
+                  (let (id:Symbol (c-read-ident b p stop (as &i64 &q))
+                        j:usize 0)
+                    (while (and (< j np) (!= (invoke (m 'params) j) id)) (set! j (+ j 1)))
+                    (when (< j np)
+                      (cfn-push &acc buf (invoke starts j) (invoke ends j))
+                      (set! p q)))
+                true 0)
+          (when (< p q) (cfn-push &acc b p q))
+          (set! p q)))
+      (let (sv:StrView (string-as-view &acc)
+            n:i64 (as i64 (sv 'len))
+            e:i64 0
+            v:i64 0)
+        (inc! g-cfn-depth)
+        (set! v (c-cexpr-top (as ptr (sv 'data)) 0 n (as &i64 &e) ok))
+        (set! g-cfn-depth (- g-cfn-depth 1))
+        (when (!= (c-skip-ws (as ptr (sv 'data)) e n) n) (set! @ok 0))
+        (return v)))))
 
 ; The value of an already-folded macro, for c-cexpr-primary's identifier case.
 (defn cmacro-value (name:Symbol out:&i64):i32
@@ -3302,23 +3415,20 @@
     (when (strview-starts-with &sv &pfx) (return 1))
     (return 0)))
 
-; §3.1: `_`-prefixed names out unless the import is `unsafe/import-private`, and
-; never over a name that already resolves — a header's constant must not displace
-; what this unit defined. The Sym is a `defconst`'s: an untyped integer literal.
+; Never over a name that already resolves — a header's constant must not displace
+; what this unit defined; a `_` spelling is not private (nuc-lua ISSUE-024).
+; The Sym is a `defconst`'s: an untyped integer literal.
 (defn cheader-define-int-const (name:Symbol val:i64):void
-  (let (priv:i32 (cmacro-private-name? name))
-    (when (and (or (= priv 0) (!= g-import-include-private 0))
-               (= (scope-lookup-key g-globals name) null)
-               (not (cconst-name-taken? name)))
-      (let (sym:ref:Sym (scope-define g-globals name
-                          (as ptr (int-literal-type val)) "" 0))
-        (set-fields! sym
-                     'is-const      1
-                     'const-val     (fstr val)
-                     'const-lit     1
-                     'const-lit-i64 val
-                     'c-const       1)
-        (when (!= priv 0) (set! (sym 'sym-private) 1))))))
+  (when (and (= (scope-lookup-key g-globals name) null)
+             (not (cconst-name-taken? name)))
+    (let (sym:ref:Sym (scope-define g-globals name
+                        (as ptr (int-literal-type val)) "" 0))
+      (set-fields! sym
+                   'is-const      1
+                   'const-val     (fstr val)
+                   'const-lit     1
+                   'const-lit-i64 val
+                   'c-const       1))))
 
 ; Does a Nucleus definition other than a value hold `name`? A C header's own tag
 ; does not count: C keeps tags apart from constants.
@@ -3542,6 +3652,7 @@
         (when (= (symbol-len name) 0) (return))
         (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40))
           (cmacro-record-skip name "is a function-like macro, which is not imported; write what it expands to")
+          (cfnmacro-record name buf ne line-end)
           (return))
         (let (m:ref:CMacro (new CMacro g-arena))
           (set-fields! m
@@ -3597,13 +3708,103 @@
     (let (m:ref:CMacro (invoke g-cmacros i:usize))
       (if (!= (m 'folded) 0)
         (when (not (contains? g-cmacro-baseline (m 'name)))
-          (cheader-define-int-const (m 'name) (m 'val)))
-        (cmacro-record-skip (m 'name) "is a macro whose body does not fold to an integer constant, which is not imported")))))
+          (let (pt:?&Type (cmacro-pointer-cast m))
+            (cond (= pt null) (cheader-define-int-const (m 'name) (m 'val))
+                  (or (= (m 'val) 0) (= (pt 'kind) TY-PTR)) (cheader-define-ptr-const (m 'name) pt (m 'val))
+                  true (cmacro-record-skip (m 'name) "casts a non-zero integer to a function pointer, which is not imported"))))
+        (let ((acc String) (str-alloc g-arena ""))
+          (if (cmacro-string m 0 &acc)
+            (when (not (contains? g-cmacro-baseline (m 'name)))
+              (cheader-define-str-const (m 'name) (symbol-intern (string-as-view &acc))))
+            (cmacro-record-skip (m 'name) "is a macro whose body does not fold to an integer constant or a string, which is not imported")))))))
+
+; A macro whose body is string literals and names of such macros, C's adjacent
+; literals concatenated (nuc-lua ISSUE-012). An embedded NUL or a wide literal is not one.
+(defn cmacro-string (m:&CMacro depth:i32 acc:&String):bool
+  (when (> depth 16) (return false))
+  (let (buf:ptr g-cmacro-buf
+        p:i64 (c-skip-ws buf (m 'body-start) (m 'body-end))
+        stop:i64 (m 'body-end)
+        any:bool false)
+    (while (< p stop)
+      (let (c:i32 (cstr-byte-at buf p))
+        (if (= c 34)
+          (let (q:i64 (+ p 1)
+                more:bool true)
+            (while more
+              (when (>= q stop) (return false))
+              (if (= (cstr-byte-at buf q) 34)
+                (set! more false)
+                (let (e:i64 0
+                      v:i64 (c-literal-char buf q stop 34 (as &i64 &e)))
+                  (when (or (<= v 0) (> v 255)) (return false))
+                  (let (b:ui8 (unsafe/cast ui8 v))
+                    (string-push-bytes-raw acc &b 1))
+                  (set! q e))))
+            (set! p (+ q 1)))
+          (let (e:i64 0
+                id:Symbol (c-read-ident buf p stop (as &i64 &e)))
+            (when (= (symbol-len id) 0) (return false))
+            (match (get g-cmacro-index id)
+              (none (return false))
+              ((some sub) (when (or (!= (sub 'folded) 0) (not (cmacro-string sub (+ depth 1) acc)))
+                            (return false))))
+            (set! p e)))
+        (set! any true)
+        (set! p (c-skip-ws buf p stop))))
+    (return any)))
+
+; The pointer type a folded macro's whole body casts to, `((__sighandler_t) 0)`, or
+; null: such a macro is that pointer, not an integer (nuc-lua ISSUE-014).
+(defn cmacro-pointer-cast (m:&CMacro):?&Type
+  (let (buf:ptr g-cmacro-buf
+        p:i64 (c-skip-ws buf (m 'body-start) (m 'body-end))
+        stop:i64 (m 'body-end)
+        more:bool true)
+    (while more
+      (set! more false)
+      (when (and (< p stop) (= (cstr-byte-at buf p) 40)
+                 (= (c-cexpr-type-ahead buf (+ p 1) stop) 0))
+        (let (close:i64 (c-skip-parens buf p stop))
+          (when (= (c-skip-ws buf close stop) stop)
+            (set! stop (- close 1))
+            (set! p (c-skip-ws buf (+ p 1) stop))
+            (set! more true)))))
+    (when (or (>= p stop) (!= (cstr-byte-at buf p) 40)
+              (= (c-cexpr-type-ahead buf (+ p 1) stop) 0))
+      (return null))
+    (let (close:i64 (c-skip-parens buf p stop)
+          ty:ptr (c-cexpr-cast-type buf (+ p 1) (- close 1)))
+      (when (or (= ty null) (= (is-ptr-repr ty) 0)) (return null))
+      (return (as ?&Type ty)))))
+
+; A pointer constant: `null` of its type, or a bare address cast to it.
+(defn cheader-define-ptr-const (name:Symbol ty:&Type val:i64):void
+  (when (and (= (scope-lookup-key g-globals name) null)
+             (not (cconst-name-taken? name)))
+    (let (lit:&Node (if (= val 0)
+                      (unsafe/cast &Node 'null)
+                      (unsafe/cast &Node (lit-list3 (lit-sym "unsafe/cast") (lit-sym "ptr")
+                                                    (lit-int-node val 0) 0)))
+          sym:&Sym (defconst-literal-sym name lit ty))
+      (when (!= val 0) (set! (sym 'const-node) lit))
+      (set! (sym 'c-const) 1))))
+
+; A string constant, under the rules cheader-define-int-const states.
+(defn cheader-define-str-const (name:Symbol val:Symbol):void
+  (when (and (= (scope-lookup-key g-globals name) null)
+             (not (cconst-name-taken? name)))
+    (let (lit:&Node (alloc-node))
+      ; A `c"…"` literal: C's `char *`, and typed before StrView exists (the REPL boot).
+      (set-fields! lit 'kind NODE-STR 's val 'i 1)
+      (let (sym:&Sym (defconst-literal-sym name lit null))
+        (set! (sym 'c-const) 1)))))
 
 ; A header macro the importer leaves out, kept so an unresolved use can say why
 ; (nuc-doom ISSUE-002). Only while importing a header, not the predefine baseline.
 (defn cmacro-record-skip (name:Symbol why:StrView):void
   (when (symbol-none? g-cmacro-header) (return))
+  ; No note for a `_` name: glibc has thousands, and the note table is a linear scan.
   (when (or (contains? g-cmacro-baseline name) (!= (cmacro-private-name? name) 0)) (return))
   (match (cheader-skip-note name) (none 0) ((some _seen) (return)))
   (when (= g-cheader-skipped null)
@@ -4662,7 +4863,7 @@
       (let (vol:bool (cheader-volatile-cell? (node-at form (+ (+ i 2) nattrs)))
             falign:i32 0
             fbits:i32 0
-            field:ptr (field-peel-attrs (cheader-strip-volatile (node-at form (+ (+ i 2) nattrs)))
+            fld:ptr (field-peel-attrs (cheader-strip-volatile (node-at form (+ (+ i 2) nattrs)))
                                         (as &i32 &falign)
                                         (as &i32 &fbits) 0
                                         ((unsafe/cast &Node form) 'line))
@@ -4676,9 +4877,9 @@
             "--emit-cheader: a ':anon' member has no standard C spelling -- C writes an anonymous member's body inline, which a named Nucleus type cannot be"))
         (if (!= anon null)
           (emit g-hdr "    " (type-node-to-c anon) ";\n")
-          (extract-name-type field (as &Symbol &fname) (as &Symbol &tname)))
+          (extract-name-type fld (as &Symbol &fname) (as &Symbol &tname)))
         (let (tnode:ptr (if (!= anon null) null
-                          (extract-type-node field ((unsafe/cast &Node field) 'line))))
+                          (extract-type-node fld ((unsafe/cast &Node fld) 'line))))
           (when (!= tnode null)
             (let (bits:StrView ""
                   fal:StrView "")
@@ -4689,7 +4890,7 @@
               ; declarators; type-node-to-c-decl is the single renderer for them.
               (emit g-hdr "    " (if vol "volatile " "")
                     (type-node-to-c-decl tnode (cheader-c-ident-view fname)
-                                     ((unsafe/cast &Node field) 'line))
+                                     ((unsafe/cast &Node fld) 'line))
                     bits fal ";\n"))))))
     (emit g-hdr "}" packed aligned " " name ";\n\n"))))
 
@@ -5234,16 +5435,16 @@
 ; define no type and are skipped.
 ; Why a field's type has no C layout to write, or "" when it has one. Dropping
 ; just the field would hand C a layout that silently disagrees with Nucleus.
-(defn cheader-field-no-c (field:ptr):StrView
-  (let (tn:ptr (cheader-unalias (extract-type-node (as ?&Node field) (node-line field 0))))
+(defn cheader-field-no-c (fld:ptr):StrView
+  (let (tn:ptr (cheader-unalias (extract-type-node (as ?&Node fld) (node-line fld 0))))
     (when (!= (cheader-niche-no-c (as ?&Node tn)) 0) (return "an error-union or option type"))
     (when (!= (cheader-template-instance (as ?&Node tn)) 0) (return "a defunion-template instance type"))
-    (when (= (field-anon-type-node field) null)
+    (when (= (field-anon-type-node fld) null)
       (let (fa:i32 0
             fb:i32 0
-            pf:ptr (field-peel-attrs (cheader-strip-volatile field) (as &i32 &fa) (as &i32 &fb) 0 (node-line field 0)))
+            pf:ptr (field-peel-attrs (cheader-strip-volatile fld) (as &i32 &fa) (as &i32 &fb) 0 (node-line fld 0)))
         (when (cheader-node-holds-no-c? (cheader-unalias (extract-type-node (as ?&Node pf) (node-line pf 0)))
-                                        (node-line field 0))
+                                        (node-line fld 0))
           (return "a type holding an error-union, option or defunion-template instance by value"))))
     (return "")))
 
@@ -5307,20 +5508,20 @@
                     nf:i32 (- (node-len (as ptr arm)) 1))
                 (if (= nf 1)
                   ; One field → the payload is just that field, named by the arm.
-                  (let (field:ptr (node-at (as ptr arm) 1)
-                        tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
-                    (emit g-hdr "        " (type-node-to-c-decl tnode aname ((unsafe/cast &Node field) 'line)) ";\n"))
+                  (let (fld:ptr (node-at (as ptr arm) 1)
+                        tnode:ptr (extract-type-node fld ((unsafe/cast &Node fld) 'line)))
+                    (emit g-hdr "        " (type-node-to-c-decl tnode aname ((unsafe/cast &Node fld) 'line)) ";\n"))
                   (do
                     (emit g-hdr "        struct { ")
                     (dotimes (fi nf)
-                      (let (field:ptr (node-at (as ptr arm) (+ fi 1))
+                      (let (fld:ptr (node-at (as ptr arm) (+ fi 1))
                             fname:Symbol (symbol-none)
                             ftname:Symbol (symbol-none))
-                        (extract-name-type field (as &Symbol &fname)
+                        (extract-name-type fld (as &Symbol &fname)
                                                   (as &Symbol &ftname))
-                        (let (tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
+                        (let (tnode:ptr (extract-type-node fld ((unsafe/cast &Node fld) 'line)))
                           (emit g-hdr (type-node-to-c-decl tnode (cheader-c-ident-view fname)
-                                                           ((unsafe/cast &Node field) 'line))
+                                                           ((unsafe/cast &Node fld) 'line))
                                 "; "))))
                     (emit g-hdr "} " aname ";\n")))))))
         (emit g-hdr "    } payload;\n"))
@@ -5437,7 +5638,7 @@
                 (cheader-scan-type-node tn)))))))))
 
 ; Run after the compile, whose registries it reads; its `(ns …)` was applied there.
-(defn emit-cheader-header (forms:ptr source-file:Symbol):void
+(defn emit-cheader-header (forms:ptr src-path:Symbol):void
   (when (!= (is-leading-ns forms) 0) (set! forms (node-rest forms)))
   (cheader-note-own-consts forms)
   ; W9 item 37: discover the cross-unit type references BEFORE the preamble, so
@@ -5462,7 +5663,7 @@
   (set! g-cheader-asm-used false)
   (let (body-at:usize ((string-as-view &g-hdr-buf) 'len))
    (emit g-hdr "\n")
-   (emit g-hdr "/* Generated from " source-file " by nucleusc --emit-cheader */\n\n")
+   (emit g-hdr "/* Generated from " src-path " by nucleusc --emit-cheader */\n\n")
    (let (fc:ptr forms)
     (while (> (node-len fc) 0)
       (let (f:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))

@@ -7823,3 +7823,31 @@ asks `literal-arg-candidate` for the one method the other arguments leave. A nic
 `none` stays a bare `none`, so `arg-literal-flag` treats it as `null`: that's what lets
 tier 2 take `(conj &v none)` when the rewrite has nothing to do.
 
+
+## The REPL boot imports C headers before the prelude defines `StrView`
+
+`lib/nucleus/core.nuc` imports `string.h` before its `defstruct StrView`. A batch
+compile's prescan registers the struct first; the REPL boot runs the forms in order,
+so the header importer runs with no `StrView`. Typing a bare `"…"` node there
+(`node-type` → `strview-type`) segfaults the REPL right after its banner, with no
+message; `make` and the batch tests stay green. Header-made string nodes set `'i 1`
+(a `c"…"` literal, typed `CStr`). `printf '1\n' | build/nucleusc -i` is the check.
+
+## A local can't take a macro's or special form's name
+
+`refuse-reserved-binder` refuses a `let`/`with` binding or parameter named like a
+special form or any macro in scope, imports included (nuc-lua ISSUE-038/051). New
+compiler or stdlib code must not name a local `label`, `field`, `into`, `new`,
+`quote`, `type-name`, `source-file`, `check` or another macro's name; the error
+names the line. The binder check uses `find-macro-registered`, never `find-macro`:
+the latter can compile a cycle partner's macro on demand (ISSUE-052).
+
+## `find-macro` can compile a macro
+
+A miss in `find-macro` calls `fold-pending-macro-ref`, which emits a pending
+`defmacro` from a file still mid-emission. It refuses the caller's own file, and a
+`user`-namespace macro unless the caller imports its file directly: a C header
+import flattens to `user`, so a bare key is otherwise visible everywhere, and a
+library's local `a` would compile the program's macro `a` before its callees exist.
+A probe that only asks "is this a macro?" and must not have side effects calls
+`find-macro-registered`.

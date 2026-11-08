@@ -252,6 +252,11 @@
 ; Structural type equality. Primitive types are singletons, so pointer equality
 ; handles them; structs are equal iff they share a StructDef; pointers compare
 ; their pointee (untyped ptr has elem=null, distinct from typed ptr).
+(defn sdef-completed (sd:ptr):ptr
+  (when (= sd null) (return sd))
+  (let (c:ptr (as ptr ((unsafe/cast &StructDef sd) 'completed-by)))
+    (if (= c null) (return sd) (return c))))
+
 (defn type-eq (a:?&Type b:?&Type):i32
   (when (= a b) (return 1))
   (when (or (= a null) (= b null)) (return 0))
@@ -270,7 +275,8 @@
       (return (type-eq (aa 'elem) b)))
     (when (!= (aa 'kind) (bb 'kind)) (return 0))
     (case (aa 'kind)
-      (:or TY-STRUCT TY-UNION) (if (= (aa 'sdef) (bb 'sdef)) (return 1) (return 0))
+      (:or TY-STRUCT TY-UNION) (if (= (sdef-completed (aa 'sdef)) (sdef-completed (bb 'sdef)))
+                                 (return 1) (return 0))
       TY-PTR (return (type-eq (aa 'elem) (bb 'elem)))
       ; Stage 15 W8 G-2: same element type AND same length. Reached from the
       ; constant-aggregate renderer, which checks the element type an
@@ -2006,6 +2012,7 @@
                             ; (the definition is emitted before any use is compiled).
                    'opaque          0
                    'alias-of        null
+                   'completed-by    null
                    'is-union        0
                    'udef            null
                    'origin-template null

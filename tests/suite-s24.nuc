@@ -291,9 +291,9 @@ yes no yes
 (defn allocate-zeroed (self:&Counting size:usize align:usize) ?&ui8
   (set! (self 'allocs) (+ (self 'allocs) 1))
   (return (allocate-zeroed &heap size align)))
-(defn reallocate (self:&Counting p:?&ui8 old:usize new:usize align:usize) ?&ui8
-  (when (= (as ptr p) null) (return (allocate self new align)))
-  (return (reallocate &heap p old new align)))
+(defn reallocate (self:&Counting p:?&ui8 old:usize nsize:usize align:usize) ?&ui8
+  (when (= (as ptr p) null) (return (allocate self nsize align)))
+  (return (reallocate &heap p old nsize align)))
 (defn deallocate (self:&Counting p:?&ui8 size:usize align:usize):void
   (when (!= (as ptr p) null) (set! (self 'frees) (+ (self 'frees) 1)))
   (deallocate &heap p size align))

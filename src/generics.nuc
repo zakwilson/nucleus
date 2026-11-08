@@ -423,6 +423,8 @@
       (if (>= (type-size result-type) (type-size bty))
         (return result-type)
         (return bty))))
+  (when (and (= (result-type 'kind) TY-CSTR) (c-char-ptr? bty)) (return result-type))
+  (when (and (= (bty 'kind) TY-CSTR) (c-char-ptr? result-type)) (return bty))
   ; Absorption: an elem-less bare ptr on exactly one side meets a typed ptr at
   ; (ptr E), E = the typed side's elem.
   (when (and (= (result-type 'kind) TY-PTR)
@@ -557,6 +559,7 @@
       ; No src-ns is an intrinsic operator seed, which belongs to no file — the
       ; same convention method-in-ns states. Those are never mangled here.
       (when (symbol-none? ns) (return (gg 'ir-prefix)))
+      (when (!= (mm 'priv) 0) (return (ns-private-ir-prefix ns)))
       (return (ns-ir-prefix ns)))))
 
 ; How many METHOD-USER methods of `g` would emit under `prefix`? Grouping by the
@@ -887,8 +890,11 @@
                           (fstr bfile ":" bline))
           note:StrView "")
       (if (and (!= (a 'priv) 0) (!= (b 'priv) 0))
-        (set! note (fstr "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '"
-                         ansname "'. Rename one, or give one file an (ns ...) of its own."))
+        (if (and (not (symbol-none? (b 'src-ns))) (!= (b 'src-ns) ansname))
+          (set! note (fstr "namespaces '" (b 'src-ns) "' and '" ansname
+                           "' set one ir-prefix, so their private '" bare "'s are one symbol. Rename one, or give one namespace its own prefix."))
+          (set! note (fstr "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '"
+                           ansname "'. Rename one, or give one file an (ns ...) of its own.")))
         (set! note (fstr "'" bare
                          "' is public, and a public name must be unique across the whole compilation unit. Declare one with `defn-` — in the default `user` namespace a private name is scoped to its own file, so the two files may each have their own — or rename one.")))
       (return (fstr head "\n  note: " note)))))
@@ -1686,6 +1692,27 @@
       (let (t:?&Type (node-type (node-at cc (+ 2 (* i 2))) scope))
         (when (and (!= t null) (= (t 'kind) TY-STRUCT) (!= (type-eq t (as ?&Type lit)) 0))
           (return lit))))
+    (return null)))
+
+; C's `char *` beside a CStr, the same pointer: they join as CStr (nuc-lua ISSUE-019).
+(defn c-char-ptr? (t:?&Type):bool
+  (when (= t null) (return false))
+  (when (= (t 'kind) TY-CSTR) (return true))
+  (when (or (!= (t 'kind) TY-PTR) (= (t 'elem) null)) (return false))
+  (let (e:&Type (unsafe/cast &Type (t 'elem)))
+    (return (or (= (e 'kind) TY-I8) (= (e 'kind) TY-UI8)))))
+
+; With no want, a cond whose string-literal branch has a `char *` or CStr sibling
+; joins the literal as CStr, as C's `c ? p : "lit"`.
+(defn cond-cstr-join-want (cc:&Node npairs:i32 scope:&Scope):ptr
+  (let (lit:bool false)
+    (dotimes (i npairs)
+      (when (= (node-kind (node-at cc (+ 2 (* i 2)))) NODE-STR) (set! lit true)))
+    (when (not lit) (return null))
+    (dotimes (i npairs)
+      (let (b:?&Node (node-at cc (+ 2 (* i 2))))
+        (when (and (!= (node-kind b) NODE-STR) (c-char-ptr? (node-type b scope)))
+          (return (as ptr ty-cstr)))))
     (return null)))
 
 ; `argtypes` with each struct-literal argument read as its struct, or null when none is one.
@@ -3938,10 +3965,11 @@
 (defconst- GCHECK-SPECIAL-FORMS
   #{"let" "with" "do" "cond" "return" "while" "break" "continue" "set!" "quote" "quasiquote"
     "ast-first" "ast-rest" "ast-at" "ast-len" "not" "_and" "_or" "cast" "ref"
-    "deref" "ptr+" "field" "sizeof" "alignof" "source-file" "source-line" "alloca"
+    "deref" "ptr+" "field" "sizeof" "alignof" "offsetof" "source-file" "source-line" "alloca"
     "char" "aref" "gensym" "macro-error" "struct-fields" "type-name" "conforms?"
     "funcall" "funcall-void" "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64"
-    "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/va-arg" "va-copy" "unsafe/ptr+" "unsafe/funcall-ptr-1"
+    "funcall-ptr-ptr" "as" "as-checked" "unsafe/cast" "unsafe/va-arg" "va-copy" "unsafe/ptr+" "unsafe/ptr-"
+    "unsafe/funcall-ptr-1"
     "unsafe/funcall-ptr-i32" "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
     "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some" "move" "defer"
     "err-name" "err-message" "match" "__make" "__init-then" "err!" "try"
@@ -4857,23 +4885,23 @@
 ; Under `user` both are the identity, so the bootstrap stays byte-identical.
 ; Centralizing both in conformance-add/-lookup/-args covers every caller (extend,
 ; imported extend, dispatch constraint check, A2 recovery) with one chokepoint.
-(defn conformance-lookup (type-name:Symbol proto-name:Symbol):i32
-  (return (if (= (conformance-find type-name proto-name) null) 0 1)))
+(defn conformance-lookup (tname:Symbol proto-name:Symbol):i32
+  (return (if (= (conformance-find tname proto-name) null) 0 1)))
 
-(defn conformance-find (type-name:Symbol proto-name:Symbol):?&Conformance
-  (set! type-name (type-canon-name type-name))
+(defn conformance-find (tname:Symbol proto-name:Symbol):?&Conformance
+  (set! tname (type-canon-name tname))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:&Conformance (invoke g-conformances i:usize))
-      (when (and (= (c 'type-name) type-name)
+      (when (and (= (c 'type-name) tname)
                  (= (c 'proto-name) proto-name))
         (return c))))
   (return null))
 
 ; A recorded conformance, or a written `extend` not reached yet (CQ-1a).
-(defn conformance-known (type-name:Symbol proto-name:Symbol):bool
-  (when (!= (conformance-lookup type-name proto-name) 0) (return true))
-  (return (conformance-promise-redeem (type-canon-name type-name)
+(defn conformance-known (tname:Symbol proto-name:Symbol):bool
+  (when (!= (conformance-lookup tname proto-name) 0) (return true))
+  (return (conformance-promise-redeem (type-canon-name tname)
                                       (protocol-canon-name proto-name))))
 
 ; `(Const C)`: the `nucleus.const` template of the first shape C conforms to,
@@ -5138,14 +5166,14 @@
 (defn conf-args-count (v:?&(Vector Symbol)):i32
   (if (= v null) 0 (unsafe/cast i32 (count (unsafe/cast &(Vector Symbol) v)))))
 
-(defn conformance-args (type-name:Symbol proto-name:Symbol out-nargs:ptr):?&(Vector Symbol)
+(defn conformance-args (tname:Symbol proto-name:Symbol out-nargs:ptr):?&(Vector Symbol)
   ; Canonicalize to the same key conformance-add records (see conformance-lookup's
   ; note): both halves namespaced since B3′.
-  (set! type-name (type-canon-name type-name))
+  (set! tname (type-canon-name tname))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:&Conformance (invoke g-conformances i:usize))
-      (when (and (= (c 'type-name) type-name)
+      (when (and (= (c 'type-name) tname)
                  (= (c 'proto-name) proto-name))
         (set! (aref (unsafe/cast &i32 out-nargs) 0) (conf-args-count (c 'args)))
         (return (c 'args)))))
@@ -5179,10 +5207,10 @@
 ;     untouched, and an existing arg-less record is *upgraded* in place if real
 ;     args arrive later (e.g. a stale conformance recorded before the args were
 ;     known). Conflict therefore fires only when both sides carry args and differ.
-(defn conformance-add (type-name:Symbol proto-name:Symbol args:ptr nargs:i32 line:i32):void
+(defn conformance-add (tname:Symbol proto-name:Symbol args:ptr nargs:i32 line:i32):void
   ; Record under each half's own canonical identity, so the dispatch-site lookup
   ; (canonicalized the same way) matches. Identity under `user`.
-  (set! type-name (type-canon-name type-name))
+  (set! tname (type-canon-name tname))
   (set! proto-name (protocol-canon-name proto-name))
   ; Materialize the incoming args as a (Vector Symbol) — null when there are none
   ; — so the retained representation is value-comparable (§14.4).
@@ -5193,7 +5221,7 @@
         (set! av v)))
     (dotimes (i (unsafe/cast i32 (count g-conformances)))
       (let (c:&Conformance (invoke g-conformances i:usize))
-        (when (and (= (c 'type-name) type-name) (= (c 'proto-name) proto-name))
+        (when (and (= (c 'type-name) tname) (= (c 'proto-name) proto-name))
           ; Incoming call supplies no args → nothing to add or check; keep as-is.
           (when (= nargs 0) (return))
           ; Existing record has no retained args → upgrade it in place.
@@ -5203,13 +5231,13 @@
           ; Both sides carry args: they must agree, else it is a coherence error.
           (when (= (conformance-args-eq (c 'args) av) 0)
             (die-at line
-              (fstr "type '" (key-display type-name line) "' re-extends protocol '" proto-name
+              (fstr "type '" (key-display tname line) "' re-extends protocol '" proto-name
                     "' with different associated arguments")))
           (return))))
-    (conformance-refuse-after-no type-name proto-name line)
+    (conformance-refuse-after-no tname proto-name line)
     (let (c:&Conformance (new Conformance g-arena))
       (set-fields! c
-                   'type-name  type-name
+                   'type-name  tname
                    'proto-name proto-name
                    'args       av
                    'promised   g-conf-promising)
@@ -7190,6 +7218,8 @@
         (when (= pt null) (return null))
         (return (as ptr (ref-type-of pt)))))
     (when (and (= h 'aref) (= (node-len (as ptr op)) 3))
+      (let (bt:?&Type (node-type (node-at op 1) scope))
+        (when (and (!= bt null) (= (bt 'kind) TY-CSTR)) (return bt)))
       (let (pt:ptr (node-type-deref-elem op scope))
         (when (= pt null) (return null))
         (return (as ptr (ref-type-of pt)))))
@@ -7582,6 +7612,8 @@
             ; kind is also what keeps `split-typed` off a cell's null `s`.
             (when (= (as ptr tgt) null) (return ty-void))
             (when (!= (tgt 'kind) NODE-SYM)
+              ; emit-set-place expands a macro place first; its type is emit's own.
+              (when (set-place-macro? tgt scope) (return null))
               ; Lockstep with emit-set-place: a member place on a receiver with a
               ; user `set` method is that call, so it is that call's type.
               (let (sc:ptr (set-place-call tgt (node-at n 2) (n 'line) scope))
@@ -7608,14 +7640,13 @@
         ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` mirrors what
         ; bare `ptr+` used to (lockstep).
         (when (= hp 'unsafe/ptr+) (return (node-type (node-at n 1) scope)))
+        (when (= hp 'unsafe/ptr-) (return ty-ssize))
         (when (= hp 'field) (return (node-type-field-form n scope)))
         (when (= hp 'invoke) (return (node-type-invoke n scope)))
-        ; sizeof yields a pointer-sized integer (size_t) — mirror emit-sizeof,
-        ; which returns (ptr-int-type). On hosted targets ptr-int-type is ty-i64
-        ; so this is byte-identical; on a 16-bit target (AVR, Stage 14 AVR-2) it
-        ; is i16, keeping the node-type<->emit-node lockstep intact.
-        (when (= hp 'sizeof) (return (ptr-int-type)))
-        (when (= hp 'alignof) (return (ptr-int-type)))
+        ; Lockstep with emit-sizeof / emit-alignof: C's size_t.
+        (when (= hp 'sizeof) (return ty-usize))
+        (when (= hp 'alignof) (return ty-usize))
+        (when (= hp 'offsetof) (return ty-usize))
         ; Lockstep with emit-source-file, which emits a plain string literal.
         (when (= hp 'source-file) (return (strview-type)))
         (when (= hp 'source-line) (return (int-literal-type (as i64 (n 'line)))))
@@ -7623,7 +7654,10 @@
         ; (char "x") is sugar for the \x char literal — a Char value (S0). Must
         ; match emit-char's result type so the Rung-3 cross-check agrees.
         (when (= hp 'char) (return ty-char))
-        (when (= hp 'aref) (return (node-type-deref-elem n scope)))
+        (when (= hp 'aref)
+          (let (pt:?&Type (node-type (node-at n 1) scope))
+            (when (and (!= pt null) (= (pt 'kind) TY-CSTR)) (return ty-i8)))
+          (return (array-decay (node-type-deref-elem n scope))))
         ; Stage 10: Maybe transition forms — relabelings mirror their emitters
         ; exactly; if-some/when-some are phi-shaped like cond (null = unmodeled).
         (when (or (= hp 'some) (= hp 'as-ref))

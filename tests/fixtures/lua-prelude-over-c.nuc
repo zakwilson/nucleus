@@ -1,0 +1,5 @@
+(ns p34)
+(import-use "tests/fixtures/lua-node.h")
+(defn main ():i32
+  (let (n:(ptr Node) (alloca Node))
+    0))

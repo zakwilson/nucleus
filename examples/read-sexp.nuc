@@ -33,9 +33,9 @@
             (return (node-at entry 1)))))))
   (return null))
 
-(defn show (label:StrView n:?&Node):void
+(defn show (lbl:StrView n:?&Node):void
   (let (s:String (node-str n))
-    (print label "=" (string-as-view &s) "\n")
+    (print lbl "=" (string-as-view &s) "\n")
     (drop &s)))
 
 (defn main ():i32

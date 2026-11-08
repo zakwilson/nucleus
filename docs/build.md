@@ -26,8 +26,9 @@ nucleus uninstall [NAME] [--prefix=DIR | --user] [--target=T]... [--all-targets]
 ```
 
 Every command also takes `--library-paths=FILE` (repeatable) and
-`--no-user-registry` (see [Dependencies](#dependencies)), and
-`--diagnostics=text|edn`.
+`--no-user-registry` (see [Dependencies](#dependencies)),
+`--diagnostics=text|edn`, and `--program=NAME`, which chooses one of
+[`:programs`](#several-programs).
 
 With `--diagnostics=edn`, every compile the command runs writes its
 diagnostics as EDN maps ([Structured diagnostics](compiler.md#structured-diagnostics)).
@@ -143,6 +144,7 @@ One EDN map. Every key is optional.
 | `:deps` | map | Libraries by name, below |
 | `:user-registry` | `true` or `false` | `false` skips the default `library-paths.edn` |
 | `:entry` | string | The entry file, relative to the project root |
+| `:programs` | map | Several programs over one set of settings, each name to its entry file; instead of `:entry` (see [Several programs](#several-programs)) |
 | `:tests` | string | The test program's entry file, relative to the project root, which `nucleus test` builds and runs |
 | `:source-root` | string | The directory put on `-I`; `src` or the root by default |
 | `:out-dir` | string | Where outputs go; `build` by default |
@@ -167,8 +169,27 @@ One EDN map. Every key is optional.
 A misspelled key, or a value of the wrong kind, is an error at its line:
 
 ```
-build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target)
+build.edn:2: error: unknown key :bogus (expected one of :name :kind :version :entry :tests :source-root :out-dir :opt :cflags :link-args :libs :c-sources :pkg-config :provides :shared :deps :user-registry :targets :default-target :programs)
 ```
+
+### Several programs
+
+A project that builds more than one program from one set of sources, as Lua
+builds `lua` and `luac` from its core, names each in `:programs`:
+
+```clojure
+{:programs {lua "src/lua.nuc" luac "src/luac.nuc"}
+ :c-sources ["src/lauxlib.c"]}
+```
+
+Each program is `build/<name>`, compiled from its entry with every other
+setting the project has, so the two share `:c-sources` objects, which build
+once. `nucleus build` builds all of them, for each chosen target, and
+`--program=luac` just one. `run` and `run-repl` run one program, so with
+several they need `--program=`; `test` builds the `:tests` program as before,
+and `repl` starts with the first program's flags. `:programs` replaces `:entry`, and a project with both is
+refused; a library has none. A later file's entry for a name replaces the earlier
+one, so `build-local.edn` can point one program elsewhere.
 
 ### Requirement sets
 

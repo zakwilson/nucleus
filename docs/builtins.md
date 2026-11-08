@@ -120,7 +120,7 @@ A header also carries its source's name-binding imports (a prefixed import as `(
 | `import-only` | Import a concrete list of symbols: `(import-only lib sym1 sym2 ...)`. Listed symbols are brought in under their bare names. | — |
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
 | `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. A parameter may be written named (`fd:i32`) or unnamed, as its bare type (`i32`) — both carry the type, and a list may mix them. See [Top-level forms](toplevel.md) for the full parameter grammar. | function prototype |
-| `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
+| `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. `(extern x:(array T 0))` declares an array of unknown extent, C's `extern T x[];`, and agrees with a `defvar` of any length, before or after it. | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a list `Node` holding the remaining args. Parameters (and the `:rest` list) are typed `&Node` inside the body — never null — so `(p 'kind)` and `(p 's)` read fields directly with no cast; elements come out through the `ast-first` / `ast-rest` / `ast-at` / `ast-len` special forms (see [A form is a collection](macros.md#a-form-is-a-collection)). The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. The reader registers the macro **as it reads it**, so it takes effect only for the forms after it — in its own file (a different file never sees it; a REPL session keeps one table across prompts, so a `def-rmacro` at one prompt is visible at the next). Refused if `prefix` is already registered, or begins with a byte that can start an atom — a prefix may open only with one of `` $ ' @ ^ ` \| ~ `` (a comma is whitespace). Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref), `&` (ref). See [Reading s-expressions](reading.md#def-rmacro). | — |
@@ -885,7 +885,7 @@ using its normal rules.
 | `(+ a b ...)` | `(_+ a (+ b ...))` — right-fold                |
 | `(*)`         | `1`                                             |
 | `(* a b ...)` | `(_* a (* b ...))` — right-fold                |
-| `(- x)`       | `(_- 0 x)` — unary negation                    |
+| `(- x)`       | `(_* -1 x)` — unary negation, as C's `-x`     |
 | `(- a b)`     | `(_- a b)`                                     |
 | `(- a b ...)` | `(- (_- a b) ...)` — left-fold                 |
 | `(/ x)`       | `(_/ 1 x)` — integer reciprocal                |
@@ -918,7 +918,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `while` | Loop; yields `void`. `(while test :step e body...)` runs `e` after each pass and on `continue` | `while` |
 | `break` | `(break)` leaves the innermost `while` (or a loop macro over one: `dotimes`, `for`, `while-some`, `doseq`) of the current function, first running the cleanups of every `with`/`defer` scope opened inside the loop. A closure body is its own function, so a `break` there does not reach a loop around the closure. | `break` |
 | `continue` | `(continue)` starts the innermost loop's next pass: it runs the loop's `:step`, then its test, after the same cleanups `break` runs. | `continue` |
-| `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
+| `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). A member place whose key is **computed** dispatches to a user `set` method — see the `set` row. A place whose head is a macro is expanded first, so `(set! (errno) 0)` works for a macro naming a place; a local of the macro's name is still the local. | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
 | `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
 | `goto` | Unconditional jump to a label declared anywhere in the current function. | `goto label` |
 | `label-addr` | Yields a `ptr` to a label (for computed gotos). | `&&label` (GCC) |
@@ -941,7 +941,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `get` | Not a special form: the key lookup of `HashMap`, `ConstMap` and other `Assoc` conformers, an ordinary generic. It does not read fields; on a struct no `get` method takes, the error names `field`. See [Callable values](#callable-values-non-function-call-position) | `m[k]` |
 | `set` | **Generic**, the write side of `invoke`: a member place with a **computed** key, `(set! (m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields. `Vector` and `HashMap` both define one. A place with more keys is the same call, `(set! (grid x y) v)` is `(set grid x y v)`, for a receiver with an `invoke` of that many keys; there no key is read as a field selector. | `m[k] = v` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
-| `sizeof` | Size of a type | `sizeof(T)` |
+| `sizeof` | Size of a type, a `usize` (see [Special Forms](special-forms.md)); `offsetof` gives a field's offset | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | `(char "x")` — a `Char` value (codepoint) from a single-byte string; sugar for the `\x` char literal. See [Char literals](types.md#char-literals--a). | `(Char)'c'` |
 | `aref` | Array element access. The index may be any integer type; it is converted to the target's pointer-int width (`usize`) for the address computation, so no cast is needed on a 16- or 32-bit target. The conversion follows the index type's own signedness — `zext` for an unsigned index, `sext` for a signed one — so a `ui8` at 200 or a `ui32` at 2^31 indexes forward, and a negative signed index still reaches backwards. | `arr[i]` |
@@ -1025,9 +1025,10 @@ The full roster:
 
 | Form | Contract it waives |
 |---|---|
-| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including unchecked→`&T` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. Refuses a capturing closure to a function-pointer type. See [Special Forms](special-forms.md#special-forms). |
+| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including unchecked→`&T` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, `fn`↔`int` (C's `(size_t)f`), int narrow/widen, `float`↔`float`, `int`↔`float`. Refuses a capturing closure to a function-pointer type. See [Special Forms](special-forms.md#special-forms). |
 | `unsafe/funcall-ptr-1` / `-i32` / `-i64` / `-ptr` | Calls a `ptr` function pointer under a signature asserted out of thin air — no arity or type check against the actual callee. |
 | `unsafe/ptr+` | Pointer arithmetic — manufactures a new pointer at an unchecked offset; the result carries no bounds guarantee. |
+| `unsafe/ptr-` | Pointer difference in elements, an `ssize`; nothing checks that the two point into one object. |
 | `unsafe/import-private` | Reaches past a library's visibility boundary to import its private (`defn-`/`defvar-`/etc.) symbols. |
 
 The statically-safe counterpart is `as` (`(as TYPE expr)`, see [Special
@@ -1052,18 +1053,19 @@ places a memory-safety bug could hide.
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
 | `+` | Addition | `a + b` |
-| `-` | Subtraction | `a - b` |
+| `-` | Subtraction; `(- x)` negates, as `(* -1 x)`, so a float zero's sign flips as with C's `-x` | `a - b` / `-x` |
 | `*` | Multiplication | `a * b` |
 | `/` | Division (signed: `sdiv`, unsigned: `udiv`) | `a / b` |
 | `%` | Remainder (signed: `srem`, unsigned: `urem`) | `a % b` |
 | `bit-and` | Bitwise AND; variadic, a macro over the binary `_bit-and` as `+` is over `_+` (`(bit-and)` is `-1`) | `a & b & c` |
 | `bit-or` | Bitwise OR; variadic over `_bit-or` (`(bit-or)` is `0`) | `a \| b \| c` |
 | `bit-xor` | Bitwise XOR; variadic over `_bit-xor` (`(bit-xor)` is `0`) | `a ^ b ^ c` |
+| `bit-not` | Bitwise NOT, `(_bit-xor x -1)`; works on an unsigned `x` too (below) | `~a` |
 | `bit-shl` | Shift left | `a << b` |
 | `bit-shr` | Shift right (signed: arithmetic `ashr`, unsigned: logical `lshr`) | `a >> b` |
 | `=` | Equal | `a == b` |
 | `!=` | Not equal | `a != b` |
-| `<` | Less than (signed: `slt`, unsigned: `ult`) | `a < b` |
+| `<` | Less than (signed: `slt`, unsigned and pointers: `ult`) | `a < b` |
 | `<=` | Less or equal (signed: `sle`, unsigned: `ule`) | `a <= b` |
 | `>` | Greater than (signed: `sgt`, unsigned: `ugt`) | `a > b` |
 | `>=` | Greater or equal (signed: `sge`, unsigned: `uge`) | `a >= b` |
@@ -1071,6 +1073,8 @@ places a memory-safety bug could hide.
 Operators are **ordinary generic functions** (§10.3). Each built-in operator is a generic; when the operands are built-in numerics (or pointers, for comparisons — including *function* pointers, which compare by identity: see [Types](types.md#function-pointer-globals)) the resolver selects the built-in method, which emits its inline instruction (`add nsw`, `icmp slt`, …) directly — a **front-end peephole**, not an LLVM pass — so there is no `call` and the IR is byte-identical to a non-polymorphic compiler even at `-O0`.
 
 **Mixed operands now resolve** (§10.3): an untyped integer literal adapts to the other operand's numeric type (`(+ x 1)` with `x:i64`), an untyped *float* literal adapts to the other operand's float width (`(* alpha 2.0)` with `alpha:f32` is `f32`), and a narrower typed integer/float widens to the wider (`(+ i32 i64)`, `(+ f32 f64)`). The same literal adaptation applies outside binops, at any typed target — `(let (a:f32 0.1) …)`, an `f32` argument, an `f32` `return`; see [Types](types.md#built-in-types). A name bound by `defconst` or a `defenum` member counts as the literal it stands for, so `(<= ans:ui32 K)` with `(defconst K 512)` resolves exactly as `(<= ans:ui32 512)` does (a local binding that *shadows* the constant is an ordinary typed value). Genuinely mismatched operands (e.g. two different typed pointers in arithmetic, or mixed signedness of two typed values) are still rejected.
+
+**A negative literal beside an unsigned operand of `bit-and`, `bit-or` or `bit-xor` is its bit pattern** at that width, as C converts it: `(bit-and status -2)` with `status:ui32` masks with `0xFFFFFFFE`, and `(bit-not u)` is `u` with every bit flipped. Elsewhere a negative literal still does not fit an unsigned type. Pointers order unsigned in every comparison, as C's do.
 
 The rule is **symmetric in operand order** and the operator's *result type* is the unified operand type (a comparison is always `bool`), so `(* 2 x)` and `(* x 2)` are interchangeable. One shared rule decides this for both codegen and the compiler's static type pass, so an expression can never be inferred at one type and emitted at another. See [types.md](types.md#implicit-type-coercion) for the full unification table.
 

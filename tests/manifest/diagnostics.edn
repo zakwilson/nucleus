@@ -1517,3 +1517,24 @@
 {:name "doom-derive-drop-except-typo" :expect :reject
  :file "tests/fixtures/doom-derive-drop-except-typo.nuc" :line 5
  :messages ["derive-drop: :except names no field of this struct"]}
+
+; A CStr is C's `const char *`: `aref` reads its bytes and refuses a store (nuc-lua ISSUE-017).
+{:name "lua-cstr-aref-store" :expect :reject
+ :file "tests/fixtures/lua-cstr-aref-store.nuc" :line 3
+ :messages ["a CStr is C's const char *, so its bytes are read-only"]}
+; In a namespaced file, a header type the prelude also names is refused at the use (nuc-lua ISSUE-034).
+{:name "lua-prelude-over-c" :expect :reject
+ :file "tests/fixtures/lua-prelude-over-c.nuc" :line 4
+ :messages ["'Node' is the prelude's nucleus.core/Node in this namespaced file, but the C header lua-node.h also defines it"]}
+; A special form's name can't be bound (nuc-lua ISSUE-038).
+{:name "lua-bind-special-form" :expect :reject
+ :file "tests/fixtures/lua-bind-special-form.nuc" :line 2
+ :messages ["cannot bind 'label': 'label' already names a special form"]}
+; Nor can a macro's in scope, which a list headed by the local would expand (nuc-lua ISSUE-051).
+{:name "lua-bind-macro" :expect :reject
+ :file "tests/fixtures/lua-bind-macro.nuc" :line 5
+ :messages ["cannot bind 'next': 'next' names a macro in scope"]}
+; A constant over a function-like macro called with the wrong arity stays out (nuc-lua ISSUE-029).
+{:name "lua-fn-macro-arity" :expect :reject
+ :file "tests/fixtures/lua-fn-macro-arity.nuc" :line 3
+ :messages ["lua-types.h defines 'LT_ARITY', but it is a macro whose body does not fold to an integer constant"]}

@@ -426,9 +426,9 @@
       true 0)))
 
 ; Run after the compile, whose registries it reads; its `(ns …)` was applied there.
-(defn emit-nuch-header (forms:ptr source-file:Symbol):void
+(defn emit-nuch-header (forms:ptr src-path:Symbol):void
   (when (!= (is-leading-ns forms) 0) (set! forms (node-rest forms)))
-  (emit g-hdr "; .nuch header for " source-file "\n")
+  (emit g-hdr "; .nuch header for " src-path "\n")
   ; Stage 12 N6: a namespaced library carries its namespace into the header so an
   ; importer's do-import re-runs the SAME ns-ir-base computation when it
   ; re-resolves the symbols — a solitary `(declare area:i32 ...)` then rebinds to

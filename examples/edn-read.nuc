@@ -22,9 +22,9 @@
  :since  #inst \"2026-10-02T00:00:00Z\"}
 "))
 
-(defn show (label:StrView n:?&Node):void
+(defn show (lbl:StrView n:?&Node):void
   (let (s:String (edn-text n))
-    (print label " (" (edn-kind-name (edn-kind n)) ") " (string-as-view &s) "\n")
+    (print lbl " (" (edn-kind-name (edn-kind n)) ") " (string-as-view &s) "\n")
     (drop &s)))
 
 (defn report (what:StrView r:ReadResult):void

@@ -33,15 +33,15 @@
 
 (defn dep-ws? (c:i32):bool (return (or (= c 32) (= c 9) (= c 10) (= c 13))))
 
-(defn depfile-take (tok:&String into:&(Vector StrView)):void
+(defn depfile-take (tok:&String sink:&(Vector StrView)):void
   (when (> (byte-len tok) 0)
     (let (v:StrView (string-as-view tok))
-      (when (!= v "/dev/null") (conj into (exec-intern tok)))))
+      (when (!= v "/dev/null") (conj sink (exec-intern tok)))))
   (string-clear tok))
 
 ; The prerequisites of a gcc-format depfile, as clang and `nucleusc --depfile=`
 ; write it: `target: dep dep \`, with `\ ` for a space and `$$` for a dollar.
-(defn depfile-paths (text:StrView into:&(Vector StrView)):void
+(defn depfile-paths (text:StrView sink:&(Vector StrView)):void
   (let (n:usize (text 'len)
         i:usize 0
         tok:String (make String))
@@ -55,7 +55,7 @@
       (let (c:i32 (dep-byte text i)
             nx:i32 (if (< (+ i 1) n) (dep-byte text (+ i 1)) 0))
         (cond (and (= c 92) (or (= nx 10) (= nx 13)))
-                (do (depfile-take &tok into) (set! i (+ i 1)))
+                (do (depfile-take &tok sink) (set! i (+ i 1)))
               (and (= c 92) (or (= nx 32) (= nx 35)))
                 (do (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 (+ i 1))) 1)
                     (set! i (+ i 1)))
@@ -63,11 +63,11 @@
                 (do (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 i)) 1)
                     (set! i (+ i 1)))
               (dep-ws? c)
-                (depfile-take &tok into)
+                (depfile-take &tok sink)
               true
                 (string-push-bytes-raw &tok (unsafe/ptr+ (text 'data) (as i64 i)) 1)))
       (set! i (+ i 1)))
-    (depfile-take &tok into)
+    (depfile-take &tok sink)
     (drop &tok)))
 
 ; ---------------------------------------------------------------------------

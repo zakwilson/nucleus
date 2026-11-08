@@ -72,13 +72,14 @@ an ordinary `defn`, which builds data for some later compilation.
 
 **Public names only.** A full name reaches what any file could write: a
 template naming its file's private helper expands, in another namespace, to an
-ordinary "private to namespace 'mylib'" error. A file with no `(ns …)` has no
-full name for its private names at all, so such a template is refused where it
-is written:
+ordinary "private to namespace 'mylib'" error. A file with no `(ns …)` gives its
+private names a namespace of the file's own, so a macro naming its file's
+`defn-` helper works in that file, the commonest case for a test program or a
+small library. Expanded in another file, it is refused there:
 
 ```
-plib.nuc:2: error: macro 'use-secret' names 'secret', which is private to its file
-  note: a template reaches public names only; make it public, or give its file an (ns …)
+p.nuc:2: error: unknown: 'secret', which a macro names, is private to plib.nuc
+  note: a macro naming a private name expands only in its own file; make 'secret' public to use the macro here
 ```
 
 **An overload must live in one namespace.** A full name filters an overloaded
@@ -189,7 +190,7 @@ The **keyword head is what marks the list** — a plain parenthesised value stay
 | `(* a b)`       | `(_* a b)`                                             |
 | `(* a b c ...)` | `(macfoldr _* 1 a b c ...)` — right-fold               |
 | `(-)`           | `0`                                                    |
-| `(- x)`         | `(_- 0 x)` — unary negation                            |
+| `(- x)`         | `(_* -1 x)` — unary negation; `-0.0` for `0.0`, as C   |
 | `(- a b)`       | `(_- a b)`                                             |
 | `(- a b c ...)` | `(macfoldl _- 0 a b c ...)` → `(_- (_- a b) c ...)` — left-fold |
 | `(/ x)`         | `(_/ 1 x)` — integer reciprocal                        |
