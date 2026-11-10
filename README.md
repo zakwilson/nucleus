@@ -10,7 +10,7 @@ Nucleus is a new systems programming language. I initially conceived of it as "a
 * Optional lexically-enforced lifetimes to prevent both memory leaks and use-after-free
 * Lisp-style macros
 
-While it already has most of the capabilities required for serious use like hosting its own compiler, using it for anything important is risky at this stage. Breaking changes are likely to happen without warning, and it's probably buggy.
+While already quite capable, Nucleus is not necessarily suitable for human consumption at this stage. The documentation is LLM-generated, breaking changes will come without warning, and it's likely buggy.
 
 building
 ========
