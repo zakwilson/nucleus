@@ -527,13 +527,6 @@
 ; type spelling sees the colon chain (design/stage16-ergonomics/ref-sigil.md).
 ; ---------------------------------------------------------------------------
 
-; A retired `&x` marker stays unexpanded so the compiler's own check can name
-; its keyword replacement instead of failing as `unknown type: rest`.
-(defn rd-legacy-marker? (sv:StrView):bool
-  (when (not (strview-has-prefix sv "&")) (return false))
-  (let (tail:StrView (strview-drop-bytes sv 1))
-    (return (or (= tail "rest") (= tail "where") (= tail "optional") (= tail "repr")))))
-
 ; Whether any segment's sigil run holds a `&`.
 (defn rd-has-ref-sigil? (tv:StrView):bool
   (let (tp:&StrView &tv
@@ -550,7 +543,6 @@
 
 (defn rd-expand-sigil (tv:StrView):Symbol
   (when (not (rd-has-ref-sigil? tv)) (return (symbol-intern tv)))
-  (when (rd-legacy-marker? tv) (return (symbol-intern tv)))
   (let (out:&String (alloca String)
         tp:&StrView &tv
         seg:ChainSeg (chain-seg-at tv 0)
@@ -576,17 +568,6 @@
     (let (s:Symbol (symbol-intern (string-as-view out)))
       (drop out)
       (return s))))
-
-; The `&` reader macro must not swallow a retired marker.
-(defn rd-at-legacy-marker (self:&Reader):bool
-  (let (end:usize (self 'pos))
-    (while (rd-sym-char? (rd-at self end))
-      (set! end (+ end 1)))
-    (when (<= (- end (self 'pos)) 1) (return false))
-    (let (sv:StrView (self 'src)
-          tok:StrView (strview (unsafe/ptr+ (sv 'data) (as i64 (self 'pos)))
-                               (- end (self 'pos))))
-      (return (rd-legacy-marker? tok)))))
 
 ; ---------------------------------------------------------------------------
 ; Node construction
@@ -1142,11 +1123,7 @@
       (= c 125)
         (do (rd-close-bracket self)
             (rd-next self)
-            (return (err (rd-error read-unexpected-close line "unexpected }" ""))))
-      ; A retired `&x` marker must reach the compiler's own check rather than be
-      ; consumed by the `&` reader macro.
-      (and (= c 38) (rd-at-legacy-marker self))
-        (return (rd-atom-form self line)))
+            (return (err (rd-error read-unexpected-close line "unexpected }" "")))))
     (let (mi:i32 (rd-macro-match self))
       (when (>= mi 0)
         (let (rm:RMacro (invoke (self 'macros) (as usize mi))
@@ -1188,7 +1165,6 @@
                   (and (= c 35) (= c1 123)) SYN-SET
                   (= c 35) SYN-TAGGED
                   (= c 123) SYN-MAP
-                  (and (= c 38) (rd-at-legacy-marker self)) SYN-ATOM
                   (>= (rd-macro-match self) 0) SYN-PREFIX
                   (or (= c 34) (and (= c 99) (= c1 34) (not (self 'edn)))) SYN-STR
                   (= c 92) SYN-CHAR

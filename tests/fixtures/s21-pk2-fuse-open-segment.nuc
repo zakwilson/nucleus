@@ -45,7 +45,6 @@
   (show "push!(x)")
   (show "!=(x)")
   (show "x:foo?(x)")
-  (show "&rest(x)")
   ; adjacency is still required
   (show "x:? (V)")
   (return 0))

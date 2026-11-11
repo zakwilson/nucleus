@@ -209,10 +209,6 @@
 (defn main ():i32 (return 0))
 "
          "defunion: :repr needs a mode (tagged or niche)"))
-  (try (check-source-rejects "(defunion (Box T) (some v:T) none &repr tagged)
-(defn main ():i32 (return 0))
-"
-         "'&repr' is no longer a marker -- write ':repr'"))
   ; And a VALID uninstantiated template still compiles -- the check must
   ; diagnose, not stamp.
   (try (check-source-accepts "(defunion (Box T) (some v:T) none :repr tagged)
@@ -1469,19 +1465,6 @@ map=2
     (drop &lib)
     (drop &srcdir)
     (drop &libdir))
-  ; 4. The retired bare spellings each name their replacement. Without this they
-  ;    fall through as ordinary symbols -- a body expression, or (in a declare) a
-  ;    phantom trailing operand -- and fail somewhere unrelated.
-  (try (check-source-rejects "(defn f (m:CStr):void noreturn (while (= 0 0) 0))\n"
-         "'noreturn' is no longer a declaration attribute -- write ':noreturn'"))
-  (try (check-source-rejects "(declare foo ():void noreturn)
-(defn main ():i32 (return 0))
-" "'noreturn' is no longer a declaration attribute -- write ':noreturn'"))
-  (try (check-source-rejects "(declare foo ():i32 returns_twice)
-(defn main ():i32 (return 0))
-" "'returns_twice' is no longer a declaration attribute -- write ':returns-twice'"))
-  ; 5. A LONE trailing form is the body, never an attribute -- otherwise a
-  ;    keyword-returning one-expression body would be silently eaten.
   (let (src:StrView "(import-use \"stdio.h\")
 (import-use nucleus.keyword)
 (defn kw ():Keyword :noreturn)
@@ -1696,29 +1679,6 @@ map=2
 ")))
     (try (check-eq (string-as-view &out) "10 9 3 8 3 10\n"))
     (drop &out)))
-
-; Every retired `&x` spelling names its replacement, from the definer that owns
-; it. Without this each one falls through as an ordinary symbol and surfaces as
-; `missing :type on param '&rest'` or `unknown type: T`.
-(deftest s16-keyword-markers-legacy-rejected
-  (try (check-source-rejects "(defn f (a:i32 &rest xs:i64):i64 (return 0))\n"
-         "'&rest' is no longer a marker -- write ':rest'"))
-  (try (check-source-rejects "(defn f (n:i32 &optional (m:i32 7)):i32 (return n))\n"
-         "'&optional' is no longer a marker -- write ':optional'"))
-  (try (check-source-rejects "(defprotocol Ord (less (a:Self b:Self):bool))
-(defn maxv (a:T b:T &where (Ord T)):T (return a))
-" "'&where' is no longer a marker -- write ':where'"))
-  (try (check-source-rejects "(defprotocol Show (shout (a:Self):i32))
-(defstruct (Box T) v:T)
-(extend (Box T) Show &where (Show T))
-" "'&where' is no longer a marker -- write ':where'"))
-  (try (check-source-rejects "(defstruct Point x:i32)
-(defunion Shape (circle p:(ref Point)) none &repr tagged)
-" "'&repr' is no longer a marker -- write ':repr'"))
-  (try (check-source-rejects "(defmacro twice (x &rest r) `(+ ~x ~x))\n"
-         "'&rest' is no longer a marker -- write ':rest'"))
-  (try (check-source-rejects "(declare printf (fmt:CStr &rest args:i32) :i32)\n"
-         "'&rest' is no longer a marker -- write ':rest'")))
 
 ; The keyword spelling did not weaken any rule the symbol spelling enforced.
 (deftest s16-keyword-markers-rules-preserved

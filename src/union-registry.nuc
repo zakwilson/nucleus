@@ -1222,7 +1222,6 @@
       (let (a:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node scur))))
         ; An arm chain is not desugared — its own chokepoint for the retired
         ; `&repr` spelling, which would otherwise register as a payload-less arm.
-        (reject-legacy-marker a line)
         (if (marker-named? a :repr)
           (let (mcell:ptr (node-rest (unsafe/cast &Node scur)))
             ; A missing mode, or an empty-list `()` mode (a NULL node), are the

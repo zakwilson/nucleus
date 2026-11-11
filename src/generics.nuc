@@ -6682,7 +6682,6 @@
                   (when (> (node-len form) 3)
                     (let (m:&Node (unsafe/cast &Node (node-at form 3)))
                       ; An extend form is not desugared — its own chokepoint.
-                      (reject-legacy-marker m (ff 'line))
                       (when (marker-named? m :where)
                         (set! where-i 3)
                         (set! nc (- (node-len form) 4)))))
@@ -6952,7 +6951,6 @@
   (when (= n 'true)  (return ty-bool))
   (when (= n 'false) (return ty-bool))
   (when (= n 'none)  (return ty-maybe-ptr))
-  (if-some (r (legacy-marker-ref (as ?&Node n))) (return (node-type r scope)) 0)
   (let (lookup-name:Symbol (symbol-none)
         annot:Symbol (symbol-none))
     (split-typed (n 's)

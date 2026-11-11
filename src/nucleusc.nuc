@@ -1291,9 +1291,7 @@
 ; Stage 16: the markers are keywords (`:rest` `:where` `:optional` `:repr`),
 ; replacing the `&x` special symbols that predated keywords
 ; (design/stage16-ergonomics/keyword-markers.md).
-;
-; Callers pass the BARE name ("rest"), never a sigil, so the marker roster is
-; not re-spelled at each of the fourteen recognition sites.
+
 (defn marker-named? (n:?&Node name:Keyword):bool
   (when (= n null) (return false))
   (let (nn:?&Node n
@@ -1310,39 +1308,6 @@
   (let (nn:(ptr Node) n)
     (when (= (nn 'kind) NODE-KEYWORD) (return (fstr ":" (nn 's))))
     (return (symbol-as-view (nn 's)))))
-
-; The bare name of a retired `&x` marker spelling, or null. Shared with the
-; reader's `&` type sigil, which must leave exactly these four atoms unexpanded.
-(defn legacy-marker-tail (s:StrView):StrView
-  (when (not (strview-has-prefix s "&")) (return ""))
-  (let (tail:StrView (strview-drop-bytes s 1))
-    (case tail
-          (:or "rest" "where" "optional" "repr") tail
-          "")))
-
-; The bare name of a retired `&x` marker, or null. `&x` is still a perfectly
-; legal symbol, so without this the retired spelling surfaces as a confusing
-; downstream error — `missing :type on param '&rest'`, or `unknown type: T` on
-; a `&where` template that no longer registers as one.
-(defn legacy-marker-name (n:?&Node):StrView
-  (when (= n null) (return ""))
-  (let (nn:?&Node n
-        s:Symbol (nn 's))
-    (when (symbol-none? s) (return ""))
-    (when (!= (nn 'kind) NODE-SYM) (return ""))
-    (return (legacy-marker-tail (symbol-as-view s)))))
-
-; In an expression the reader's unexpanded `&rest` (above) is just `(ref rest)`.
-(defn legacy-marker-ref (n:?&Node):?&Node
-  (let (nm:StrView (legacy-marker-name n))
-    (when (str-empty? &nm) (return null))
-    (return (node-list2 'ref (intern-node (symbol-intern nm)) (node-line n 0)))))
-
-(defn reject-legacy-marker (n:?&Node encl:i32):void
-  (let (nm:StrView (legacy-marker-name n))
-    (when (str-empty? &nm) (return))
-    (die-at (node-line (as ptr n) encl)
-            (fstr "'&" nm "' is no longer a marker -- write ':" nm "'"))))
 
 ; The three markers that terminate a parameter walk. `:repr` is deliberately
 ; absent — it marks a defunion arm chain, never a parameter list.
@@ -1367,30 +1332,6 @@
 ; function attribute on the `define`/`declare`; only `:noreturn` has a
 ; Nucleus-side consumer (`terminate-after-noreturn`).
 
-; The bare `noreturn` / `returns_twice` symbols the attributes were spelled as
-; before Stage 16: 1, 2, or 0 for neither.
-(defn legacy-fn-attr-kind (n:?&Node):i32
-  (when (= n null) (return 0))
-  (let (nn:?&Node n
-        s:Symbol (nn 's))
-    (when (symbol-none? s) (return 0))
-    (when (!= (nn 'kind) NODE-SYM) (return 0))
-    (when (= s "noreturn") (return 1))
-    (when (= s "returns_twice") (return 2))
-    (return 0)))
-
-; Retired the same way the `&x` markers were: a located error naming the
-; replacement, since either spelling is otherwise an ordinary symbol and would
-; surface as an unrelated failure in body or return position.
-(defn reject-legacy-fn-attr (n:?&Node encl:i32):void
-  (let (k:i32 (legacy-fn-attr-kind n))
-    (when (= k 0) (return))
-    (when (= k 1)
-      (die-at (node-line (as ptr n) encl)
-              "'noreturn' is no longer a declaration attribute -- write ':noreturn'"))
-    (die-at (node-line (as ptr n) encl)
-            "'returns_twice' is no longer a declaration attribute -- write ':returns-twice'")))
-
 ; Which attribute a node spells: 1 = `:noreturn`, 2 = `:returns-twice`, 0 = none.
 (defn decl-attr-kind (n:?&Node):i8
   (when (marker-named? n :noreturn) (return 1))
@@ -1414,8 +1355,7 @@
       (let (b0:?&Node (as ?&Node (node-at form bs))
             k:i32 (decl-attr-kind b0))
         (if (= k 0)
-          (do (reject-legacy-fn-attr b0 (node-line (as ptr form) encl))
-              (set! scanning 0))
+          (set! scanning 0)
           (do (when (= k 1) (set! @out-noreturn 1))
               (when (= k 2) (set! @out-returns-twice 1))
               (set! bs (+ bs 1))))))
@@ -1438,8 +1378,7 @@
       (let (last:?&Node (as ?&Node (node-at form (- n 1)))
             k:i8 (decl-attr-kind last))
         (if (= k 0)
-          (do (reject-legacy-fn-attr last (node-line (as ptr form) encl))
-              (set! scanning 0))
+          (set! scanning 0)
           (do (when (= k 1) (set! @out-noreturn 1))
               (when (= k 2) (set! @out-returns-twice 1))
               (set! n (- n 1))))))
@@ -4345,7 +4284,6 @@
     (when (= n 'true)  (return (alloc-val ty-bool "1")))
     (when (= n 'false) (return (alloc-val ty-bool "0")))
     (when (= n 'none)  (return (alloc-val ty-maybe-ptr "null")))
-    (if-some (r (legacy-marker-ref n)) (return (emit-node r scope)) 0)
     (let (lookup-name:Symbol (symbol-none)
           annot:Symbol (symbol-none))
       (split-typed (nn 's) (as &Symbol &lookup-name) (as &Symbol &annot))
@@ -19677,7 +19615,6 @@
     (dotimes (vi num-params)
       (let (vp:?&Node (as ?&Node (node-at params-node vi)))
         ; A macro param list is not desugared, so this is its own chokepoint.
-        (reject-legacy-marker vp encl)
         (when (marker-named? vp :rest)
               (when (!= vi (- num-params 2))
                     (die-at (node-line (as ptr vp) encl)
@@ -20408,7 +20345,6 @@
   (when (= params null) (return null))
   (let (n:&Node (unsafe/cast &Node params))
     (when (!= (n 'kind) NODE-LIST) (return params))
-    (reject-legacy-marker (node-first n) (node-line (as ptr params) encl))
     (let (new-car:ptr (desugar-typed (node-first n) (node-line (as ptr params) encl))
           new-cdr:ptr (desugar-params (node-rest n) encl))
       (when (and (= new-car (node-first n)) (= new-cdr (node-rest n)))
@@ -20421,7 +20357,6 @@
   (when (or (= params null) (!= (node-kind (as ptr params)) NODE-LIST)) (return params))
   (let (cur:ptr params)
     (while (> (node-len cur) 0)
-      (reject-legacy-marker (node-first (as ?&Node cur)) (node-line (as ptr params) encl))
       (set! cur (node-rest (as ?&Node cur)))))
   (return params))
 
@@ -20501,8 +20436,7 @@
 (defn desugar-slot (kind:i32 e:?&Node line:i32):ptr
   (case kind
     SLOT-BINDER (return (desugar-typed e line))
-    SLOT-FIELD (do (reject-legacy-marker e line)
-                   (return (desugar-typed e line)))
+    SLOT-FIELD (return (desugar-typed e line))
     SLOT-PARAMS (return (desugar-params e line))
     SLOT-DECL-PARAMS (return (declare-params-checked e line))
     SLOT-BINDINGS (return (desugar-let-bindings e line))

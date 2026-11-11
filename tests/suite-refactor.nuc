@@ -557,10 +557,6 @@
   (try (rf3-check-sugared "(ref x)" "&x" "(ref x)"))
   (try (rf3-check-sugared "(ref (Vector T))" "&(Vector T)" "(ref (Vector T))"))
   (try (rf3-check-sugared "''x" "''x" "(quote (quote x))"))
-  ; Fallbacks: `&rest` is the retired marker, `~@x` the splice, and a wrong
-  ; arity has no prefix spelling.
-  (try (rf3-check-sugared "(ref rest)" "(ref rest)" "(ref rest)"))
-  (try (rf3-check-sugared "(ref where)" "(ref where)" "(ref where)"))
   (try (rf3-check-sugared "(unquote (deref x))" "(unquote @x)" "(unquote (deref x))"))
   (try (rf3-check-sugared "(ref s 'f)" "(ref s 'f)" "(ref s (quote f))"))
   (try (rf3-check-sugared "(quote)" "(quote)" "(quote)"))
@@ -805,9 +801,6 @@
   (rule (note ~@xs) :refuse "a comment inside" :when (has-comment? self)))
 
 (deftest rf3b-guards
-  ; `(ref rest)` prints long: `&rest` would read back as the retired marker.
-  (try (rf3b-check (rf3b-spell) "(ref a) &b (ref rest) (ref (f x)) 'z (quote w)"
-                   "&a &b (ref rest) &(f x) (Q z) (quote w)" ""))
   (try (rf3b-check (rf3b-spell) "(same x x) (same x y) (same (a 1) (a  1))"
                    "(one x) (same x y) (same (a 1) (a  1))" ""))
   (try (rf3b-check (rf3b-spell) "(note a)\n(note ; c\n b)" "(note a)\n(note ; c\n b)"
