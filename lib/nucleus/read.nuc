@@ -1575,16 +1575,3 @@
     (node-write-sugared s n)
     (return @s)))
 
-; Structural equality: same shape, same kinds, same values. Symbols compare by
-; interned identity, which is what makes two reads of one spelling equal.
-(defn node-eq (a:?&Node b:?&Node):bool
-  (cond (and (= a null) (= b null)) (return true)
-        (or (= a null) (= b null)) (return false)
-        (!= (a 'kind) (b 'kind)) (return false))
-  (let (k:i32 (a 'kind))
-    (return (cond (or (= k NODE-INT) (= k NODE-CHAR)) (= (a 'i) (b 'i))
-                  (= k NODE-STR) (and (= (a 'i) (b 'i)) (= (a 's) (b 's)))
-                  (or (= k NODE-SYM) (= k NODE-FLOAT) (= k NODE-KEYWORD)) (= (a 's) (b 's))
-                  (= k NODE-LIST) (and (node-eq (node-first a) (node-first b))
-                                       (node-eq (node-rest a) (node-rest b)))
-                  true false))))

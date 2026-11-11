@@ -290,11 +290,35 @@
           (return (e 'node))))
       (set! j (bit-and (+ j 1) mask)))))
 
+
+; Structural equality: same shape, same kinds, same values. Symbols compare by
+; interned identity, which is what makes two reads of one spelling equal.
+(defn node-eq (a:?&Node b:?&Node):bool
+  (cond (and (= a null) (= b null)) (return true)
+        (or (= a null) (= b null)) (return false)
+        (!= (a 'kind) (b 'kind)) (return false))
+  (let (k:i32 (a 'kind))
+    (return (cond (or (= k NODE-INT) (= k NODE-CHAR)) (= (a 'i) (b 'i))
+                  (= k NODE-STR) (and (= (a 'i) (b 'i)) (= (a 's) (b 's)))
+                  (or (= k NODE-SYM) (= k NODE-FLOAT) (= k NODE-KEYWORD)) (= (a 's) (b 's))
+                  (= k NODE-LIST) (and (node-eq (node-first a) (node-first b))
+                                       (node-eq (node-rest a) (node-rest b)))
+                  true false))))
+
+
+
 ; The ONLY caller is the `'foo` lowering, which emits `call ptr @intern-symbol`
 ; with a C string constant — this is that lowering's ABI, not a source-level API.
 ; Nucleus source interns through `(intern-node (symbol-intern …))`.
 (defn intern-symbol (s:CStr):&Node
   (return (intern-node (symbol-from-cstr s))))
+
+(defn index-of (self:?&Node elem:?&Node):i32
+  (when-some (s self)
+    (when-some (e elem)
+      (dotimes (i (node-len self))
+        (when (node-eq (aref (s 'elems) i) e) (return i)))))
+  (return -1))
 
 ; ============================================================
 ; A list Node as a collection
@@ -355,9 +379,7 @@
   (node-push self elem))
 
 (defn contains? (self:&Node elem:&Node):bool
-  (dotimes (i (node-len self))
-    (when (= (aref (self 'elems) i) elem) (return true)))
-  (return false))
+  (> (index-of self elem) -1))
 
 (defn insert (self:&Node i:usize elem:&Node):void
   (let (at:i32 (unsafe/cast i32 i))

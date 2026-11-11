@@ -1294,20 +1294,20 @@
 
 (defn marker-named? (n:?&Node name:Keyword):bool
   (when (= n null) (return false))
-  (let (nn:?&Node n
-        s:Symbol (n 's))
+  (let (s:Symbol (n 's))
     ; An INT/CELL node has no name, and reaching its bytes segfaults the
     ; compiler (the W4d `(defmacro m (5) …)` crash).
     (when (symbol-none? s) (return false))
-    (when (!= (n 'kind) NODE-KEYWORD) (return false))
+    (unless (node-keyword? n) (return false))
     (return (= (keyword s) name))))
 
 ; The marker as the user wrote it, for a diagnostic that quotes it back: the
 ; lexer strips a keyword's leading colon, so it has to be put back.
 (defn marker-spelling (n:?&Node):StrView
-  (let (nn:(ptr Node) n)
-    (when (= (nn 'kind) NODE-KEYWORD) (return (fstr ":" (nn 's))))
-    (return (symbol-as-view (nn 's)))))
+  (if-some (nn n) ; TODO this becomes a single cond with better null guard checks
+           (cond (node-keyword? nn) (-> nn (_ 's) keyword keyword-name (fstr":" _))
+                   true (symbol-as-view (nn 's)))
+             ""))
 
 ; The three markers that terminate a parameter walk. `:repr` is deliberately
 ; absent — it marks a defunion arm chain, never a parameter list.
@@ -1318,10 +1318,7 @@
 
 ; Where `:varargs` sits in a parameter list, or -1.
 (defn varargs-marker-at (params-node:?&Node):i32
-  (when (= params-node null) (return -1))
-  (dotimes (i (node-len params-node))
-    (when (marker-named? (as ?&Node (node-at params-node i)) :varargs) (return i)))
-  (return -1))
+  (index-of params-node ':varargs))
 
 ; ------------------------------------------------------------
 ; Declaration attributes: `:noreturn`, `:returns-twice`
