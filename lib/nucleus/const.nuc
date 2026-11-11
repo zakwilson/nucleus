@@ -53,10 +53,17 @@
 (defn const-cmp (a:CStr b:CStr):i32
   (let (c:i32 (strcmp a b))
     (return (if (< c 0) -1 (if (> c 0) 1 0)))))
+(defn const-cmp (a:Symbol b:Symbol):i32
+  (let (ai:ui8 @(a 'p)
+        bi:ui8 @(b 'p))
+    (cond (< ai bi) -1
+          (> ai bi) 1
+          true 0)))
 (extend i8 ConstOrd) (extend i16 ConstOrd) (extend i32 ConstOrd) (extend i64 ConstOrd)
 (extend ssize ConstOrd) (extend ui8 ConstOrd) (extend ui16 ConstOrd)
 (extend ui32 ConstOrd) (extend ui64 ConstOrd) (extend usize ConstOrd)
 (extend bool ConstOrd) (extend f32 ConstOrd) (extend CStr ConstOrd)
+(extend Symbol ConstOrd)
 
 ; A map's entries order by key alone.
 (defn const-cmp (a:(Entry K V) b:(Entry K V)):i32

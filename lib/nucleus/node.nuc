@@ -6,7 +6,6 @@
 (ns nucleus.node)
 
 (import-use nucleus.arena)
-
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node ():&Node
   (return (unsafe/cast &Node (arena-alloc (sizeof Node)))))

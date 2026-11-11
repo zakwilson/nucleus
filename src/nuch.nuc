@@ -25,6 +25,7 @@
 (import-use nucleus.vector)
 (import-use nucleus.strview-str)
 (import-use nucleus.create)
+(import-use nucleus.keyword)
 
 ; `--library=NAME@VERSION` and `--build-id=ID`: a header naming its library is
 ; format 1 (BT-4 H3); one without is format 0.
@@ -493,7 +494,8 @@
 
 ; `:rest`/`:optional` are defn-only: a declaration has no machinery for them.
 (defn reject-declare-marker (n:?&Node line:i32):void
-  (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
+  (when (or (marker-named? n :rest)
+            (marker-named? n :optional))
     (die-at line
       (fstr "declare: '" (marker-spelling n)
             "' is not supported in a declaration -- a C variadic function is declared with ':varargs'"))))

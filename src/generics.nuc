@@ -11,6 +11,7 @@
 (import-use nucleus.strview)
 (import-use nucleus.hashset)
 (import-use nucleus.const)   ; a literal is a Const
+(import-use nucleus.keyword)
 
 ; Generic / polymorphism registry, bounded-generic def-time checking, Stage 11
 ; tyvar-from-receiver inference + structural unification, and the Valid inferred
@@ -34,8 +35,8 @@
 ; private key.
 (defn generic-lookup-exact (name:Symbol):?&Generic
   (doseq (g g-generics (VecIter &Generic))
-     (when (= (g 'name) name)
-           (return (as ptr g))))
+    (when (= (g 'name) name)
+      (return (as ptr g))))
   (return null))
 
 (defn generic-lookup (name:Symbol):?&Generic
@@ -709,11 +710,11 @@
     (when (>= va-at 0) (return va-at))
     (dotimes (i nraw)
       ; W5f: a malformed parameter may be NULL (an empty list `()` reads as a
-      ; null node). `marker-named` is null-safe; the located diagnostic for a
+      ; null node). `marker-named?` is null-safe; the located diagnostic for a
       ; malformed parameter is emit-defn's job, not this counter's.
       (let (sp:?&Node (as ?&Node (node-at params-node i)))
-        (when (!= (marker-named sp "rest") 0) (set! n (- n 1)))
-        (when (!= (marker-named sp "optional") 0) (set! n (- n 1)))))
+        (when (marker-named? sp :rest) (set! n (- n 1)))
+        (when (marker-named? sp :optional) (set! n (- n 1)))))
     (return n)))
 
 ; Does a defn param list carry a `:rest` marker? The two registration sites used
@@ -726,7 +727,7 @@
       ; W5f: see defn-params-count — a NULL (empty-list) parameter is not a
       ; marker and must not be dereferenced during the prescan.
       (let (sp:?&Node (as ?&Node (node-at params-node i)))
-        (when (!= (marker-named sp "rest") 0) (set! found 1))))
+        (when (marker-named? sp :rest) (set! found 1))))
     (return found)))
 
 ; The `:optional` count and default-expression array of a defn param list —
@@ -741,7 +742,7 @@
         opt-idx:i32 -1)
     (dotimes (si nraw)
       (let (sp:?&Node (as ?&Node (node-at params-node si)))
-        (when (!= (marker-named sp "optional") 0) (set! opt-idx si))))
+        (when (marker-named? sp :optional) (set! opt-idx si))))
     (when (= opt-idx -1) (return))
     (let (nopt:i32 (- (- nraw 1) opt-idx))
       (when (<= nopt 0) (return))
@@ -773,8 +774,10 @@
       ; W5f: see defn-params-count — a NULL (empty-list) parameter is not a
       ; marker and must not be dereferenced during the prescan.
       (let (sp:?&Node (as ?&Node (node-at params-node si)))
-        (when (!= (marker-named sp "rest") 0) (set! has-rest 1) (set! rest-idx si))
-        (when (!= (marker-named sp "optional") 0) (set! opt-idx si))))
+        (when (marker-named? sp :rest)
+          (set! has-rest 1)
+          (set! rest-idx si))
+        (when (marker-named? sp :optional) (set! opt-idx si))))
     (let (nparams:i32 nraw)
       (when (!= has-rest 0) (set! nparams (- nparams 1)))
       (when (!= opt-idx -1) (set! nparams (- nparams 1)))
@@ -1956,9 +1959,9 @@
   (let (nraw:i32 (node-len params-node))
     (dotimes (i nraw)
       ; W5f: an empty list `()` among the params is a NULL node — never a
-      ; `:where` marker, and not to be dereferenced. `marker-named` is null-safe.
+      ; `:where` marker, and not to be dereferenced. `marker-named?` is null-safe.
       (let (e:?&Node (as ?&Node (node-at params-node i)))
-        (when (!= (marker-named e "where") 0)
+        (when (marker-named? e :where)
           (return i))))
     (return -1)))
 
@@ -2517,7 +2520,7 @@
         ; dereference and let emit-defn diagnose it.
         (let (p:?&Node (as ?&Node (node-at params-node i)))
           ; Skip :where / :rest / :optional markers and their constraint lists.
-          (when (!= (marker-any p) 0)
+          (when (marker-any p)
             (return (if (> ntv 0) 1 0)))
           (collect-pattern-tyvars (binding-type-node (node-at params-node i))
                                   tyvars (as &i32 &ntv)))
@@ -2805,7 +2808,7 @@
           nparams:i32 (if (>= wi 0) wi (defn-params-count params-node)))
       (dotimes (i nparams)
         (let (p:&Node (unsafe/cast &Node (node-at params-node i)))
-          (when (!= (marker-named p "rest") 0)
+          (when (marker-named? p :rest)
             (die-at (node-line (as ptr p) (ff 'line)) "defn: :rest combined with a generic method is not supported yet"))))
       (let (nc:i32 (if (>= wi 0) (- nraw (+ wi 1)) 0))
         (when (and (!= has-where 0) (< nc 1))
@@ -6680,7 +6683,7 @@
                     (let (m:&Node (unsafe/cast &Node (node-at form 3)))
                       ; An extend form is not desugared — its own chokepoint.
                       (reject-legacy-marker m (ff 'line))
-                      (when (!= (marker-named m "where") 0)
+                      (when (marker-named? m :where)
                         (set! where-i 3)
                         (set! nc (- (node-len form) 4)))))
                   (when (and (>= where-i 0) (< nc 1))

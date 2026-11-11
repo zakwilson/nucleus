@@ -30,14 +30,12 @@
 (import-use nucleus.intern)
 (import-use nucleus.intern-str)
 (import-use nucleus.coll)       ; ConstOrd
+(import-only nucleus.node Node)
 
 (defstruct Keyword sym:Symbol)
 
 ; The canonical Keyword for the name in `sv`.
-(defn keyword-intern (sv:StrView):Keyword
-  (let (k:&Keyword (alloca Keyword))
-    (set! (k 'sym) (symbol-intern sv))
-    (return @k)))
+
 
 ; The keyword's name. Borrowed and process-lived, like every interned view.
 (defn keyword-name (self:Keyword):StrView
@@ -45,6 +43,14 @@
 
 (defn keyword-symbol (self:Keyword):Symbol
   (return (self 'sym)))
+
+(defn keyword (s:Symbol):Keyword
+  (let (k:&Keyword (alloca Keyword))
+    (set! (k 'sym) s)
+    (return @k)))
+
+(defn keyword-intern (sv:StrView):Keyword
+  (return (keyword (symbol-intern sv))))
 
 ; ---------------------------------------------------------------------------
 ; Conformances. Eq is identity and Hash is the hash cached at intern time, both
@@ -68,3 +74,9 @@
 (extend Keyword ToStr)
 (defn to-str (self:Keyword out:&String):!void
   (return (to-str (self 'sym) out)))
+
+(defn node-keyword? (self:&Node):bool
+  (= (self 'kind) NODE-KEYWORD))
+
+(defn node-keyword (self:&Node):Keyword
+  (keyword (self 's)))

@@ -134,6 +134,7 @@
 ; enum constants, symbols, C strings). A `form` that isn't a name or a literal is
 ; bound once first, so it runs once.
 (defmacro case (form :rest clauses)
+  "(case foo b result-b c result-c (:or a e i o u) result-vowel default)"
   (let ((acc ?&Node) null
         i:i32 0
         n:i32 (ast-len clauses)

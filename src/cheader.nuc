@@ -29,9 +29,11 @@
 (import-use nucleus.strview-str)
 (import-use nucleus.io)
 (import-use nucleus.read)
+(import-use nucleus.keyword)
+
 (defn c-fn-noreturn (fname:Symbol):bool
   (return (contains? #{"exit" "abort" "_exit" "_Exit" "quick_exit"
-                       "abort_handler_s" "longjmp" "siglongjmp"}
+                              "abort_handler_s" "longjmp" "siglongjmp"}
                      (symbol-as-view fname))))
 
 ; Likewise by name: the setjmp family. clang treats these as builtins and adds
@@ -5092,8 +5094,9 @@
 ; A parameter's `name:type` node: null for a `:optional`/`:rest` marker, and the
 ; declaration half of a `(decl default)` cell after `:optional`.
 (defn cheader-param-decl (p:ptr opt:bool):ptr
-  (when (or (!= (marker-named (as ?&Node p) "optional") 0) (!= (marker-named (as ?&Node p) "rest") 0)
-            (!= (marker-named (as ?&Node p) "varargs") 0))
+  (when (or (marker-named? (as ?&Node p) :optional)
+            (marker-named? (as ?&Node p) :rest)
+            (marker-named? (as ?&Node p) :varargs))
     (return null))
   (when (and opt (= (node-kind p) NODE-LIST) (> (node-len p) 0)) (return (node-at p 0)))
   (return p))
@@ -5144,7 +5147,7 @@
     (when (cheader-node-holds-no-c? ret ((unsafe/cast &Node form) 'line)) (return 5))
     (let (opt:bool false)
      (dotimes (hpi np)
-      (when (!= (marker-named (as ?&Node (node-at params hpi)) "optional") 0) (set! opt true))
+      (when (marker-named? (as ?&Node (node-at params hpi)) :optional) (set! opt true))
       (let (pn:ptr (cheader-param-decl (node-at params hpi) opt))
         (when (and (!= pn null)
                    (cheader-node-holds-no-c?
@@ -5205,8 +5208,8 @@
               rest:bool false
               opt:bool false)
           (dotimes (i n)
-            (when (!= (marker-named (as ?&Node (node-at params i)) "rest") 0) (set! rest true))
-            (when (!= (marker-named (as ?&Node (node-at params i)) "optional") 0) (set! opt true))
+            (when (marker-named? (as ?&Node (node-at params i)) :rest) (set! rest true))
+            (when (marker-named? (as ?&Node (node-at params i)) :optional) (set! opt true))
             (let (p:ptr (cheader-param-decl (node-at params i) opt)
                   pname:Symbol (symbol-none)
                   ptname:Symbol (symbol-none))

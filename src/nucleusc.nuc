@@ -15,6 +15,7 @@
 (import-use nucleus.file)
 (import-use nucleus.fmt)
 (import-use nucleus.hashmap)
+(import-use nucleus.keyword)
 
 (extern stderr:ptr)
 (extern stdout:ptr)
@@ -1293,15 +1294,15 @@
 ;
 ; Callers pass the BARE name ("rest"), never a sigil, so the marker roster is
 ; not re-spelled at each of the fourteen recognition sites.
-(defn marker-named (n:?&Node name:StrView):i32
-  (when (= n null) (return 0))
+(defn marker-named? (n:?&Node name:Keyword):bool
+  (when (= n null) (return false))
   (let (nn:?&Node n
-        s:Symbol (nn 's))
+        s:Symbol (n 's))
     ; An INT/CELL node has no name, and reaching its bytes segfaults the
     ; compiler (the W4d `(defmacro m (5) …)` crash).
-    (when (symbol-none? s) (return 0))
-    (when (!= (nn 'kind) NODE-KEYWORD) (return 0))
-    (return (if (= s name) 1 0))))
+    (when (symbol-none? s) (return false))
+    (when (!= (n 'kind) NODE-KEYWORD) (return false))
+    (return (= (keyword s) name))))
 
 ; The marker as the user wrote it, for a diagnostic that quotes it back: the
 ; lexer strips a keyword's leading colon, so it has to be put back.
@@ -1315,11 +1316,9 @@
 (defn legacy-marker-tail (s:StrView):StrView
   (when (not (strview-has-prefix s "&")) (return ""))
   (let (tail:StrView (strview-drop-bytes s 1))
-    (when (= tail "rest") (return tail))
-    (when (= tail "where") (return tail))
-    (when (= tail "optional") (return tail))
-    (when (= tail "repr") (return tail))
-    (return "")))
+    (case tail
+          (:or "rest" "where" "optional" "repr") tail
+          "")))
 
 ; The bare name of a retired `&x` marker, or null. `&x` is still a perfectly
 ; legal symbol, so without this the retired spelling surfaces as a confusing
@@ -1347,18 +1346,16 @@
 
 ; The three markers that terminate a parameter walk. `:repr` is deliberately
 ; absent — it marks a defunion arm chain, never a parameter list.
-(defn marker-any (n:?&Node):i32
-  (when (!= (marker-named n "where") 0) (return 1))
-  (when (!= (marker-named n "rest") 0) (return 1))
-  (when (!= (marker-named n "optional") 0) (return 1))
-  (when (!= (marker-named n "varargs") 0) (return 1))
-  (return 0))
+(defn marker-any (n:?&Node):bool
+  (match n
+    ((some k) (contains? #{:where :rest :optional :varargs} (keyword (k 's))))
+    (none false)))
 
 ; Where `:varargs` sits in a parameter list, or -1.
 (defn varargs-marker-at (params-node:?&Node):i32
   (when (= params-node null) (return -1))
   (dotimes (i (node-len params-node))
-    (when (!= (marker-named (as ?&Node (node-at params-node i)) "varargs") 0) (return i)))
+    (when (marker-named? (as ?&Node (node-at params-node i)) :varargs) (return i)))
   (return -1))
 
 ; ------------------------------------------------------------
@@ -1395,9 +1392,9 @@
             "'returns_twice' is no longer a declaration attribute -- write ':returns-twice'")))
 
 ; Which attribute a node spells: 1 = `:noreturn`, 2 = `:returns-twice`, 0 = none.
-(defn decl-attr-kind (n:?&Node):i32
-  (when (!= (marker-named n "noreturn") 0) (return 1))
-  (when (!= (marker-named n "returns-twice") 0) (return 2))
+(defn decl-attr-kind (n:?&Node):i8
+  (when (marker-named? n :noreturn) (return 1))
+  (when (marker-named? n :returns-twice) (return 2))
   (return 0))
 
 ; The attribute run a `defn` carries between its return operand and its body,
@@ -1439,7 +1436,7 @@
         scanning:i32 1)
     (while (and (!= scanning 0) (> n min-len))
       (let (last:?&Node (as ?&Node (node-at form (- n 1)))
-            k:i32 (decl-attr-kind last))
+            k:i8 (decl-attr-kind last))
         (if (= k 0)
           (do (reject-legacy-fn-attr last (node-line (as ptr form) encl))
               (set! scanning 0))
@@ -18585,16 +18582,16 @@
           ; params; everything after it (until end or :rest) is an optional spec.
           (dotimes (si raw-nparams)
             ; W5f: a parameter may be NULL — an empty list `()` in the parameter
-            ; list reads as a null node. `marker-named` is null-safe.
+            ; list reads as a null node. `marker-named?` is null-safe.
             (let (sp:?&Node (as ?&Node (node-at params-node si)))
-              (when (!= (marker-named sp "rest") 0)
+              (when (marker-named? sp :rest)
                     (when (!= si (- raw-nparams 2))
                           (die-at (node-line (as ptr sp) (cc 'line)) "defn: :rest must be second-to-last param"))
                     (when (!= has-rest 0)
                           (die-at (node-line (as ptr sp) (cc 'line)) "defn: multiple :rest in params"))
                     (set! has-rest 1)
                     (set! rest-idx si))
-              (when (!= (marker-named sp "optional") 0)
+              (when (marker-named? sp :optional)
                     (when (!= opt-idx -1)
                           (die-at (node-line (as ptr sp) (cc 'line)) "defn: multiple :optional in params"))
                     (set! opt-idx si))))
@@ -19673,7 +19670,7 @@
         variadic:i32 0
         pcount:i32 (node-len params-node))
     ; Detect the :rest variadic parameter (must be second-to-last in param list).
-    ; `marker-named` is null-safe: a NULL (empty-list `()`) param and an INT
+    ; `marker-named?` is null-safe: a NULL (empty-list `()`) param and an INT
     ; param both carry a null `Node.s`, and reaching a content compare with it
     ; segfaulted the compiler on `(defmacro m (5) …)` — the loop below is what
     ; raises the located "param must be a symbol" diagnostic for them.
@@ -19681,7 +19678,7 @@
       (let (vp:?&Node (as ?&Node (node-at params-node vi)))
         ; A macro param list is not desugared, so this is its own chokepoint.
         (reject-legacy-marker vp encl)
-        (when (!= (marker-named vp "rest") 0)
+        (when (marker-named? vp :rest)
               (when (!= vi (- num-params 2))
                     (die-at (node-line (as ptr vp) encl)
                             (fstr what ": :rest must be second-to-last param")))
@@ -19697,7 +19694,7 @@
         (let (p:?&Node (as ?&Node (node-at params-node pi)))
           ; The marker test precedes the symbol check: a `:rest` marker is a
           ; NODE-KEYWORD, which that check would otherwise reject outright.
-          (when (= (marker-named p "rest") 0)
+          (unless (marker-named? p :rest)
             ; W5f: `()` reads as a NULL node — same user error as a non-symbol
             ; param, reported at the enclosing form's line (a null node has none).
             (when (= p null)
