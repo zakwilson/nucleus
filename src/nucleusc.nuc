@@ -1476,24 +1476,25 @@
   (when (!= (pd 'variadic) 0)
     (emit out "declare " (type-to-ir (pd 'ret)) " " (pd 'ir-name) "(...)\n")
     (return))
-  (let (rinfo:&AbiInfo (unsafe/cast &AbiInfo (abi-classify (pd 'ret))))
+  (let (rinfo:&AbiInfo (unsafe/cast &AbiInfo (abi-classify (pd 'ret)))
+        need-comma:i32 0)
     (emit out "declare " (abi-ret-ir rinfo (pd 'ret)) " " (pd 'ir-name) "(")
-    (let (need-comma:i32 0)
       ; An sret prefix occupies the first operand slot even at zero parameters.
-      (when (= (rinfo 'kind) ABI-MEMORY)
-        (emit out "ptr sret(" (type-to-ir (pd 'ret)) ") align "
-              (rinfo 'align))
-        (set! need-comma 1))
+    (when (= (rinfo 'kind) ABI-MEMORY)
+      (emit out "ptr sret(" (type-to-ir (pd 'ret)) ") align "
+            (rinfo 'align))
+      (set! need-comma 1))
       ; RV-6c: one walk over this signature, so reset the riscv64 register budget
       ; before it (design/stage14/riscv-fp-abi.md §4).
-      (abi-args-begin rinfo)
-      (dotimes (j (pd 'nparams))
-        (when (!= need-comma 0) (emit out ", "))
-        (abi-print-param-to out
-          (abi-classify-arg (aref (unsafe/cast &ptr (pd 'ptypes)) j))
-          (aref (unsafe/cast &ptr (pd 'ptypes)) j)
-          (symbol-none))
-        (set! need-comma 1)))
+
+    (abi-args-begin rinfo)
+    (dotimes (j (pd 'nparams))
+      (when (!= need-comma 0) (emit out ", "))
+      (abi-print-param-to out
+                          (abi-classify-arg (aref (unsafe/cast &ptr (pd 'ptypes)) j))
+                          (aref (unsafe/cast &ptr (pd 'ptypes)) j)
+                          (symbol-none))
+      (set! need-comma 1))
     (emit out ")\n")))
 
 ; Write a hand-written `declare` line into a macro/CT JIT module's decl stream
@@ -1512,10 +1513,22 @@
 ; The host's list reads, for a CT module: `ast-first`/`ast-rest`/`ast-at`/
 ; `ast-len` lower to calls on the RUNNING compiler's own implementations.
 (defn macro-jit-ast-read-decls ((out &String)):void
-  (macro-jit-declare-raw out (core-link-name "node-first") (symbol-intern (fstr "declare ptr " (core-link-name "node-first") "(ptr)\n")))
-  (macro-jit-declare-raw out (core-link-name "node-rest") (symbol-intern (fstr "declare ptr " (core-link-name "node-rest") "(ptr)\n")))
-  (macro-jit-declare-raw out (core-link-name "node-at") (symbol-intern (fstr "declare ptr " (core-link-name "node-at") "(ptr, i32)\n")))
-  (macro-jit-declare-raw out (core-link-name "node-len") (symbol-intern (fstr "declare i32 " (core-link-name "node-len") "(ptr)\n"))))
+  (macro-jit-declare-raw out (core-link-name "node-first")
+                         (symbol-intern (fstr "declare ptr "
+                                              (core-link-name "node-first")
+                                              "(ptr)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-rest")
+                         (symbol-intern (fstr "declare ptr "
+                                              (core-link-name "node-rest")
+                                              "(ptr)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-at")
+                         (symbol-intern (fstr "declare ptr "
+                                              (core-link-name "node-at")
+                                              "(ptr, i32)\n")))
+  (macro-jit-declare-raw out (core-link-name "node-len")
+                         (symbol-intern (fstr "declare i32 "
+                                              (core-link-name "node-len")
+                                              "(ptr)\n"))))
 
 ; The macro/CT body being compiled, as a diagnostic subject.
 (defn ct-body-who ():StrView
@@ -1523,7 +1536,8 @@
   ; the argument rather than the macro it is being passed to.
   (when (!= g-ct-body-arg 0)
     (return (fstr "the computed argument '" g-ct-body-name "'")))
-  (when (symbol-none? g-ct-body-name) (return "compile-time block"))
+  (when (symbol-none? g-ct-body-name)
+    (return "compile-time block"))
   (return (fstr "macro '" (display-key g-ct-body-name) "'")))
 
 ; What a computed macro argument may evaluate to. A bare `ptr` is in because the
@@ -1566,13 +1580,14 @@
     (when (!= splice 0) (set! pfx "~@"))
     (when (= e null) (return (symbol-intern (fstr pfx "()"))))
     (let (en:?&Node e)
-      (when (= (en 'kind) NODE-SYM) (return (symbol-intern (fstr pfx (en 's)))))
-      (when (= (en 'kind) NODE-INT) (return (symbol-intern (fstr pfx (en 'i)))))
-      (when (= (en 'kind) NODE-LIST)
-        (let (h:?&Node (node-first en))
-          (when (and (!= h null) (= (h 'kind) NODE-SYM))
-            (when (= (node-len e) 1) (return (symbol-intern (fstr pfx "(" (h 's) ")"))))
-            (return (symbol-intern (fstr pfx "(" (h 's) " ...)"))))))
+      (case (en 'kind)
+            NODE-SYM (return (symbol-intern (fstr pfx (en 's))))
+            NODE-INT (return (symbol-intern (fstr pfx (en 'i))))
+            NODE-LIST
+            (let (h:?&Node (node-first en))
+              (when (and (!= h null) (= (h 'kind) NODE-SYM))
+                (when (= (node-len e) 1) (return (symbol-intern (fstr pfx "(" (h 's) ")"))))
+                (return (symbol-intern (fstr pfx "(" (h 's) " ...)"))))))
       (return (symbol-intern (fstr pfx "..."))))))
 
 ; Stage 20 U1 (design/stage20-macros/unquote-operand-typing.md). A sibling of
@@ -1972,42 +1987,19 @@
     (set! @out-name (symbol-none))
     (return null)))
 
-; ============================================================
-; Stage 14 defn-signature.md S1 — dual-acceptance signature accessor
-; ============================================================
-; The named-function signature is migrating from the legacy
-;   (defn name:ret (params) body…)
-; to the fn-style
-;   (defn name (params) ret body…)
-; During S1 the compiler accepts BOTH: a bare-symbol name with the return type as
-; its own operand at index 3 (new), or a colon-typed / list-head name carrying the
-; return type (legacy). Every reader of a defn shape funnels through these
-; accessors so the two styles stay in lockstep and byte-identical for legacy code.
-
-; True when a defn / protocol-sig name node is *new-style*: a bare symbol with no
-; embedded return type. Legacy names are a colon-typed symbol (`name:ret`) or a
-; desugared / list-head `(name ret)` cell. This is the single style-detection rule
-; every consumer branches on.
-(defn sig-name-is-bare (name-node:?&Node):i32
-  (when (= name-node null) (return 0))
-  (let (nn:?&Node name-node)
-    (when (= (nn 'kind) NODE-LIST) (return 0))
-    (when (and (= (nn 'kind) NODE-SYM) (symbol-contains-byte (nn 's) 58)) (return 0))
-    (when (= (nn 'kind) NODE-SYM) (return 1))
-    (return 0)))
-
 ; The raw return-type node embedded in a *legacy* defn name node: the type of a
 ; desugared / list-head `(name ret)` cell, or (for an un-desugared `name:ret`
 ; symbol) the type recovered by desugaring the symbol first. Null if the name
 ; carries no return type.
 (defn legacy-ret-node (name-node:?&Node):?&Node
   ; W9 item 45: a name spelled `()` is a NULL node (W5f) and carries no return
-  ; type, which is this function's own "null" answer — the same null-safety
-  ; `sig-name-is-bare` above already has, and for the same callers.
+  ; type, which is this function's own "null" answer.
   (when (= name-node null) (return null))
   (let (nn:?&Node name-node)
-    (when (= (nn 'kind) NODE-LIST) (return (binding-type-node name-node)))
-    (when (and (= (nn 'kind) NODE-SYM) (symbol-contains-byte (nn 's) 58))
+    (when (= (nn 'kind) NODE-LIST)
+      (return (binding-type-node name-node)))
+    (when (and (= (nn 'kind) NODE-SYM)
+               (symbol-contains-byte (nn 's) 58))
       (return (binding-type-node (desugar-symbol name-node (nn 'line)))))
     (return null)))
 
@@ -2027,30 +2019,15 @@
     (when (node-empty? name-node) (die-at (ff 'line) "defn: missing name"))
     (require-sig-name name-node "defn: name" (ff 'line))
     (set! @out-params (node-at form 2))
-    (if (!= (sig-name-is-bare name-node) 0)
-      ; New style: bare name, ret at index 3, body at 4.
-      (do
-        (set! @out-name (name-node 's))
-        (when (< (node-len form) 4)
-          (die-at (ff 'line)
-            (fstr "defn '" (name-node 's)
-                  "': expected return type after the parameter list, e.g. (defn " (name-node 's)
-                  " (params):i32 …)")))
-        (set! @out-ret-node (node-at form 3))
-        (set! @out-body-start 4)
-        (return 1))
-      ; S4: the legacy `name:ret` / list-head `(name ret)` signature is retired.
-      ; The dual-detection machinery (sig-name-is-bare / legacy-ret-node /
-      ; defn-name-only) is kept precisely so this diagnostic can recognize the
-      ; legacy shape and quote the offending name; only the *behavior* changed
-      ; from "parse it" to "die with a clear message". (return 0) is unreachable
-      ; — die-at exits — but keeps the branch an i32-yielding terminator.
-      (do
-        (die-at (ff 'line)
-          (fstr "defn '" (defn-name-only name-node)
-                "': legacy 'name:ret' syntax is no longer supported — write (defn "
-                (defn-name-only name-node) " (params):ret …)"))
-        (return 0)))))
+    (set! @out-name (name-node 's))
+    (when (< (node-len form) 4)
+      (die-at (ff 'line)
+              (fstr "defn '" (name-node 's)
+                    "': expected return type after the parameter list, e.g. (defn " (name-node 's)
+                    " (params):i32 …)")))
+    (set! @out-ret-node (node-at form 3))
+    (set! @out-body-start 4)
+    (return 1)))
 
 ; ============================================================
 ; The guards each top-level definer runs before it dereferences a node position.
@@ -2141,7 +2118,7 @@
 (defn require-defn-form (form:ptr):void
   (let (cc:&Node (unsafe/cast &Node form))
     (when (< (node-len form) 4)
-      (if (and (>= (node-len form) 2) (!= (sig-name-is-bare (node-at form 1)) 0))
+      (if (>= (node-len form) 2)
         (die-at (cc 'line)
           (fstr "defn '" (-> (node-at form 1) (unsafe/cast &Node _) (_ 's))
                 "': expected return type after the parameter list, e.g. (defn "
@@ -2171,9 +2148,7 @@
 (defn defn-ret-node (form:?&Node):?&Node
   (let (name-node:?&Node (node-at form 1)
         rn:?&Node null)
-    (if (!= (sig-name-is-bare name-node) 0)
-      (when (>= (node-len form) 4) (set! rn (node-at form 3)))
-      (set! rn (legacy-ret-node name-node)))
+    (when (>= (node-len form) 4) (set! rn (node-at form 3)))
     (return (normalize-ret-node rn))))
 
 ; Parse a protocol method signature `(name params [ret])` (new style) or the
@@ -2184,21 +2159,11 @@
 (defn proto-sig-parse (sig:(ptr Node) out-name:&Symbol out-ret-node:&ptr out-params:&ptr):i32
   (let (name-node:(ptr Node) (node-at sig 0))
     (set! @out-params (node-at sig 1))
-    (if (!= (sig-name-is-bare name-node) 0)
-      (do
-        (set! @out-name (name-node 's))
-        (if (>= (node-len sig) 3)
-          (set! @out-ret-node (normalize-ret-node (node-at sig 2)))
-          (set! @out-ret-node null))
-        (return 1))
-      ; S4: legacy `(name:ret params)` / `((name ret) params)` protocol sigs are
-      ; retired; detection stays so the diagnostic can quote the method name.
-      (do
-        (die-at (sig 'line)
-          (fstr "protocol method '" (defn-name-only name-node)
-                "': legacy 'name:ret' syntax is no longer supported — write ("
-                (defn-name-only name-node) " (params):ret)"))
-        (return 0)))))
+    (set! @out-name (name-node 's))
+    (if (>= (node-len sig) 3)
+      (set! @out-ret-node (normalize-ret-node (node-at sig 2)))
+      (set! @out-ret-node null))
+    (return 1)))
 
 ; ============================================================
 ; Expression codegen

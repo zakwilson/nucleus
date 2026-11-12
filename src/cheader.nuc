@@ -5065,13 +5065,6 @@
 (defn cheader-defn-ret-node (form:?&Node):ptr
   (let (name-node:ptr (node-at form 1))
     ; A `()` name or return operand is a NULL node, answered as itself, not read.
-    (when (= (sig-name-is-bare name-node) 0)
-      (return (extract-type-node name-node
-                (node-line name-node ((unsafe/cast &Node form) 'line)))))
-    ; New style: the return operand is at index 3. type-node-to-c needs the nested
-    ; type-node form, so a colon-chain spelling (`ptr:Pt`) is split into `(ptr Pt)`
-    ; exactly as the legacy desugar path yields it; a plain spelling stays a symbol
-    ; node; a parenthesized list-form return is used verbatim.
     (let (rn:&Node (unsafe/cast &Node (node-at form 3)))
       (when (or (= (node-kind (as ptr rn)) NODE-KEYWORD)
                 (= (node-kind (as ptr rn)) NODE-SYM))
@@ -5114,7 +5107,7 @@
     ; the include pre-pass asks this question before any prescan has vetted the
     ; form's shape. A null ret reads as "no return type", which every check below
     ; already answers 0 for.
-    (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
+    (when (>= (node-len form) 4)
       (set! ret (cheader-unalias (cheader-defn-ret-node form))))
     ; Signatures mentioning template-instance types (no C spelling yet).
     (let (skip:i32 (cheader-template-instance ret))
@@ -5601,9 +5594,7 @@
                   (let (p:&Node (unsafe/cast &Node (node-at (as ptr params) i)))
                     (cheader-scan-sig-node
                       (extract-type-node (as &Node p) (node-line (as ptr p) (f 'line))) (f 'line))))))
-            ; Guarded exactly as cheader-defn-ret-node dereferences: the legacy
-            ; spelling reads the name node, the S1 spelling index 3.
-            (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
+            (when (>= (node-len form) 4)
               (cheader-scan-sig-node (cheader-defn-ret-node (as ?&Node form)) (f 'line))))
           (return))
         (when (= h "defstruct")

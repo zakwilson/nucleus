@@ -655,36 +655,19 @@
                         (as &i32 &is-noreturn)
                         (as &i32 &is-returns-twice)
                         (ff 'line)))
-      ; A new-style declare `(declare name (params) :rettype [:noreturn])` has a
-      ; bare name and the return operand at index 3 (eff-len 4). Both the toplevel
-      ; `declare` form (desugared) and .nuch imports reach here; as of S3 the .nuch
-      ; writer emits new-style, so every well-formed input takes the bare-name path.
-      ; S4: the legacy `(declare name:ret [(params)])` shape is retired — detection
-      ; (sig-name-is-bare) stays so the diagnostic can quote the name and say what
-      ; moved.
       (let (name-node:ptr (node-at form 1)
-            ndi-new:i32 (sig-name-is-bare (node-at form 1))
             params-node:ptr null)
         ; W9 item 45: a name spelled `()` is a NULL node (W5f). It is not a legacy
         ; signature — the message below would quote it as '(null)' — it is no name
         ; at all, so it gets the wording every other definer uses for that.
         (require-declare-name (as ?&Node name-node) (ff 'line))
-        (if (!= ndi-new 0)
-          (do
-            (when (!= eff-len 4)
-              (die-at (ff 'line) "declare: expected (declare name (params) :rettype)"))
-            (set! params-node (node-at form 2)))
-          (die-at (ff 'line)
-            (fstr "declare '" (defn-name-only name-node)
-                  "': legacy 'name:ret' syntax is no longer supported — write (declare "
-                  (defn-name-only name-node) " (params) :ret)")))
+        (when (!= eff-len 4)
+          (die-at (ff 'line) "declare: expected (declare name (params) :rettype)"))
+        (set! params-node (node-at form 2))
         (let (fname:Symbol (symbol-none)
               is-va:i32 (if (>= (varargs-marker-at (as ?&Node params-node)) 0) 1 0)
-              ret:ptr (if (!= ndi-new 0)
-                        (fn-parse-ret-type (node-at form 3) (ff 'line))
-                        (extract-name-and-type name-node (as &Symbol &fname)
-                                               ((unsafe/cast &Node name-node) 'line))))
-          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast &Node _) (_ 's))))
+              ret:ptr (fn-parse-ret-type (node-at form 3) (ff 'line)))
+          (set! fname (-> name-node (unsafe/cast &Node _) (_ 's)))
           (when (= ret null)
             (die-at ((unsafe/cast &Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))

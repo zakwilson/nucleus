@@ -2798,12 +2798,7 @@
         has-where:i32 (if (>= (params-where-index params-node) 0) 1 0))
     (when (symbol-none? fname) (die-at (ff 'line) "defn: malformed generic name"))
     ; S4: bounded-generic templates bypass defn-parse-sig (the prescan routes them
-    ; here and emit-defn returns early for templates), so hard-error a legacy
-    ; `name:ret` / list-head `(name ret)` name here too, with the same diagnostic.
-    (when (= (sig-name-is-bare name-node) 0)
-      (die-at (ff 'line)
-        (fstr "defn '" fname "': legacy 'name:ret' syntax is no longer supported — write (defn "
-              fname " (params):ret …)")))
+    ; here and emit-defn returns early for templates)
     (let (nraw:i32 (node-len params-node)
           nparams:i32 (if (>= wi 0) wi (defn-params-count params-node)))
       (dotimes (i nparams)
@@ -3847,18 +3842,11 @@
         params:ptr (node-at sig 1)
         nm:Symbol (symbol-none)
         rettail:Symbol (symbol-none))
-    (if (!= (sig-name-is-bare name-node) 0)
-      ; S1 new style: bare method name at 0, return operand at 2. rettail is the
-      ; return's colon-spelling ("Self", "i32", "ptr:Node"); a list-form return
-      ; leaves it null (→ ty-void here), matching the legacy list-head limitation.
-      (do
-        (set! nm (-> name-node (unsafe/cast &Node _) (_ 's)))
-        (when (>= (node-len sig) 3)
-          (let (rn:&Node (unsafe/cast &Node (node-at sig 2)))
-            (when (or (= (rn 'kind) NODE-KEYWORD) (= (rn 'kind) NODE-SYM))
-              (set! rettail (rn 's))))))
-      (split-typed (-> name-node (unsafe/cast &Node _) (_ 's))
-                   (as &Symbol &nm) (as &Symbol &rettail)))
+    (set! nm (-> name-node (unsafe/cast &Node _) (_ 's)))
+    (when (>= (node-len sig) 3)
+      (let (rn:&Node (unsafe/cast &Node (node-at sig 2)))
+        (when (or (= (rn 'kind) NODE-KEYWORD) (= (rn 'kind) NODE-SYM))
+          (set! rettail (rn 's)))))
     ; A signature with its own `:where` is generic; its call is checked at the stamp.
     (when (and (= nm head) (= (node-len params) nargs) (< (params-where-index params) 0))
       (let (ok:i32 1
@@ -4235,12 +4223,8 @@
             pnm:Symbol (gbind-name pnode))
         (when (and (not (symbol-none? pnm)) (!= pty null))
           (scope-define scope pnm pty (symbol-as-view pnm) 1))))
-    ; S1/S3: the body starts after the return operand — index 4 for a new-style
-    ; template (bare name, ret at 3), index 3 for a legacy one. Walking from 3
-    ; unconditionally would gcheck a new-style CELL return (e.g. `(BoxedFn (V) V)`)
-    ; as a body form, mis-reading its `(V …)` as a call to an unknown function.
     (let (cl:i32 (node-len form)
-          j:i32 (if (!= (sig-name-is-bare (node-at form 1)) 0) 4 3))
+          j:i32 4) ; defn body start
       (while (< j cl)
         (gcheck (node-at form j) scope m)
         (inc! j)))))
@@ -4518,7 +4502,7 @@
     ; S1/S3: skip the return operand — index 4 for a new-style stamped form,
     ; index 3 for a legacy one (see check-generic-template).
     (let (cl:i32 (node-len stamped)
-          j:i32 (if (!= (sig-name-is-bare (node-at stamped 1)) 0) 4 3))
+          j:i32 4) ; defn body start
       (while (< j cl)
         (valid-walk (node-at stamped j) scope gname cty line)
         (inc! j)))))
@@ -5648,17 +5632,8 @@
               (require-sig-name (as ?&Node snn) "defprotocol: method name"
                                 (node-line sig (ff 'line)))
               (refuse-qualified-binder (defn-name-only snn) (node-line sig (ff 'line)))
-              ; S4: reject a legacy `name:ret` / list-head `(name ret)` method sig
-              ; at registration (protocol sigs are stored verbatim and parsed
-              ; lazily, so this is the one def-time chokepoint). New-style sigs put
-              ; the return after the param list. The guard on defn-name-only keeps a
-              ; genuinely malformed sig on its existing lazy-parse error path.
-              (when (and (= (sig-name-is-bare snn) 0) (not (symbol-none? (defn-name-only snn))))
-                (die-at (ff 'line)
-                  (fstr "protocol method '" (defn-name-only snn)
-                        "': legacy 'name:ret' syntax is no longer supported — write ("
-                        (defn-name-only snn) " (params):ret)")))
-              (when (or (!= (node-len sig) 3) (not (node-is-list (node-at sig 1))))
+              (when (or (!= (node-len sig) 3)
+                        (not (node-is-list (node-at sig 1))))
                 (let (s:String (node-str (as ?&Node sig)))
                   (die-at (node-line sig (ff 'line))
                     (fstr "protocol method '" (defn-name-only snn)
@@ -5712,8 +5687,7 @@
           (tyvars-add (pv 's) base (as &i32 &nbase)))))
     (dotimes (si (- (node-len form) 2))
       (let (sig:?&Node (node-at form (+ si 2)))
-        (when (and (= (node-kind (as ptr sig)) NODE-LIST)
-                   (!= (sig-name-is-bare (node-at sig 0)) 0))
+        (when (= (node-kind (as ptr sig)) NODE-LIST)
           (proto-sig-check sig base nbase (node-line sig (ff 'line))))))))
 
 ; A `:where` in a signature declares tyvars as a defn's does; the parse is dry
@@ -5892,7 +5866,7 @@
             sline:i32 (if foreign (node-line sig line) line)
             ctx:StrView (foreign-read-context (pp 'src-file) "protocol" (pp 'name) line)
             here:NameEnv (protocol-env-enter pp))
-        (if (and (!= (sig-name-is-bare name-node) 0) (>= (params-where-index params-node) 0))
+        (if (>= (params-where-index params-node) 0)
           (let (gm:&Method (proto-sig-generic-method csig sline))
             (name-env-set here)
             (set! g-mono-context ctx)
@@ -5906,11 +5880,8 @@
           (do
             ; S1: a new-style sig carries the (Self-substituted) return at index 2;
             ; legacy sigs keep the exact extract-name-and-type parse (byte-identical).
-            (if (!= (sig-name-is-bare name-node) 0)
-              (do (set! mname (-> name-node (unsafe/cast &Node _) (_ 's)))
-                  (set! ret (fn-parse-ret-type (node-at csig 2) sline)))
-              (set! ret (extract-name-and-type name-node (as &Symbol &mname)
-                                               ((unsafe/cast &Node name-node) 'line))))
+            (set! mname (-> name-node (unsafe/cast &Node _) (_ 's)))
+            (set! ret (fn-parse-ret-type (node-at csig 2) sline))
             (let (nparams:i32 (defn-params-count params-node)
                   ptypes:ptr (if foreign (defn-params-to-types-at params-node sline)
                                (defn-params-to-types params-node))

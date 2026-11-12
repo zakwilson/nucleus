@@ -87,25 +87,6 @@
 {:name "s1-missing-ret-diagnostic" :expect :reject
  :file "tests/fixtures/s1-missing-ret.nuc"
  :messages ["expected return type after the parameter list"]}
-
-; Stage 14 defn-signature.md S4 — the legacy `name:ret` return-in-the-name signature
-; is retired. A colon-bearing (or list-head) defn / declare / protocol-method /
-; generic-template signature must now die with the targeted "legacy 'name:ret'
-; syntax is no longer supported" diagnostic, quoting the offending name, at each
-; chokepoint (defn-parse-sig, emit-nuch-declare-import, protocol-register-form,
-; register-generic-defn).
-{:name "s4-legacy-defn-rejected" :expect :reject
- :file "tests/fixtures/s4-legacy-defn.nuc"
- :messages ["defn 'foo': legacy 'name:ret' syntax is no longer supported"]}
-{:name "s4-legacy-declare-rejected" :expect :reject
- :file "tests/fixtures/s4-legacy-declare.nuc"
- :messages ["declare 'bar': legacy 'name:ret' syntax is no longer supported"]}
-{:name "s4-legacy-proto-rejected" :expect :reject
- :file "tests/fixtures/s4-legacy-proto.nuc"
- :messages ["protocol method 'area': legacy 'name:ret' syntax is no longer supported"]}
-{:name "s4-legacy-template-rejected" :expect :reject
- :file "tests/fixtures/s4-legacy-template.nuc"
- :messages ["defn 'gmax': legacy 'name:ret' syntax is no longer supported"]}
 {:name "s17-dup-struct-field-rejected" :expect :reject
  :file "tests/fixtures/s17-dup-struct-field.nuc"
  :messages ["defstruct: duplicate field 'x'"]}
