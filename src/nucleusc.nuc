@@ -1865,11 +1865,8 @@
       (die-at (node-line (as ptr nm) line)
         (fstr what " must be a symbol, found '" (string-as-view &s) "'")))))
 
-; A signature's name: a symbol, or the head of a legacy `(name ret)` cell (which
-; its reader refuses by name).
 (defn require-sig-name (name:?&Node what:StrView line:i32):void
-  (require-name-slot (if (= (node-kind (as ptr name)) NODE-LIST) (node-first name) name)
-                     what line))
+  (require-name-slot name what line))
 
 ; The name slot of a `name:type` declaration — the node, or the head of its
 ; `(name type…)` cell. An attribute-headed cell is asked again once its reader
@@ -1987,35 +1984,16 @@
     (set! @out-name (symbol-none))
     (return null)))
 
-; The raw return-type node embedded in a *legacy* defn name node: the type of a
-; desugared / list-head `(name ret)` cell, or (for an un-desugared `name:ret`
-; symbol) the type recovered by desugaring the symbol first. Null if the name
-; carries no return type.
-(defn legacy-ret-node (name-node:?&Node):?&Node
-  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and carries no return
-  ; type, which is this function's own "null" answer.
-  (when (= name-node null) (return null))
-  (let (nn:?&Node name-node)
-    (when (= (nn 'kind) NODE-LIST)
-      (return (binding-type-node name-node)))
-    (when (and (= (nn 'kind) NODE-SYM)
-               (symbol-contains-byte (nn 's) 58))
-      (return (binding-type-node (desugar-symbol name-node (nn 'line)))))
-    (return null)))
-
 ; Central signature accessor for a full defn form `(defn NAME …)`. Detects style,
 ; writes the bare function name, the *raw* return-type node (a NODE-KEYWORD /
 ; NODE-SYM / NODE-LIST, left unparsed — the generic-template path must not eagerly
 ; parse a free-tyvar return, per the TY-TYVAR confinement rule), the parameter
-; list node, and the index of the first body form. Returns 1 for new style, 0 for
-; legacy. Diagnostics use the *form's* line (interned name/keyword nodes carry 0).
+; list node, and the index of the first body form.
+; Diagnostics use the *form's* line (interned name/keyword nodes carry 0).
 (defn defn-parse-sig (form:?&Node out-name:&Symbol out-ret-node:&ptr
                           out-params:&ptr out-body-start:&i32):i32
   (let (ff:(ptr Node) form
         name-node:(ptr Node) (node-at form 1))
-    ; W9 item 45: an absent or `()` name is not a legacy signature — the S4
-    ; message below would quote it as '(null)' — it is no name at all, so it gets
-    ; the wording every other definer uses for that.
     (when (node-empty? name-node) (die-at (ff 'line) "defn: missing name"))
     (require-sig-name name-node "defn: name" (ff 'line))
     (set! @out-params (node-at form 2))
@@ -2125,11 +2103,6 @@
                 (-> (node-at form 1) (unsafe/cast &Node _) (_ 's)) " (params):i32 …)"))
         (die-at (cc 'line) "defn: bad form")))))
 
-; Normalize a return-type node so a new-style NODE-KEYWORD ret (`:T`, `:i32`)
-; reads as the equivalent NODE-SYM — making it structurally identical to a legacy
-; desugared return, which the generic type-resolution machinery expects (bare-tyvar
-; detection, tyvar collection, parse-type-from-node). NODE-SYM / NODE-LIST rets and
-; null pass through unchanged, so legacy forms are byte-identical.
 (defn normalize-ret-node (rn:?&Node):?&Node
   (when (= rn null) (return null))
   (let (rnn:?&Node rn)
@@ -2151,11 +2124,6 @@
     (when (>= (node-len form) 4) (set! rn (node-at form 3)))
     (return (normalize-ret-node rn))))
 
-; Parse a protocol method signature `(name params [ret])` (new style) or the
-; legacy `(name:ret params)` / `((name ret) params)`. Sets *out-name (bare method
-; name), *out-ret-node (normalized ret node; null if none) and *out-params.
-; Returns 1 for new style, 0 for legacy. Byte-identical name/ret/params for the
-; legacy shapes.
 (defn proto-sig-parse (sig:(ptr Node) out-name:&Symbol out-ret-node:&ptr out-params:&ptr):i32
   (let (name-node:(ptr Node) (node-at sig 0))
     (set! @out-params (node-at sig 1))
@@ -3729,22 +3697,6 @@
         (when (= (e 'name) fname) (return (some (symbol-as-view (e 'note))))))))
   (return (none)))
 
-; Stage 15 B2b: a bare spelling that names an operation of the built-in `unsafe`
-; namespace. That namespace is bound PREFIXED in every file and never flattened,
-; so `cast` / `ptr+` / `funcall-ptr-*` do not resolve — which is the mechanism
-; UN-5 wanted and previously spelled as six hard-coded refusals in the dispatch
-; ladder (plus its mirror in `node-type-call`). The refusals are gone; the text
-; they carried lives on here, verbatim, as a did-you-mean tier.
-(defn unsafe-bare-message (name:Symbol):?StrView
-  (when (= (unsafe-op-named name) 0) (return (none)))
-  ; `import-private` is not a legacy bare spelling of anything — the retired
-  ; form was `unsafe-import-private`, a different string, still refused by its
-  ; own top-level arm.
-  (when (= name "import-private") (return (none)))
-  (when (= name "cast")
-    (return (some "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)")))
-  (return (some (fstr "'" name "' was split in Stage 14: use 'unsafe/" name "'"))))
-
 ; The qualifier is in scope nowhere in this file. Not a reachability failure:
 ; the definition is in the unit and the import graph reaches it; only the
 ; spelling cannot be written here. `qualifier-scope-note` carries the two tiers
@@ -3845,10 +3797,6 @@
 (defn unresolved-name-message (verb:StrView name:Symbol):StrView
   (match (retired-form-message name) (none 0) ((some dot-note) (return dot-note)))
   (match (private-name-message verb name) (none 0) ((some priv-note) (return priv-note)))
-  ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
-  ; are reserved, so this cannot shadow a user name, and its answer is exact
-  ; where every tier below is a guess.
-  (match (unsafe-bare-message name) (none 0) ((some unsafe-note) (return unsafe-note)))
   ; Then an out-of-scope qualifier, before every reachability tier below,
   ; because it is the one failure here that is NOT about reachability.
   (match (qualifier-scope-message verb name) (none 0) ((some unbound) (return unbound)))
@@ -18385,11 +18333,6 @@
 
 (defn emit-defn (call:?&Node):void
   (let (cc:&Node (unsafe/cast &Node call))
-      ; S1: a bare-name (new-style) defn that stops before its return operand gets
-      ; the targeted diagnostic from defn-signature.md — the same message a stale
-      ; legacy spelling receives in Phase S4. Every other malformed shape (including
-      ; a bodyless legacy `name:ret`) keeps the generic "bad form". Error-path only;
-      ; no valid defn has < 4 elements, so bootstrap IR is unaffected.
       (require-defn-form (as ptr cc))
     (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))

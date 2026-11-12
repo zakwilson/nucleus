@@ -246,23 +246,6 @@
  :file "tests/fixtures/unsafe-ns-reserved.nuc"
  :messages ["'unsafe' is a reserved namespace name"]}
 
-; Stage 14 unsafe-namespace.md UN-5 — the bare legacy spellings (`cast`,
-; `funcall-ptr-*`, `ptr+`, `unsafe-import-private`) are retired: each dispatch
-; site now dies with a targeted error naming its replacement instead of
-; silently working as an alias (D6).
-{:name "un5-bare-cast-rejected" :expect :reject
- :file "tests/fixtures/un5-bare-cast.nuc"
- :messages ["'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"]}
-{:name "un5-bare-ptr-plus-rejected" :expect :reject
- :file "tests/fixtures/un5-bare-ptr-plus.nuc"
- :messages ["'ptr+' was split in Stage 14: use 'unsafe/ptr+'"]}
-{:name "un5-bare-funcall-ptr-rejected" :expect :reject
- :file "tests/fixtures/un5-bare-funcall-ptr.nuc"
- :messages ["'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"]}
-{:name "un5-bare-import-private-rejected" :expect :reject
- :file "tests/fixtures/un5-bare-import-private.nuc"
- :messages ["'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"]}
-
 ; Stage 14 attributes.md AT-3 — the old postfix volatile spellings are retired:
 ; both the list form `(T volatile)` and the colon-sugared `T:volatile` (which
 ; reduces to the same trailing-symbol shape via split-colon-segments) now die
@@ -338,9 +321,6 @@
 {:name "w4a-let-null-ref" :expect :reject
  :file "tests/fixtures/w4a-let-null-ref.nuc" :line 7
  :messages ["unchecked pointer where non-null (ref ...) is required"]}
-{:name "w4a-bare-cast-head" :expect :reject
- :file "tests/fixtures/w4a-bare-cast-head.nuc" :line 7
- :messages ["'cast' was split in Stage 14"]}
 
 ; --- Stage 15 W4b: annotated definers + sibling-definer sweep ----
 ; design/stage15-stress-test/diagnostics.md §W4b. `(defconst K:i32 2)` once
