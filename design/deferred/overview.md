@@ -856,3 +856,11 @@ Iron Doom ISSUE-011 asked that anything possible at the top level be possible in
 (when (= x null)) before use narrows, but (cond (null? x) r-null (need-ref x) r-ref) doesn't
 
 ## if-some/when-some should take multiple bindings
+
+## Binding a local ptr to a Maybe is like unsafe/cast
+
+(defn foo (bar:?&Bar):void
+  (let (baz:(ptr Bar) bar)
+    ...))
+    
+This will segfault if `bar` is `none`. Things that will segfault should usually 

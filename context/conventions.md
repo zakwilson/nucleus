@@ -7851,3 +7851,16 @@ import flattens to `user`, so a bare key is otherwise visible everywhere, and a
 library's local `a` would compile the program's macro `a` before its callees exist.
 A probe that only asks "is this a macro?" and must not have side effects calls
 `find-macro-registered`.
+
+## Do not use locals to bypass safety
+
+This code will segfault if `bar` is `none`
+
+```lisp
+(defn foo (bar:?&Bar):void
+  (let (baz:(ptr Bar) bar)
+    ...))
+```
+
+Use `match` or `when-some` instead. If a `none` or error value is unrecoverable, exit explicitly
+or call `die-at` as appropriate.
