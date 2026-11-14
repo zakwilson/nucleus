@@ -3621,22 +3621,8 @@
                                    req-path ":" line ")")))
     (let (stamped:ptr (monomorphize-form (mm 'body) (mm 'tyvars) spellings
                                          (mm 'num-tyvars) (mm 'num-params))
-          sname:Symbol (symbol-none)
-          ; S1: a new-style template stamps its return type into the index-3 keyword
-          ; (substituted by subst-tyvars-node's NODE-KEYWORD branch inside
-          ; monomorphize-form); parse it with the fn grammar. Legacy stamped forms
-          ; keep the exact extract-name-and-type parse.
-          s-ret-node:ptr null
-          s-params:ptr null
-          s-bstart:i32 3
-          s-style:i32 (defn-parse-sig stamped (as &Symbol &sname)
-                        (as &ptr &s-ret-node)
-                        (as &ptr &s-params)
-                        (as &i32 &s-bstart))
-          sret:ptr (if (!= s-style 0)
-                     (fn-parse-ret-type s-ret-node (node-line (as ?&Node s-ret-node) tline))
-                     (extract-name-and-type (node-at stamped 1) (as &Symbol &sname)
-                                            ((unsafe/cast &Node (node-at stamped 1)) 'line))))
+          sig (defn-parse-sig stamped)
+          sret:ptr (fn-parse-ret-type (sig 'ret-node) (node-line (sig 'ret-node) tline)))
       (when (= sret null)
         (die-at tline (fstr "generic '" (gg 'name) "': cannot resolve instantiated return type")))
       ; Valid bound (§10.2): dry-run the concrete body before committing it, so an

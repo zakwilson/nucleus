@@ -1990,22 +1990,32 @@
 ; parse a free-tyvar return, per the TY-TYVAR confinement rule), the parameter
 ; list node, and the index of the first body form.
 ; Diagnostics use the *form's* line (interned name/keyword nodes carry 0).
-(defn defn-parse-sig (form:?&Node out-name:&Symbol out-ret-node:&ptr
-                          out-params:&ptr out-body-start:&i32):i32
-  (let (ff:(ptr Node) form
-        name-node:(ptr Node) (node-at form 1))
-    (when (node-empty? name-node) (die-at (ff 'line) "defn: missing name"))
-    (require-sig-name name-node "defn: name" (ff 'line))
-    (set! @out-params (node-at form 2))
-    (set! @out-name (name-node 's))
-    (when (< (node-len form) 4)
-      (die-at (ff 'line)
-              (fstr "defn '" (name-node 's)
-                    "': expected return type after the parameter list, e.g. (defn " (name-node 's)
-                    " (params):i32 …)")))
-    (set! @out-ret-node (node-at form 3))
-    (set! @out-body-start 4)
-    (return 1)))
+
+(defstruct FnSig
+  name:&Symbol
+  name-node:&Node
+  ret-node:&Node
+  params:&Node)
+
+(defn defn-parse-sig (form:?&Node):&FnSig
+  (if-some (f form)
+           (let (name-node:&Node (node-at. f 1)
+                 sig:&FnSig (new FnSig g-arena))
+             (when (node-empty? name-node) (die-at (f 'line) "defn: missing name"))
+             (require-sig-name name-node "defn: name" (f 'line))
+             (when (< (node-len f) 4)
+               (die-at (f 'line)
+                       (fstr "defn '" (name-node 's)
+                             "': expected return type after the parameter list, e.g. (defn "
+                             (name-node 's)
+                             " (params):i32 …)")))
+             (set-fields! sig
+                          'params (node-at. f 2)
+                          'name-node name-node
+                          'name &(name-node 's)
+                          'ret-node (node-at. f 3))
+             (return sig))
+           (die-at 0 "defn-parse-sig called with a null argument (this should not be possible)")))
 
 ; ============================================================
 ; The guards each top-level definer runs before it dereferences a node position.
@@ -15805,10 +15815,10 @@
 (defn guard-name-kind (name:Symbol line:i32 newk:i32):void
   (cconst-yield name)
   (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
-    (die-at line
-      (fstr "'" name "' already names " (binding-noun (hit 'kind) (hit 'payload))
-            " — a symbol may name only one kind of thing"))
-    0)
+           (die-at line
+                   (fstr "'" name "' already names " (binding-noun (hit 'kind) (hit 'payload))
+                         " — a symbol may name only one kind of thing"))
+           0)
   (refuse-qualified-binder name line))
 
 ; Stage 15 B4 — R4's rule (name-resolution.md §11.1): two definitions of one
@@ -18349,28 +18359,20 @@
       ; S1: route name/return/body-start through the central accessor. Legacy forms
       ; keep the exact extract-name-and-type parse (byte-identical); new-style forms
       ; parse the index-3 return operand with fn-parse-ret-type (the fn grammar).
-      (let (fname:Symbol (symbol-none)
-            ret-node:ptr null
-            sig-params:ptr null
-            body-start:i32 3
-            sig-style:i32 (defn-parse-sig call (as &Symbol &fname)
-                            (as &ptr &ret-node)
-                            (as &ptr &sig-params)
-                            (as &i32 &body-start))
-            ret:ptr (if (!= sig-style 0)
-                      (fn-parse-ret-type ret-node (cc 'line))
-                      (extract-name-and-type name-node (as &Symbol &fname)
-                                             ((unsafe/cast &Node name-node) 'line))))
+      (let (body-start:i32 4
+            sig:&FnSig (defn-parse-sig call)
+            ret:ptr (fn-parse-ret-type (sig 'ret-node) (cc 'line)))
         (when (= ret null)
           (die-at ((unsafe/cast &Node name-node) 'line) (fstr "defn: missing :type on '"
-                                                                 fname "'")))
+                                                              (symbol-as-view (sig 'name))
+                                                              "'")))
         ; W3a: a by-value return of an opaque C type has no ABI classification
         ; (no size, no layout) — refuse at the signature, where the line is exact,
         ; rather than at type-to-ir's ambient-line backstop.
         (reject-opaque-type ret (cc 'line) "defn return type")
         (reject-valist ret (cc 'line) "defn return type")
         (reject-cycle-pending-layout ret (cc 'line) "defn return type")
-        (guard-name-kind fname (cc 'line) NK-FUNCTION)
+        (guard-name-kind (sig 'name) (cc 'line) NK-FUNCTION)
         ; L8: warn when a public defn's signature exposes a capturing-closure env
         ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — it is
         ; excluded from --emit-cheader (see cheader-mentions-closure). Gated on
@@ -18381,9 +18383,7 @@
         ; trigger this.
         (when (and (= g-defining-private 0) (str-empty? &g-mono-context))
           (let (mc:i32 (cheader-mentions-closure
-                         (if (!= sig-style 0)
-                           ret-node
-                           (extract-type-node name-node ((unsafe/cast &Node name-node) 'line))))
+                        (sig 'ret-node))
                 mcpi:i32 0
                 mcp:i32 (node-len params-node))
             (while (< mcpi mcp)
@@ -18391,14 +18391,14 @@
               ; node) — `extract-type-node` tolerates that, but computing its line
               ; with a raw deref did not. `node-line` is the null-safe accessor.
               (when (!= (cheader-mentions-closure
-                          (extract-type-node (node-at params-node mcpi)
-                                             (node-line (node-at params-node mcpi) (cc 'line)))) 0)
+                         (extract-type-node (node-at params-node mcpi)
+                                            (node-line (node-at params-node mcpi) (cc 'line)))) 0)
                 (set! mc 1))
               (inc! mcpi))
             (when (!= mc 0)
               (diag-emit "warning" g-source-path (cc 'line)
-                    (fstr "'" fname
-                          "' exposes a closure or type-erased box type and will be excluded from generated C headers")))))
+                         (fstr "'" (symbol-as-view (sig 'name))
+                               "' exposes a closure or type-erased box type and will be excluded from generated C headers")))))
         ; Declaration attributes sit between the return operand and the body:
         ; `:noreturn` (die-at, longjmp and friends — drives the LLVM attribute
         ; and the Sym flag `terminate-after-noreturn` consumes) and
@@ -18527,12 +18527,14 @@
             ; Solitary names (and fallback defns with no registered generic) keep
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
-            (when (and (!= is-va 0) (!= (defn-is-mangled fname) 0))
-              (die-at (cc 'line) (fstr "defn: variadic '" fname "' can't be overloaded")))
-            (when (= (defn-is-mangled fname) 0)
-              (check-ir-name-legal (cc 'line) fname (symbol-as-view (defn-ir-name fname param-types nparams ret)))
-              (let (fsym:&Sym (scope-define g-globals fname (as ptr ft)
-                                  (symbol-as-view (defn-ir-name fname param-types nparams ret)) 0))
+            (when (and (!= is-va 0) (!= (defn-is-mangled @(sig 'name)) 0))
+              (die-at (cc 'line) (fstr "defn: variadic '"
+                                       (symbol-as-view (sig 'name))
+                                       "' can't be overloaded")))
+            (when (= (defn-is-mangled @(sig 'name)) 0)
+              (check-ir-name-legal (cc 'line) (sig 'name) (symbol-as-view (defn-ir-name (sig 'name) param-types nparams ret)))
+              (let (fsym:&Sym (scope-define g-globals (sig 'name) (as ptr ft)
+                                  (symbol-as-view (defn-ir-name (sig 'name) param-types nparams ret)) 0))
                 (sym-record-src fsym (cc 'line))
                 (set! ((unsafe/cast &Sym fsym) 'docstring) (body-docstring cc body-start))
                 ; Stage 16: the `define` below is going to a sink, so this name is
@@ -18547,10 +18549,10 @@
                 (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym fsym) 'sym-private) 1)))))
           ; Codegen
           (reset-function-state)
-          ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
+          ; g-cur-(sig 'name) is the @-less IR symbol of this function (for blockaddress
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
           (set! g-cur-fname
-            (strview-drop-bytes (symbol-as-view (defn-ir-name fname param-types nparams ret)) 1))
+            (strview-drop-bytes (symbol-as-view (defn-ir-name (sig 'name) param-types nparams ret)) 1))
           (when (!= g-resolve 0) (resolve-note-link call g-cur-fname))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
@@ -18619,7 +18621,7 @@
                   (when (!= (frame-taint-survives last-val ret) 0)
                     (die-at (cc 'line)
                       "address of frame-local storage escapes via implicit return — the pointed-to storage is reclaimed when this function returns")))
-                (reject-lost-join last-val ret (cc 'line) (fstr fname ": implicit return"))
+                (reject-lost-join last-val ret (cc 'line) (fstr @(sig 'name) ": implicit return"))
                 (if (!= ((unsafe/cast &AbiInfo g-fn-ret-abi) 'kind) ABI-DIRECT)
                   ; Struct return via the aggregate ABI. A void last expression
                   ; (degenerate fall-off) returns a zeroed struct.
@@ -18642,7 +18644,7 @@
                     (let (coerced:ptr (coerce-int-val last-val ret (cc 'line)))
                       (when (= coerced null)
                         (die-at (cc 'line)
-                          (fstr fname
+                          (fstr @(sig 'name)
                                 ": implicit return type mismatch — last expression does not match declared return type")))
                       (let (cv:&Val (unsafe/cast &Val coerced))
                         (emit g-body-stream "  ret " (type-to-ir ret) " " (cv 'val) "\n"))))))))
@@ -18653,17 +18655,17 @@
             ; Stage 20 L1: it must precede the `define`, because it also opens
             ; that define's byte span in g-def-buf (§5.1). Nothing it does emits.
             (let (pd:?&ProgDefn
-                    (program-defn-record (defn-ir-name fname param-types nparams ret)
-                                         fname ret param-types nparams is-va))
-              ; L5: the mangled counterpart of the CT prescan's `@fname`.
-              (ct-module-defn-note (defn-ir-name fname param-types nparams ret))
+                    (program-defn-record (defn-ir-name (sig 'name) param-types nparams ret)
+                                         (sig 'name) ret param-types nparams is-va))
+              ; L5: the mangled counterpart of the CT prescan's `@(sig 'name)`.
+              (ct-module-defn-note (defn-ir-name (sig 'name) param-types nparams ret))
               ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
               ; (`weak_odr` for a definition this unit only carries a copy of)
               ; are the same decision, taken once in `def-linkage`.
-              (defn-link-check fname (defn-ir-name fname param-types nparams ret)
+              (defn-link-check (sig 'name) (defn-ir-name (sig 'name) param-types nparams ret)
                                (fn-link-sig ret param-types nparams (!= is-va 0)) (cc 'line))
               (emit g-out "define " (def-linkage) (abi-ret-ir g-fn-ret-abi ret) " "
-                    (defn-ir-name fname param-types nparams ret) "(")
+                    (defn-ir-name (sig 'name) param-types nparams ret) "(")
               ; A MEMORY return prepends the hidden sret pointer parameter.
               (let (need-comma:i32 0)
                 (when (= ((unsafe/cast &AbiInfo g-fn-ret-abi) 'kind) ABI-MEMORY)
@@ -18687,7 +18689,7 @@
               ; Stage 10 Phase F1: the LLVM `noreturn` function attribute lets the
               ; optimizer and verifier know control never returns from this define.
               ; Stage 14 AVR-5: emit-fn-attrs-for then appends any string function
-              ; attributes registered by `(fn-attr fname …)` (e.g. AVR "signal"/
+              ; attributes registered by `(fn-attr (sig 'name) …)` (e.g. AVR "signal"/
               ; "interrupt" ISR attributes). Split into pieces so both a keyword attr
               ; (noreturn) and string attrs can coexist on one `define` line; with no
               ; fn-attr entries the emitted bytes are exactly the historical
@@ -18695,10 +18697,10 @@
               (emit g-out ")")
               (when (!= is-noreturn 0) (emit g-out " noreturn"))
               (when (!= is-returns-twice 0) (emit g-out " returns_twice"))
-              (emit-fn-attrs-for fname)
+              (emit-fn-attrs-for (sig 'name))
               (when (!= (ir-sections-on) 0)
                 (write-ir-section g-out ".text"
-                  (symbol-as-view (defn-ir-name fname param-types nparams ret))))
+                  (symbol-as-view (defn-ir-name (sig 'name) param-types nparams ret))))
               (emit g-out " {\n")
               (emit g-out "entry:\n")
               (emit-all g-out g-entry-stream)
@@ -19327,21 +19329,13 @@
                          (>= (node-len bf) 4)
                          (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
                          (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 's) (= _ "defn")))
-                (let (name-node:ptr (node-at bf 1)
-                      params-node:ptr (node-at bf 2))
+                (let (name-node:&Node (node-at. bf 1)
+                      params-node:&Node (node-at. bf 2))
                   (when (node-is-list params-node)
-                    (let (fname:Symbol (symbol-none)
-                          ct-ret-node:ptr null
-                          ct-params:ptr null
-                          ct-bstart:i32 3
-                          ct-style:i32 (defn-parse-sig (as ptr bf) (as &Symbol &fname)
-                                         (as &ptr &ct-ret-node)
-                                         (as &ptr &ct-params)
-                                         (as &i32 &ct-bstart))
-                          ret:ptr (if (!= ct-style 0)
-                                    (fn-parse-ret-type ct-ret-node ((unsafe/cast &Node name-node) 'line))
-                                    (extract-name-and-type name-node (as &Symbol &fname)
-                                                            ((unsafe/cast &Node name-node) 'line))))
+                    (let (sig:FnSig (defn-parse-sig bf)
+                          fname:Symbol @(sig 'name)
+                          ret:ptr (fn-parse-ret-type (sig 'ret-node)
+                                                     (name-node 'line)))
                       (when (!= ret null)
                         (let (nparams:i32 (node-len params-node)
                               ptypes:ptr null)
@@ -20923,24 +20917,15 @@
         ; rather than parsing its (free-tyvar) parameter/return types now.
         (if (!= (defn-is-generic-template (as ptr f)) 0)
           (register-generic-defn (as ptr f) 0)
-          (let (fname:Symbol (symbol-none)
-                ps-ret-node:ptr null
-                ps-params:ptr null
-                ps-bstart:i32 3
-                ps-style:i32 (defn-parse-sig (as ptr f) (as &Symbol &fname)
-                               (as &ptr &ps-ret-node)
-                               (as &ptr &ps-params)
-                               (as &i32 &ps-bstart))
+          (let (sig:FnSig (defn-parse-sig f)
+                fname:Symbol @(sig 'name)
                 ; W3a: `name-node` is the defn's NAME — an interned
                 ; NODE-SYM whose own line is always 0 — so resolving the
                 ; signature's types against it reported every failure
                 ; (`unknown type: T`) at `:0:`. Borrow the return operand's
                 ; own line, falling back to the defn form's.
-                ret:ptr (if (!= ps-style 0)
-                          (fn-parse-ret-type ps-ret-node
-                            (node-line ps-ret-node (f 'line)))
-                          (extract-name-and-type name-node (as &Symbol &fname)
-                                                  (f 'line))))
+                ret:ptr (fn-parse-ret-type (sig 'ret-node)
+                                           (node-line (sig 'ret-node) (f 'line))))
             (when (!= ret null)
               (let (nparams:i32 (defn-params-count params-node)
                     ptypes:ptr (defn-params-to-types params-node)

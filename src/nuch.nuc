@@ -66,13 +66,7 @@
 ; does. `defn-scan-attrs` is the same reader emit-defn uses, so the exported and
 ; consumed spellings cannot drift.
 (defn emit-nuch-fn-attrs (form:ptr):void
-  (let (fname:Symbol (symbol-none)
-        rn:ptr null
-        ps:ptr null
-        bstart:i32 3
-        style:i32 (defn-parse-sig (as ?&Node form) (as &Symbol &fname)
-                    (as &ptr &rn) (as &ptr &ps)
-                    (as &i32 &bstart))
+  (let (bstart:i32 4
         nr:i32 0
         rt:i32 0
         body:i32 (defn-scan-attrs (as ?&Node form) bstart

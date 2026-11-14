@@ -6,6 +6,8 @@
 (ns nucleus.node)
 
 (import-use nucleus.arena)
+(import-use "stdio.h")
+
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node ():&Node
   (return (unsafe/cast &Node (arena-alloc (sizeof Node)))))
@@ -22,6 +24,12 @@
 (defn node-at (n:ptr:Node i:i32):?&Node
   (when (or (< i 0) (>= i (node-len n))) (return none))
   (return (as-ref (aref (n 'elems) i))))
+
+(defn node-at. (n:ptr:Node i:i32):&Node
+  (match (node-at n i)
+    ((some n) n)
+    (none (do (puts "node-at. called on bad node")
+            (exit 1)))))
 
 (defn node-len (n:?&Node):i32
   (when (= n null) (return 0))
