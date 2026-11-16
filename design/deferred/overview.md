@@ -864,3 +864,7 @@ Iron Doom ISSUE-011 asked that anything possible at the top level be possible in
     ...))
     
 This will segfault if `bar` is `none`. Things that will segfault should usually 
+
+## Struct slot of &T accepted T
+
+I could set the name of an FnSig to a Symbol instead of &Symbol and it segfaulted at runtime.

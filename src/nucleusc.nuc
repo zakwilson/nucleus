@@ -2134,14 +2134,17 @@
     (when (>= (node-len form) 4) (set! rn (node-at form 3)))
     (return (normalize-ret-node rn))))
 
-(defn proto-sig-parse (sig:(ptr Node) out-name:&Symbol out-ret-node:&ptr out-params:&ptr):i32
-  (let (name-node:(ptr Node) (node-at sig 0))
-    (set! @out-params (node-at sig 1))
-    (set! @out-name (name-node 's))
-    (if (>= (node-len sig) 3)
-      (set! @out-ret-node (normalize-ret-node (node-at sig 2)))
-      (set! @out-ret-node null))
-    (return 1)))
+(defn proto-sig-parse (sig:&Node):&FnSig
+  (let (ret:&FnSig (new FnSig g-arena)
+        name:&Symbol &(-> sig (node-at. 0) (_ 's))
+        ret-node:?&Node (-> sig (node-at. 2) normalize-ret-node))
+    (when (= ret-node null) (die-at (sig 'line) "Could not parse return node"))
+    (set-fields! ret
+                 'name name
+                 'name-node (node-at. sig 0)
+                 'ret-node ret-node
+                 'params (node-at. sig 1))
+    ret))
 
 ; ============================================================
 ; Expression codegen
@@ -10117,26 +10120,23 @@
 ; §3.3 as one predicate, asked by synthesis (a null slot) and by the forward (the
 ; diagnostic). `nargs` is how many of the protocol's parameters the box binds.
 (defn dyn-sig-safety (pp:&Protocol i:i32 nargs:i32):i32
-  (let (sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) i)
-        line:i32 (node-line sig 0)
-        mname:Symbol (symbol-none)
-        ret-node:ptr null
-        params-node:ptr null)
-    (proto-sig-parse sig (as &Symbol &mname) (as &ptr &ret-node) (as &ptr &params-node))
-    (when (>= (params-where-index params-node) 0) (return DYN-WHERE))
-    (when (or (< (node-len params-node) 1)
-              (not (dyn-self-ptr-node? (dyn-param-type-node (node-at params-node 0) line) line)))
+  (let (form:&Node (unsafe/cast &Node  (aref (unsafe/cast &ptr (pp 'sigs)) i))
+        line:i32 (node-line form 0)
+        sig:&FnSig (proto-sig-parse form))
+    (when (>= (params-where-index (sig 'params)) 0) (return DYN-WHERE))
+    (when (or (< (node-len (sig 'params)) 1)
+              (not (dyn-self-ptr-node? (dyn-param-type-node (node-at (sig 'params) 0) line) line)))
       (return DYN-RECEIVER))
-    (dotimes (j (- (node-len params-node) 1))
-      (when (!= (node-mentions-tyvar-named (node-at params-node (+ j 1)) (symbol-intern "Self")) 0)
+    (dotimes (j (- (node-len (sig 'params)) 1))
+      (when (!= (node-mentions-tyvar-named (node-at (sig 'params) (+ j 1)) (symbol-intern "Self")) 0)
         (return DYN-SELF-PARAM)))
-    (when (!= (node-mentions-tyvar-named ret-node (symbol-intern "Self")) 0)
+    (when (!= (node-mentions-tyvar-named (sig ' ret-node) (symbol-intern "Self")) 0)
       (return DYN-SELF-RET))
     ; Rule 4: the application's arguments are concrete by construction, so what
     ; can stay abstract is a parameter the box does not bind at all.
     (let (j:i32 nargs)
       (while (< j (pp 'num-params))
-        (when (!= (node-mentions-tyvar-named sig (aref (unsafe/cast &Symbol (pp 'params)) j)) 0)
+        (when (!= (node-mentions-tyvar-named form (aref (unsafe/cast &Symbol (pp 'params)) j)) 0)
           (return DYN-UNBOUND))
         (inc! j)))
     (return DYN-CALLABLE)))

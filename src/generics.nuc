@@ -12,6 +12,7 @@
 (import-use nucleus.hashset)
 (import-use nucleus.const)   ; a literal is a Const
 (import-use nucleus.keyword)
+(import-use nucleus.io)
 
 ; Generic / polymorphism registry, bounded-generic def-time checking, Stage 11
 ; tyvar-from-receiver inference + structural unification, and the Valid inferred
@@ -5257,36 +5258,36 @@
     ; entry is inert under self-compilation — the compiler never stamps a
     ; BinaryFn — so the bootstrap stays a byte-identical fixed point.
     (when (not (or (core-named? proto "UnaryFn") (core-named? proto "FoldFn")
-                  (core-named? proto "BinaryFn")))
+                   (core-named? proto "BinaryFn")))
       (return 0))
   ; Step 3: find the closure's invoke method — a METHOD-USER on the `invoke`
   ; generic whose self param (param-types[0]) is (ref Env) with Env.name == cvspell.
   ; Detection is semantic ("the type has an invoke method"), not by name, so it
   ; covers vfn/mfn/cfn closures uniformly; a hand-written struct with an `invoke`
   ; method that has NOT hand-extended the protocol would also derive (benign — if
-  ; it HAD hand-extended, step 1 already returned 1).
-  (let (ig:ptr (generic-lookup (symbol-intern "invoke"))
-        im:?&Method null)
+    ; it HAD hand-extended, step 1 already returned 1).
+    (let (ig:ptr (generic-lookup (symbol-intern "invoke"))
+          im:?&Method null)
     ; The invoke search only fires when an `invoke` generic exists (a program
     ; with closures); a bare `fn` in a closure-free program reaches the TY-FN
-    ; synthesis below with im=null.
-    (when (!= ig null)
-      (let (igg:&Generic (unsafe/cast &Generic ig))
-        (dotimes (mi (unsafe/cast i32 (count (igg 'methods))))
-          (let (mm:&Method (as &Method (invoke (igg 'methods) mi:usize)))
-            (when (= (mm 'kind) METHOD-USER)
-              (let (self-ty:ptr (aref (unsafe/cast &ptr (mm 'param-types)) 0))
-                (when (!= self-ty null)
-                  (let (st:&Type (unsafe/cast &Type self-ty))
-                    (when (and (= (st 'kind) TY-PTR)
-                               (and (!= (st 'elem) null)
-                                    (= (st 'pkind) PTR-REF)))
-                      (let (et:&Type (unsafe/cast &Type (st 'elem)))
-                        (when (= (et 'kind) TY-STRUCT)
-                          (let (sd:&StructDef (unsafe/cast &StructDef (et 'sdef)))
-                            (when (and (!= (as ptr sd) null)
-                                       (= (sd 'name) cvspell))
-                              (set! im (as ptr mm)))))))))))))))
+      ; synthesis below with im=null.
+      (when (!= ig null)
+        (let (igg:&Generic (unsafe/cast &Generic ig))
+          (dotimes (mi (unsafe/cast i32 (count (igg 'methods))))
+            (let (mm:&Method (as &Method (invoke (igg 'methods) mi:usize)))
+              (when (= (mm 'kind) METHOD-USER)
+                (let (self-ty:ptr (aref (unsafe/cast &ptr (mm 'param-types)) 0))
+                  (when (!= self-ty null)
+                    (let (st:&Type (unsafe/cast &Type self-ty))
+                      (when (and (= (st 'kind) TY-PTR)
+                                 (and (!= (st 'elem) null)
+                                      (= (st 'pkind) PTR-REF)))
+                        (let (et:&Type (unsafe/cast &Type (st 'elem)))
+                          (when (= (et 'kind) TY-STRUCT)
+                            (let (sd:&StructDef (unsafe/cast &StructDef (et 'sdef)))
+                              (when (and (!= (as ptr sd) null)
+                                         (= (sd 'name) cvspell))
+                                (set! im (as ptr mm)))))))))))))))
       ; Resolve the source method whose signature drives derivation. For a
       ; capturing closure that is the `invoke` method found above (call-style 0,
       ; forward by calling invoke on self). For a bare `fn` (TY-FN — no env, no
@@ -5327,21 +5328,16 @@
               pp:?&Protocol (protocol-resolve-any proto))
           (when (= pp null) (return 0))
           (when (!= (pp 'num-sigs) 1) (return 0))
-        (let (sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) 0)
+          (let (form:ptr (aref (unsafe/cast &ptr (pp 'sigs)) 0)
               ; S1: route the method name / return / params through the accessor so
               ; a new-style single-method protocol sig `(m (params) Ret)` works. For
               ; the legacy list-head `((m Ret) (params))` this reproduces the former
-              ; method-name / ret-node exactly.
-              method-name:Symbol (symbol-none)
-              ret-node:ptr null
-              params-node:ptr null
-              fwd-style:i32 (proto-sig-parse sig (as &Symbol &method-name)
-                              (as &ptr &ret-node)
-                              (as &ptr &params-node))
-              k:i32 (- (node-len params-node) 1)
-              npp:i32 (pp 'num-params)
-              args:ptr (arena-alloc (* (as i64 npp) (ptr-bytes)))
-              j:i32 0)
+                ; method-name / ret-node exactly.
+                sig:&FnSig (proto-sig-parse (unsafe/cast &Node form))
+                k:i32 (- (node-len (sig 'params)) 1)
+                npp:i32 (pp 'num-params)
+                args:ptr (arena-alloc (* (as i64 npp) (ptr-bytes)))
+                j:i32 0)
             ; Step 6: arity check — non-self param count must match imp's.
             (when (!= k (- (imp 'num-params) 1)) (return 0))
           ; Step 8: bind each protocol extra-param to an invoke type spelling.
@@ -5350,44 +5346,43 @@
           ; type's spelling is the candidate. Zero candidates → unbindable;
           ; multiple differing candidates → inconsistent. (UnaryFn: Arg←invoke
           ; param[0], Ret←invoke ret. FoldFn: Acc←invoke ret/param[0], Elem←
-          ; invoke param[1].)
-          (while (< j npp)
-            (let (pj:Symbol (aref (unsafe/cast &Symbol (pp 'params)) j)
-                  cand:Symbol (symbol-none)
-                  ncand:i32 0
-                  pi2:i32 0)
-              (when (and (!= ret-node null)
-                         (and (= ((unsafe/cast &Node ret-node) 'kind) NODE-SYM)
-                              (= ((unsafe/cast &Node ret-node) 's) pj)))
-                (set! cand (type-spelling (imp 'ret-type)))
-                (inc! ncand))
-              (while (< pi2 k)
-                (let (ptn:ptr (binding-type-node (node-at params-node (+ pi2 1))))
-                  (when (and (!= ptn null)
-                             (and (= ((unsafe/cast &Node ptn) 'kind) NODE-SYM)
-                                  (= ((unsafe/cast &Node ptn) 's) pj)))
-                    (let (this-cand:Symbol
-                           (type-spelling (aref (unsafe/cast &ptr (imp 'param-types)) (+ pi2 1))))
-                      (inc! ncand)
-                      (when (symbol-none? cand) (set! cand this-cand))
-                      (when (!= cand this-cand)
-                        (return 0)))))
-                (inc! pi2))
-              (when (= ncand 0) (return 0))
-              (set! (aref (unsafe/cast &Symbol args) j) cand))
-            (inc! j))
+            ; invoke param[1].)
+            (while (< j npp)
+              (let (pj:Symbol (aref (unsafe/cast &Symbol (pp 'params)) j)
+                    cand:Symbol (symbol-none)
+                    ncand:i32 0
+                    pi2:i32 0)
+                (when (and (= ((unsafe/cast &Node (sig 'ret-node)) 'kind) NODE-SYM)
+                           (= ((unsafe/cast &Node (sig 'ret-node)) 's) pj))
+                  (set! cand (type-spelling (imp 'ret-type)))
+                  (inc! ncand))
+                (while (< pi2 k)
+                  (let (ptn:ptr (binding-type-node (node-at (sig 'params) (+ pi2 1))))
+                    (when (and (!= ptn null)
+                               (and (= ((unsafe/cast &Node ptn) 'kind) NODE-SYM)
+                                    (= ((unsafe/cast &Node ptn) 's) pj)))
+                      (let (this-cand:Symbol
+                              (type-spelling (aref (unsafe/cast &ptr (imp 'param-types)) (+ pi2 1))))
+                        (inc! ncand)
+                        (when (symbol-none? cand) (set! cand this-cand))
+                        (when (!= cand this-cand)
+                          (return 0)))))
+                  (inc! pi2))
+                (when (= ncand 0) (return 0))
+                (set! (aref (unsafe/cast &Symbol args) j) cand))
+              (inc! j))
             ; Step 9: synthesize the forwarding method (mirrors fn-make-invoke-method).
             ; call-style 0 (closure): (invoke self __a0…) routes to the env's invoke.
             ; call-style 1 (bare fn): ((deref self) __a0…) loads the fn pointer from
             ; the self slot and calls it directly (a TY-FN indirect call).
             (let (ret-spelling:Symbol (type-spelling (imp 'ret-type))
                   total:i32 (imp 'num-params)
-                  name-sym:ptr (as ptr (intern-node method-name))
+                  name-sym:ptr (as ptr (intern-node @(sig 'name)))
                   ret-node:ptr (as ptr (intern-node ret-spelling))
                   self-sym:ptr (as ptr (intern-node (symbol-intern "self")))
                   env-ref-node:ptr
                     (node-list2 (as ptr (intern-node (symbol-intern "ref")))
-                      (as ptr (intern-node cvspell)) line)
+                                (as ptr (intern-node cvspell)) line)
                   self-spec:ptr
                     (node-list2 self-sym env-ref-node line)
                   params-spine:ptr null
@@ -5395,9 +5390,9 @@
               (while (>= pi3 0)
                 (let (a-sym:ptr (as ptr (intern-node (symbol-intern (fstr "__a" pi3))))
                       ty-sym:ptr
-                        (as ptr (intern-node
-                                    (type-spelling
-                                      (aref (unsafe/cast &ptr (imp 'param-types)) (+ pi3 1)))))
+                      (as ptr (intern-node
+                               (type-spelling
+                                (aref (unsafe/cast &ptr (imp 'param-types)) (+ pi3 1)))))
                       spec-i:ptr (node-list2 a-sym ty-sym line))
                   (set! params-spine (node-cons spec-i params-spine line))
                   (dec! pi3)))
@@ -5406,57 +5401,57 @@
                     pi4:i32 (- k 1))
                 (while (>= pi4 0)
                   (set! fwd-args
-                    (node-cons (as ptr (intern-node (symbol-intern (fstr "__a" pi4))))
-                      fwd-args line))
+                        (node-cons (as ptr (intern-node (symbol-intern (fstr "__a" pi4))))
+                                   fwd-args line))
                   (dec! pi4))
                 (let (call-head:ptr
                         (if (= call-style 0)
                           (node-cons (as ptr (intern-node (symbol-intern "invoke")))
-                            (node-cons self-sym fwd-args line) line)
+                                     (node-cons self-sym fwd-args line) line)
                           (let (deref-self:ptr
                                   (node-list2 (as ptr (intern-node (symbol-intern "deref")))
-                                    self-sym line))
+                                              self-sym line))
                             (node-cons deref-self fwd-args line)))
-                      ; New-style: (defn <method> (params) <ret> <call-head>).
-                      defn-form:ptr
+                        ; New-style: (defn <method> (params) <ret> <call-head>).
+                        defn-form:ptr
                         (node-list5 (as ptr (intern-node (symbol-intern "defn")))
-                          name-sym
-                          params-spine
-                          ret-node
-                          call-head line)
-                      mtypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes))))
-                (dotimes (ci total)
-                  (set! (aref (unsafe/cast &ptr mtypes) ci) (aref (unsafe/cast &ptr (imp 'param-types)) ci)))
-                (let (mangled:Symbol (mangle-fn-name (symbol-intern "") method-name mtypes total))
+                                    name-sym
+                                    params-spine
+                                    ret-node
+                                    call-head line)
+                        mtypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes))))
+                  (dotimes (ci total)
+                    (set! (aref (unsafe/cast &ptr mtypes) ci) (aref (unsafe/cast &ptr (imp 'param-types)) ci)))
+                  (let (mangled:Symbol (mangle-fn-name (symbol-intern "") @(sig 'name) mtypes total))
                   ; A bare `fn` (call-style 1) erases its signature to the lossy
                   ; "pfn" token under mangle-fn-name, so every same-signature bare
                   ; fn forwards through an IDENTICAL synthesized method named e.g.
                   ; `apply.pfn.i32` (the forwarder just derefs self and calls the
                   ; fn pointer — correct for any bare fn of that signature). The
-                  ; conformance key, however, is the per-fn `__fnty_N` spelling
-                  ; (fnty-intern dedups by Type* identity), so step 1's idempotent
-                  ; short-circuit misses and each occurrence would re-synthesize a
-                  ; colliding `define @apply.pfn.i32`. Register the method for
-                  ; dispatch unconditionally, but queue its emission MonoJob only
-                  ; the first time this exact ir-name is seen — a later occurrence
-                  ; reuses the single shared thunk. (Capturing closures never hit
-                  ; this: each has a distinct env-struct spelling, so their
-                  ; forwarder names are already unique.)
-                  (let (newm:ref:Method
-                         (generic-register-method method-name (imp 'ret-type)
-                           mtypes total 0 0 defn-form)
-                        already:i32 (derived-fwd-already-emitted method-name mangled))
-                    (set! (newm 'ir-name) mangled)
-                    (fn-force-generic-mangled method-name)
-                    (when (= already 0)
-                      (conj g-mono-worklist
-                            (mono-job-here defn-form
-                              (fstr "while deriving closure conformance to " proto " (at "
-                                    g-source-path ":" line ")"))))
-                    ; Step 10: record the conformance with the recovered args.
-                    (conformance-add cvspell proto args npp line)
-                    ; Step 11: success.
-                    (return 1))))))))))))
+                    ; conformance key, however, is the per-fn `__fnty_N` spelling
+                    ; (fnty-intern dedups by Type* identity), so step 1's idempotent
+                    ; short-circuit misses and each occurrence would re-synthesize a
+                    ; colliding `define @apply.pfn.i32`. Register the method for
+                    ; dispatch unconditionally, but queue its emission MonoJob only
+                    ; the first time this exact ir-name is seen — a later occurrence
+                    ; reuses the single shared thunk. (Capturing closures never hit
+                    ; this: each has a distinct env-struct spelling, so their
+                    ; forwarder names are already unique.)
+                    (let (newm:ref:Method
+                            (generic-register-method @(sig 'name) (imp 'ret-type)
+                                                     mtypes total 0 0 defn-form)
+                            already:i32 (derived-fwd-already-emitted @(sig 'name) mangled))
+                      (set! (newm 'ir-name) mangled)
+                      (fn-force-generic-mangled @(sig 'name))
+                      (when (= already 0)
+                        (conj g-mono-worklist
+                              (mono-job-here defn-form
+                                             (fstr "while deriving closure conformance to " proto " (at "
+                                                   g-source-path ":" line ")"))))
+                      ; Step 10: record the conformance with the recovered args.
+                      (conformance-add cvspell proto args npp line)
+                      ; Step 11: success.
+                      (return 1))))))))))))
 
 
 ; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
