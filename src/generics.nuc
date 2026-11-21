@@ -197,10 +197,11 @@
   (return false))
 
 (defn proto-declares-method? (p:&Protocol name:Symbol):bool
-  (dotimes (i (p 'num-sigs))
-    (let (hd:ptr:Node (node-first (as ptr:Node (aref (unsafe/cast &ptr (p 'sigs)) i))))
+  (doseq (s (p 'sigs))
+    (let (hd:&Node (node-first. s))
       (when (= (node-kind hd) NODE-SYM)
-        (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
+        (let (nm:Symbol (symbol-none)
+              tail:Symbol (symbol-none))
           (split-typed (hd 's) (as &Symbol &nm) (as &Symbol &tail))
           (when (= nm name) (return true))))))
   (return false))
@@ -211,7 +212,9 @@
   (when (not (core-ns? (m 'src-ns))) (return false))
   (when (contains? g-core-proto-methods name) (return true))
   (doseq (p g-protocols (VecIter &Protocol))
-    (when (and (core-ns? (p 'src-ns)) (proto-declares-method? p name)) (return true)))
+    (when (and (core-ns? (p 'src-ns))
+               (proto-declares-method? p name))
+      (return true)))
   (return false))
 
 ; A recorded conformance of `t`, by the key dispatch asks (`type-spelling`).
@@ -3864,11 +3867,10 @@
            (when (= (crec 'var) tvname)
             ; B2a: resolved in the file that WROTE it, so this is a key.
             (let (proto:ptr (protocol-lookup-ns (constraint-proto crec)))
-              (when (!= proto null)
+              (when (!= proto null) ;TODO use Maybe
                 (let (pp:&Protocol (unsafe/cast &Protocol proto))
-                  (dotimes (si (pp 'num-sigs))
-                    (let (sig:?&Node (aref (unsafe/cast &ptr (pp 'sigs)) si)
-                          sline:i32 (if (protocol-foreign? pp)
+                  (doseq (sig (pp 'sigs))
+                    (let (sline:i32 (if (protocol-foreign? pp)
                                       (node-line (as ptr sig) line) line)
                           ctx:StrView (foreign-read-context (pp 'src-file) "protocol" (pp 'name) line)
                           here:NameEnv (protocol-env-enter pp)
@@ -4605,9 +4607,8 @@
 ; through the fallback-bearing resolver would fold a namespace's own `Describe`
 ; into an unrelated `user` one it merely shadows.
 (defn protocol-lookup-exact (key:Symbol):?&Protocol
-  (dotimes (i (unsafe/cast i32 (count g-protocols)))
-    (let (p:&Protocol (as &Protocol (invoke g-protocols i:usize)))
-      (when (= (p 'name) key) (return (as ptr p)))))
+  (doseq (p g-protocols)
+    (when (= (p 'name) key) (return p)))
   (return null))
 
 ; Resolve a protocol KEY by namespace alone — the pre-B2a `protocol-lookup`.
@@ -4701,7 +4702,7 @@
     (when (!= hit null) (return hit))
     (return (protocol-lookup-ns name))))
 
-(defn protocol-new (name:Symbol sigs:ptr num-sigs:i32):&Protocol
+(defn protocol-new (name:Symbol sigs:&(Vector &Node) num-sigs:i32):&Protocol
   (let (p:&Protocol (new Protocol g-arena))
     ; The registry key is the namespace-qualified identity of the *defining*
     ; namespace (identity under `user`). Everything downstream — the conformance
@@ -5328,7 +5329,7 @@
               pp:?&Protocol (protocol-resolve-any proto))
           (when (= pp null) (return 0))
           (when (!= (pp 'num-sigs) 1) (return 0))
-          (let (form:ptr (aref (unsafe/cast &ptr (pp 'sigs)) 0)
+          (let (form:&Node ((pp 'sigs) 0)
               ; S1: route the method name / return / params through the accessor so
               ; a new-style single-method protocol sig `(m (params) Ret)` works. For
               ; the legacy list-head `((m Ret) (params))` this reproduces the former
@@ -5595,13 +5596,12 @@
                             (prev 'src-file) (prev 'src-line)))
         0)
       (guard-name-kind pname (ff 'line) NK-PROTOCOL)
-      (let (nsigs:i32 (- (node-len form) 2)
-            sigs:ptr null)
+      (with (nsigs:i32 (- (node-len form) 2)
+             sigs:&(Vector &Node) (new (Vector &Node) g-arena))
         (when (> nsigs 0)
-          (set! sigs (arena-alloc (* nsigs (ptr-bytes))))
           (dotimes (i nsigs)
-            (let (sig:ptr (node-at form (+ i 2))
-                  snn:ptr (node-at (node-at form (+ i 2)) 0))
+            (let (sig:&Node (node-at. form (+ i 2))
+                  snn:&Node (node-at. (node-at. form (+ i 2)) 0))
               ; W9 item 45: a sig that is not a list carries no name to store and
               ; no params to parse lazily. `()` reads as NULL and `5` reads as an
               ; int; both used to reach `defn-name-only` and segfault, and a
@@ -5609,7 +5609,7 @@
               ; tried to satisfy it.
               (when (!= (node-kind sig) NODE-LIST)
                 (die-at (node-line sig (ff 'line))
-                  "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
+                        "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
               (require-sig-name (as ?&Node snn) "defprotocol: method name"
                                 (node-line sig (ff 'line)))
               (refuse-qualified-binder (defn-name-only snn) (node-line sig (ff 'line)))
@@ -5617,11 +5617,14 @@
                         (not (node-is-list (node-at sig 1))))
                 (let (s:String (node-str (as ?&Node sig)))
                   (die-at (node-line sig (ff 'line))
-                    (fstr "protocol method '" (defn-name-only snn)
-                          "': expected (" (defn-name-only snn)
-                          " (params) ret), found " (string-as-view &s)))))
-              (set! (aref (unsafe/cast &ptr sigs) i) sig))))
-        (let (p:ref:Protocol (protocol-new pname sigs nsigs))
+                          (fstr "protocol method '" (defn-name-only snn)
+                                "': expected (" (defn-name-only snn)
+                                " (params) ret), found " (string-as-view &s)))))
+              (conj sigs sig))))
+        (when (!= nsigs (unsafe/cast i32  (count sigs)))
+          (die-at (ff 'line)
+                  (fstr "Protocol " pname " has " (count sigs) " and the counter says " nsigs)))
+        (let (p:ref:Protocol (protocol-new pname (move sigs) nsigs))
           ; Stage 15 B4 (R4): the defining site, which is both the redefinition
           ; blame and the "same form, registered again" discriminator.
           (set-fields! p
@@ -5837,9 +5840,8 @@
         foreign:bool (protocol-foreign? pp)
         self-s:Symbol (if foreign (env-arg-sym (as ptr (intern-node typename)) line) typename)
         param-s:ptr (if foreign (env-arg-syms pspellings (pp 'num-params) line) pspellings))
-    (dotimes (i (pp 'num-sigs))
-      (let (sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) i)
-            csig:ptr (subst-proto-sig-node sig self-s (pp 'params) param-s (pp 'num-params))
+    (doseq (sig (pp 'sigs))
+      (let (csig:ptr (subst-proto-sig-node sig self-s (pp 'params) param-s (pp 'num-params))
             name-node:ptr (node-at csig 0)
             params-node:ptr (node-at csig 1)
             mname:Symbol (symbol-none)
@@ -6997,7 +6999,7 @@
           i:i32 0
           bl:i32 (node-len (as ptr binds)))
       (while (< i bl)
-        (let (bname:ptr (node-at (as ptr binds) i)
+        (let (bname:ptr (node-at binds i)
               name:Symbol (symbol-none)
               ty:ptr (extract-name-and-type bname
                                             (as &Symbol &name)

@@ -868,3 +868,19 @@ This will segfault if `bar` is `none`. Things that will segfault should usually
 ## Struct slot of &T accepted T
 
 I could set the name of an FnSig to a Symbol instead of &Symbol and it segfaulted at runtime.
+
+## Remove type expressions from doseq calls
+
+macro doesn't use them anymore
+
+## Manual search antipattern
+
+Manual loops iterating a sequence looking for a needle should be `contains?` or find/index
+
+## Future functions to refactor
+
+## if-let, when-let
+
+## with allowed use-after-free
+
+In generics.nuc protocol-register-form, binding sigs using with made registering protocols fail

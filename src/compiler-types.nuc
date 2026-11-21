@@ -1007,7 +1007,7 @@
 ; verifies a matching concrete method exists (see emit-extend).
 (defstruct Protocol
   name:Symbol
-  sigs:ptr          ; ptr to array of ptr:Node, each a (name:ret (params...)) form
+  sigs:&(Vector &Node)          ; each a (name:ret (params...)) form
   num-sigs:i32
   ; --- Stage 11 parametric protocols (T4) ---
   ; Extra type parameters beyond the implicit `Self`: for `(defprotocol (Seq E)

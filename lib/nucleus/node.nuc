@@ -31,6 +31,10 @@
     (none (do (puts "node-at. called on bad node")
             (exit 1)))))
 
+(defn node-first. (n:ptr:Node):&Node
+  (node-at. n 0))
+
+
 (defn node-len (n:?&Node):i32
   (when (= n null) (return 0))
   (when (!= (n 'kind) NODE-LIST) (return 0))

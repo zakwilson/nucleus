@@ -2379,7 +2379,7 @@ foo:(bar)
 
 ; A bare-symbol binding blames the call's line: the symbol has none of its own.
 (deftest s21-loop-binding-shapes
-  (let (seq:StrView "doseq: the first argument must be (var coll IterType)"
+  (let (seq:StrView "doseq: the first argument must be (var coll)"
         it:StrView "doseq-iter: the first argument must be (var iter-ref)"
         tms:StrView "dotimes: the first argument must be (var count)")
     (try (s21-loop-refused "(defn f (v:&(Vector i32)):void (doseq item v (VecIter i32) (conj v item)))" seq))
@@ -2392,20 +2392,6 @@ foo:(bar)
     (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes (i) (+ i n)) (return 0))" tms))
     (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes i n (+ i n)) (return 0))" tms))
     (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes () (+ n 1)) (return 0))" tms)))
-  (return (ok)))
-
-; The one shape with a likelier intent gets it as a note.
-(deftest s21-doseq-two-element-binding-notes-doseq-iter
-  (let (p:String (try (test-write-file "t.nuc" "(import-use nucleus.vector)
-
-(defn f (it:&(VecIter i32)):void (doseq (x it) (next it)))
-"))
-        pv:StrView (string-as-view &p)
-        c:Compiled (try (compile-path pv)))
-    (try (check-error-at (ref c 'diags) pv 3 "doseq: the first argument must be (var coll IterType)"))
-    (try (check-note-at (ref c 'diags) pv 3 "use (doseq-iter (var iter-ref) ...)"))
-    (drop &c)
-    (drop &p))
   (return (ok)))
 
 ; Every JIT'd entry the compiler calls: a macro body (a null dereference, and a

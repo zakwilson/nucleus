@@ -9349,11 +9349,11 @@
           (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
         (dotimes (pi nparams)
           (let (pname:Symbol (symbol-none)
-                          pty:ptr (extract-name-and-type (node-at params-node pi)
-                                                         (as &Symbol &pname)
-                                                         (node-line (node-at params-node pi) line)))
+                pty:ptr (extract-name-and-type (node-at params-node pi)
+                                               (as &Symbol &pname)
+                                               (node-line (node-at params-node pi) line)))
             (when (= pty null)
-                  (die-at line (fstr "fn: missing :type on param '" pname "'")))
+              (die-at line (fstr "fn: missing :type on param '" pname "'")))
             (set! (aref (unsafe/cast &ptr param-types) pi) pty)
             (set! (aref (unsafe/cast &Symbol param-names) pi) pname)))
         ; Fresh IR-legal lifted name (no `!`/`?`; routed through sanitize-for-ir
@@ -10120,7 +10120,7 @@
 ; §3.3 as one predicate, asked by synthesis (a null slot) and by the forward (the
 ; diagnostic). `nargs` is how many of the protocol's parameters the box binds.
 (defn dyn-sig-safety (pp:&Protocol i:i32 nargs:i32):i32
-  (let (form:&Node (unsafe/cast &Node  (aref (unsafe/cast &ptr (pp 'sigs)) i))
+  (let (form:&Node ((pp 'sigs) i)
         line:i32 (node-line form 0)
         sig:&FnSig (proto-sig-parse form))
     (when (>= (params-where-index (sig 'params)) 0) (return DYN-WHERE))
@@ -10152,7 +10152,7 @@
   (return ""))
 
 (defn dyn-sig-name (pp:&Protocol i:i32):Symbol
-  (return (defn-name-only (node-at (aref (unsafe/cast &ptr (pp 'sigs)) i) 0))))
+  (return (defn-name-only (node-at ((pp 'sigs) i) 0))))
 
 ; Asked before admission, so the message names the protocol's shape rather than
 ; the conformer.
@@ -10267,7 +10267,7 @@
                                   subj:StrView line:i32):Symbol
   (let (foreign:bool (protocol-foreign? ppp)
         typename:Symbol (type-spelling concrete-ty)
-        sig:ptr (aref (unsafe/cast &ptr (ppp 'sigs)) i)
+        sig:&Node ((ppp 'sigs) i)
         csig:ptr (subst-proto-sig-node sig (if foreign (env-arg-sym (as ptr (intern-node typename)) line)
                                              typename)
                                        (ppp 'params) markers nargs)
@@ -11009,10 +11009,10 @@
       (when (= pp null) (return -1))
       (let (ppp:&Protocol pp)
         (dotimes (i (ppp 'num-sigs))
-          (let (sig:ptr (aref (unsafe/cast &ptr (ppp 'sigs)) i)
-                name-node:ptr (node-at sig 0)
+          (let (sig:&Node ((ppp 'sigs) i)
                 mname:Symbol (symbol-none))
-            (extract-name-and-type name-node (as &Symbol &mname) 0)
+            (when-some (name-node (node-at sig 0))
+                       (extract-name-and-type name-node (as &Symbol &mname) 0))
             (when (and (not (symbol-none? mname)) (= mname mkey)) (return i))))
         (return -1))))))
 
@@ -11036,7 +11036,7 @@
         subj:StrView (dyn-subject box-ty)
         ; B2a: downstream of the box-construction gate (`protocol-resolve-any`).
         pp:&Protocol (unsafe/cast &Protocol (protocol-resolve-any proto))
-        sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) sidx)
+        sig:&Node ((pp 'sigs) sidx)
         bargs:i32 (dyn-nargs-of box-ty)
         ; The application's arguments go in as Type markers; `Self` stays itself.
         csig:ptr (if (= bargs 0) sig
