@@ -19,6 +19,7 @@
 (import-use nucleus.vector)
 (import-use nucleus.string)
 (import-use nucleus.coll)
+(import-use nucleus.tmputil)
 
 ; The parent's environment, for the merge `command-env` does. Declared rather
 ; than imported: the C header reader takes function declarations and object-like
@@ -180,7 +181,7 @@
         n:usize (count (ref self 'offs))
         i:usize 0)
     (while (< i n)
-      (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (ref self 'offs) i)))))
+      (conj out (as ptr (unsafe/ptr+ base (as i64 (vg "command-argv" (ref self 'offs) i)))))
       (set! i (+ i 1)))
     (conj out null)))
 
@@ -206,7 +207,7 @@
             shadowed:bool false
             j:usize 0)
         (while (< j n)
-          (let (ov:&ui8 (unsafe/ptr+ base (as i64 (invoke (ref self 'envs) j)))
+          (let (ov:&ui8 (unsafe/ptr+ base (as i64 (vg "command-envp" (ref self 'envs) j)))
                 ok2:StrView (env-key ov))
             (when (strview-eq &ek &ok2) (set! shadowed true)))
           (set! j (+ j 1)))
@@ -214,7 +215,7 @@
       (set! i (+ i 1)))
     (let (j:usize 0)
       (while (< j n)
-        (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (ref self 'envs) j)))))
+        (conj out (as ptr (unsafe/ptr+ base (as i64 (vg "command-envp 2" (ref self 'envs) j)))))
         (set! j (+ j 1))))
     (conj out null)))
 
@@ -248,7 +249,7 @@
     (init envp)
     (command-argv self argv)
     (when has-env (command-envp self envp))
-    (set! prog (invoke argv 0))
+    (set! prog (argv 0))
     (let (v:StrView (string-as-view (ref self 'buf)))
       (when (>= (self 'cwd-off) 0)
         (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off)))))

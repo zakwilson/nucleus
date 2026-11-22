@@ -1,0 +1,10 @@
+; temporary utilities for solving library development problems
+; do not use in new, permanent code
+(import-use nucleus.vector)
+(import-use nucleus.error)
+
+(defn vg (caller:StrView v:&(Vector T) i:usize):T
+  (match (get! v i)
+    ((ok r) r)
+    ((err e) (do (printf "vector get out of range in %s" caller)
+               (exit 0)))))

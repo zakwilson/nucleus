@@ -393,10 +393,9 @@
 ; content and is now one `icmp`: C7-4b interned the ir-name substrate, which is
 ; what made content and identity the same question.
 (defn program-defn-lookup (irn:Symbol):?&ProgDefn
-  (dotimes (i (unsafe/cast i32 (count g-program-defns)))
-    (let (pd:&ProgDefn (invoke g-program-defns i:usize))
-      (when (= (pd 'ir-name) irn)
-        (return pd))))
+  (doseq (pd g-program-defns)
+    (when (= (pd 'ir-name) irn)
+      (return pd)))
   (return null))
 
 ; Record a program-defined function's signature so macro/CT JIT modules can
@@ -443,10 +442,9 @@
 ; respect: idempotent by ir-name, null when it declined, and `ir-start ==
 ; ir-end == 0` is the only "no span" test.
 (defn program-global-lookup (irn:Symbol):?&ProgGlobal
-  (dotimes (i (unsafe/cast i32 (count g-program-globals)))
-    (let (pg:&ProgGlobal (invoke g-program-globals i:usize))
-      (when (= (pg 'ir-name) irn)
-        (return pg))))
+  (doseq (pg g-program-globals)
+    (when (= (pg 'ir-name) irn)
+      (return pg)))
   (return null))
 
 (defn program-global-record (irn:Symbol name:Symbol is-const:i32):?&ProgGlobal

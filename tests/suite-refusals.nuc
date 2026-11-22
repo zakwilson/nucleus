@@ -331,7 +331,7 @@
   (return (ok)))
 
 (deftest w45-empty-defprotocol-sig
-  (try (check-probe-refused "(defprotocol P ())"
+  (try (check-probe-refused "(defprotocol dammit ())"
          "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
   (return (ok)))
 

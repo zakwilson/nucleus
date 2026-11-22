@@ -30,6 +30,7 @@
 (import-use nucleus.node)
 (import-use nucleus.syntax)
 (import-use nucleus.const)
+(import-use nucleus.tmputil)
 
 (deferror read-eof "unexpected end of input")
 (deferror read-unterminated-list "unterminated list")
@@ -106,7 +107,7 @@
   (let (n:usize (count tbl)
         i:usize 0)
     (while (< i n)
-      (let (rm:RMacro (invoke tbl i))
+      (let (rm:RMacro (vg "rd-macro-find" tbl i))
         (when (= (rm 'prefix) prefix) (return (unsafe/cast i32 i))))
       (set! i (+ i 1)))
     (return -1)))
@@ -445,7 +446,7 @@
       (return c))))
 
 (defn chain-seg (c:&Chain i:usize):ChainSeg
-  (return ((ref c 'segs) i)))
+  (return (vg "chain-seg" (ref c 'segs) i)))
 
 (defn chain-sigils (c:&Chain i:usize):StrView
   (let (seg:ChainSeg (chain-seg c i))
@@ -505,7 +506,7 @@
 
 ; The source offset of value byte `i`; `i` may be the value's length.
 (defn str-source-at (ss:&StrSource i:usize):usize
-  (return ((ref ss 'map) i)))
+  (return (vg "str-source-at" (ref ss 'map) i)))
 
 ; Whether value offset `i` falls inside one escape's bytes (a `\uXXXX` that
 ; decodes to several), where no source offset corresponds to it.
@@ -818,7 +819,7 @@
         best-len:usize 0
         i:usize 0)
     (while (< i n)
-      (let (rm:RMacro (invoke tbl i)
+      (let (rm:RMacro (vg "rd-macro-match" tbl i)
             p:StrView (rm 'prefix)
             plen:usize (p 'len)
             j:usize 0
@@ -950,7 +951,7 @@
               name:Symbol (symbol-none)
               have-name:bool false)
           (when (= (child 'kind) NODE-SYM)
-            (set! name (invoke segs 0))
+            (set! name (vg "rd-fuse-color-paren" segs 0))
             (set! have-name true)
             (set! start 1))
           (let (result:?&Node paren-form
@@ -958,7 +959,7 @@
             (while (> i start)
               (set! i (- i 1))
               (set! result (as &Node
-                             (node-list2 (as &Node (intern-node (invoke segs i)))
+                             (node-list2 (as &Node (intern-node (vg "rd-fuse-color-paren 2" segs i)))
                                result line))))
             (when have-name
               (set! result (as &Node
@@ -1126,7 +1127,7 @@
             (return (err (rd-error read-unexpected-close line "unexpected }" "")))))
     (let (mi:i32 (rd-macro-match self))
       (when (>= mi 0)
-        (let (rm:RMacro (invoke (self 'macros) (as usize mi))
+        (let (rm:RMacro (vg "rd-form" (self 'macros) (as usize mi))
               p:StrView (rm 'prefix)
               k:usize (p 'len)
               j:usize 0)
@@ -1172,7 +1173,7 @@
 
 (defn rd-syn-open (self:&Reader kind:i32):i32
   (when (= kind SYN-PREFIX)
-    (let (rm:RMacro (invoke (self 'macros) (as usize (rd-macro-match self)))
+    (let (rm:RMacro (vg "rd-syn-open" (self 'macros) (as usize (rd-macro-match self)))
           p:StrView (rm 'prefix))
       (return (unsafe/cast i32 (p 'len)))))
   (return (case kind SYN-LIST 1 SYN-VEC 1 SYN-MAP 1 SYN-SET 2 SYN-TAGGED 1 0)))
@@ -1183,7 +1184,7 @@
   (let (ks:&(Vector &Syn) (ref s 'kids)
         start:usize (s 'start))
     (cond (and (= (s 'kind) SYN-ATOM) (> (count ks) 0))
-            (let (k0:&Syn (ks 0)
+            (let (k0:&Syn (vg "rd-syn-head-kid" ks 0)
                   end:usize (k0 'start)
                   text:StrView (strview-take-bytes (strview-drop-bytes (self 'src) start)
                                                    (- end start))
@@ -1301,7 +1302,7 @@
   (let (f:&SynFile ((rd-syn-builder r) 'file))
     (try (rd-read-into r (f 'tree)))
     (let (fs:&(Vector &Syn) (ref f 'forms))
-      (return (ok (fs (- (count fs) 1)))))))
+      (return (ok (vg "read-syntax-one" fs (- (count fs) 1)))))))
 
 ; `read-all` in syntax mode: the same tree, as `(f 'tree)`, plus a `Syn` per form.
 (defn read-syntax-all (src:StrView):SynFileResult
@@ -1448,7 +1449,7 @@
   (let (n:usize (count table)
         i:usize 0)
     (while (< i n)
-      (let (rm:RMacro (invoke table i))
+      (let (rm:RMacro (vg "rd-macro-prefix-for" table i))
         (when (= (rm 'wrap) head) (return (rm 'prefix))))
       (set! i (+ i 1)))
     (return "")))

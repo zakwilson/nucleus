@@ -182,10 +182,10 @@
 ; Whether a `;` comment lies inside `s`, the refusal a rewrite that would lose
 ; one needs.
 (defn syn-has-comment? (f:&SynFile s:&Syn):bool
-  (return (syn-spans-inside? (ref f 'comments) s)))
+  (syn-spans-inside? (ref f 'comments) s))
 
 (defn syn-has-discard? (f:&SynFile s:&Syn):bool
-  (return (syn-spans-inside? (ref f 'discards) s)))
+  (syn-spans-inside? (ref f 'discards) s))
 
 ; How many leading elems of a kind's node have no kid: the head symbol of a
 ; literal cell or a reader-macro wrap.
@@ -199,8 +199,7 @@
         i:usize 1)
     (when (or (!= (s 'kind) SYN-FUSE) (= n null)) (return null))
     (while (< i (count ks))
-      (let (k:&Syn (ks i))
-        (when (= (k 'node) n) (return k)))
+      (when (= ((ks i) 'node) n) (return (ks i)))
       (set! i (+ i 1)))
     (return null)))
 
@@ -211,8 +210,7 @@
         off:i32 (syn-elem-offset (s 'kind)))
     (when (= (s 'kind) SYN-FUSE)
       ; A lone `:` fuses to its list unwrapped, so the fuse's elems are its kid's.
-      (let (k:&Syn (ks 1))
-        (when (= (k 'node) (s 'node)) (return (syn-kid-for-elem k i))))
+      (when (= ((ks 1) 'node) (s 'node)) (return (syn-kid-for-elem (ks 1) i)))
       (return (syn-kid-for-node s (node-at (s 'node) i))))
     (when (or (< off 0) (< i off) (>= (- i off) (unsafe/cast i32 (count ks))))
       (return null))

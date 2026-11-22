@@ -67,7 +67,8 @@
         (let (t:String text
               paths:(Vector StrView) (make (Vector StrView)))
           (depfile-paths (string-as-view &t) &paths)
-          (dotimes (i (count &paths)) (track-read (invoke &paths i)))
+          (doseq (p &paths (VecIter StrView))
+            (track-read p))
           (drop &paths)
           (drop &t))))
     (match (remove-file tv) ((ok) 0) ((err e) 0))))
@@ -115,16 +116,15 @@
         (let (p:Symbol (symbol-intern (strview-take-bytes (strview-drop-bytes all start) (- k start))))
           (set! start (+ k 1))
           (let (dup:bool false)
-            (dotimes (j (count &seen))
-              (when (= (invoke &seen j) p) (set! dup true)))
+            (doseq (s &seen (VecIter Symbol))
+              (when (= s p) (set! dup true)))
             (when (not dup)
               (conj &seen p)
               (str-into &out " \\\n  ")
               (depfile-escape-into &out (symbol-as-view p)))))))
     ; The link reads its file arguments too: a reinstalled archive must relink.
-    (dotimes (k (count g-link-args))
-      (let (a:Symbol (invoke g-link-args k)
-            av:StrView (symbol-as-view a))
+    (doseq (a g-link-args (VecIter Symbol))
+      (let (av:StrView (symbol-as-view a))
         (when (and (not (strview-has-prefix av "-")) (file-exists? av)
                    (not (sym-vec-has? &seen a)))
           (conj &seen a)
@@ -160,7 +160,7 @@
   (str-into out " :" key " [")
   (dotimes (i (count v))
     (when (> i 0) (str-into out " "))
-    (diag-write-string out (symbol-as-view (invoke v i))))
+    (diag-write-string out (symbol-as-view (vg "list-imports-strings" v i))))
   (str-into out "]"))
 
 (defn list-imports-record (out:&String file:Symbol line:i32 head:Symbol name:?&Node path:Symbol
@@ -187,8 +187,8 @@
     (str-into out "}\n")))
 
 (defn list-imports-file (path:Symbol out:&String seen:&(Vector Symbol)):void
-  (dotimes (j (count seen))
-    (when (= (invoke seen j) path) (return)))
+  (doseq (s seen (VecIter Symbol))
+    (when (= s path) (return)))
   (conj seen path)
   (let (save-path:Symbol g-source-path)
     ; Before the read, so a syntax error names this file.
@@ -214,8 +214,8 @@
                       (when (not (symbol-none? p)) (conj &next p)))))))))
         (set! cur (node-rest (unsafe/cast &Node cur))))
       (drop &src)
-      (dotimes (j (count &next))
-        (list-imports-file (invoke &next j) out seen))
+      (doseq (n next (VecIter Symbol))
+        (list-imports-file n out seen))
       (drop &next))
     (set! g-source-path save-path)))
 

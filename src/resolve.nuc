@@ -184,7 +184,7 @@
     (assoc (st 'sites) (resolve-addr (s 'node)) (new RSite g-arena s rf)))
   (let (ks:&(Vector &Syn) (ref s 'kids))
     (dotimes (i (count ks))
-      (resolve-index-syn st rf (ks i)))))
+      (resolve-index-syn st rf (vg "resolve-index-syn" ks i)))))
 
 ; A top-level form's identity across reads of one file: its line, head and name.
 (defn resolve-top-key (path:Symbol n:?&Node):Symbol
@@ -217,8 +217,8 @@
     (set! (rf 'path) path)
     (set! (rf 'syn) f)
     (dotimes (i (count fs))
-      (resolve-index-syn st rf (fs i))
-      (resolve-index-top st path (fs i)))
+      (resolve-index-syn st rf (vg "resolve-add-file" fs i))
+      (resolve-index-top st path (vg "resolve-add-file2" fs i)))
     (when (resolve-first? (symbol-intern (fstr "file\n" path)))
       (let (out:&String (new String g-arena)
             d:&RDef (new RDef g-arena))
@@ -612,7 +612,7 @@
               (set! (r 'amb) true))
     (let (ks:&(Vector &Syn) (ref s 'kids))
       (dotimes (i (count ks))
-        (resolve-trace-walk f (ks i) type name passed r)))))
+        (resolve-trace-walk f (vg "resolve-trace-walk" ks i) type name passed r)))))
 
 ; The candidates among the operands of call `c`; its head is not one.
 (defn resolve-trace-call (f:&SynFile c:&Syn type:bool name:StrView passed:?&(HashMap usize i32) r:&RTr):void
@@ -650,7 +650,7 @@
   (when (!= (x 'inner) null)
     (let (ks:&(Vector Symbol) (unsafe/cast &(Vector Symbol) (x 'inner)))
       (dotimes (i (count ks))
-        (when (resolve-in-set? (resolve-key-mints (ks i)) name) (return true)))))
+        (when (resolve-in-set? (resolve-key-mints (vg "resolve-minted-in?" ks i)) name) (return true)))))
   (return false))
 
 ; A string no reader returns as a symbol: a message, which mints no name (§4.9).
@@ -693,8 +693,8 @@
         n:usize (st 'ctn))
     (when (resolve-unspellable? (symbol-as-view s)) (return))
     (cond (and jit (> n 0))
-            (when ((st 'ctsited) (- n 1))
-              (let (k:Symbol ((st 'ctkeys) (- n 1)))
+            (when (vg "resolve-note-mint" (st 'ctsited) (- n 1))
+              (let (k:Symbol (vg "resolve-note-mint2" (st 'ctkeys) (- n 1)))
                 (if (symbol-none? k)
                   (resolve-mint-add (st 'gmint) s)
                   (let (m:?&(HashMap Symbol i32) (resolve-key-mints k))
@@ -726,7 +726,8 @@
         at:StrView "@")
     (when (strview-starts-with &t &at) (set! t (strview-drop-bytes t 1)))
     (match (get ((rs) 'pend) (symbol-intern t))
-      ((some v) (dotimes (i (count v)) (resolve-mint-add ((rs) 'gmint) (v i))))
+      ((some v) (dotimes (i (count v))
+                  (resolve-mint-add ((rs) 'gmint) (vg "resolve-mint-reach" v i))))
       (none 0))))
 
 (defn resolve-mirror-enter ():void (set! ((rs) 'mirroring) (+ ((rs) 'mirroring) 1)))
@@ -800,7 +801,7 @@
   (let (cur:&Syn k)
     (while (and (or (= (cur 'kind) SYN-LIST) (= (cur 'kind) SYN-FUSE))
                 (> (count (ref cur 'kids)) 0))
-      (set! cur ((ref cur 'kids) 0)))
+      (set! cur (vg "resolve-atom-span" (ref cur 'kids) 0)))
     (when (!= (cur 'kind) SYN-ATOM) (return (resolve-no-span)))
     (let (seg:ChainSeg (resolve-seg0 (syn-text f cur)))
       (return (RSpan (+ (cur 'start) (seg 'start)) (+ (cur 'start) (seg 'end))
@@ -972,7 +973,7 @@
         fs:&(Vector &RFrame) (st 'frames))
     (when (!= g-rs-quiet 0) (return d))
     (when (= d (count fs)) (conj fs (new RFrame g-arena)))
-    (let (f:&RFrame (fs d))
+    (let (f:&RFrame (vg "resolve-push-frame" fs d))
       (set-fields! f
                    'node  n
                    'idx   idx
@@ -1042,7 +1043,7 @@
 (defn resolve-push-minted (n:?&Node slot:i32):usize
   (let (d:usize (resolve-push-decl-as n slot))
     (when (and (!= g-resolve 0) (> ((rs) 'depth) d))
-      (let (f:&RFrame (((rs) 'frames) d))
+      (let (f:&RFrame (vg "resolve-push-minted" ((rs) 'frames) d))
         (set! (f 'gen) true)))
     (return d)))
 
@@ -1090,7 +1091,7 @@
         (set! at (resolve-barrier-locus src path))))
     (let (d:usize (resolve-push-frame at -1 SLOT-TOP (if instance RO-INSTANCE RO-GENERATED)))
       (when (and (> ((rs) 'depth) d) (= (as ptr at) (as ptr form)) (resolve-sited? form))
-        (let (f:&RFrame (((rs) 'frames) d))
+        (let (f:&RFrame (vg "resolve-push-barrier" ((rs) 'frames) d))
           (set! (f 'open) true)))
       (return d))))
 
@@ -1280,7 +1281,7 @@
         (return (resolve-macro-occ (o 'call) (o 'file) (o 'macro) (o 'exp)))))
     (while (> d 0)
       (set! d (- d 1))
-      (let (f:&RFrame ((st 'frames) d)
+      (let (f:&RFrame (vg "resolve-why" (st 'frames) d)
             site:?&RSite (resolve-site-of (f 'node))
             fo:?&ROrigin (resolve-origin-of (f 'node)))
         (when (f 'gen) (set! gen true))
@@ -1374,7 +1375,7 @@
         i:usize d)
     (while (> i 0)
       (set! i (- i 1))
-      (let (f:&RFrame ((st 'frames) i))
+      (let (f:&RFrame (vg "resolve-anchor-base" (st 'frames) i))
         (when (!= (f 'idx) RF-ANCHOR) (return f))))
     (return null)))
 
@@ -1580,7 +1581,7 @@
         q:&(Vector &RQQ) (st 'qq)
         n:usize (st 'nqq))
     (when (= n (count q)) (conj q (new RQQ g-arena)))
-    (let (h:&RQQ (q n))
+    (let (h:&RQQ (vg "resolve-qq-hit" q n))
       (set-fields! h
                    'name    name
                    'kind    kind
@@ -1600,7 +1601,7 @@
     (when (or (= (node-kind e) NODE-SYM) (= (node-kind e) NODE-KEYWORD))
       (let (j:usize mark)
         (while (< j (st 'nqq))
-          (resolve-qq-event l i ((st 'qq) j))
+          (resolve-qq-event l i (vg "resolve-qq-flush" (st 'qq) j))
           (set! j (+ j 1)))))
     (set! (st 'nqq) mark)))
 
@@ -1718,8 +1719,9 @@
 
 (defn resolve-tally (role:i32 o:i32):void
   (let (t:&(Vector i64) ((rs) 'tally)
-        ti:usize (as usize (+ (* role RO-COUNT) o)))
-    (set t ti (+ (t ti) 1))))
+        ti:usize (as usize (+ (* role RO-COUNT) o))
+        tv:i32 (t ti))
+    (set t ti (+ tv 1))))
 
 ; One record in the order its first occurrence was met: a span's group, or a line.
 (defstruct RSlot group:?&RGroup line:Symbol)
@@ -1731,11 +1733,11 @@
         slots:&(Vector &RSlot) (new (Vector &RSlot) g-arena)
         framed:&(HashMap Symbol i32) (new (HashMap Symbol i32) g-arena))
     (dotimes (i (count evs))
-      (let (ev:&REvent (evs i))
+      (let (ev:&REvent (vg "resolve-write-refs" evs i))
         (resolve-settle-kind ev)
         (when (and (= (ev 'outcome) RO-MACRO) (!= (ev 'exp) null)) (resolve-trace-event ev))))
     (dotimes (i (count evs))
-      (let (ev:&REvent (evs i))
+      (let (ev:&REvent (vg "resolve-write-refs" evs i))
         (assoc framed (ev 'ufk) 1)
         (when (and (!= (ev 'self) null) (= (ev 'outcome) RO-ATTRIBUTED))
           (let (b:&RBind (unsafe/cast &RBind (ev 'self)))
@@ -1746,7 +1748,7 @@
                          'ok    true)))))
     ; Spanned records merge by span; the rest are their line, written once.
     (dotimes (i (count evs))
-      (let (ev:&REvent (evs i))
+      (let (ev:&REvent (vg "resolve-write-refs" evs i))
         (if (= (ev 'outcome) RO-ATTRIBUTED)
           (when (not (resolve-self-ref? ev))
             (let (k:Symbol (symbol-intern (fstr (resolve-ev-path ev) "\n" (as i64 ((ev 'span) 'start)) "\n"
@@ -1780,7 +1782,7 @@
                   (resolve-tally (ev 'role) (ev 'outcome))
                   (conj slots sl))))))))
     (dotimes (i (count slots))
-      (let (sl:&RSlot (slots i))
+      (let (sl:&RSlot (vg "resolve-write-refs" slots i))
         (if (= (sl 'group) null)
           (str-into out (symbol-as-view (sl 'line)))
           (let (g:&RGroup (unsafe/cast &RGroup (sl 'group)))
@@ -1790,16 +1792,18 @@
               (do (resolve-write-ref out (g 'ev) (g 'kind) (symbol-as-view (resolve-target-text (g 'ev)))
                                      RO-ATTRIBUTED (g 'via))
                   (resolve-tally ((g 'ev) 'role) RO-ATTRIBUTED)
-                  (let (vt:&(Vector i64) (st 'vtally))
-                    (set vt (as usize (g 'via)) (+ (vt (as usize (g 'via))) 1)))))))))
+                  (let (vt:&(Vector i64) (st 'vtally)
+                        vv:i64 (+ (vt (as usize (g 'via))) 1))
+                    (set vt (as usize (g 'via))
+                         vv))))))))
     ; Prescan lookups emission never repeated, by file, role, name and key.
     (let (only:i64 0
           ufs:&(Vector Symbol) (st 'ufs))
       (dotimes (i (count ufs))
-        (match (get framed (ufs i))
+        (match (get framed (vg "resolve-write-refs" ufs i))
           ((some v) 0)
           ; A prescan's lookup, its position unknown: recorded rather than lost.
-          (none (let (ev:&REvent ((st 'ufevs) i))
+          (none (let (ev:&REvent (vg "resolve-write-refs" (st 'ufevs) i))
                   (resolve-settle-kind ev)
                   (set! only (+ only 1))
                   (resolve-write-ref out ev (ev 'kind) (symbol-as-view (resolve-target-text ev))
@@ -1814,7 +1818,9 @@
     (dotimes (o RO-COUNT)
       (let (n:i64 0)
         (dotimes (r RREF-COUNT)
-          (set! n (+ n ((st 'tally) (as usize (+ (* r RO-COUNT) o))))))
+          (set! n
+                (+ n
+                   ((st 'tally) (as usize (+ (* r RO-COUNT) o))))))
         (conj tot n)))
     (str-into out "{:record :coverage :attributed " (tot 0) " :ambiguous " (tot 1)
               " :no-span " (+ (tot 2) (+ (tot 3) (+ (tot 4) (+ (tot 5) (+ (tot 6) (tot 7))))))
@@ -1826,13 +1832,17 @@
       (str-into out ":" (resolve-role-name r) " {")
       (dotimes (o RO-COUNT)
         (when (> o 0) (str-into out " "))
-        (str-into out ":" (resolve-outcome-name o) " " ((st 'tally) (as usize (+ (* r RO-COUNT) o)))))
+        (str-into out
+                  ":" (resolve-outcome-name o) " "
+                  ((st 'tally) (as usize (+ (* r RO-COUNT) o)))))
       (str-into out "}"))
     (str-into out "} :via {")
     (dotimes (v VIA-COUNT)
       (when (> v 0)
         (when (> v 1) (str-into out " "))
-        (str-into out ":" (resolve-via-name v) " " (vt (as usize v)))))
+        (str-into out
+                  ":" (resolve-via-name v) " "
+                  (vt (as usize v)))))
     (str-into out "}}\n")))
 
 (defn resolve-write-report (unit:Symbol):void

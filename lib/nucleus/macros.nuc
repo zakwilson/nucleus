@@ -340,12 +340,12 @@
         it-sym:ptr    (gensym)
         var-sym:ptr   (ast-at binding 0)
         coll-expr:ptr (ast-at binding 1))
-    `(let (~it-sym (iter ~coll-expr))
-       (let ((~done-sym i32) 0)
-         (while (= ~done-sym 0)
-           (match (next &~it-sym)
-             ((some ~var-sym) (do ~@body))
-             (none (set! ~done-sym 1))))))))
+    `(let (~it-sym (iter ~coll-expr)
+           (~done-sym i32) 0)
+       (while (= ~done-sym 0)
+         (match (next &~it-sym)
+           ((some ~var-sym) (do ~@body))
+           (none (set! ~done-sym 1)))))))
 
 ; (doseq-iter (var iter-ref) body...) — iterate a bare iterator REFERENCE.
 ;

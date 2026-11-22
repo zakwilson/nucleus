@@ -24,6 +24,7 @@
 (import-use nucleus.string)
 (import-use nucleus.fmt)
 (import-use nucleus.coll)
+(import-use nucleus.tmputil)
 
 ; `O_*` come from the target's own <fcntl.h>, so the values are the emission
 ; target's (design/stage17-native-strings/platform-constants.md). `0644` is a
@@ -209,14 +210,15 @@
 
 ; A symlink is not a directory here, whatever it points at.
 (defn dir-is-dir? (self:&DirEntries i:usize):bool
-  (return (= (as i32 (invoke (ref self 'kinds) i)) DT_DIR)))
+  (= (as i32 ((ref self 'kinds) i)) DT_DIR))
 
 ; Valid while the DirEntries is alive and unmodified.
 (defn dir-name (self:&DirEntries i:usize):StrView
-  (let (v:StrView (string-as-view (ref self 'buf)))
+  (let (v:StrView (string-as-view (ref self 'buf))
+        )
     (return (strview-from-cstr
               (as CStr (unsafe/ptr+ (unsafe/cast &i8 (as ptr (v 'data)))
-                                    (as i64 (invoke (ref self 'offs) i))))))))
+                                    (as i64 (vg "dir-name" (ref self 'offs) i))))))))
 
 (extend DirEntries Drop)
 (defn drop (self:&DirEntries):void
@@ -237,12 +239,12 @@
 
 ; Insertion sort over the OFFSETS, which is why the names never move: an
 ; offset is a usize and the buffer is untouched.
-(defn dir-sort (self:&DirEntries):void
+(defn dir-sort (self:&DirEntries):!void
   (let (n:usize (dir-count self)
         i:usize 1)
     (while (< i n)
-      (let (key:usize (invoke (ref self 'offs) i)
-            kind:ui8 (invoke (ref self 'kinds) i)
+      (let (key:usize (vg "dir-sort" (ref self 'offs) i)
+            kind:ui8 (vg "dir-sort" (ref self 'kinds) i)
             kv:StrView (dir-name self i)
             j:i64 (- (as i64 i) 1)
             placed:i32 0)
@@ -252,9 +254,9 @@
               (set! placed 1)
               (do
                 (set (ref self 'offs) (as usize (+ j 1))
-                     (invoke (ref self 'offs) (as usize j)))
+                     (vg "dir-sort" (ref self 'offs) (as usize j)))
                 (set (ref self 'kinds) (as usize (+ j 1))
-                     (invoke (ref self 'kinds) (as usize j)))
+                     (vg "dir-sort"(ref self 'kinds) (as usize j)))
                 (set! j (- j 1))))))
         (set (ref self 'offs) (as usize (+ j 1)) key)
         (set (ref self 'kinds) (as usize (+ j 1)) kind))
@@ -584,7 +586,7 @@
     (init v)
     (while (< i n)
       (let (j:usize i)
-        (while (and (> j 0) (walk-less? d i (invoke v (- j 1))))
+        (while (and (> j 0) (walk-less? d i (vg "walk-order" v (- j 1))))
           (set! j (- j 1)))
         (insert v j i))
       (set! i (+ i 1)))
@@ -599,7 +601,7 @@
          order:(Vector usize) (walk-order &d))
     (let (i:usize 0)
       (while (< i (count &order))
-        (let (k:usize (invoke &order i)
+        (let (k:usize (vg "walk-into" &order i)
               nm:StrView (dir-name &d k))
           (when (or hidden (not (strview-has-prefix nm ".")))
             (with (path:String (str prefix nm))
@@ -608,7 +610,7 @@
                   (with (sub:String (str prefix nm "/"))
                     (try (walk-into out pv (string-as-view &sub) filter pat hidden)))
                   (when (or (not filter) (path-glob-match &pat &pv))
-                    (dir-push out pv (invoke (ref d 'kinds) k))))))))
+                    (dir-push out pv (vg "walk-into 2" (ref d 'kinds) k))))))))
         (set! i (+ i 1)))))
   (return (ok)))
 

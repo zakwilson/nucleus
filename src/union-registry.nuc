@@ -9,6 +9,7 @@
 (import-use nucleus.fmt)
 (import-use nucleus.read)
 (import-use nucleus.keyword)
+(import-use nucleus.tmputil)
 
 ; Union/struct registry and type-parsing — extracted from src/nucleusc.nuc.
 ; Source-imported by src/nucleusc.nuc after the ABI module is available.
@@ -293,7 +294,7 @@
 ; `:T` annotation holds a spelling.
 (defn lookup-struct (name:Symbol):?&StructDef
   (dotimes (i (unsafe/cast i32 (count g-structs)))
-    (let (sd:&StructDef (as &StructDef (invoke g-structs i:usize)))
+    (let (sd:&StructDef (as &StructDef (vg "lookup-struct" g-structs i:usize)))
       (when (and (= (sd 'name) name)
                  (or (= g-priv-bindings 0) (!= (binding-visible (sd 'priv) (sd 'src-ns)) 0)))
         (return (as ptr sd)))))
@@ -670,7 +671,7 @@
 
 (defn boxedfn-memo-lookup (key:Symbol):?&Type
   (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
-    (let (e:&BoxedFnEntry (invoke g-boxedfn-table i:usize))
+    (let (e:&BoxedFnEntry (vg "boxedfn-memo-lookup" g-boxedfn-table i:usize))
       (when (= (e 'key) key) (return (e 'ty)))))
   (return null))
 
@@ -734,7 +735,7 @@
     (let (sd:ptr (tt 'sdef))
       (when (= sd null) (return null))
       (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
-        (let (e:&BoxedFnEntry (invoke g-boxedfn-table i:usize))
+        (let (e:&BoxedFnEntry (vg "boxedfn-canonical" g-boxedfn-table i:usize))
           (when (= ((e 'ty) 'sdef) sd) (return (as ptr (e 'ty))))))
       (return null))))
 
@@ -761,7 +762,7 @@
 
 (defn dyn-memo-lookup (key:Symbol):?&Type
   (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
-    (let (e:&DynEntry (invoke g-dyn-table i:usize))
+    (let (e:&DynEntry (vg "dyn-memo-lookup" g-dyn-table i:usize))
       (when (= (e 'key) key) (return (e 'ty)))))
   (return null))
 
@@ -886,7 +887,7 @@
     (let (sd:ptr (tt 'sdef))
       (when (= sd null) (return null))
       (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
-        (let (e:&DynEntry (invoke g-dyn-table i:usize))
+        (let (e:&DynEntry (vg "dyn-entry-of" g-dyn-table i:usize))
           (when (= ((e 'ty) 'sdef) sd) (return e))))
       (return null))))
 
@@ -918,7 +919,7 @@
 
 (defn uniondef-lookup (name:Symbol):?&UnionDef
   (dotimes (i (unsafe/cast i32 (count g-uniondefs)))
-    (let (ud:&UnionDef (as &UnionDef (invoke g-uniondefs i:usize)))
+    (let (ud:&UnionDef (as &UnionDef (vg "uniondef-lookup" g-uniondefs i:usize)))
       (when (and (= (ud 'name) name)
                  (or (= g-priv-bindings 0) (!= (binding-visible (ud 'priv) (ud 'src-ns)) 0)))
         (return (as ptr ud)))))
@@ -1066,7 +1067,7 @@
   (let (ud:?&UnionDef (result-union-of ct))
     (when (or (= ud null) (= vt null)) (return vt))
     (let (ei:i32 (union-arm-index (as ptr ud) (symbol-intern "err"))
-          et:?&Type ((invoke (ud 'arms) (as usize ei)) 'ptype)
+          et:?&Type ((vg "init-then-type" (ud 'arms) ei:usize) 'ptype)
           ut:?&UnionTemplate (union-template-lookup-ref (symbol-intern "Result")))
       (when (= et null) (return null))
       (when (= ut null)
@@ -1081,7 +1082,7 @@
   (let (ud:?&UnionDef (result-union-of t))
     (when (= ud null) (return null))
     (let (oi:i32 (union-arm-index (as ptr ud) (symbol-intern "ok")))
-      (return ((invoke (ud 'arms) (as usize oi)) 'ptype)))))
+      (return ((vg "result-ok-type" (ud 'arms) oi:usize) 'ptype)))))
 
 ; The UnionDef behind a value-`Maybe`, or null. Structural like
 ; `result-union-of`: a stamped instance is named `Maybe.<mangled-arg>`, so the
@@ -1093,8 +1094,8 @@
     (let (si:i32 (union-arm-index (as ptr ud) (symbol-intern "some"))
           ni:i32 (union-arm-index (as ptr ud) (symbol-intern "none")))
       (when (or (< si 0) (< ni 0)) (return null))
-      (when (!= ((invoke (ud 'arms) (as usize si)) 'nfields) 1) (return null))
-      (when (!= ((invoke (ud 'arms) (as usize ni)) 'nfields) 0) (return null))
+      (when (!= ((vg "value-maybe-union-of" (ud 'arms) si:usize) 'nfields) 1) (return null))
+      (when (!= ((vg "value-maybe-union-of" (ud 'arms) ni:usize) 'nfields) 0) (return null))
       (return ud))))
 
 ; An arm is never a global, so a template's full name in an arm position means the
@@ -1108,7 +1109,7 @@
   (set! name (arm-spelling name))
   (let (udd:ptr:UnionDef ud)
     (dotimes (i (udd 'num-arms))
-      (let (arm:&Arm (invoke (udd 'arms) i:usize))
+      (let (arm:&Arm (vg "union-arm-index" (udd 'arms) i:usize))
         (when (= (arm 'name) name)
           (return i))))
     (return -1)))
@@ -1172,8 +1173,8 @@
       (return LAYOUT-ENUM)))
   ; Rules 2 & 3 are two-arm shapes (order-independent in the arms).
   (when (= narms 2)
-    (let (arm0:&Arm (invoke arms 0)
-          arm1:&Arm (invoke arms 1)
+    (let (arm0:&Arm (vg "union-layout-classify" arms 0)
+          arm1:&Arm (vg "union-layout-classify" arms 1)
           none0:i32 (if (= (arm0 'nfields) 0) 1 0)
           none1:i32 (if (= (arm1 'nfields) 0) 1 0)
           ref0:i32 (arm-is-typed-ref arm0)
@@ -1333,7 +1334,7 @@
       (let (npay:i32 0
             i:i32 0)
         (while (< i narms)
-          (when (!= ((invoke arms-vec (as usize i)) 'ptype) null) (inc! npay))
+          (when (!= ((vg "defunion-register" arms-vec i:usize) 'ptype) null) (inc! npay))
           (inc! i))
         ; A niche layout (rules 2/3) lowers to a bare pointer with no backing
         ; struct or payload union — skip building the anon payload union (which
@@ -1347,7 +1348,7 @@
                   mi:i32 0)
               (set! i 0)
               (while (< i narms)
-                (let (arm-rec:&Arm (invoke arms-vec i:usize))
+                (let (arm-rec:&Arm (vg "defunion-register" arms-vec i:usize))
                   (when (!= (arm-rec 'ptype) null)
                     (set! (aref (unsafe/cast &Symbol mnames) mi) (arm-rec 'name))
                     (set! (aref (unsafe/cast &ptr mtypes) mi) (arm-rec 'ptype))
@@ -1440,7 +1441,7 @@
 ; helper) — scans the arms conj'd so far.
 (defn union-arm-index-in (name:Symbol arms:&(Vector &Arm)):i32
   (dotimes (i (unsafe/cast i32 (count arms)))
-    (when (= ((invoke arms i:usize) 'name) name)
+    (when (= ((vg "defunion-register" arms i:usize) 'name) name)
       (return i)))
   (return -1))
 
@@ -1836,7 +1837,7 @@
       (while (< i (sv 'len))
         (set! idx (+ (* idx 10) (as usize (- (as i32 (aref (sv 'data) (as i64 i))) 48))))
         (set! i (+ i 1)))
-      (return (invoke g-env-args idx)))))
+      (return (vg "env-arg-of" g-env-args idx)))))
 
 ; A marker is parsed as its writer spelled it, in its writer's file.
 (defn env-arg-type (name:Symbol array-ok:i32):?&Type

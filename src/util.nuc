@@ -1,0 +1,9 @@
+(import-use nucleus.node)
+(import-use diagnostics)
+(import-use nucleus.vector)
+
+
+(defn vget (caller:StrView v:&(Vector T) i:usize):T
+  (if-some (r (invoke v i))
+           r
+           (die-at 0 (fstr "vector get out of range in " caller))))

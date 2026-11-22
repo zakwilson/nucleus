@@ -119,6 +119,13 @@
   (when (>= i (field self 'len)) (vector-bounds "get" i (field self 'len)))
   (return (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 i))))
 
+(deferror vector-oob "vector access out of bounds")
+
+(defn get! (self:&(Vector T) i:usize):!T
+  (if (>= i (field self 'len))
+    (err vector-oob)
+    (ok (aref (unsafe/cast &T (as ptr (field self 'data))) (as i64 i)))))
+
 ; set: index assignment `(set! (v i) x)` — the write side of `invoke`
 ; (dot-forms.md §3). Panics out-of-bounds exactly as `invoke` does; growing on a
 ; write would make a typo silently extend the vector.

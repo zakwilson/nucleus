@@ -5544,14 +5544,14 @@
       (reject-colon-in-def-name name-node "defprotocol" (ff 'line))
       ; Parametric protocol: name position is a list `(Seq E ...)` — head is the
       ; protocol name, the rest are the extra parameter names (beyond Self).
-      (if (= (node-kind (as ptr name-node)) NODE-LIST)
-        (let (head:&Node (unsafe/cast &Node (node-at (as ptr name-node) 0)))
+      (if (= (node-kind name-node) NODE-LIST)
+        (let (head:&Node (unsafe/cast &Node (node-at name-node 0)))
           ; W9 item 45: `node-kind`, so a head spelled `(())` reaches this
           ; message rather than dereferencing the NULL node `()` reads as.
           (when (!= (node-kind (as ptr head)) NODE-SYM)
             (die-at (name-node 'line) "defprotocol: protocol name must be a symbol"))
           (set! pname (head 's))
-          (set! nparams (- (node-len (as ptr name-node)) 1))
+          (set! nparams (- (node-len name-node) 1))
           (when (< nparams 1)
             (die-at (name-node 'line)
               "defprotocol: parametric protocol needs at least one parameter — use a plain defprotocol"))
@@ -5562,15 +5562,16 @@
           ; message here rather than falling into the generic, misleading
           ; "protocol parameter must be a symbol" below.
           (when (and (= nparams 1)
-                     (= (node-kind (node-at (as ptr name-node) 1)) NODE-LIST))
+                     (or (= (node-kind (node-at name-node 1)) NODE-LIST)
+                         (node-empty? name-node)))
             (die-at (name-node 'line)
               (fstr "defprotocol: takes no type annotation; write (defprotocol " (head 's)
                     " ...)")))
           (set! params (arena-alloc (* nparams (ptr-bytes))))
           (dotimes (pi nparams)
             (let (pv:&Node (unsafe/cast &Node (node-at (as ptr name-node) (+ pi 1))))
-              (when (!= (node-kind (as ptr pv)) NODE-SYM)
-                (die-at (node-line (as ptr pv) (name-node 'line))
+              (when (!= (node-kind pv) NODE-SYM)
+                (die-at (node-line pv (name-node 'line))
                   "defprotocol: protocol parameter must be a symbol"))
               (set! (aref (unsafe/cast &Symbol params) pi) (pv 's)))))
         (do
@@ -5601,13 +5602,18 @@
         (when (> nsigs 0)
           (dotimes (i nsigs)
             (let (sig:&Node (node-at. form (+ i 2))
-                  snn:&Node (node-at. (node-at. form (+ i 2)) 0))
+                  snn:?&Node (node-at sig 0))
               ; W9 item 45: a sig that is not a list carries no name to store and
               ; no params to parse lazily. `()` reads as NULL and `5` reads as an
               ; int; both used to reach `defn-name-only` and segfault, and a
               ; stored non-sig would have failed much later, at the `extend` that
               ; tried to satisfy it.
-              (when (!= (node-kind sig) NODE-LIST)
+              (when (= null snn)
+                (die-at (node-line sig (ff 'line))
+                        "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
+              (when (= nsigs 0) (die-at 0 (string-as-view &(node-str snn))))
+              (when (or (!= (node-kind sig) NODE-LIST)
+                        (node-empty? sig))
                 (die-at (node-line sig (ff 'line))
                         "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
               (require-sig-name (as ?&Node snn) "defprotocol: method name"

@@ -21,6 +21,7 @@
 (import-use nucleus.edn)
 (import-use nucleus.build.graph)
 (import-use "stdlib.h")
+(import-use nucleus.tmputil)
 
 (defn exec-intern (s:&String):StrView
   (return (symbol-as-view (symbol-intern (string-as-view s)))))
@@ -123,19 +124,19 @@
 (extend BuildLog Drop)
 (defn drop (self:&BuildLog):void
   (dotimes (i (count (ref self 'entries)))
-    (read-recs-free ((invoke (ref self 'entries) i) 'reads)))
+    (read-recs-free (field (vg "buildlog drop" (ref self 'entries) i) 'reads)))
   (drop (ref self 'entries)))
 
 (defn log-find (log:&BuildLog output:StrView):i64
   (dotimes (i (count (ref log 'entries)))
-    (when (= ((invoke (ref log 'entries) i) 'output) output) (return (as i64 i))))
+    (when (= ((vg "log-find" (ref log 'entries) i) 'output) output) (return (as i64 i))))
   (return -1))
 
 (defn log-put (log:&BuildLog e:LogEntry):void
   (let (at:i64 (log-find log (e 'output)))
     (if (< at 0)
       (conj (ref log 'entries) e)
-      (do (read-recs-free ((invoke (ref log 'entries) (as usize at)) 'reads))
+      (do (read-recs-free ((vg "log-put" (ref log 'entries) (as usize at)) 'reads))
           (set (ref log 'entries) (as usize at) e)))))
 
 (defn log-str (m:?&Node key:StrView):StrView
@@ -176,7 +177,7 @@
 (defn log-save (path:StrView log:&BuildLog):bool
   (let (out:String (make String))
     (dotimes (i (count (ref log 'entries)))
-      (let (e:LogEntry (invoke (ref log 'entries) i))
+      (let (e:LogEntry (vg "log-save" (ref log 'entries) i))
         (str-into &out "{:output ")
         (log-write-str &out (e 'output))
         (str-into &out " :command ")
@@ -185,7 +186,7 @@
         (log-write-str &out (e 'compiler))
         (str-into &out " :reads [")
         (dotimes (j (count (e 'reads)))
-          (let (r:ReadRec (invoke (e 'reads) j))
+          (let (r:ReadRec (vg "log-save2" (e 'reads) j))
             (when (> j 0) (str-into &out " "))
             (str-into &out "[")
             (log-write-str &out (r 'path))
@@ -222,7 +223,7 @@
     (when (!= (r 'command) (edge-command-hash e)) (return "command changed"))
     (when (!= (r 'compiler) (e 'compiler-id)) (return "compiler changed"))
     (dotimes (i (count (r 'reads)))
-      (let (rr:ReadRec (invoke (r 'reads) i))
+      (let (rr:ReadRec (vg "edge-stale-reason" (r 'reads) i))
         (match (file-stat (rr 'path))
           ((err x)
             (let (m:String (str (rr 'path) " is gone")) (return (exec-intern &m))))
@@ -239,7 +240,7 @@
 (defn edge-why (e:&Edge log:&BuildLog):StrView
   (let (at:i64 (log-find log (e 'output)))
     (when (< at 0) (return (edge-stale-reason e null)))
-    (let (le:LogEntry (invoke (ref log 'entries) (as usize at)))
+    (let (le:LogEntry (vg "edge-why" (ref log 'entries) (as usize at)))
       (return (edge-stale-reason e &le)))))
 
 ; A depfile names the command's own input as it was given, relative to the
@@ -260,10 +261,10 @@
             (depfile-paths (string-as-view &t) &paths)
             (drop &t)))))
     (dotimes (i (count &paths))
-      (let (p:StrView (exec-under (e 'cwd) (invoke &paths i))
+      (let (p:StrView (exec-under (e 'cwd) (vg "edge-record" &paths i))
             dup:bool false)
         (dotimes (j (count reads))
-          (when (= ((invoke reads j) 'path) p) (set! dup true)))
+          (when (= ((vg "edge-record" reads j) 'path) p) (set! dup true)))
         (when (not dup)
           (match (file-stat p)
             ((ok st) (conj reads (ReadRec p (st 'mtime-ns) (st 'size) (file-hash p))))
@@ -282,27 +283,27 @@
 (defconst EDGE-FRESH 4)
 
 (defn edge-ready? (g:&Graph state:&(Vector i32) i:usize):bool
-  (let (e:Edge (invoke (ref g 'edges) i))
+  (let (e:Edge (vg "edge-ready?" (ref g 'edges) i))
     (dotimes (k (count (ref e 'after)))
-      (let (s:i32 (invoke state (invoke (ref e 'after) k)))
+      (let (s:i32 (vg "edge-ready?" state (vg "edge-ready?" (ref e 'after) k)))
         (when (and (!= s EDGE-BUILT) (!= s EDGE-FRESH)) (return false))))
     (return true)))
 
 (defn edge-after-rebuilt? (g:&Graph state:&(Vector i32) i:usize):bool
-  (let (e:Edge (invoke (ref g 'edges) i))
+  (let (e:Edge (vg "edge-after-rebuilt?" (ref g 'edges) i))
     (dotimes (k (count (ref e 'after)))
-      (when (= (invoke state (invoke (ref e 'after) k)) EDGE-BUILT) (return true)))
+      (when (= (vg "edge-after-rebuilt?" state (vg "edge-after-rebuilt?" (ref e 'after) k)) EDGE-BUILT) (return true)))
     (return false)))
 
 (defn edge-spawn (e:&Edge):!Process
   (let (argv:&(Vector StrView) (ref e 'argv)
-        c:Command (command (invoke argv 0)))
-    (dotimes (k (count (ref e 'report))) (command-arg &c (invoke (ref e 'report) k)))
-    (dotimes (k (- (count argv) 1)) (command-arg &c (invoke argv (+ k 1))))
+        c:Command (command (vg "edge-spawn" argv 0)))
+    (dotimes (k (count (ref e 'report))) (command-arg &c (vg "edge-spawn" (ref e 'report) k)))
+    (dotimes (k (- (count argv) 1)) (command-arg &c (vg "edge-spawn" argv (+ k 1))))
     (command-cwd &c (e 'cwd))
     (let (k:usize 0)
       (while (< (+ k 1) (count (ref e 'env)))
-        (command-env &c (invoke (ref e 'env) k) (invoke (ref e 'env) (+ k 1)))
+        (command-env &c (vg "edge-spawn" (ref e 'env) k) (vg "edge-spawn" (ref e 'env) (+ k 1)))
         (set! k (+ k 2))))
     (let (p:!Process (spawn &c))
       (drop &c)
@@ -313,7 +314,8 @@
 
 (defn log-set-get (ls:&LogSet path:StrView):&BuildLog
   (dotimes (i (count (ref ls 'paths)))
-    (when (= (invoke (ref ls 'paths) i) path) (return (invoke (ref ls 'logs) i))))
+    (when (= (vg "log-set-get" (ref ls 'paths) i) path)
+      (return (vg "log-set-get" (ref ls 'logs) i))))
   (let (l:&BuildLog (unsafe/cast &BuildLog (malloc (sizeof BuildLog))))
     (set! @l (build-log))
     (log-load path l)
@@ -342,9 +344,11 @@
     (while (or progress (> running 0))
       (set! progress false)
       (dotimes (i n)
-        (when (and (not failed) (< running jobs) (= (invoke &state i) EDGE-PENDING)
+        (when (and (not failed)
+                   (< running jobs)
+                   (= (vg "exec-graph" &state i) EDGE-PENDING)
                    (edge-ready? g &state i))
-          (let (ev:Edge (invoke (ref g 'edges) i)
+          (let (ev:Edge (vg "exec-graph" (ref g 'edges) i)
                 e:&Edge &ev
                 why:StrView (if (edge-after-rebuilt? g &state i) "an input was rebuilt"
                               (edge-why e (edge-log e &ls log-path))))
@@ -361,7 +365,7 @@
                     (set &state i EDGE-RUNNING)
                     (inc! running))
                   ((err x)
-                    (eprint "nucleus: cannot run " (invoke (ref e 'argv) 0) "\n")
+                    (eprint "nucleus: cannot run " (vg "exec-graph" (ref e 'argv) 0) "\n")
                     (set &state i EDGE-FAILED)
                     (set! failed true))))))))
       (when (> running 0)
@@ -369,10 +373,11 @@
           ((err x) (set! running 0) (set! failed true))
           ((ok ce)
             (dotimes (i n)
-              (when (and (= (invoke &state i) EDGE-RUNNING) (= (invoke &pids i) (ce 'pid)))
+              (when (and (= (vg "exec-graph" &state i) EDGE-RUNNING)
+                         (= (vg "exec-graph" &pids i) (ce 'pid)))
                 (dec! running)
                 (set! progress true)
-                (let (ev:Edge (invoke (ref g 'edges) i)
+                (let (ev:Edge (vg "exec-graph" (ref g 'edges) i)
                       e:&Edge &ev
                       ok:bool (and (success? (ref ce 'status)) (file-exists? (e 'tmp))))
                   (when ok
@@ -387,8 +392,8 @@
                           (match (remove-file (e 'tmp)) ((ok) 0) ((err x) 0)))))))))))
       (when failed (set! progress false)))
     (dotimes (i (count (ref ls 'paths)))
-      (let (path:StrView (invoke (ref ls 'paths) i)
-            l:&BuildLog (invoke (ref ls 'logs) i))
+      (let (path:StrView (vg "exec-graph" (ref ls 'paths) i)
+            l:&BuildLog (vg "exec-graph" (ref ls 'logs) i))
         (when (not (log-save path l))
           (eprint "nucleus: cannot write " path "\n")
           (set! failed true))
